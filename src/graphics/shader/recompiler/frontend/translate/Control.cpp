@@ -50,7 +50,8 @@ void Translator::S_SUBVECTOR_LOOP(const Decoder::Instruction& inst, bool begin) 
 }
 
 void Translator::S_SAVEEXEC(const Decoder::Instruction& inst, IR::ValueOpcode operation,
-                            bool negate_exec, bool negate_source, bool write_64) {
+                            bool negate_exec, bool negate_source, bool write_64,
+                            bool negate_result) {
 	if (!write_64) {
 		// Read the encoded scalar word and preserve EXEC_HI, including in wave32.
 		const auto old = ir.GetExecLo();
@@ -61,18 +62,23 @@ void Translator::S_SAVEEXEC(const Decoder::Instruction& inst, IR::ValueOpcode op
 		switch (operation) {
 			case IR::ValueOpcode::LogicalAnd: result = ir.BitwiseAnd(lhs, rhs); break;
 			case IR::ValueOpcode::LogicalOr: result = ir.BitwiseOr(lhs, rhs); break;
+			case IR::ValueOpcode::LogicalXor: result = ir.BitwiseXor(lhs, rhs); break;
 			default: EXIT("unsupported SAVEEXEC operation");
+		}
+		if (negate_result) {
+			result = ir.BitwiseNot(result);
 		}
 		WriteRawU32(inst.dst, old);
 		WriteRawU32(ConditionOperand(Decoder::OperandKind::ExecLo), result);
 		ir.SetScc(ir.INotEqual(result, IR::U32(IR::Value(0u))));
 		return;
 	}
-	const auto old    = ir.GetExec();
-	const auto src    = ReadMask(inst.src0);
-	const auto lhs    = negate_exec ? ir.LogicalNot(old) : old;
-	const auto rhs    = negate_source ? ir.LogicalNot(src) : src;
-	const auto result = IR::U1(ir.Emit(operation, {lhs, rhs}));
+	const auto old      = ir.GetExec();
+	const auto src      = ReadMask(inst.src0);
+	const auto lhs      = negate_exec ? ir.LogicalNot(old) : old;
+	const auto rhs      = negate_source ? ir.LogicalNot(src) : src;
+	const auto combined = IR::U1(ir.Emit(operation, {lhs, rhs}));
+	const auto result   = negate_result ? ir.LogicalNot(combined) : combined;
 	WriteMask(inst.dst, old, true);
 	const auto mask = BallotMask(result);
 	ir.SetExec(result);
