@@ -16,7 +16,9 @@ void Translator::EmitCompareResult(const Decoder::Instruction& inst, IR::U1 valu
 		const auto mask = BallotMask(masked);
 		ir.SetExec(masked);
 		ir.SetExecLo(mask[0]);
-		ir.SetExecHi(mask[1]);
+		if (program.wave_size == 64u) {
+			ir.SetExecHi(mask[1]);
+		}
 		return;
 	}
 	WriteMask(inst.dst, masked);
