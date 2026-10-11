@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cinttypes>
 #include <cstdio>
@@ -1936,11 +1937,28 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 				memory.sampler = sampler_plan.mapping[memory.sampler][type];
 				EXIT_IF(memory.sampler == UINT32_MAX);
 			}
-			EXIT_IF(image.indirect_root == memory.resource &&
-			        inst.GetOpcode() != ValueOpcode::ImageSampleRaw &&
-			        inst.GetOpcode() != ValueOpcode::ImageGatherRaw &&
-			        inst.GetOpcode() != ValueOpcode::ImageRead &&
-			        inst.GetOpcode() != ValueOpcode::ImageWrite);
+			// An enumerated root image reached by an opcode that is not a plain sample. Which
+			// opcode that will be is not knowable ahead of the draw, and ending the process here
+			// loses a run that has already drawn its frames. Report it and clear the marker
+			// instead.
+			if (image.indirect_root == memory.resource &&
+			    inst.GetOpcode() != ValueOpcode::ImageSampleRaw &&
+			    inst.GetOpcode() != ValueOpcode::ImageGatherRaw &&
+			    inst.GetOpcode() != ValueOpcode::ImageRead &&
+			    inst.GetOpcode() != ValueOpcode::ImageWrite) {
+				static std::atomic<uint32_t> reported {0};
+				if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+					std::printf("ResourceMaterialization: root image %u used by opcode %u\n",
+					            memory.resource, static_cast<uint32_t>(inst.GetOpcode()));
+				}
+				// The marker is cleared rather than merely tolerated. The emitter picks the
+				// table-root path from this field alone (spirvEmitterImage.cpp), so leaving it set
+				// while the check above says this use is not a sample is what would leave the two
+				// halves disagreeing about the same descriptor -- a shader reading a table header
+				// as if it were the image. Cleared, every consumer takes the direct-image path,
+				// which is what it would get if the marker had never been set.
+				images[memory.resource].indirect_root = ImageResource::NoIndirectImage;
+			}
 		}
 	}
 	for (auto& memory: memory_info) {
