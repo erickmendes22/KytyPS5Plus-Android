@@ -203,6 +203,18 @@ union ShaderStageInputInfo {
 	const ShaderComputeInputInfo* compute = nullptr;
 };
 
+// Device capabilities that change which SPIR-V the recompiler may emit. Defaults are the most
+// restrictive. The emitter rejects a shader that needs an unsupported feature instead of
+// producing SPIR-V the device cannot accept.
+// Optional device capabilities the SPIR-V backend may use. Defaults describe a desktop GPU with
+// everything available (the pre-mobile behaviour); the renderer overrides them from the device.
+struct ShaderDeviceFeatures {
+	bool fragment_shader_barycentric      = true; // BaryCoord inputs and PerVertexKHR reads
+	bool shader_float64                   = true; // Float64 arithmetic
+	bool shader_shared_int64_atomics      = true; // Int64 atomics on Workgroup (LDS) memory
+	bool signed_zero_inf_nan_preserve_f32 = true; // SignedZeroInfNanPreserve at width 32
+};
+
 inline const ShaderWorkgroupInputInfo* ShaderWorkgroupInput(ShaderType           stage,
                                                             ShaderStageInputInfo input) {
 	switch (stage) {

@@ -1,8 +1,11 @@
 #include "graphics/host_gpu/renderer/image/imageView.h"
 
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/image.h"
+
+#include <atomic>
 
 namespace Libs::Graphics {
 
@@ -362,9 +365,19 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	                         : image.usage & ~vk::ImageUsageFlagBits::eStorage;
 	vk::ImageViewMinLodCreateInfoEXT min_lod {};
 	if (normalized.min_lod != 0) {
-		min_lod.minLod = static_cast<float>(normalized.base_level) +
-		                 static_cast<float>(normalized.min_lod) / 256.0f;
-		usage.pNext    = &min_lod;
+		if (m_graphics.optional_features.image_view_min_lod) {
+			min_lod.minLod = static_cast<float>(normalized.base_level) +
+			                 static_cast<float>(normalized.min_lod) / 256.0f;
+			usage.pNext    = &min_lod;
+		} else {
+			// Fallback: the view-level LOD clamp is dropped, so sampling may use a finer mip
+			// than the guest requested. Warn once rather than failing the draw.
+			static std::atomic<bool> s_warned = false;
+			if (!s_warned.exchange(true)) {
+				LOGF("WARNING: texture minimum LOD requested but VK_EXT_image_view_min_lod is "
+				     "unsupported; the clamp is ignored\n");
+			}
+		}
 	}
 	vk::ImageViewCreateInfo create {};
 	create.pNext                           = &usage;

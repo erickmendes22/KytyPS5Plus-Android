@@ -26,17 +26,16 @@ void DynamicState::Commit(const GraphicContext& graphics, vk::CommandBuffer cmdb
 		dirty_state.depth_compare_op = false;
 		cmdbuf.setDepthCompareOp(depth_compare_op);
 	}
-	if (dirty_state.depth_bounds_test_enabled) {
-		dirty_state.depth_bounds_test_enabled = false;
-#if !defined(__APPLE__)
-		cmdbuf.setDepthBoundsTestEnable(depth_bounds_test_enabled);
-#endif
-	}
-	if (depth_bounds_test_enabled && dirty_state.depth_bounds) {
-		dirty_state.depth_bounds = false;
-#if !defined(__APPLE__)
-		cmdbuf.setDepthBounds(depth_bounds_min, depth_bounds_max);
-#endif
+	// Depth-bounds state is only pipeline-dynamic when the device exposes depthBounds.
+	if (graphics.optional_features.depth_bounds) {
+		if (dirty_state.depth_bounds_test_enabled) {
+			dirty_state.depth_bounds_test_enabled = false;
+			cmdbuf.setDepthBoundsTestEnable(depth_bounds_test_enabled);
+		}
+		if (depth_bounds_test_enabled && dirty_state.depth_bounds) {
+			dirty_state.depth_bounds = false;
+			cmdbuf.setDepthBounds(depth_bounds_min, depth_bounds_max);
+		}
 	}
 	if (dirty_state.depth_bias_enabled) {
 		dirty_state.depth_bias_enabled = false;
@@ -131,11 +130,9 @@ void DynamicState::Commit(const GraphicContext& graphics, vk::CommandBuffer cmdb
 	}
 	if (dirty_state.color_write_enables) {
 		dirty_state.color_write_enables = false;
-#if !defined(__APPLE__)
-		if (num_color_write_enables != 0) {
+		if (graphics.optional_features.color_write_enable && num_color_write_enables != 0) {
 			cmdbuf.setColorWriteEnableEXT(num_color_write_enables, color_write_enables.data());
 		}
-#endif
 	}
 	if (dirty_state.line_width) {
 		dirty_state.line_width = false;
