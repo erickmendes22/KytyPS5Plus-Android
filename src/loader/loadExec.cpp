@@ -16,6 +16,7 @@
 #include <windows.h>
 #elif defined(__linux__)
 #include <linux/close_range.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #endif
 
@@ -116,7 +117,14 @@ int LoadExec(const char* path, const char* const argv[]) {
 		host_argv.push_back(argument.data());
 	}
 	host_argv.push_back(nullptr);
-	if (close_range(3, ~0u, CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) == 0) {
+#if defined(__ANDROID__)
+	// bionic exposes close_range() only from API 34; the raw syscall exists since kernel 5.9.
+	const bool fds_closed =
+	    syscall(__NR_close_range, 3u, ~0u, CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) == 0;
+#else
+	const bool fds_closed = close_range(3, ~0u, CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) == 0;
+#endif
+	if (fds_closed) {
 		execvp(host_argv[0], host_argv.data());
 	}
 	LOGF("LoadExec failed: %s\n", std::strerror(errno));

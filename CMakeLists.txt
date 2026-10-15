@@ -36,8 +36,21 @@ if(CMAKE_SYSTEM_NAME MATCHES ".*Linux")
 	set(LINUX TRUE)
 endif()
 
+# Android (NDK, bionic) rides the POSIX/Linux code paths and is additionally
+# flagged with KYTY_ANDROID for the few places that need libc/NDK specifics.
+if(ANDROID)
+	set(LINUX TRUE)
+	set(KYTY_ANDROID TRUE)
+	add_compile_definitions(KYTY_ANDROID=1)
+	# The NDK's libc++ hides std::jthread and std::stop_token (used by the schedulers and
+	# worker threads) behind its experimental switch; the desktop standard libraries ship them.
+	add_compile_definitions(_LIBCPP_ENABLE_EXPERIMENTAL)
+	# libmain.so is a shared library: every static archive linked into it must be PIC.
+	set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 if (NOT (WIN32 OR LINUX OR APPLE))
-    message(FATAL_ERROR "only Windows, Linux, and macOS builds are supported")
+    message(FATAL_ERROR "only Windows, Linux, macOS and Android builds are supported")
 endif()
 
 if(WIN32)
@@ -336,7 +349,15 @@ if (KYTY_CLANG_CL)
 	set_source_files_properties(${kyty_emulator_src} PROPERTIES COMPILE_FLAGS "-Wno-pragma-pack -Wno-deprecated-declarations -D_TIMESPEC_DEFINED")
 endif()
 
-set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL3::SDL3-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak opus)
+# Android ships SDL as libSDL3.so next to libmain.so, which is what SDLActivity
+# loads by default; desktop links SDL statically into the executable.
+if(KYTY_ANDROID)
+	set(KYTY_SDL3_LIBRARY SDL3::SDL3-shared)
+else()
+	set(KYTY_SDL3_LIBRARY SDL3::SDL3-static)
+endif()
+
+set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools ${KYTY_SDL3_LIBRARY} imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak opus)
 
 # Guest CPU backend: FEXCore on ARM64 hosts (adds kyty_guest_cpu to kyty_emulator_link_libraries).
 include("${KYTY_SOURCE_DIR}/cpu/fex.cmake")
@@ -345,6 +366,10 @@ include("${KYTY_SOURCE_DIR}/cpu/fex.cmake")
 if(LINUX)
 	find_package(Threads REQUIRED)
 	list(APPEND kyty_emulator_link_libraries m ${CMAKE_DL_LIBS} Threads::Threads)
+endif()
+
+if(KYTY_ANDROID)
+	list(APPEND kyty_emulator_link_libraries log android)
 endif()
 
 set(inc_headers
@@ -769,7 +794,13 @@ if(KYTY_GUEST_CPU_FEX)
 	endif()
 endif()
 
-add_executable(kyty_emulator "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
+if(KYTY_ANDROID)
+	# SDLActivity dlopen()s libmain.so and calls its exported SDL_main().
+	add_library(kyty_emulator SHARED "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
+	set_target_properties(kyty_emulator PROPERTIES OUTPUT_NAME main)
+else()
+	add_executable(kyty_emulator "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
+endif()
 configure_macos_guest_address_space(kyty_emulator)
 
 set(KYTY_TROPHY_UNLOCK_SOUND "${CMAKE_CURRENT_SOURCE_DIR}/assets/sounds/trophy-unlock.wav")
@@ -791,7 +822,8 @@ endif()
 if (KYTY_CLANG_CL)
 	target_link_libraries(kyty_emulator onecore)
 endif()
-if (CLANG AND NOT KYTY_CLANG_CL)
+# Bionic has no libpthread.a; pthread lives in libc.
+if (CLANG AND NOT KYTY_CLANG_CL AND NOT KYTY_ANDROID)
 	target_link_libraries(kyty_emulator pthread)
 endif()
 # dlopen/dlsym/dladdr for RenderDoc.

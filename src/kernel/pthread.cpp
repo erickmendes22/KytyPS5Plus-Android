@@ -1,6 +1,7 @@
 #include "kernel/pthread.h"
 
 #include "common/assert.h"
+#include "common/atomicRef.h"
 #include "common/common.h"
 #include "common/dateTime.h"
 #include "common/emulatorConfig.h"
@@ -70,6 +71,72 @@
 
 #ifdef pthread_attr_getguardsize
 #undef pthread_attr_getguardsize
+#endif
+
+#ifndef PTHREAD_PRIO_PROTECT
+// Bionic has no priority-protect protocol. The value is only recorded for the guest (the host
+// call is disabled on every platform), so the POSIX value is used as a placeholder.
+#define PTHREAD_PRIO_PROTECT 2
+#endif
+
+#if defined(__ANDROID__)
+// Bionic has no thread cancellation (no pthread_cancel, pthread_setcancelstate or
+// pthread_setcanceltype). Cancellation requests are rejected, and the cancel state and type
+// are kept per thread so guest save/restore pairs still round-trip. Values match glibc.
+namespace {
+constexpr int kHostCancelEnable       = 0;
+constexpr int kHostCancelDisable      = 1;
+constexpr int kHostCancelDeferred     = 0;
+constexpr int kHostCancelAsynchronous = 1;
+
+thread_local int t_host_cancel_state = kHostCancelEnable;
+thread_local int t_host_cancel_type  = kHostCancelDeferred;
+
+int HostPthreadCancel(pthread_t /*thread*/) {
+	return ENOTSUP;
+}
+
+int HostPthreadSetcancelstate(int state, int* old_state) {
+	if (old_state != nullptr) {
+		*old_state = t_host_cancel_state;
+	}
+	t_host_cancel_state = state;
+	return 0;
+}
+
+int HostPthreadSetcanceltype(int type, int* old_type) {
+	if (old_type != nullptr) {
+		*old_type = t_host_cancel_type;
+	}
+	t_host_cancel_type = type;
+	return 0;
+}
+
+void HostPthreadTestcancel() {}
+} // namespace
+#else
+namespace {
+constexpr int kHostCancelEnable       = PTHREAD_CANCEL_ENABLE;
+constexpr int kHostCancelDisable      = PTHREAD_CANCEL_DISABLE;
+constexpr int kHostCancelDeferred     = PTHREAD_CANCEL_DEFERRED;
+constexpr int kHostCancelAsynchronous = PTHREAD_CANCEL_ASYNCHRONOUS;
+
+int HostPthreadCancel(pthread_t thread) {
+	return pthread_cancel(thread);
+}
+
+int HostPthreadSetcancelstate(int state, int* old_state) {
+	return pthread_setcancelstate(state, old_state);
+}
+
+int HostPthreadSetcanceltype(int type, int* old_type) {
+	return pthread_setcanceltype(type, old_type);
+}
+
+void HostPthreadTestcancel() {
+	pthread_testcancel();
+}
+} // namespace
 #endif
 
 namespace Libs {
@@ -1424,7 +1491,7 @@ void* PthreadStaticObjects::CreateObject(void* addr, PthreadStaticObject::Type t
 	}
 
 	auto*      current       = static_cast<void**>(addr);
-	auto       current_ref   = std::atomic_ref<void*>(*current);
+	auto       current_ref   = Common::AtomicRef<void*>(*current);
 	auto*      current_value = current_ref.load(std::memory_order_acquire);
 	const bool adaptive_static_mutex =
 	    (type == PthreadStaticObject::Type::Mutex &&
@@ -1708,7 +1775,7 @@ static int PthreadMutexInitNamed(PthreadMutex* mutex, const PthreadMutexattr* at
 		LOGF("\tmutex init: %s, %d\n", new_mutex->name.c_str(), result);
 	}
 
-	std::atomic_ref<PthreadMutexPrivate*>(*mutex).store(new_mutex, std::memory_order_release);
+	Common::AtomicRef<PthreadMutexPrivate*>(*mutex).store(new_mutex, std::memory_order_release);
 
 	switch (result) {
 		case 0: return OK;
@@ -2309,7 +2376,7 @@ static int PthreadRwlockInitNamed(PthreadRwlock* rwlock, const PthreadRwlockattr
 
 	LOGF("\trwlock init: %s, 0\n", new_rwlock->name.c_str());
 
-	std::atomic_ref<PthreadRwlockPrivate*>(*rwlock).store(new_rwlock, std::memory_order_release);
+	Common::AtomicRef<PthreadRwlockPrivate*>(*rwlock).store(new_rwlock, std::memory_order_release);
 
 	return OK;
 }
@@ -2800,7 +2867,7 @@ static int PthreadCondInitNamed(PthreadCond* cond, const PthreadCondattr* attr, 
 		     reinterpret_cast<uint64_t>(__builtin_return_address(0)), result);
 	}
 
-	std::atomic_ref<PthreadCondPrivate*>(*cond).store(new_cond, std::memory_order_release);
+	Common::AtomicRef<PthreadCondPrivate*>(*cond).store(new_cond, std::memory_order_release);
 
 	switch (result) {
 		case 0: return OK;
@@ -3385,7 +3452,7 @@ int KYTY_SYSV_ABI PthreadCancel(Pthread thread) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	int result = pthread_cancel(thread->p);
+	int result = HostPthreadCancel(thread->p);
 
 	LOGF("\tthread cancel: %s, %d\n", thread->name.c_str(), result);
 
@@ -3424,22 +3491,22 @@ int KYTY_SYSV_ABI PthreadGetaffinity(Pthread thread, KernelCpumask* mask) {
 int KYTY_SYSV_ABI PthreadSetcancelstate(int state, int* old_state) {
 	PRINT_NAME();
 
-	int pstate = PTHREAD_CANCEL_DISABLE;
+	int pstate = kHostCancelDisable;
 
 	switch (state) {
-		case 0: pstate = PTHREAD_CANCEL_ENABLE; break;
-		case 1: pstate = PTHREAD_CANCEL_DISABLE; break;
+		case 0: pstate = kHostCancelEnable; break;
+		case 1: pstate = kHostCancelDisable; break;
 		default: EXIT("unknown state: %d", state);
 	}
 
-	int result = pthread_setcancelstate(pstate, old_state);
+	int result = HostPthreadSetcancelstate(pstate, old_state);
 
 	LOGF("\tthread setcancelstate: %d\n", result);
 
 	if (old_state != nullptr) {
 		switch (*old_state) {
-			case PTHREAD_CANCEL_ENABLE: *old_state = 0; break;
-			case PTHREAD_CANCEL_DISABLE: *old_state = 1; break;
+			case kHostCancelEnable: *old_state = 0; break;
+			case kHostCancelDisable: *old_state = 1; break;
 			default: EXIT("unknown old_state: %d", *old_state);
 		}
 	}
@@ -3453,22 +3520,22 @@ int KYTY_SYSV_ABI PthreadSetcancelstate(int state, int* old_state) {
 int KYTY_SYSV_ABI PthreadSetcanceltype(int type, int* old_type) {
 	PRINT_NAME();
 
-	int ptype = PTHREAD_CANCEL_DEFERRED;
+	int ptype = kHostCancelDeferred;
 
 	switch (type) {
-		case 0: ptype = PTHREAD_CANCEL_DEFERRED; break;
-		case 2: ptype = PTHREAD_CANCEL_ASYNCHRONOUS; break;
+		case 0: ptype = kHostCancelDeferred; break;
+		case 2: ptype = kHostCancelAsynchronous; break;
 		default: EXIT("unknown type: %d", type);
 	}
 
-	int result = pthread_setcanceltype(ptype, old_type);
+	int result = HostPthreadSetcanceltype(ptype, old_type);
 
 	LOGF("\tthread setcanceltype: %d\n", result);
 
 	if (old_type != nullptr) {
 		switch (*old_type) {
-			case PTHREAD_CANCEL_DEFERRED: *old_type = 0; break;
-			case PTHREAD_CANCEL_ASYNCHRONOUS: *old_type = 2; break;
+			case kHostCancelDeferred: *old_type = 0; break;
+			case kHostCancelAsynchronous: *old_type = 2; break;
 			default: EXIT("unknown type: %d", *old_type);
 		}
 	}
@@ -3537,7 +3604,7 @@ int KYTY_SYSV_ABI PthreadSetprio(Pthread thread, int prio) {
 void KYTY_SYSV_ABI PthreadTestcancel() {
 	PRINT_NAME();
 
-	pthread_testcancel();
+	HostPthreadTestcancel();
 }
 
 void KYTY_SYSV_ABI PthreadExit(void* value) {

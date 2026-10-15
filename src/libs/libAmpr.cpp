@@ -1,5 +1,6 @@
 #include "common/abi.h"
 #include "common/assert.h"
+#include "common/atomicRef.h"
 #include "common/dateTime.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -1202,7 +1203,7 @@ static int ExecuteCommand(const CommandBufferState::Command& entry) {
 	} else if (const auto* payload =
 	               std::get_if<CommandBufferState::WriteAddressCommand>(&entry.data)) {
 		const auto& command = *payload;
-		std::atomic_ref(*reinterpret_cast<uint64_t*>(command.address))
+		Common::AtomicRef(*reinterpret_cast<uint64_t*>(command.address))
 		    .store(command.value, std::memory_order_release);
 	} else if (const auto* command =
 	               std::get_if<CommandBufferState::WriteCounterCommand>(&entry.data)) {
@@ -1238,7 +1239,7 @@ struct Submission {
 static bool IsWaitSatisfied(const CommandBufferState::WaitCommand& wait) {
 	const uint64_t value = wait.is_counter
 	                           ? g_counters[wait.source].load(std::memory_order_acquire)
-	                           : std::atomic_ref(*reinterpret_cast<uint64_t*>(wait.source))
+	                           : Common::AtomicRef(*reinterpret_cast<uint64_t*>(wait.source))
 	                                 .load(std::memory_order_acquire);
 	const uint64_t sign = uint64_t {1} << (wait.is_counter ? 31 : 63);
 	switch (wait.compare) {
