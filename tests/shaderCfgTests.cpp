@@ -6668,6 +6668,173 @@ void TestPerspectiveSampleInputs() {
   }
 }
 
+// Without VK_KHR_fragment_shader_barycentric, pixel parameters must be native interpolated inputs.
+// Ordinary I/J pairs take that path, centroid and sample requests become Centroid/Sample
+// qualifiers, flat P0/P10/P20 need no vertices, and anything needing vertex data is rejected.
+void TestNativePixelInterpolationFallback() {
+  constexpr uint32_t kFragmentBarycentricCapability = 5284u;
+  constexpr uint32_t kSampleRateShadingCapability = 35u;
+  constexpr uint32_t kLocation = 30u;
+  constexpr uint32_t kFlat = 14u;
+  constexpr uint32_t kCentroid = 16u;
+  constexpr uint32_t kSample = 17u;
+  constexpr uint32_t kPerVertexKhr = 5285u;
+
+  const auto native_options = [](ShaderPixelInputInfo &info) {
+    auto options = MakeCompileOptions(ShaderType::Pixel);
+    options.input_info.pixel = &info;
+    options.device_features.fragment_shader_barycentric = false;
+    return options;
+  };
+  const auto desktop_options = [](ShaderPixelInputInfo &info) {
+    auto options = MakeCompileOptions(ShaderType::Pixel);
+    options.input_info.pixel = &info;
+    return options;
+  };
+
+  // Linear interpolation of attr0.x: v_interp_p1 reads I=v4, v_interp_p2 reads J=v5.
+  const uint32_t linear_shader[] = {
+      EncodeVintrp(0, 6, 0, 0, 4), EncodeVintrp(1, 6, 0, 0, 5),
+      EncodeExp0(0x00, 0x1),       EncodeExp1(6, 6, 6, 6),
+      0xbf810000u,
+  };
+  ShaderPixelInputInfo linear_info{};
+  linear_info.input_num = 1;
+  linear_info.ps_perspective_center_vgpr = 4;
+  SetIdentityInterpolatorSettings(&linear_info);
+  {
+    const auto native = RecompileForTest(linear_shader, native_options(linear_info));
+    CheckSpirvBinaryValidates(native.spirv);
+    Check(!SpirvContainsCapability(native.spirv, kFragmentBarycentricCapability),
+          "native linear PS required FragmentBarycentricKHR");
+    Check(!SpirvHasDecorationValueWithDecoration(native.spirv, kLocation, 0u, kPerVertexKhr),
+          "native linear PS declared a per-vertex input");
+    Check(DisassembleSpirvBinary(native.spirv).find("gl_BaryCoord") == std::string::npos,
+          "native linear PS referenced barycentric builtins");
+    const auto desktop = RecompileForTest(linear_shader, desktop_options(linear_info));
+    CheckSpirvBinaryValidates(desktop.spirv);
+    Check(!SpirvContainsCapability(desktop.spirv, kFragmentBarycentricCapability),
+          "desktop linear PS unexpectedly required FragmentBarycentricKHR");
+  }
+
+  // Centroid I/J pair: the P2 J source selects the centroid qualifier on the native input.
+  const uint32_t centroid_shader[] = {
+      EncodeVintrp(0, 6, 0, 0, 2), EncodeVintrp(1, 6, 0, 0, 3),
+      EncodeExp0(0x00, 0x1),       EncodeExp1(6, 6, 6, 6),
+      0xbf810000u,
+  };
+  ShaderPixelInputInfo centroid_info{};
+  centroid_info.input_num = 1;
+  centroid_info.ps_perspective_centroid_vgpr = 2;
+  SetIdentityInterpolatorSettings(&centroid_info);
+  {
+    const auto native = RecompileForTest(centroid_shader, native_options(centroid_info));
+    CheckSpirvBinaryValidates(native.spirv);
+    Check(SpirvHasDecorationValueWithDecoration(native.spirv, kLocation, 0u, kCentroid),
+          "native centroid P2 did not qualify the input with Centroid");
+    Check(!SpirvContainsCapability(native.spirv, kSampleRateShadingCapability),
+          "native centroid P2 unexpectedly required SampleRateShading");
+    Check(!SpirvContainsCapability(native.spirv, kFragmentBarycentricCapability),
+          "native centroid P2 required FragmentBarycentricKHR");
+    // Desktop keeps pixel-center sampling for every P2, so its output carries no qualifier.
+    const auto desktop = RecompileForTest(centroid_shader, desktop_options(centroid_info));
+    CheckSpirvBinaryValidates(desktop.spirv);
+    Check(!SpirvHasDecorationValueWithDecoration(desktop.spirv, kLocation, 0u, kCentroid),
+          "desktop centroid P2 output changed");
+  }
+
+  // Sample I/J pair (VGPR 0/1) qualifies the input with Sample and requires SampleRateShading.
+  const uint32_t sample_shader[] = {
+      EncodeVintrp(0, 6, 0, 0, 0), EncodeVintrp(1, 6, 0, 0, 1),
+      EncodeExp0(0x00, 0x1),       EncodeExp1(6, 6, 6, 6),
+      0xbf810000u,
+  };
+  ShaderPixelInputInfo sample_info{};
+  sample_info.input_num = 1;
+  sample_info.ps_perspective_sample_vgpr = 0;
+  SetIdentityInterpolatorSettings(&sample_info);
+  {
+    const auto native = RecompileForTest(sample_shader, native_options(sample_info));
+    CheckSpirvBinaryValidates(native.spirv);
+    Check(SpirvHasDecorationValueWithDecoration(native.spirv, kLocation, 0u, kSample),
+          "native sample P2 did not qualify the input with Sample");
+    Check(SpirvContainsCapability(native.spirv, kSampleRateShadingCapability),
+          "native sample P2 did not require SampleRateShading");
+    Check(!SpirvContainsCapability(native.spirv, kFragmentBarycentricCapability),
+          "native sample P2 required FragmentBarycentricKHR");
+  }
+
+  // Flat parameter: P0 is the provoking vertex, P10 is zero. Desktop still needs barycentrics
+  // for the P10 subtraction, which the native path avoids.
+  const uint32_t flat_shader[] = {
+      EncodeVintrp(2, 12, 0, 0, 2), EncodeVintrp(2, 13, 0, 0, 0),
+      EncodeExp0(0x00, 0x3),        EncodeExp1(12, 13, 0, 0),
+      0xbf810000u,
+  };
+  ShaderPixelInputInfo flat_info{};
+  flat_info.input_num = 1;
+  flat_info.interpolator_settings[0] = 0x00000400u;
+  {
+    const auto native = RecompileForTest(flat_shader, native_options(flat_info));
+    CheckSpirvBinaryValidates(native.spirv);
+    Check(SpirvHasDecorationValueWithDecoration(native.spirv, kLocation, 0u, kFlat),
+          "native flat P0/P10 did not keep a Flat input");
+    Check(!SpirvContainsCapability(native.spirv, kFragmentBarycentricCapability),
+          "native flat P0/P10 required FragmentBarycentricKHR");
+    const auto desktop = RecompileForTest(flat_shader, desktop_options(flat_info));
+    CheckSpirvBinaryValidates(desktop.spirv);
+    Check(SpirvContainsCapability(desktop.spirv, kFragmentBarycentricCapability),
+          "desktop flat P10 no longer uses the barycentric path");
+  }
+
+  // Patterns that need the per-vertex values must be rejected with a fatal error.
+  const uint32_t smooth_p0_shader[] = {
+      EncodeVintrp(2, 12, 0, 0, 2), EncodeExp0(0x00, 0x1), EncodeExp1(12, 0, 0, 0),
+      0xbf810000u,
+  };
+  ShaderPixelInputInfo smooth_info{};
+  smooth_info.input_num = 1;
+  SetIdentityInterpolatorSettings(&smooth_info);
+  {
+    const auto options = native_options(smooth_info);
+    ExpectFatal([&] { (void)RecompileForTest(smooth_p0_shader, options); },
+                "native smooth P0 read was not rejected");
+    const auto desktop = RecompileForTest(smooth_p0_shader, desktop_options(smooth_info));
+    CheckSpirvBinaryValidates(desktop.spirv);
+    Check(SpirvContainsCapability(desktop.spirv, kFragmentBarycentricCapability),
+          "desktop smooth P0 no longer uses the barycentric path");
+  }
+
+  // A raw read of the I VGPR needs the barycentric builtin.
+  const uint32_t raw_ij_shader[] = {
+      EncodeVintrp(0, 6, 0, 0, 4), EncodeVintrp(1, 6, 0, 0, 5),
+      EncodeVop2(0x03, 7, 4 + 256, 6), EncodeExp0(0x00, 0x1), EncodeExp1(7, 7, 7, 7),
+      0xbf810000u,
+  };
+  {
+    const auto options = native_options(linear_info);
+    ExpectFatal([&] { (void)RecompileForTest(raw_ij_shader, options); },
+                "native raw I/J read was not rejected");
+  }
+
+  // A flat and a smooth parameter sharing one slot cannot both be native inputs.
+  const uint32_t mixed_slot_shader[] = {
+      EncodeVintrp(1, 6, 0, 0, 5), EncodeVintrp(1, 7, 1, 0, 5),
+      EncodeExp0(0x00, 0x3),       EncodeExp1(6, 7, 0, 0),
+      0xbf810000u,
+  };
+  ShaderPixelInputInfo mixed_info{};
+  mixed_info.input_num = 2;
+  mixed_info.ps_perspective_center_vgpr = 4;
+  mixed_info.interpolator_settings[0] = 0u;
+  mixed_info.interpolator_settings[1] = 0x00000400u;
+  {
+    const auto options = native_options(mixed_info);
+    ExpectFatal([&] { (void)RecompileForTest(mixed_slot_shader, options); },
+                "native mixed flat/smooth slot was not rejected");
+  }
+}
+
 void TestPsInputCountRegisterDecode() {
   HW::Context context;
   // NUM_INTERP is 3 while bit 14 is an independent control flag that must be
@@ -15871,6 +16038,7 @@ int main() {
   TestCustomVintrpMovTranslation();
   TestPerspectiveCentroidInputs();
   TestPerspectiveSampleInputs();
+  TestNativePixelInterpolationFallback();
   TestGraphicsCreateInterpolantMapping();
   TestNewShaderRecompilerPixelPipelineEntry();
   TestComputeLdsAllocationIdentity();

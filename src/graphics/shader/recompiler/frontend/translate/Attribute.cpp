@@ -75,9 +75,26 @@ void Translator::TranslateEmbeddedFetch(const Decoder::Instruction& inst, uint32
 
 void Translator::V_INTERP_P1_F32() {}
 
+// The I/J pair selects the sampling position: each perspective pair occupies two consecutive
+// VGPRs whose first one is I, so P2's J source is pair + 1. Anything else keeps pixel center.
+IR::PixelInterpolationSampling Translator::PixelSamplingForJ(uint32_t j) const {
+	if (pixel_input == nullptr) {
+		return IR::PixelInterpolationSampling::Center;
+	}
+	const auto is_pair_j = [j](uint32_t pair) { return pair != UINT32_MAX && j == pair + 1u; };
+	if (is_pair_j(pixel_input->ps_perspective_sample_vgpr)) {
+		return IR::PixelInterpolationSampling::Sample;
+	}
+	if (is_pair_j(pixel_input->ps_perspective_centroid_vgpr)) {
+		return IR::PixelInterpolationSampling::Centroid;
+	}
+	return IR::PixelInterpolationSampling::Center;
+}
+
 void Translator::V_INTERP_P2_F32(const Decoder::Instruction& inst) {
 	const auto value = ir.Emit(IR::ValueOpcode::GetAttribute,
-	                           {IR::Value(inst.src1.value), IR::Value(inst.src2.value)});
+	                           {IR::Value(inst.src1.value), IR::Value(inst.src2.value)},
+	                           PixelSamplingForJ(inst.src0.reg));
 	WriteOperand(inst.dst, value);
 }
 

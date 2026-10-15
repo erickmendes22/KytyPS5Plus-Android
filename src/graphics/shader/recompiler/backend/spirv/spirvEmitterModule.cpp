@@ -471,6 +471,14 @@ uint32_t BuiltInForInput(IR::StageInputKind kind) {
 	}
 }
 
+// Native (non-barycentric) pixel parameter whose interpolation is qualified by centroid or sample.
+bool PixelParameterUsesSampling(const EmitterState& state, const InputBinding& input) {
+	return state.program.stage == ShaderType::Pixel &&
+	       input.kind == IR::StageInputKind::Parameter && !input.per_vertex &&
+	       !PixelParameterIsFlat(state, input.location) &&
+	       input.pixel_sampling != IR::PixelInterpolationSampling::Center;
+}
+
 void DefineInputs(EmitterState& state) {
 	state.inputs.reserve(state.program.info.inputs.size());
 	for (const auto& input: state.program.info.inputs) {
@@ -563,6 +571,15 @@ void DefineInputs(EmitterState& state) {
 			    state.input_info.pixel->ps_no_perspective && !flat && !input.per_vertex) {
 				state.builder.AddAnnotation(spv::OpDecorate, input.variable_id,
 				                            spv::DecorationNoPerspective);
+			}
+			// Only native (non-barycentric) inputs carry a sampling request, so this is a no-op
+			// for the barycentric path.
+			if (PixelParameterUsesSampling(state, input) && !flat) {
+				state.builder.AddAnnotation(
+				    spv::OpDecorate, input.variable_id,
+				    input.pixel_sampling == IR::PixelInterpolationSampling::Sample
+				        ? spv::DecorationSample
+				        : spv::DecorationCentroid);
 			}
 			state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationLocation,
 			                            PixelParameterLocation(state, input.location));
@@ -757,7 +774,11 @@ void DefineModule(EmitterState& state) {
 		state.builder.RequireVersion(0x00010500u);
 		state.builder.RequireCapability(spv::CapabilityShaderViewportIndex);
 	}
-	if (InputVariableForKind(state, IR::StageInputKind::SampleId) != 0) {
+	if (InputVariableForKind(state, IR::StageInputKind::SampleId) != 0 ||
+	    std::ranges::any_of(state.inputs, [&state](const InputBinding& input) {
+		    return PixelParameterUsesSampling(state, input) &&
+		           input.pixel_sampling == IR::PixelInterpolationSampling::Sample;
+	    })) {
 		state.builder.RequireCapability(spv::CapabilitySampleRateShading);
 	}
 	if (state.program.info.image_gather_extended) {

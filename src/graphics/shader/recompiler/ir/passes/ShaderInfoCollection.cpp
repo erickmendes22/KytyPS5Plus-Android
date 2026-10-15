@@ -15,17 +15,43 @@ namespace {
 }
 
 void AddInput(ShaderInfo& info, StageInputKind kind, uint32_t location, uint32_t components,
-              std::string name, bool per_vertex = false) {
+              std::string name, bool per_vertex = false,
+              PixelInterpolationSampling sampling = PixelInterpolationSampling::Center) {
 	const auto input = std::find_if(info.inputs.begin(), info.inputs.end(), [=](const auto& value) {
 		return value.kind == kind && value.location == location;
 	});
 	if (input == info.inputs.end()) {
-		info.inputs.push_back({kind, location, components, std::move(name), per_vertex});
+		info.inputs.push_back(
+		    {kind, location, components, std::move(name), per_vertex, sampling});
 	} else {
 		input->component_count = std::max(input->component_count, components);
 		input->per_vertex      = input->per_vertex || per_vertex;
+		input->pixel_sampling  = std::max(input->pixel_sampling, sampling);
 	}
 }
+
+// Per-vertex and sampling usage gathered while visiting the instructions.
+struct InputUsage {
+	std::array<uint8_t, 32> components {};
+	std::array<bool, 32> per_vertex {};
+	// P0/P10/P20 reads of a pixel parameter (v_interp_mov), independent of P2 components.
+	std::array<bool, 32> interpolated {};
+	std::array<PixelInterpolationSampling, 32> sampling {};
+	std::array<bool, NumScalarRegs> user_data {};
+	std::array<StageInputKind, static_cast<size_t>(StageInputKind::Parameter)> builtins {};
+	uint32_t builtin_mask = 0;
+	uint32_t builtin_count = 0;
+	// No VK_KHR_fragment_shader_barycentric: parameters are native inputs only.
+	bool native_pixel_interpolation = false;
+
+	void AddBuiltin(StageInputKind kind) {
+		const auto bit = 1u << static_cast<uint32_t>(kind);
+		if ((builtin_mask & bit) == 0) {
+			builtin_mask |= bit;
+			builtins[builtin_count++] = kind;
+		}
+	}
+};
 
 bool HasOutput(const ShaderInfo& info, StageOutputKind kind, uint32_t index) {
 	return std::any_of(info.outputs.begin(), info.outputs.end(), [=](const auto& output) {
@@ -88,15 +114,57 @@ void CollectVertexInputs(const ShaderVertexInputInfo* vertex, ShaderInfo& info,
 	}
 }
 
-void CollectPixelInputs(const ShaderPixelInputInfo* pixel, ShaderInfo& info,
-                        std::array<bool, 32>& per_vertex,
-                        const std::array<uint8_t, 32>& used_components) {
+bool SameParameterSlot(const ShaderPixelInputInfo& pixel, uint32_t input, uint32_t alias) {
+	return ShaderPixelParameterMappedLocation(pixel, input) ==
+	       ShaderPixelParameterMappedLocation(pixel, alias);
+}
+
+// Without barycentrics every parameter is a native interpolated input. Each slot is declared once
+// with the strongest sampling any of its aliases requests. Operations that need the vertices
+// themselves (P0/P10/P20 of smooth parameters, raw I/J reads, mixed flat and smooth aliases in
+// use) are rejected here, before any SPIR-V is emitted.
+void CollectNativePixelParameters(const ShaderPixelInputInfo* pixel, ShaderInfo& info,
+                                  const InputUsage& usage) {
+	const auto used = [&usage](uint32_t input) {
+		return usage.components[input] != 0 || usage.interpolated[input];
+	};
+	for (uint32_t input = 0; input < pixel->input_num; input++) {
+		auto sampling = PixelInterpolationSampling::Center;
+		for (uint32_t alias = 0; alias < pixel->input_num; alias++) {
+			if (!SameParameterSlot(*pixel, input, alias)) {
+				continue;
+			}
+			const bool same_mode = ShaderPixelParameterIsFlat(*pixel, input) ==
+			                       ShaderPixelParameterIsFlat(*pixel, alias);
+			if (pixel->parameter_mode == ShaderPixelParameterMode::Rectangle && !same_mode) {
+				continue;
+			}
+			if (!same_mode && (used(input) || used(alias))) {
+				return Fail(fmt::format("pixel parameter slot {} mixes flat and smooth "
+				                        "interpolation in use; this needs "
+				                        "VK_KHR_fragment_shader_barycentric",
+				                        ShaderPixelParameterMappedLocation(*pixel, input)));
+			}
+			sampling = std::max(sampling, usage.sampling[alias]);
+		}
+		AddInput(info, StageInputKind::Parameter, input, 4, fmt::format("in_param_{}", input),
+		         false, sampling);
+	}
+}
+
+void CollectPixelInputs(const ShaderPixelInputInfo* pixel, ShaderInfo& info, InputUsage& usage) {
 	if (pixel->HasPositionInput()) {
 		AddInput(info, StageInputKind::FragCoord, 0, 4, "gl_FragCoord");
 	}
 	if (pixel->ps_front_face) {
 		AddInput(info, StageInputKind::FrontFacing, 0, 1, "gl_FrontFacing");
 	}
+	if (usage.native_pixel_interpolation) {
+		CollectNativePixelParameters(pixel, info, usage);
+		return;
+	}
+	auto& per_vertex = usage.per_vertex;
+	const auto& used_components = usage.components;
 	// Mixed interpolation modes share raw vertices at their guest export slot.
 	// Rectangle expansion alone supplies separate flat and smooth outputs.
 	for (uint32_t input = 0; input < pixel->input_num; input++) {
@@ -267,23 +335,6 @@ void CollectOutput(const Program& program, ShaderStageInputInfo input_info,
 	}
 }
 
-struct InputUsage {
-	std::array<uint8_t, 32> components {};
-	std::array<bool, 32> per_vertex {};
-	std::array<bool, NumScalarRegs> user_data {};
-	std::array<StageInputKind, static_cast<size_t>(StageInputKind::Parameter)> builtins {};
-	uint32_t builtin_mask = 0;
-	uint32_t builtin_count = 0;
-
-	void AddBuiltin(StageInputKind kind) {
-		const auto bit = 1u << static_cast<uint32_t>(kind);
-		if ((builtin_mask & bit) == 0) {
-			builtin_mask |= bit;
-			builtins[builtin_count++] = kind;
-		}
-	}
-};
-
 void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs,
            const Inst& inst) {
 	auto& info = program.info;
@@ -396,6 +447,10 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				auto& components = inputs.components[inst.Arg(0).U32()];
 				components = std::max(components, static_cast<uint8_t>(inst.Arg(1).U32() + 1u));
 			}
+			if (program.stage == ShaderType::Pixel) {
+				auto& sampling = inputs.sampling[inst.Arg(0).U32()];
+				sampling = std::max(sampling, inst.Flags<PixelInterpolationSampling>());
+			}
 			break;
 		}
 		case ValueOpcode::GetInterpolationParameter: {
@@ -410,8 +465,22 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				return Fail("interpolation parameter reference is out of range");
 			}
 			const auto input = inst.Arg(0).U32();
-			inputs.per_vertex[input] |= inst.Arg(2).U32() < 2u ||
-			                            !ShaderPixelParameterIsFlat(*input_info.pixel, input);
+			const auto mode  = inst.Arg(2).U32();
+			inputs.interpolated[input] = true;
+			if (inputs.native_pixel_interpolation) {
+				// Only a flat parameter has a per-vertex value that native inputs can provide:
+				// P0 is the provoking vertex and P10/P20 are zero. Smooth and custom parameters
+				// need the three vertex values.
+				if (!ShaderPixelParameterIsFlat(*input_info.pixel, input)) {
+					return Fail(fmt::format(
+					    "pixel parameter {} read with v_interp_mov mode {} needs per-vertex data, "
+					    "which requires VK_KHR_fragment_shader_barycentric",
+					    input, mode));
+				}
+				break;
+			}
+			inputs.per_vertex[input] |=
+			    mode < 2u || !ShaderPixelParameterIsFlat(*input_info.pixel, input);
 			break;
 		}
 		case ValueOpcode::GetBuiltin: {
@@ -451,6 +520,10 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				case StageInputKind::BaryCoordNoPerspective:
 					if (component >= 2u) {
 						return Fail("typed barycentric component is out of range");
+					}
+					if (inputs.native_pixel_interpolation) {
+						return Fail("raw I/J barycentric VGPR read needs "
+						            "VK_KHR_fragment_shader_barycentric, which this device lacks");
 					}
 					break;
 				case StageInputKind::TessCoord:
@@ -551,7 +624,8 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 
 } // namespace
 
-void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
+void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info,
+                       bool barycentric_available) {
 	if (!program.resource_tracking_complete || program.shader_info_complete) {
 		return Fail(!program.resource_tracking_complete ? "shader resources were not tracked"
 		                                                : "shader info already collected");
@@ -572,6 +646,7 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 	    info.function_lds = info.function_scratch = info.pixel_valid_mask = info.buffer_int64_atomics =
 	    info.buffer_u8 = info.buffer_u16 = info.shared_int64_atomics = info.coherent_buffers = info.float64 = false;
 	InputUsage inputs;
+	inputs.native_pixel_interpolation = !barycentric_available;
 	for (const auto* block: program.blocks) {
 		for (const auto& inst: *block) {
 			Visit(program, input_info, inputs, inst);
@@ -592,7 +667,7 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 		case ShaderType::TessellationEvaluation:
 		case ShaderType::Mesh: break;
 		case ShaderType::Pixel:
-			CollectPixelInputs(input_info.pixel, info, inputs.per_vertex, inputs.components);
+			CollectPixelInputs(input_info.pixel, info, inputs);
 			break;
 		case ShaderType::Compute: CollectComputeInputs(input_info.compute, info); break;
 		default: return Fail("unsupported shader stage for info collection");
