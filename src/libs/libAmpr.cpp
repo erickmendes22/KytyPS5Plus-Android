@@ -619,7 +619,7 @@ constexpr int      PROT_ACP_READ                 = 0x100;
 constexpr int      PROT_ACP_WRITE                = 0x200;
 constexpr uint64_t APR_MAX_READ_LENGTH           = 0x0000000100000000ull;
 constexpr uint64_t APR_MAX_FILE_OFFSET           = 0x0000010000000000ull;
-constexpr uint64_t APR_MAX_APP_ADDRESS           = 0x0000f00000000000ull;
+constexpr uint64_t APR_MAX_APP_ADDRESS           = Common::AddressLayout::kMaxAppAddress;
 constexpr uint64_t APR_HOST_READ_CHUNK_SIZE      = 4 * 1024 * 1024;
 constexpr uint32_t APR_TYPE_GATHER_SCATTER_VALID = 0x00010000;
 constexpr uint32_t APR_TYPE_MAP_ACTIVE           = 0x00020000;
@@ -2347,9 +2347,10 @@ static void KYTY_SYSV_ABI AmmGetVirtualAddressRanges(uint64_t* va_start, uint64_
                                                      uint64_t* multimap_va_end) {
 	PRINT_NAME();
 
-	constexpr auto end = LibKernel::Memory::kExtendedMemoryBase + LibKernel::Memory::kExtendedMemorySize;
+	constexpr auto range = Common::AddressLayout::ExtendedVirtualRange();
+	constexpr auto end   = range.end;
 	if (va_start != nullptr) {
-		AprShared::WriteGuest(reinterpret_cast<uint64_t>(va_start), LibKernel::Memory::kExtendedMemoryBase);
+		AprShared::WriteGuest(reinterpret_cast<uint64_t>(va_start), range.start);
 	}
 	if (va_end != nullptr) {
 		AprShared::WriteGuest(reinterpret_cast<uint64_t>(va_end), end);

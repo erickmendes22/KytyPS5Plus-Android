@@ -6,6 +6,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
+#include "kernel/addressLayout.h"
 #include "kernel/memory.h"
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
@@ -57,8 +58,8 @@ static void AllocShadow(uintptr_t min_addr, uintptr_t max_addr) {
 
 	static const uintptr_t page_size = 0x10000ull;
 
-	auto min_shadow = ((min_addr >> 3u) + 0x10000000000ull) & ~(page_size - 1);
-	auto max_shadow = ((max_addr >> 3u) + 0x10000000000ull) & ~(page_size - 1);
+	auto min_shadow = ((min_addr >> 3u) + Common::AddressLayout::kAsanShadowOffset) & ~(page_size - 1);
+	auto max_shadow = ((max_addr >> 3u) + Common::AddressLayout::kAsanShadowOffset) & ~(page_size - 1);
 
 	auto size = max_shadow - min_shadow + page_size;
 
@@ -92,8 +93,8 @@ static void FreeShadow(uintptr_t min_addr, uintptr_t max_addr) {
 
 	static const uintptr_t page_size = 0x10000ull;
 
-	auto min_shadow = ((min_addr >> 3u) + 0x10000000000ull) & ~(page_size - 1);
-	auto max_shadow = ((max_addr >> 3u) + 0x10000000000ull) & ~(page_size - 1);
+	auto min_shadow = ((min_addr >> 3u) + Common::AddressLayout::kAsanShadowOffset) & ~(page_size - 1);
+	auto max_shadow = ((max_addr >> 3u) + Common::AddressLayout::kAsanShadowOffset) & ~(page_size - 1);
 
 	auto size = max_shadow - min_shadow + page_size;
 

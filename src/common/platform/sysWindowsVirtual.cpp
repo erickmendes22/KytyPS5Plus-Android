@@ -11,6 +11,7 @@
 
 #include "common/assert.h"
 #include "common/virtualMemory.h"
+#include "kernel/addressLayout.h"
 
 // IWYU pragma: no_include <basetsd.h>
 // IWYU pragma: no_include <errhandlingapi.h>
@@ -85,10 +86,10 @@ uint64_t AllocAligned(uint64_t address, uint64_t size, Mode mode, uint64_t align
 		return 0;
 	}
 
-	static constexpr uint64_t SYSTEM_MANAGED_MIN = 0x0000040000u;
-	static constexpr uint64_t SYSTEM_MANAGED_MAX = 0x07FFFFBFFFu;
-	static constexpr uint64_t USER_MIN           = 0x1000000000u;
-	static constexpr uint64_t USER_MAX           = 0xFBFFFFFFFFu;
+	static constexpr uint64_t SYSTEM_MANAGED_MIN = Common::AddressLayout::kHostSystemManagedMin;
+	static constexpr uint64_t SYSTEM_MANAGED_MAX = Common::AddressLayout::kHostSystemManagedMax;
+	static constexpr uint64_t USER_MIN           = Common::AddressLayout::kHostUserMin;
+	static constexpr uint64_t USER_MAX           = Common::AddressLayout::kHostUserMax;
 
 	MEM_ADDRESS_REQUIREMENTS req {};
 	MEM_EXTENDED_PARAMETER   param {};
@@ -201,10 +202,10 @@ uint64_t ReserveAligned(uint64_t address, uint64_t size, uint64_t alignment) {
 		return 0;
 	}
 
-	static constexpr uint64_t SYSTEM_MANAGED_MIN = 0x0000040000u;
-	static constexpr uint64_t SYSTEM_MANAGED_MAX = 0x07FFFFBFFFu;
-	static constexpr uint64_t USER_MIN           = 0x1000000000u;
-	static constexpr uint64_t USER_MAX           = 0xFBFFFFFFFFu;
+	static constexpr uint64_t SYSTEM_MANAGED_MIN = Common::AddressLayout::kHostSystemManagedMin;
+	static constexpr uint64_t SYSTEM_MANAGED_MAX = Common::AddressLayout::kHostSystemManagedMax;
+	static constexpr uint64_t USER_MIN           = Common::AddressLayout::kHostUserMin;
+	static constexpr uint64_t USER_MAX           = Common::AddressLayout::kHostUserMax;
 
 	MEM_ADDRESS_REQUIREMENTS req {};
 	MEM_EXTENDED_PARAMETER   param {};

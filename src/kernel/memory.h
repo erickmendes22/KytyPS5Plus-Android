@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/common.h"
 #include "common/virtualMemory.h"
+#include "kernel/addressLayout.h"
 
 namespace Libs::Graphics {
 class RenderContext;
@@ -24,8 +25,8 @@ struct Lifecycle {
 using callback_func_t = void (*)(uintptr_t addr, size_t size);
 
 constexpr uint32_t KERNEL_MAXIMUM_NAME_LENGTH = 32;
-constexpr uint64_t kExtendedMemoryBase       = 0x080000000000ull;
-constexpr uint64_t kExtendedMemorySize       = 512ull * 1024 * 1024 * 1024;
+constexpr uint64_t kExtendedMemoryBase       = Common::AddressLayout::kExtendedMemoryBase;
+constexpr uint64_t kExtendedMemorySize       = Common::AddressLayout::kExtendedMemorySize;
 
 struct VirtualQueryInfo {
 	uintptr_t start;

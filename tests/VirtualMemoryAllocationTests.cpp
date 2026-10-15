@@ -555,7 +555,7 @@ void TestSparseReadDuringDirectCommit() {
 	            0, Libs::LibKernel::Memory::KernelGetDirectMemorySize(), size, chunk_size,
 	            SceKernelMtypeC, &physical),
 	        "KernelAllocateDirectMemory");
-	constexpr uint64_t base = 0x80180000000ull;
+	constexpr uint64_t base = Libs::LibKernel::Memory::kExtendedMemoryBase + 0x180000000ull;
 	const auto map_chunk = [&](uint64_t index) {
 		void* address = reinterpret_cast<void*>(base + index * chunk_size);
 		return Libs::LibKernel::Memory::KernelMapNamedDirectMemory(
@@ -2629,11 +2629,19 @@ void TestFixedReserveRangeAddRollbackKeepsPlaceholder() {
 
 void TestExtendedAndUserMappingsDoNotAlias() {
 	const char* test = "ExtendedAndUserMappingsDoNotAlias";
+#if KYTY_HOST_ARM64
+	// ARM64 user window ends at kHostUserEnd; the aliasing offset must stay inside the 64 GiB
+	// extended window.
+	constexpr uint64_t user_address     = Common::AddressLayout::kHostUserEnd - 0x40000000ull;
+	constexpr uint64_t extended_offset  = 0x40000000ull;
+#else
 	// macOS starts its ordinary guest range at 448 GiB.
-	constexpr uint64_t user_address = 0x7000000000ull;
+	constexpr uint64_t user_address    = 0x7000000000ull;
+	constexpr uint64_t extended_offset = user_address;
+#endif
 	const uint64_t addresses[] {
 	    user_address,
-	    Libs::LibKernel::Memory::kExtendedMemoryBase + user_address,
+	    Libs::LibKernel::Memory::kExtendedMemoryBase + extended_offset,
 	    Libs::LibKernel::Memory::kExtendedMemoryBase + Libs::LibKernel::Memory::kExtendedMemorySize -
 	        SceKernelPageSize,
 	};

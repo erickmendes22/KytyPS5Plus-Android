@@ -321,8 +321,11 @@ void TestGuestRange() {
         "zero-address nonempty guest range is rejected");
   Check(!GuestRange{1, 0}.Empty() && !GuestRange{1, 0}.ValidOrEmpty(),
         "nonzero-address empty guest range is rejected");
+  // The first address past the lower window is a gap only where the window ends before the
+  // extended base (x86); on ARM64 the lower window runs straight into the extended region.
   Check(GuestRange{Libs::LibKernel::Memory::kExtendedMemoryBase, 1}.Valid() &&
-            !GuestRange{Libs::Graphics::LOWER_ADDRESS_SIZE, 1}.Valid() &&
+            (Libs::Graphics::LOWER_ADDRESS_SIZE == Libs::LibKernel::Memory::kExtendedMemoryBase ||
+             !GuestRange{Libs::Graphics::LOWER_ADDRESS_SIZE, 1}.Valid()) &&
             !GuestRange{Libs::LibKernel::Memory::kExtendedMemoryBase - 1, 2}.Valid() &&
             !GuestRange{extended_end - 1, 2}.Valid(),
         "extended range and gap boundaries are enforced");

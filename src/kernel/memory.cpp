@@ -946,8 +946,8 @@ struct PrtAperture {
 
 constexpr int      PRT_APERTURE_MAX_INDEX = 2;
 constexpr uint64_t PRT_PAGE_SIZE          = 0x4000;
-constexpr uint64_t PRT_APERTURE_START     = 0x0f00000000ull;
-constexpr uint64_t PRT_APERTURE_END       = 0xfc00000000ull;
+constexpr uint64_t PRT_APERTURE_START     = Common::AddressLayout::kPrtApertureStart;
+constexpr uint64_t PRT_APERTURE_END       = Common::AddressLayout::kPrtApertureEnd;
 
 static std::array<PrtAperture, PRT_APERTURE_MAX_INDEX + 1> g_prt_apertures {};
 static Common::Mutex                                       g_prt_aperture_mutex;
