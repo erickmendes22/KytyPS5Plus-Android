@@ -24,6 +24,9 @@ object LaunchArgs {
     /** Intent extra carrying the Array<String> handed to the emulator by GameActivity.getArguments(). */
     const val EXTRA_GAME_ARGS = "com.kytyps5.android.extra.GAME_ARGS"
 
+    /** Emulator working directory for logs, shader dumps and caches; GameActivity supplies it. */
+    const val FLAG_DATA_DIR = "--data-dir"
+
     private const val FLAG_GAME = "--game"
     private const val FLAG_SCREEN_WIDTH = "--screen-width"
     private const val FLAG_SCREEN_HEIGHT = "--screen-height"
