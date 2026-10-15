@@ -4,10 +4,10 @@
 #include "loader/guestInstructionPatcher.h"
 
 #include "common/assert.h"
+#include "common/hostArch.h"
 #include "common/logging/log.h"
 #include "common/virtualMemory.h"
 
-#include <Zydis/Zydis.h>
 #include <algorithm>
 #include <array>
 #include <bitset>
@@ -21,6 +21,9 @@
 #include <set>
 #include <unordered_set>
 #include <vector>
+
+#if KYTY_HOST_X86
+#include <Zydis/Zydis.h>
 #include <xbyak/xbyak.h>
 #include <xbyak/xbyak_util.h>
 
@@ -32,8 +35,11 @@
 #endif
 
 using namespace Xbyak::util;
+#endif
 
 namespace Loader {
+
+#if KYTY_HOST_X86
 
 using u8  = uint8_t;
 using s8  = int8_t;
@@ -1567,6 +1573,22 @@ GuestInstructionPatchResult PatchGuestInstructions(u64 segment_addr, u64 segment
 	return result;
 }
 
+#else
+
+// On ARM64 FEXCore translates guest x86 code, so nothing is patched natively.
+GuestInstructionHostFeatures GetGuestInstructionHostFeatures() {
+	return GuestInstructionHostFeatures {};
+}
+
+GuestInstructionPatchResult PatchGuestInstructions(
+    uint64_t /*segment_addr*/, uint64_t /*segment_size*/,
+    std::span<const uintptr_t> /*function_starts*/, bool /*protect_memory*/, bool /*emulate_amd*/,
+    GuestInstructionHostFeatures /*host_features*/) {
+	return GuestInstructionPatchResult {};
+}
+
+#endif
+
 namespace {
 
 constexpr uint8_t DW_EH_PE_FORMAT_MASK      = 0x0f;
@@ -1742,6 +1764,8 @@ bool DecodeEhFrameFunctionStarts(uint64_t eh_frame_header_addr, uint64_t eh_fram
 	return true;
 }
 
+#if KYTY_HOST_X86
+
 void RegisterGuestInstructionPatchModule(void* module_ptr, uint64_t module_size,
                                          void* trampoline_area_ptr, uint64_t trampoline_area_size) {
 	EXIT_IF(module_ptr == nullptr || module_size == 0 || trampoline_area_ptr == nullptr ||
@@ -1757,6 +1781,16 @@ void RegisterGuestInstructionPatchModule(void* module_ptr, uint64_t module_size,
 void UnregisterGuestInstructionPatchModule(void* module_ptr) {
 	g_patch_modules.erase(reinterpret_cast<u64>(module_ptr));
 }
+
+#else
+
+void RegisterGuestInstructionPatchModule(void* /*module_ptr*/, uint64_t /*module_size*/,
+                                         void* /*trampoline_area_ptr*/,
+                                         uint64_t /*trampoline_area_size*/) {}
+
+void UnregisterGuestInstructionPatchModule(void* /*module_ptr*/) {}
+
+#endif
 
 #undef ASSERT
 

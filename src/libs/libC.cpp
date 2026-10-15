@@ -1,6 +1,7 @@
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/hostArch.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
 #include "common/stringUtils.h"
@@ -189,9 +190,12 @@ static void PrintAbortPointerArrayCandidate(const char* name, uint64_t addr) {
 	uint64_t rbp = 0;
 	uint64_t rsp = 0;
 	// This assembly is x86-64-specific, not Windows-specific.
-#if defined(__x86_64__) || defined(_M_X64)
+#if KYTY_HOST_X86
 	asm volatile("movq %%rbp, %0" : "=r"(rbp));
 	asm volatile("movq %%rsp, %0" : "=r"(rsp));
+#else
+	// rbp/rsp here are guest registers. The guest stack walk below only understands x86 frames, so on
+	// ARM64 they stay 0 and the diagnostics skip the walk.
 #endif
 
 	const auto ret = reinterpret_cast<uint64_t>(__builtin_return_address(0));
@@ -449,10 +453,12 @@ static KYTY_SYSV_ABI void catchReturnFromMain(int status) {
 	uint64_t ret_addr = reinterpret_cast<uint64_t>(__builtin_return_address(0));
 	uint64_t rsp      = 0;
 	uint64_t rbp      = 0;
-#if defined(__x86_64__) || defined(_M_X64)
+#if KYTY_HOST_X86
 	asm volatile("movq %%rsp, %0\n\t"
 	             "movq %%rbp, %1\n\t"
 	             : "=r"(rsp), "=r"(rbp));
+#else
+	// Guest registers are not readable natively on ARM64; leave rsp/rbp at 0 (no stack dump).
 #endif
 
 	LOGF("\t status     = %d\n"

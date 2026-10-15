@@ -4,6 +4,7 @@
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/hostArch.h"
 #include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/platform/sysDbg.h"
@@ -224,7 +225,7 @@ static thread_local uint8_t* g_tls_cached_main_tcb     = nullptr;
 
 static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_func_t atexit_func,
                                    void* stack_top) {
-#if defined(__x86_64__) || defined(_M_X64)
+#if KYTY_HOST_X86
 	auto* func = reinterpret_cast<entry_func_t>(addr);
 
 	if (stack_top != nullptr) {
@@ -358,8 +359,12 @@ static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_fu
 	               "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
 #endif
 #else
+	// A native call into guest code is impossible on ARM64; the FEXCore path replaces it.
+	(void)addr;
+	(void)params;
+	(void)atexit_func;
 	(void)stack_top;
-	reinterpret_cast<entry_func_t>(addr)(params, atexit_func);
+	KYTY_ARM64_TODO("guest module entry (RunEntry)");
 #endif
 }
 
@@ -376,6 +381,7 @@ struct MainEntryStackTestState {
 static KYTY_SYSV_ABI void TestMainEntryStackCallback(EntryParams* params,
                                                      atexit_func_t /*atexit_func*/) {
 	auto* state = reinterpret_cast<MainEntryStackTestState*>(const_cast<char*>(params->argv[0]));
+#if KYTY_HOST_X86
 	asm volatile("pushq %%r15\n\t"
 	             "pushq %%r14\n\t"
 	             "popq %%r14\n\t"
@@ -391,10 +397,17 @@ static KYTY_SYSV_ABI void TestMainEntryStackCallback(EntryParams* params,
 	             :
 	             : "memory");
 #endif
+#else
+	// Only reached through RunEntry, which stops on ARM64 until the guest translator exists.
+	KYTY_ARM64_TODO("guest main-entry stack test callback");
+#endif
 	state->called = true;
 }
 
 bool TestMainEntryUsesGuestStack() {
+#if KYTY_HOST_ARM64
+	KYTY_ARM64_TODO("guest main-entry stack test");
+#endif
 	constexpr uint64_t stack_size = 0x10000;
 	const auto         stack_base = Libs::LibKernel::Memory::AllocateRuntimeMemory(
 	    0, stack_size, Common::VirtualMemory::Mode::ReadWrite, "main_entry_stack_test");
@@ -408,7 +421,7 @@ bool TestMainEntryUsesGuestStack() {
 	std::memset(reinterpret_cast<void*>(stack_base), 0xcd, stack_size);
 	auto* root_frame = reinterpret_cast<const uintptr_t*>(stack_base + stack_size) - 2;
 
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS && KYTY_HOST_X86
 	uintptr_t original_teb_stack_base  = 0;
 	uintptr_t original_teb_stack_limit = 0;
 	asm volatile("movq %%gs:0x08, %0\n\t"
@@ -421,7 +434,7 @@ bool TestMainEntryUsesGuestStack() {
 	RunEntry(reinterpret_cast<uint64_t>(TestMainEntryStackCallback), &params, nullptr,
 	         reinterpret_cast<void*>(stack_base + stack_size));
 
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS && KYTY_HOST_X86
 	uintptr_t restored_teb_stack_base  = 0;
 	uintptr_t restored_teb_stack_limit = 0;
 	asm volatile("movq %%gs:0x08, %0\n\t"

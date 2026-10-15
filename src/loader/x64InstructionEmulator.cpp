@@ -1,7 +1,9 @@
 #include "loader/x64InstructionEmulator.h"
 
 #include "common/common.h"
+#include "common/hostArch.h"
 
+#if KYTY_HOST_X86
 #include <Zydis/Zydis.h>
 #include <bit>
 #include <cstring>
@@ -823,3 +825,17 @@ bool TryEmulate(void* native_context) {
 }
 
 } // namespace Loader::X64InstructionEmulator
+
+#else
+
+namespace Loader::X64InstructionEmulator {
+
+// ARM64: guest SSE4a/SHA-NI/RDTSCP/reciprocal-sqrt instructions are executed by FEXCore, so there
+// is never a native fault to emulate.
+bool TryEmulate(void* /*native_context*/) {
+	return false;
+}
+
+} // namespace Loader::X64InstructionEmulator
+
+#endif

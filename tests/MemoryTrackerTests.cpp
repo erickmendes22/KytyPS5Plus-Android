@@ -1,3 +1,4 @@
+#include "common/hostArch.h"
 #include "common/hostException.h"
 #include "common/virtualMemory.h"
 #include "graphics/host_gpu/memoryTracker.h"
@@ -1139,6 +1140,7 @@ bool HandleStackFault(const Common::HostException::ExceptionInfo &info) {
 }
 
 // A stack write must fault before any signal frame can use the protected stack.
+#if KYTY_HOST_X86
 __attribute__((naked)) void WriteProtectedStack(void *) {
   asm volatile("mov %rsp, %rax\n"
                "mov %rdi, %rsp\n"
@@ -1146,6 +1148,17 @@ __attribute__((naked)) void WriteProtectedStack(void *) {
                "pop %rsp\n"
                "ret\n");
 }
+#elif KYTY_HOST_ARM64
+// AAPCS64: x0 is the stack top (page aligned, so 16-byte aligned for sp). The 8-byte store at
+// top-8 is the same faulting address the x86 push targets; x9 keeps the caller's sp for restore.
+__attribute__((naked)) void WriteProtectedStack(void *) {
+  asm volatile("mov x9, sp\n"
+               "mov sp, x0\n"
+               "stur x9, [sp, #-8]\n"
+               "mov sp, x9\n"
+               "ret\n");
+}
+#endif
 
 void TestFaultOnProtectedStack() {
   const pid_t pid = ::fork();

@@ -2,6 +2,7 @@
 #define EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_RECOMPILER_SHADERIR_H_
 
 #include "common/common.h"
+#include "common/hostArch.h"
 #include "common/stringUtils.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/gpu_format.h"
@@ -582,6 +583,28 @@ struct CompiledShaderInfo {
 	Bindings                      bindings;
 };
 
+// Portable form of the x86 SRT walker: the same table levels the JIT would encode, executed in C++
+// on hosts that cannot run the generated code (ARM64).
+struct SrtWalkRead {
+	int32_t  offset       = 0;
+	uint32_t flat_offset  = 0;
+	uint32_t entry_index  = 0;
+};
+
+struct SrtWalkLevel {
+	// Offset of the 64-bit pointer word relative to the parent level base (user data for roots).
+	int32_t                   pointer_offset = 0;
+	int32_t                   first          = 0;
+	int32_t                   last           = 0;
+	std::vector<SrtWalkRead>  reads;
+	std::vector<SrtWalkLevel> children;
+};
+
+struct SrtWalkProgram {
+	uint32_t                  user_data_count = 0;
+	std::vector<SrtWalkLevel> roots;
+};
+
 struct UniformFillPlan {
 	UniformFill          fill;
 	std::array<Value, 4> values;
@@ -628,7 +651,11 @@ struct ResourcePlan {
 	bool                                resource_tracking_complete = false;
 	ShaderInfo                          info;
 	UniformFillPlan                     uniform_fill;
+#if KYTY_HOST_X86
 	std::unique_ptr<Xbyak::CodeGenerator> srt_code;
+#else
+	std::unique_ptr<SrtWalkProgram>       srt_code;
+#endif
 	// GPU-thread scratch for nested clean/EXEC memos, activity and material keys.
 	mutable std::deque<EvaluationContext> evaluation_contexts;
 	mutable uint32_t                       evaluation_value_count = 0;

@@ -1,5 +1,7 @@
 #include "common/hostException.h"
 
+#include "common/hostArch.h"
+
 #include <atomic>
 #include <cstdio>
 
@@ -15,6 +17,9 @@
 #include <sys/ucontext.h>
 #else
 #include <ucontext.h> // IWYU pragma: keep
+#if KYTY_HOST_ARM64
+#include <asm/sigcontext.h> // esr_context, ESR_MAGIC
+#endif
 #endif
 #endif
 
@@ -225,6 +230,68 @@ static void ChainToDefault(int signal_number) noexcept {
 	::sigaction(signal_number, &restore, nullptr);
 }
 
+#if KYTY_HOST_ARM64
+// ESR_EL1 fields (ARM ARM D17.2.40): exception class and the data-abort write-not-read bit.
+constexpr uint64_t ESR_EC_SHIFT               = 26;
+constexpr uint64_t ESR_EC_MASK                = 0x3f;
+constexpr uint64_t ESR_EC_INSTRUCTION_ABORT_L = 0x20;
+constexpr uint64_t ESR_EC_INSTRUCTION_ABORT   = 0x21;
+constexpr uint64_t ESR_DATA_ABORT_WNR         = 1ull << 6;
+
+// The kernel appends an esr_context record to the signal frame for synchronous faults.
+static uint64_t FindFaultEsr(const ucontext_t* context) {
+	const auto* cursor = reinterpret_cast<const uint8_t*>(context->uc_mcontext.__reserved);
+	const auto* end    = cursor + sizeof(context->uc_mcontext.__reserved);
+	while (cursor + sizeof(_aarch64_ctx) <= end) {
+		const auto* header = reinterpret_cast<const _aarch64_ctx*>(cursor);
+		if (header->magic == 0 || header->size == 0) {
+			break;
+		}
+		if (header->magic == ESR_MAGIC) {
+			return reinterpret_cast<const esr_context*>(header)->esr;
+		}
+		cursor += header->size;
+	}
+	return 0;
+}
+
+static AccessViolationType DecodeArm64Access(uint64_t esr) {
+	const uint64_t ec = (esr >> ESR_EC_SHIFT) & ESR_EC_MASK;
+	if (ec == ESR_EC_INSTRUCTION_ABORT_L || ec == ESR_EC_INSTRUCTION_ABORT) {
+		return AccessViolationType::Execute;
+	}
+	return (esr & ESR_DATA_ABORT_WNR) != 0 ? AccessViolationType::Write : AccessViolationType::Read;
+}
+
+// ARM64 host: faults here come from host code (e.g. GPU page tracking touching guest memory). Guest
+// x86 register state lives in the guest CPU translator, so the x86 register fields stay zero.
+static void SignalHandler(int signal_number, siginfo_t* signal_info, void* native_context) {
+	auto* context = static_cast<ucontext_t*>(native_context);
+
+	ExceptionInfo info {};
+	info.exception_address = static_cast<uint64_t>(context->uc_mcontext.pc);
+	info.native_code       = static_cast<uint32_t>(signal_number);
+	info.native_context    = context;
+
+	if (signal_number == SIGSEGV || signal_number == SIGBUS) {
+		info.type                   = ExceptionType::AccessViolation;
+		info.access_violation_type  = DecodeArm64Access(FindFaultEsr(context));
+		info.access_violation_vaddr = reinterpret_cast<uint64_t>(signal_info->si_addr);
+	} else if (signal_number == SIGILL) {
+		info.type = ExceptionType::IllegalInstruction;
+	} else {
+		ChainToDefault(signal_number);
+		return;
+	}
+
+	const auto handler = g_handler.load(std::memory_order_acquire);
+	if (handler != nullptr && handler(info)) {
+		return;
+	}
+
+	ChainToDefault(signal_number);
+}
+#else
 static void SignalHandler(int signal_number, siginfo_t* signal_info, void* native_context) {
 	auto* context = static_cast<ucontext_t*>(native_context);
 	auto* gregs   = context->uc_mcontext.gregs;
@@ -276,6 +343,7 @@ static void SignalHandler(int signal_number, siginfo_t* signal_info, void* nativ
 
 	ChainToDefault(signal_number);
 }
+#endif // KYTY_HOST_ARM64
 
 #endif
 

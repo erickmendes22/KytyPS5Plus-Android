@@ -19,6 +19,7 @@
 #include <zarchive/zarchivecommon.h>
 
 #if !defined(_WIN32) || defined(_GLIBCXX_GCC_GTHR_POSIX_H)
+#include <climits>
 #include <pthread.h>
 #endif
 
@@ -328,10 +329,13 @@ int main() {
 #endif
 
 #if !defined(_WIN32)
-  // Guest threads have much smaller stacks than std::thread's default stack.
+  // Guest threads have much smaller stacks than std::thread's default stack. Some hosts have a
+  // larger minimum (AArch64 glibc: 128 KiB), so never go below the host's PTHREAD_STACK_MIN.
+  const size_t guest_stack_size =
+      std::max<size_t>(64 * 1024, static_cast<size_t>(PTHREAD_STACK_MIN));
   pthread_attr_t attributes;
   Check(pthread_attr_init(&attributes) == 0 &&
-            pthread_attr_setstacksize(&attributes, 64 * 1024) == 0,
+            pthread_attr_setstacksize(&attributes, guest_stack_size) == 0,
         "configure a guest-sized stack");
   struct SmallStackRead {
     const std::filesystem::path &path;

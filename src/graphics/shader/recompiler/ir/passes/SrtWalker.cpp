@@ -2,9 +2,12 @@
 
 #include "common/abi.h"
 #include "common/assert.h"
+#include "common/hostArch.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
+#if KYTY_HOST_X86
 #include <xbyak/xbyak.h>
+#endif
 
 #include <algorithm>
 #include <bit>
@@ -373,6 +376,47 @@ private:
 
 } // namespace
 
+#if !KYTY_HOST_X86
+namespace {
+
+// Mirrors the generated x86 walker: copies one table level in offset order (seeding the evaluator
+// memo for each read), then descends through that level's child pointers.
+bool RunSrtWalkLevel(const SrtWalkLevel& level, const uint8_t* parent, uint32_t* flat,
+                     ResourcePlan::EvaluationContext::Entry* entries, uint64_t generation) {
+	uint64_t pointer = 0;
+	std::memcpy(&pointer, parent + level.pointer_offset, sizeof(pointer));
+	const uint64_t base = pointer & (AddressMask & ~uint64_t {3});
+	if (level.first < 0 && base < static_cast<uint64_t>(-static_cast<int64_t>(level.first))) return false;
+	if (level.last > 0 && base > AddressMask - static_cast<uint64_t>(level.last)) return false;
+	const auto* table = reinterpret_cast<const uint8_t*>(base);
+	for (const auto& read: level.reads) {
+		uint32_t value = 0;
+		std::memcpy(&value, table + read.offset, sizeof(value));
+		flat[read.flat_offset]                = value;
+		entries[read.entry_index].value      = value;
+		entries[read.entry_index].generation = generation;
+	}
+	for (const auto& child: level.children) {
+		if (!RunSrtWalkLevel(child, table, flat, entries, generation)) return false;
+	}
+	return true;
+}
+
+bool RunSrtWalkProgram(const SrtWalkProgram& walk, const uint32_t* user_data, uint32_t* flat,
+                       ResourcePlan::EvaluationContext::Entry* entries, uint64_t generation,
+                       size_t user_data_size) {
+	if (user_data_size < walk.user_data_count) return false;
+	for (const auto& root: walk.roots) {
+		if (!RunSrtWalkLevel(root, reinterpret_cast<const uint8_t*>(user_data), flat, entries, generation)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+} // namespace
+#endif
+
 void CompileSrtWalker(ResourcePlan& program) {
 	if (!program.resource_tracking_complete || !program.srt_plan_complete ||
 	    program.capture_specialization_reads || !program.control_flow.empty() ||
@@ -441,6 +485,7 @@ void CompileSrtWalker(ResourcePlan& program) {
 	}
 	if (visited.size() != pointer_uses.size()) return;
 
+#if KYTY_HOST_X86
 	program.srt_code = std::make_unique<Xbyak::CodeGenerator>(4096, Xbyak::AutoGrow);
 	auto& code = *program.srt_code;
 	Xbyak::Label failed, finished;
@@ -496,6 +541,31 @@ void CompileSrtWalker(ResourcePlan& program) {
 	code.ret();
 	code.readyRE();
 	EXIT_IF(Xbyak::GetError() != 0);
+#else
+	// Interpretable form of the same walk: identical level order, bounds and copies.
+	auto walk = std::make_unique<SrtWalkProgram>();
+	walk->user_data_count = user_data_count;
+	const auto build = [&](auto&& self, int32_t pointer_offset, const Reads& reads) -> SrtWalkLevel {
+		SrtWalkLevel level;
+		level.pointer_offset = pointer_offset;
+		level.first          = reads.begin()->first;
+		level.last           = reads.rbegin()->first;
+		for (const auto& [offset, read]: reads) {
+			level.reads.push_back({offset, read->flat_offset,
+			    read->value.ResolveInstruction()->EvaluationIndex(program.evaluation_value_count)});
+		}
+		for (const auto& [offset, read]: reads) {
+			const auto child = pointer_uses.find(read->value.ResolveInstruction());
+			if (child == pointer_uses.end()) continue;
+			level.children.push_back(self(self, offset, child->second));
+		}
+		return level;
+	};
+	for (const auto& [reg, reads]: roots) {
+		walk->roots.push_back(build(build, static_cast<int32_t>(reg * sizeof(uint32_t)), reads));
+	}
+	program.srt_code = std::move(walk);
+#endif
 }
 
 SrtWalker::SrtWalker(const ResourcePlan& program, const SrtRuntime& runtime,
@@ -1159,10 +1229,15 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		flat.resize(m_program.srt_reads.size());
 		m_program.active_sources.clear();
 		m_context.values.resize(m_program.evaluation_value_count);
+#if KYTY_HOST_X86
 		using Walker = bool KYTY_SYSV_ABI (*)(const uint32_t*, uint32_t*,
 		    ResourcePlan::EvaluationContext::Entry*, uint64_t, size_t);
 		return m_program.srt_code->getCode<Walker>()(m_runtime.user_data.data(), flat.data(),
 		    m_context.values.data(), m_context.generation, m_runtime.user_data.size());
+#else
+		return RunSrtWalkProgram(*m_program.srt_code, m_runtime.user_data.data(), flat.data(),
+		    m_context.values.data(), m_context.generation, m_runtime.user_data.size());
+#endif
 	}
 	const auto refresh = [&](uint32_t slot) {
 		if (slot >= m_program.srt_reads.size()) return false;

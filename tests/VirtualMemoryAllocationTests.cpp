@@ -1,5 +1,6 @@
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/hostArch.h"
 #include "common/logging/log.h"
 #include "common/subsystems.h"
 #include "common/threads.h"
@@ -32,6 +33,8 @@
 
 #if defined(__linux__) || KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #include <csignal>
+#endif
+#if (defined(__linux__) || KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS) && KYTY_HOST_X86
 #include <immintrin.h>
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -44,7 +47,9 @@
 #endif
 
 #if defined(__linux__)
+#if KYTY_HOST_X86
 #include <asm/prctl.h>
+#endif
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <ucontext.h>
@@ -194,7 +199,7 @@ void InitSubsystems() {
 	initialized = true;
 }
 
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS && KYTY_HOST_X86
 void* g_red_zone_fault_page = nullptr;
 
 LONG CALLBACK RedZoneFaultHandler(EXCEPTION_POINTERS* exception) {
@@ -1055,6 +1060,7 @@ void TestGuestStackUsesPrivateOwnerMemoryAndCache() {
 	std::printf("[host]    %-48s ok\n", test);
 }
 
+#if KYTY_HOST_X86
 void TestMainEntryUsesGuestStackAndDisablesHostChecks() {
 	const char* test = "MainEntryUsesGuestStackAndDisablesHostChecks";
 
@@ -1063,6 +1069,7 @@ void TestMainEntryUsesGuestStackAndDisablesHostChecks() {
 
 	std::printf("[host]    %-48s ok\n", test);
 }
+#endif
 
 void TestFragmentedBackingUnmapRollback() {
 	const char* test     = "FragmentedBackingUnmapRollback";
@@ -3302,7 +3309,7 @@ void TestModuleRelocationUsesWritableHostMapping() {
 	std::printf("[host]    %-48s ok\n", test);
 }
 
-#if defined(__linux__) || KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#if (defined(__linux__) || KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS) && KYTY_HOST_X86
 volatile sig_atomic_t g_instruction_traps = 0;
 
 bool EmulateInstructionContext(void* context) {
@@ -4342,7 +4349,7 @@ void TestCpuExtensionPatches() {
 
 #endif
 
-#if defined(__x86_64__) || defined(_M_X64)
+#if KYTY_HOST_X86
 constexpr int32_t FiberErrorState = -2141650938; // SCE_FIBER_ERROR_STATE
 constexpr int32_t FiberErrorPermission = -2141650939;
 
@@ -4526,13 +4533,13 @@ int main(int argc, char** argv) {
 		return g_failed_tests == 0 ? 0 : 1;
 	}
 #endif
-#if defined(__x86_64__) || defined(_M_X64)
+#if KYTY_HOST_X86
 	if (argc == 2 && std::strcmp(argv[1], "--fiber-only") == 0) {
 		RunTest(TestSmallFiberStacksAndMigration);
 		return g_failed_tests == 0 ? 0 : 1;
 	}
 #endif
-#if defined(__linux__) || KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#if (defined(__linux__) || KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS) && KYTY_HOST_X86
 	if (argc == 2 && std::strcmp(argv[1], "--cpu-extensions-only") == 0) {
 		RunTest(TestCpuExtensionContexts);
 		RunTest(TestPackedBitFieldInsert);
@@ -4553,10 +4560,10 @@ int main(int argc, char** argv) {
 		return g_failed_tests == 0 ? 0 : 1;
 	}
 
-#if defined(__x86_64__) || defined(_M_X64)
+#if KYTY_HOST_X86
 	RunTest(TestSmallFiberStacksAndMigration);
 #endif
-#if defined(__linux__) || KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#if (defined(__linux__) || KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS) && KYTY_HOST_X86
 	RunTest(TestPackedReciprocalSquareRoot);
 	RunTest(TestPackedBitFieldExtract);
 	RunTest(TestCpuExtensionContexts);
@@ -4580,7 +4587,9 @@ int main(int argc, char** argv) {
 	RunTest(TestFlexibleMemoryReuseIsZeroFilled);
 	RunTest(TestSmallerFlexibleMapReusesReleasedHole);
 	RunTest(TestGuestStackUsesPrivateOwnerMemoryAndCache);
+#if KYTY_HOST_X86
 	RunTest(TestMainEntryUsesGuestStackAndDisablesHostChecks);
+#endif
 	RunTest(TestFragmentedBackingUnmapRollback);
 	RunTest(TestRuntimeMemoryOwnerLifecycle);
 	RunTest(TestFlexibleMapQueryAndWholeMunmap);

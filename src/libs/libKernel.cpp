@@ -3,6 +3,7 @@
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/hostArch.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
 #include "common/stringUtils.h"
@@ -462,7 +463,11 @@ static KYTY_SYSV_ABI void stack_chk_fail() {
 	PRINT_NAME();
 
 	uint64_t rsp = 0;
+#if KYTY_HOST_X86
 	asm volatile("movq %%rsp, %0" : "=r"(rsp));
+#else
+	asm volatile("mov %0, sp" : "=r"(rsp));
+#endif
 	dump_stack_chk_fail_context(reinterpret_cast<uint64_t>(__builtin_return_address(0)), rsp);
 
 	EXIT("stack fail!!!");
@@ -696,13 +701,15 @@ static SignalUcontext CreateSignalUcontext(
 	ctx.uc_mcontext.mc_rflags = rflags;
 	ctx.uc_mcontext.mc_cs     = cs;
 	ctx.uc_mcontext.mc_ss     = ss;
+#else
+	KYTY_ARM64_TODO("capturing guest register context from host signal");
 #endif
 #endif
 
 	return ctx;
 }
 
-static SignalUcontext CreateCurrentGuestCallSignalUcontext(uint64_t rip) {
+[[maybe_unused]] static SignalUcontext CreateCurrentGuestCallSignalUcontext(uint64_t rip) {
 	auto ctx = CreateSignalUcontext();
 
 	uint64_t rsp = 0;
@@ -712,6 +719,7 @@ static SignalUcontext CreateCurrentGuestCallSignalUcontext(uint64_t rip) {
 	uint64_t r13 = 0;
 	uint64_t r14 = 0;
 	uint64_t r15 = 0;
+#if KYTY_HOST_X86
 	asm volatile("movq %%rsp, %0\n\t"
 	             "movq %%rbp, %1\n\t"
 	             "movq %%rbx, %2\n\t"
@@ -722,6 +730,10 @@ static SignalUcontext CreateCurrentGuestCallSignalUcontext(uint64_t rip) {
 	             : "=r"(rsp), "=r"(rbp), "=r"(rbx), "=r"(r12), "=r"(r13), "=r"(r14), "=r"(r15)
 	             :
 	             : "memory");
+
+#else
+	KYTY_ARM64_TODO("capturing guest call register context");
+#endif
 
 	ctx.uc_mcontext.mc_rax = 0;
 	ctx.uc_mcontext.mc_rcx = 0;
@@ -1193,8 +1205,8 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 		WaitForSignalDispatch(thread, signum);
 		return OK;
 #else
-		auto ctx = CreateSignalUcontext();
-		handler(signum, &ctx);
+		KYTY_ARM64_TODO("dispatching guest exception handler");
+		return KERNEL_ERROR_EINVAL;
 #endif
 	}
 
@@ -2485,13 +2497,15 @@ FiberRestoreContext(FiberCpuContext* /*ctx*/, uint64_t /*ret*/) {
 #else
 static int FiberSaveContext(FiberCpuContext* ctx) {
 	(void)ctx;
+	KYTY_ARM64_TODO("fiber context save");
 	return 0;
 }
 
-static void FiberRestoreContext(FiberCpuContext* ctx, uint64_t ret) {
+[[noreturn]] static void FiberRestoreContext(FiberCpuContext* ctx, uint64_t ret) {
 	(void)ctx;
 	(void)ret;
-	EXIT("Fiber context switching is only implemented on x86_64\n");
+	KYTY_ARM64_TODO("fiber context restore");
+	std::abort();
 }
 #endif
 

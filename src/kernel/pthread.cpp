@@ -4,6 +4,7 @@
 #include "common/common.h"
 #include "common/dateTime.h"
 #include "common/emulatorConfig.h"
+#include "common/hostArch.h"
 #include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/singleton.h"
@@ -135,6 +136,10 @@ static uint64_t GetHostThreadId() {
 static uint64_t KernelReadTscNative() {
 #if defined(_M_X64) || defined(__x86_64__)
 	return __rdtsc();
+#elif KYTY_HOST_ARM64 && KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+	uint64_t value = 0;
+	asm volatile("mrs %0, cntvct_el0" : "=r"(value));
+	return value;
 #else
 	return Common::Timer::QueryPerformanceCounter();
 #endif
@@ -172,6 +177,10 @@ static uint64_t KernelGetTscFrequencyNative() {
 		freq = (mod >= ROUND_TO / 2 ? freq - mod + ROUND_TO : freq - mod);
 
 		return freq != 0 ? freq : host_frequency;
+#elif KYTY_HOST_ARM64 && KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+		uint64_t counter_frequency = 0;
+		asm volatile("mrs %0, cntfrq_el0" : "=r"(counter_frequency));
+		return counter_frequency;
 #else
 		return Common::Timer::QueryPerformanceFrequency();
 #endif
@@ -930,8 +939,11 @@ static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func,
 
 	return ret;
 #else
+	(void)arg;
+	(void)func;
 	(void)stack_top;
-	return func(arg);
+	KYTY_ARM64_TODO("running guest thread entry on guest stack");
+	return nullptr;
 #endif
 }
 

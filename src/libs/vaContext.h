@@ -1,14 +1,23 @@
 #ifndef EMULATOR_INCLUDE_EMULATOR_LIBS_VACONTEXT_H_
 #define EMULATOR_INCLUDE_EMULATOR_LIBS_VACONTEXT_H_
 
+#include "common/hostArch.h"
+
 #include <cstddef>
+
+#if KYTY_HOST_X86
 #include <xmmintrin.h>
+using VaXmm = __m128;
+#else
+// Guest SysV XMM register image; same size and alignment as x86 __m128 (generic vector extension).
+using VaXmm = float __attribute__((__vector_size__(16), __aligned__(16)));
+#endif
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define VA_ARGS                                                                                    \
 	uint64_t rdi, uint64_t rsi, uint64_t rdx, uint64_t rcx, uint64_t r8, uint64_t r9,              \
-	    uint64_t overflow_arg_area, __m128 xmm0, __m128 xmm1, __m128 xmm2, __m128 xmm3,            \
-	    __m128 xmm4, __m128 xmm5, __m128 xmm6, __m128 xmm7, ...
+	    uint64_t overflow_arg_area, VaXmm xmm0, VaXmm xmm1, VaXmm xmm2, VaXmm xmm3,                \
+	    VaXmm xmm4, VaXmm xmm5, VaXmm xmm6, VaXmm xmm7, ...
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define VA_CONTEXT(ctx)                                                                            \
@@ -47,7 +56,7 @@ struct VaList {
 
 struct VaRegSave {
 	uint64_t gp[6];
-	__m128   fp[8];
+	VaXmm    fp[8];
 };
 
 struct VaContext {
