@@ -11262,6 +11262,8 @@ void TestCapturedBufferAtomicsX2() {
     ValueOpcode ir_opcode;
   };
   const Case cases[] = {
+      {{0xe1480018u, 0x80000000u}, 0u, 234u, "BUFFER_ATOMIC_ADD_X2",
+       "BufferAtomicIAdd64", "OpAtomicIAdd", ValueOpcode::BufferAtomicIAdd64},
       {{0xe1680018u, 0x80000000u}, 0u, 241u, "BUFFER_ATOMIC_OR_X2",
        "BufferAtomicOr64", "OpAtomicOr", ValueOpcode::BufferAtomicOr64},
       {{0xe1402000u, 0x80000913u}, 9u, 229u, "BUFFER_ATOMIC_SWAP_X2",
