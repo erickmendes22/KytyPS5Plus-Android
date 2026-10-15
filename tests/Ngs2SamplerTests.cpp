@@ -1,5 +1,6 @@
 // Exercise sampler controls and rendering without a host audio device.
 #include "libs/ngs2.cpp"
+#include "GuestFunctionPointer.h"
 
 #include <bit>
 #include <cstdio>
@@ -186,7 +187,7 @@ void TestWaveformRingReuse() {
 	for (auto rack: {Ngs2RackType::Sampler, Ngs2RackType::CustomSampler}) {
 		Fixture f(48000, 2, rack);
 		PcmRing ring {f};
-		f.voice.callback = reinterpret_cast<uintptr_t>(&RefillPcmRing);
+		f.voice.callback = reinterpret_cast<uintptr_t>(GuestFunctionPointer<RefillPcmRing>("ngs2_test.RefillPcmRing"));
 		f.voice.callback_data = reinterpret_cast<uintptr_t>(&ring);
 		f.voice.callback_flags = 1;
 		for (uint32_t slot = 0; slot < ring.buffers.size(); ++slot) {
@@ -969,7 +970,7 @@ void TestLoopCallbacksAndExit() {
 	const int16_t pcm[] = {8192, 16384, 24576};
 	Fixture       f(48000);
 	LoopCallbacks log;
-	f.voice.callback       = reinterpret_cast<uintptr_t>(&RecordLoopCallback);
+	f.voice.callback       = reinterpret_cast<uintptr_t>(GuestFunctionPointer<RecordLoopCallback>("ngs2_test.RecordLoopCallback"));
 	f.voice.callback_data  = reinterpret_cast<uintptr_t>(&log);
 	f.voice.callback_flags = 3;
 	f.Queue(pcm, 2, 0, 2);
@@ -981,7 +982,7 @@ void TestLoopCallbacksAndExit() {
 	Fixture active(48000);
 	log.events.clear();
 	log.pause                   = true;
-	active.voice.callback       = reinterpret_cast<uintptr_t>(&RecordLoopCallback);
+	active.voice.callback       = reinterpret_cast<uintptr_t>(GuestFunctionPointer<RecordLoopCallback>("ngs2_test.RecordLoopCallback"));
 	active.voice.callback_data  = reinterpret_cast<uintptr_t>(&log);
 	active.voice.callback_flags = 2;
 	active.Queue(pcm, 2, 1, UINT32_MAX);
@@ -1023,7 +1024,7 @@ void TestAtrac9Looping() {
 		auto f = std::make_unique<Fixture>(24000);
 		f->voice.SetupSampler({NGS2_WAVEFORM_TYPE_ATRAC9, 1, 24000, 0xfe4005f0});
 		f->voice.state          = Ngs2VoicePlayState::Playing;
-		f->voice.callback       = reinterpret_cast<uintptr_t>(&RecordLoopCallback);
+		f->voice.callback       = reinterpret_cast<uintptr_t>(GuestFunctionPointer<RecordLoopCallback>("ngs2_test.RecordLoopCallback"));
 		f->voice.callback_data  = reinterpret_cast<uintptr_t>(&log);
 		f->voice.callback_flags = 3;
 		const Ngs2WaveformBlock block {0, encoded.size(), repeats, 129, 137, 0, 123};
@@ -1099,7 +1100,7 @@ void TestAtrac9WaveformJoining() {
 			f.voice.SetupSampler({NGS2_WAVEFORM_TYPE_ATRAC9, 1, 24000, 0xfe4005f0});
 			f.voice.state = Ngs2VoicePlayState::Playing;
 			LoopCallbacks callbacks;
-			f.voice.callback = reinterpret_cast<uintptr_t>(&RecordLoopCallback);
+			f.voice.callback = reinterpret_cast<uintptr_t>(GuestFunctionPointer<RecordLoopCallback>("ngs2_test.RecordLoopCallback"));
 			f.voice.callback_data = reinterpret_cast<uintptr_t>(&callbacks);
 			f.voice.callback_flags = 1;
 			const Ngs2WaveformBlock first {0, 36, 0, 0, 512, 0, 123};
@@ -1186,7 +1187,7 @@ void TestCallbackStopsConsumption() {
 			f.Queue(pcm, 1, 1);
 			f.Queue(pcm + 1, 1, 1);
 			CallbackEvent context {&f.voice, event};
-			f.voice.callback       = reinterpret_cast<uintptr_t>(&ApplyCallbackEvent);
+			f.voice.callback       = reinterpret_cast<uintptr_t>(GuestFunctionPointer<ApplyCallbackEvent>("ngs2_test.ApplyCallbackEvent"));
 			f.voice.callback_data  = reinterpret_cast<uintptr_t>(&context);
 			f.voice.callback_flags = 1;
 			f.Render(2);
@@ -1215,7 +1216,7 @@ void TestCallbackPauseDuringLargeStep() {
 	f.Queue(pcm + 2, 2, 1);
 	f.voice.sample_step = uint64_t(120000) << 32u;
 	CallbackEvent context {&f.voice, 16};
-	f.voice.callback       = reinterpret_cast<uintptr_t>(&ApplyCallbackEvent);
+	f.voice.callback       = reinterpret_cast<uintptr_t>(GuestFunctionPointer<ApplyCallbackEvent>("ngs2_test.ApplyCallbackEvent"));
 	f.voice.callback_data  = reinterpret_cast<uintptr_t>(&context);
 	f.voice.callback_flags = 1;
 	f.Render(2);
@@ -1237,7 +1238,7 @@ void TestCallbackPauseDuringLookahead() {
 		f.Queue(pcm, 1, 1);
 		f.Queue(pcm + 1, 1, 0);
 		CallbackEvent context {&f.voice, 16, 0, 2};
-		f.voice.callback = reinterpret_cast<uintptr_t>(&ApplyCallbackEvent);
+		f.voice.callback = reinterpret_cast<uintptr_t>(GuestFunctionPointer<ApplyCallbackEvent>("ngs2_test.ApplyCallbackEvent"));
 		f.voice.callback_data = reinterpret_cast<uintptr_t>(&context);
 		f.voice.callback_flags = 1;
 		f.Render(1);
@@ -1288,7 +1289,7 @@ void TestCallbackReplacesSource() {
 				for (uint32_t i = 0; i < trigger; ++i) {
 					f.Queue(pcm, 1, 1);
 				}
-				f.voice.callback = reinterpret_cast<uintptr_t>(&ReplaceCallbackSource);
+				f.voice.callback = reinterpret_cast<uintptr_t>(GuestFunctionPointer<ReplaceCallbackSource>("ngs2_test.ReplaceCallbackSource"));
 				f.voice.callback_data = reinterpret_cast<uintptr_t>(&replacement);
 				f.voice.callback_flags = 1;
 				f.Render(4);

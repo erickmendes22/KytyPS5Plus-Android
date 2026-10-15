@@ -20,6 +20,8 @@
 #include "libs/libs.h"
 #include "libs/network.h"
 #include "loader/elf.h"
+#include "loader/guestCall.h"
+#include "loader/guestHostFunction.h"
 #include "loader/runtimeLinker.h"
 #include "loader/symbolDatabase.h"
 
@@ -258,7 +260,7 @@ int KYTY_SYSV_ABI KernelDlsym(KernelModule handle, const char* symbol, void** ad
 
 	const auto* record = kernel_find_export_symbol(program->export_symbols.get(), symbol);
 	if (record != nullptr) {
-		*addr = reinterpret_cast<void*>(record->vaddr);
+		*addr = reinterpret_cast<void*>(Loader::GuestHost::SymbolAddress(*record));
 		if (index < 32 || (index % 600) == 0) {
 			LOGF("\t resolved = 0x%016" PRIx64 " (%s)\n", record->vaddr, record->name.c_str());
 		}
@@ -266,7 +268,8 @@ int KYTY_SYSV_ABI KernelDlsym(KernelModule handle, const char* symbol, void** ad
 	}
 
 	if (handle == 0 && std::strcmp(symbol, "scriptingGetMem") == 0) {
-		*addr = reinterpret_cast<void*>(&KernelApplicationHeapGetMem);
+		*addr = reinterpret_cast<void*>(
+		    Loader::GuestHost::AddressOf<KernelApplicationHeapGetMem>("LibKernel::KernelApplicationHeapGetMem"));
 		if (index < 32 || (index % 600) == 0) {
 			LOGF("\t resolved = 0x%016" PRIx64 " (application heap scriptingGetMem)\n",
 			     reinterpret_cast<uint64_t>(*addr));
@@ -1000,12 +1003,12 @@ static void HostSignalDispatchHandler(int /*host_signal*/, siginfo_t* /*info*/,
 			SignalDispatchScope scope;
 			auto                ctx = CreateSignalUcontextFromHost(host_ctx);
 			if (IsGuestCodeAddress(ctx.uc_mcontext.mc_rip)) {
-				handler(signum, &ctx);
+				Loader::GuestHost::CallGuestFunction(handler, signum, &ctx);
 				ApplySignalUcontextToHost(host_ctx, ctx);
 			} else {
 				// Do not expose or restore a host frame.
 				SanitizeNonGuestSignalUcontext(&ctx, current);
-				handler(signum, &ctx);
+				Loader::GuestHost::CallGuestFunction(handler, signum, &ctx);
 			}
 		}
 		return;
@@ -1066,12 +1069,12 @@ static void SignalApcHandler(void* arg1, void* arg2, void* /*arg3*/, PCONTEXT co
 			std::thread([thread, signum, handler, ctx]() mutable {
 				SignalDispatchScope helper_scope;
 				auto*               previous_self = PthreadSwapSelfForSignal(thread);
-				handler(signum, &ctx);
+				Loader::GuestHost::CallGuestFunction(handler, signum, &ctx);
 				PthreadSwapSelfForSignal(previous_self);
 			}).detach();
 			return;
 		}
-		handler(signum, &ctx);
+		Loader::GuestHost::CallGuestFunction(handler, signum, &ctx);
 		if (guest_context) {
 			ApplySignalUcontext(context, ctx);
 		}
@@ -1096,7 +1099,7 @@ void KernelDispatchPendingSignalForCurrentThread() {
 			SignalDispatchScope scope;
 			auto                ctx = CreateSignalUcontext();
 			SanitizeNonGuestSignalUcontext(&ctx, current);
-			handler(signum, &ctx);
+			Loader::GuestHost::CallGuestFunction(handler, signum, &ctx);
 		}
 		return;
 	}
@@ -1152,7 +1155,7 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 			SignalDispatchScope scope;
 			auto                ctx = CreateCurrentGuestCallSignalUcontext(
 			    reinterpret_cast<uint64_t>(__builtin_return_address(0)));
-			handler(signum, &ctx);
+			Loader::GuestHost::CallGuestFunction(handler, signum, &ctx);
 			return OK;
 		}
 		if (nt_queue_apc_thread_ex == nullptr) {
@@ -1191,7 +1194,7 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 			SignalDispatchScope scope;
 			auto                ctx = CreateCurrentGuestCallSignalUcontext(
 			    reinterpret_cast<uint64_t>(__builtin_return_address(0)));
-			handler(signum, &ctx);
+			Loader::GuestHost::CallGuestFunction(handler, signum, &ctx);
 			return OK;
 		}
 
@@ -1299,11 +1302,11 @@ static int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args
 	}
 
 	if (g_get_thread_atexit_count_func != nullptr &&
-	    g_get_thread_atexit_count_func(program->unique_id) > 0) {
+	    Loader::GuestHost::CallGuestFunction(g_get_thread_atexit_count_func, program->unique_id) > 0) {
 		LOGF("KernelStopUnloadModule: cannot unload %s\n",
 		     Common::PathToString(program->file_name).c_str());
 		if (g_thread_atexit_report_func != nullptr) {
-			g_thread_atexit_report_func(program->unique_id);
+			Loader::GuestHost::CallGuestFunction(g_thread_atexit_report_func, program->unique_id);
 		}
 		return KERNEL_ERROR_EBUSY;
 	}
@@ -2539,7 +2542,7 @@ static int FiberSaveContext(FiberCpuContext* ctx) {
 [[noreturn]] static KYTY_SYSV_ABI void FiberStartTrampoline(FiberObject* fiber) {
 	FiberCompleteSwitch(fiber);
 
-	fiber->entry(fiber->arg_on_initialize, fiber->arg_on_run);
+	Loader::GuestHost::CallGuestFunction(fiber->entry, fiber->arg_on_initialize, fiber->arg_on_run);
 
 	FiberStoreState(fiber, FIBER_STATE_TERMINATED);
 	FiberSetContextValid(fiber, false);

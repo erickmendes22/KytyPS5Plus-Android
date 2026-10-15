@@ -16,6 +16,8 @@
 #include "kernel/memory.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "loader/guestCall.h"
+#include "loader/guestHostFunction.h"
 #include "loader/runtimeLinker.h"
 #include "loader/timer.h"
 
@@ -1012,7 +1014,7 @@ static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func,
 	// The host thread already exists (created by pthread_create); bind it to a guest context whose
 	// stack is this thread's guest stack, then run the entry as an ordinary guest call.
 	const auto top = reinterpret_cast<uint64_t>(stack_top);
-	if (!Cpu::GuestCpu::AttachCurrentThread(top)) {
+	if (!Loader::GuestHost::AttachGuestThread(top)) {
 		std::fprintf(stderr, "pthread: guest CPU attach failed\n");
 		std::abort();
 	}
@@ -1638,7 +1640,7 @@ static void DestructPthreadSpecific() {
 			}
 			const auto destructor = entry.destructor;
 			lock.unlock();
-			destructor(value.data);
+			Loader::GuestHost::CallGuestFunction(destructor, value.data);
 			lock.lock();
 			called = true;
 		}
@@ -3256,7 +3258,7 @@ static void CleanupThread(void* arg) {
 	auto thread_dtors = g_pthread_context->GetThreadDtors();
 
 	if (thread_dtors != nullptr) {
-		thread_dtors();
+		Loader::GuestHost::CallGuestFunction(thread_dtors);
 	}
 
 	DestructPthreadSpecific();
@@ -4089,7 +4091,7 @@ int KYTY_SYSV_ABI pthread_once(void* once_control, void(KYTY_SYSV_ABI* init_rout
 	}
 
 run_init:
-	init_routine();
+	Loader::GuestHost::CallGuestFunction(init_routine);
 
 	{
 		std::lock_guard lock(g_pthread_once_mutex);

@@ -75,6 +75,9 @@ struct SafeCall {
 
 	void SetFunc(func_t func) { *reinterpret_cast<func_t*>(&code[0x22]) = func; }
 
+	// Guest-visible target (an x86 trap on ARM64, where a host function cannot be called directly).
+	void SetTarget(uint64_t address) { *reinterpret_cast<uint64_t*>(&code[0x22]) = address; }
+
 	static uint64_t GetSize() { return 0x1000; }
 
 	uint8_t code[0x90] = {

@@ -4,6 +4,7 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
+#include "loader/guestCall.h"
 
 #include <condition_variable>
 #include <cstring>
@@ -204,7 +205,8 @@ static int KYTY_SYSV_ABI UltUlthreadRuntimeCreate(void* runtime, const char* nam
 
 static KYTY_SYSV_ABI void* UltUlthreadRun(void* arg) {
 	auto* state = static_cast<UltUlthreadState*>(arg);
-	return reinterpret_cast<void*>(static_cast<intptr_t>(state->entry(state->arg)));
+	return reinterpret_cast<void*>(
+	    static_cast<intptr_t>(Loader::GuestHost::CallGuestFunction(state->entry, state->arg)));
 }
 
 static int KYTY_SYSV_ABI UltUlthreadCreate(void* ulthread, const char* name, UltUlthreadEntry entry,

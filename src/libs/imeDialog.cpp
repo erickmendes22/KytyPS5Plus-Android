@@ -1,6 +1,7 @@
 #include "libs/imeDialog.h"
 
 #include "libs/errno.h"
+#include "loader/guestCall.h"
 
 #include <algorithm>
 #include <atomic>
@@ -317,7 +318,7 @@ void ApplyExternalInputs() {
 		if (filter != nullptr) {
 			uint16_t output_keycode = input.key.keycode;
 			uint32_t output_status  = input.key.status;
-			if (filter(&input.key, &output_keycode, &output_status, nullptr) == 0) {
+			if (Loader::GuestHost::CallGuestFunction(filter, &input.key, &output_keycode, &output_status, nullptr) == 0) {
 				accepted = ImeCommon::ApplyKeyboardFilterOutput(&input, output_keycode,
 				                                                output_status, multiline);
 			}

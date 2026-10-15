@@ -456,8 +456,12 @@ target_include_directories(trophy_system_tests PRIVATE ${inc_headers})
 add_executable(avplayer_file_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/AvPlayerFileTests.cpp"
 	"${KYTY_SOURCE_DIR}/loader/timer.cpp"
+	"${KYTY_SOURCE_DIR}/loader/guestHostFunction.cpp"
 )
 target_link_libraries(avplayer_file_tests common FFmpeg::ffmpeg ZArchive::zarchive)
+if(KYTY_GUEST_CPU_FEX)
+	target_link_libraries(avplayer_file_tests kyty_guest_cpu)
+endif()
 target_include_directories(avplayer_file_tests PRIVATE ${inc_headers})
 
 add_executable(vdecsw_tests EXCLUDE_FROM_ALL
@@ -492,7 +496,11 @@ add_executable(ime_dialog_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ImeDialogTests.cpp"
 	"${KYTY_SOURCE_DIR}/libs/imeCommon.cpp"
 	"${KYTY_SOURCE_DIR}/libs/imeDialog.cpp"
+	"${KYTY_SOURCE_DIR}/loader/guestHostFunction.cpp"
 )
+if(KYTY_GUEST_CPU_FEX)
+	target_link_libraries(ime_dialog_tests kyty_guest_cpu)
+endif()
 target_include_directories(ime_dialog_tests PRIVATE ${inc_headers})
 
 add_executable(memory_tracker_tests EXCLUDE_FROM_ALL
@@ -548,8 +556,12 @@ target_include_directories(audio_out_timing_tests PRIVATE ${inc_headers})
 add_executable(ngs2_sampler_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/Ngs2SamplerTests.cpp"
 	"${KYTY_SOURCE_DIR}/loader/timer.cpp"
+	"${KYTY_SOURCE_DIR}/loader/guestHostFunction.cpp"
 )
 target_link_libraries(ngs2_sampler_tests common fmt::fmt LibAtrac9)
+if(KYTY_GUEST_CPU_FEX)
+	target_link_libraries(ngs2_sampler_tests kyty_guest_cpu)
+endif()
 target_include_directories(ngs2_sampler_tests PRIVATE ${inc_headers})
 
 add_executable(pad_haptics_tests EXCLUDE_FROM_ALL
@@ -791,9 +803,8 @@ if(APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
 endif()
 
 if(KYTY_GUEST_CPU_FEX)
-	add_executable(guest_cpu_fex_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/GuestCpuFexTests.cpp")
-	target_link_libraries(guest_cpu_fex_tests kyty_guest_cpu)
-	target_include_directories(guest_cpu_fex_tests PRIVATE ${inc_headers})
+	# Full emulator sources: the import-path test resolves real libC records from the symbol database.
+	add_kyty_full_emulator_test(guest_cpu_fex_tests "${KYTY_TESTS_DIR}/GuestCpuFexTests.cpp")
 	if(BUILD_TESTING)
 		add_test(NAME guest_cpu_fex COMMAND $<TARGET_FILE:guest_cpu_fex_tests>)
 		set_tests_properties(guest_cpu_fex PROPERTIES TIMEOUT 300)

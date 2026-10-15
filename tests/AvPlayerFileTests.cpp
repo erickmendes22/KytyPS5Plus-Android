@@ -1,6 +1,7 @@
 #include "libs/avPlayer.cpp"
 #include "common/archive.h"
 #include "ArchiveTestFixture.h"
+#include "GuestFunctionPointer.h"
 
 #include <array>
 #include <chrono>
@@ -130,7 +131,11 @@ void CheckVideoReadAhead(const std::filesystem::path& root) {
 		}
 	}
 	VideoMemory memory;
-	const AvPlayerMemAllocator allocator {&memory, Allocate, Deallocate, Allocate, Deallocate};
+	const AvPlayerMemAllocator allocator {&memory,
+									      GuestFunctionPointer<Allocate>("avplayer_test.Allocate"),
+									      GuestFunctionPointer<Deallocate>("avplayer_test.Deallocate"),
+									      GuestFunctionPointer<Allocate>("avplayer_test.Allocate"),
+									      GuestFunctionPointer<Deallocate>("avplayer_test.Deallocate")};
 	Source source(allocator, {}, {}, 6, false, 0);
 	Check(source.Init("/app0/movie.m4v", AvPlayerSourceFileMp4) == 0, "open video fixture");
 	source.SetSync(1);
@@ -192,7 +197,11 @@ int main() {
 		CheckStream(archive, payload);
 	}
 	Callbacks callbacks {payload};
-	const AvPlayerFileReplacement replacement {&callbacks, Open, Close, Read, Size};
+	const AvPlayerFileReplacement replacement {&callbacks,
+	                                          GuestFunctionPointer<Open>("avplayer_test.Open"),
+	                                          GuestFunctionPointer<Close>("avplayer_test.Close"),
+	                                          GuestFunctionPointer<Read>("avplayer_test.Read"),
+	                                          GuestFunctionPointer<Size>("avplayer_test.Size")};
 	{
 		FileStreamer callback(replacement);
 		Check(callback.Init("callback"), "open guest callback stream");

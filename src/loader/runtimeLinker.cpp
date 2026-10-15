@@ -20,6 +20,8 @@
 #include "kernel/pthread.h"
 #include "loader/elf.h"
 #include "loader/gamePatch.h"
+#include "loader/guestCall.h"
+#include "loader/guestHostFunction.h"
 #include "loader/guestInstructionPatcher.h"
 #include "loader/jit.h"
 #include "loader/symbolDatabase.h"
@@ -67,7 +69,7 @@ static void FreeTlsBlock(ThreadLocalStorage::Block* block) {
 	}
 
 	if (block->free_func != nullptr) {
-		block->free_func(block->ptr);
+		GuestHost::CallGuestFunction(block->free_func, block->ptr);
 	} else if (block->vm_alloc) {
 		EXIT_IF(!Libs::LibKernel::Memory::FreeGuestMemory(reinterpret_cast<uint64_t>(block->ptr),
 		                                                  block->alloc_size));
@@ -128,6 +130,19 @@ static constexpr uint64_t               UNRESOLVED_STUB_PAGE_SIZE      = 4096;
 
 static KYTY_SYSV_ABI uint64_t UnresolvedImportStub(uint64_t record_id);
 
+#if KYTY_HOST_ARM64
+// ARM64: the x86 thunk above would jump to a host address, so the stub is an HLE trap instead.
+static void UnresolvedImportThunk(Loader::GuestAbi::CallFrame& frame) {
+	const auto log_index = g_unresolved_stub_call_log_count.fetch_add(1);
+	if (log_index < 1024) {
+		const std::string name(GuestHost::CurrentTrapName());
+		printf("Unresolved import stub called: %s\n", name.c_str());
+		LOGF("Unresolved import stub called [%u]: symbol=%s\n", log_index, name.c_str());
+	}
+	frame.SetIntReturn(0);
+}
+#endif
+
 static bool PatchGuestMemory64(uint64_t vaddr, uint64_t value) {
 	auto* ptr     = reinterpret_cast<uint64_t*>(vaddr);
 	bool  changed = (*ptr != value);
@@ -185,8 +200,12 @@ static uint64_t RegisterStubbedImport(uint32_t index, const Program* program,
 	record.bind        = ri.bind;
 	record.program     = Common::PathToString(program->file_name);
 	g_stubbed_imports.push_back(record);
-	const auto record_id                     = g_stubbed_imports.size() - 1;
-	const auto thunk                         = AllocateUnresolvedImportThunk(record_id);
+	const auto record_id = g_stubbed_imports.size() - 1;
+#if KYTY_HOST_ARM64
+	const auto thunk = GuestHost::NewTrap(record.name, &UnresolvedImportThunk);
+#else
+	const auto thunk = AllocateUnresolvedImportThunk(record_id);
+#endif
 	g_stubbed_imports[record_id].thunk_vaddr = thunk;
 	return thunk;
 }
@@ -365,7 +384,7 @@ static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_fu
 	                          reinterpret_cast<uint64_t>(atexit_func)};
 	if (stack_top != nullptr) {
 		const auto top = reinterpret_cast<uint64_t>(stack_top);
-		if (!Cpu::GuestCpu::AttachCurrentThread(top)) {
+		if (!GuestHost::AttachGuestThread(top)) {
 			std::fprintf(stderr, "RunEntry: guest CPU attach failed\n");
 			std::abort();
 		}
@@ -789,6 +808,16 @@ static void KYTY_SYSV_ABI ProgramExitHandler() {
 	LOGF("exit!!!\n");
 }
 
+// Exit callback handed to the guest entry: a trap on ARM64, the native function on x86.
+static atexit_func_t GuestExitHandler() {
+#if KYTY_HOST_ARM64
+	return reinterpret_cast<atexit_func_t>(
+	    GuestHost::AddressOf<ProgramExitHandler>("Loader::ProgramExitHandler"));
+#else
+	return ProgramExitHandler;
+#endif
+}
+
 template <class T>
 static void GetDynModules(Elf64* elf, T* out, const char* names, Elf64_Sxword tag) {
 	std::vector<uint64_t> needed_modules;
@@ -858,7 +887,7 @@ static RelocationInfo GetRelocationInfo(Elf64_Rela* r, Program* program) {
 					ret.bind = (ret.bind == BindType::Unknown ? BindType::Weak : ret.bind);
 					ret.name = names + sym.st_name;
 					program->rt->Resolve(ret.name, ret.type, program, &sr, &ret.bind_self);
-					symbol_vaddr = sr.vaddr;
+					symbol_vaddr = GuestHost::SymbolAddress(sr);
 				} break;
 				default: EXIT("unknown bind: %d\n", (int)bind);
 			}
@@ -948,6 +977,29 @@ static KYTY_MS_ABI uint8_t* TlsMainGetAddr() {
 	    RuntimeLinker::TlsGetAddr(g_tls_main_program) + g_tls_main_program->tls.tcb_offset;
 	return g_tls_cached_main_tcb;
 }
+
+#if KYTY_HOST_ARM64
+static void TlsMainGetAddrThunk(Loader::GuestAbi::CallFrame& frame) {
+	frame.SetIntReturn(reinterpret_cast<uint64_t>(TlsMainGetAddr()));
+}
+#endif
+
+uint64_t CurrentThreadTcb() {
+#if KYTY_HOST_ARM64
+	if (g_tls_main_program == nullptr) {
+		return 0;
+	}
+	return reinterpret_cast<uint64_t>(TlsMainGetAddr());
+#else
+	return 0;
+#endif
+}
+
+// Hands the TCB lookup to the guest-host bridge, which must not depend on the runtime linker.
+[[maybe_unused]] static const bool g_tcb_provider_registered = [] {
+	GuestHost::SetThreadTcbProvider(&CurrentThreadTcb);
+	return true;
+}();
 
 static void PatchProgram(Program* program, uint64_t address, uint64_t size) {
 	EXIT_IF(program == nullptr);
@@ -1308,7 +1360,7 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 
 		LOGF("stack_addr = %" PRIx64 "\n", reinterpret_cast<uint64_t>(params));
 
-		RunEntry(entry, params, ProgramExitHandler,
+		RunEntry(entry, params, GuestExitHandler(),
 		         reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(params) - 0x1000u));
 	}
 }
@@ -1570,8 +1622,10 @@ int RuntimeLinker::StartModule(Program* program, size_t args, const void* argp,
 	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Start module: %s\n---\n",
 	           Common::PathToString(program->file_name).c_str());
 
-	return reinterpret_cast<module_ini_fini_func_t>(program->dynamic_info->init_vaddr +
-	                                                program->base_vaddr)(args, argp, func);
+	return GuestHost::CallGuestFunction(
+	    reinterpret_cast<module_ini_fini_func_t>(program->dynamic_info->init_vaddr +
+	                                             program->base_vaddr),
+	    args, argp, func);
 }
 
 int RuntimeLinker::StopModule(Program* program, size_t args, const void* argp, module_func_t func) {
@@ -1585,8 +1639,10 @@ int RuntimeLinker::StopModule(Program* program, size_t args, const void* argp, m
 	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Stop module: %s\n---\n",
 	           Common::PathToString(program->file_name).c_str());
 
-	int result = reinterpret_cast<module_ini_fini_func_t>(program->dynamic_info->fini_vaddr +
-	                                                      program->base_vaddr)(args, argp, func);
+	int result = GuestHost::CallGuestFunction(
+	    reinterpret_cast<module_ini_fini_func_t>(program->dynamic_info->fini_vaddr +
+	                                             program->base_vaddr),
+	    args, argp, func);
 
 	Libs::LibKernel::PthreadDeleteStaticObjects(program);
 
@@ -2145,7 +2201,11 @@ void RuntimeLinker::SetupTlsHandler(Program* program) {
 
 	auto* code = new (reinterpret_cast<void*>(program->tls.handler_vaddr)) Jit::SafeCall;
 
+#if KYTY_HOST_ARM64
+	code->SetTarget(GuestHost::NewTrap("kyty.TlsMainGetAddr", &TlsMainGetAddrThunk));
+#else
 	code->SetFunc(TlsMainGetAddr);
+#endif
 
 	for (uint8_t reg = 1; reg < 8; reg++) {
 		if (reg == 4) {
@@ -2194,7 +2254,10 @@ void* RuntimeLinker::ApplicationHeapMemalign(uint64_t alignment, uint64_t size) 
 
 	if (m_application_heap_posix_memalign != nullptr) {
 		void* ptr = nullptr;
-		return m_application_heap_posix_memalign(&ptr, alignment, size) == 0 ? ptr : nullptr;
+		return GuestHost::CallGuestFunction(m_application_heap_posix_memalign, &ptr, alignment,
+		                                    size) == 0
+		           ? ptr
+		           : nullptr;
 	}
 
 	return nullptr;
@@ -2203,7 +2266,9 @@ void* RuntimeLinker::ApplicationHeapMemalign(uint64_t alignment, uint64_t size) 
 void* RuntimeLinker::ApplicationHeapMalloc(uint64_t size) {
 	Common::LockGuard lock(m_mutex);
 
-	return m_application_heap_malloc != nullptr ? m_application_heap_malloc(size) : nullptr;
+	return m_application_heap_malloc != nullptr
+	           ? GuestHost::CallGuestFunction(m_application_heap_malloc, size)
+	           : nullptr;
 }
 
 } // namespace Loader

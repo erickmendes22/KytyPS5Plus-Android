@@ -203,6 +203,9 @@ private:
 	application_heap_posix_memalign_func_t m_application_heap_posix_memalign = nullptr;
 };
 
+// Guest TLS base (the main program's TCB) for the calling host thread; 0 before a TLS block exists.
+uint64_t CurrentThreadTcb();
+
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 bool TestMainEntryUsesGuestStack();
 bool TestModuleRelocationUsesWritableHostMapping();
