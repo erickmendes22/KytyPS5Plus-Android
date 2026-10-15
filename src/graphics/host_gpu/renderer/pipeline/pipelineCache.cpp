@@ -388,6 +388,13 @@ struct PipelineCache::ProgramCache {
 		ShaderRecompiler::CompileOptions options;
 		options.stage       = stage;
 		options.maintenance8_enabled = graphics.maintenance8_enabled;
+		options.device_features      = {
+		         .fragment_shader_barycentric = graphics.optional_features.fragment_shader_barycentric,
+		         .shader_float64              = graphics.optional_features.shader_float64,
+		         .shader_shared_int64_atomics = graphics.optional_features.shader_shared_int64_atomics,
+		         .signed_zero_inf_nan_preserve_f32 =
+		             graphics.optional_features.shader_signed_zero_inf_nan_preserve_f32,
+		};
 		options.shader_hash = params.hash;
 		options.user_data   = user_data;
 		options.back_code      = params.back_code;

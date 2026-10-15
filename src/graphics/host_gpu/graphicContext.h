@@ -18,6 +18,20 @@ struct VulkanImage;
 
 inline constexpr uint32_t VULKAN_TARGET_API_VERSION = VK_API_VERSION_1_3;
 
+// Optional device features, probed once when the logical device is created. A false flag never
+// rejects a device; the renderer and shader backend read the flag and take a documented fallback.
+struct OptionalDeviceFeatures {
+	bool depth_clip_enable           = false; // VK_EXT_depth_clip_enable: depthClipEnable
+	bool color_write_enable          = false; // VK_EXT_color_write_enable: colorWriteEnable
+	bool fragment_shader_barycentric = false; // VK_KHR_fragment_shader_barycentric
+	bool depth_bounds                = false; // core depthBounds
+	bool image_view_min_lod          = false; // VK_EXT_image_view_min_lod: minLod
+	bool shader_float64              = false; // core shaderFloat64 (enabled with FP64 signed zero)
+	// Vulkan 1.2 shaderSharedInt64Atomics plus workgroupMemoryExplicitLayout.
+	bool shader_shared_int64_atomics             = false;
+	bool shader_signed_zero_inf_nan_preserve_f32 = false; // float controls property
+};
+
 struct GraphicContext {
 	vk::Instance                       instance                              = nullptr;
 	vk::DebugUtilsMessengerEXT         debug_messenger                       = nullptr;
@@ -42,6 +56,7 @@ struct GraphicContext {
 	uint32_t                           max_subgroup_size                     = 0;
 	uint32_t                           max_push_descriptors                  = 0;
 	vk::ShaderStageFlags               required_subgroup_size_stages         = {};
+	OptionalDeviceFeatures             optional_features                     = {};
 	Common::Mutex                      queue_mutex;
 	uint32_t                           queue_family = static_cast<uint32_t>(-1);
 	vk::Queue                          queue        = nullptr;

@@ -19,6 +19,7 @@
 #include "graphics/shader/shader.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <limits>
 #include <span>
@@ -365,13 +366,22 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	clip_ext.depthClipEnable = static_params.depth_clip_enable ? VK_TRUE : VK_FALSE;
 
 	vk::PipelineRasterizationStateCreateInfo rasterizer {};
-	// MoltenVK lacks VK_EXT_depth_clip_enable; omit the depth-clip struct on macOS and accept
-	// Vulkan's default depth clipping (enabled) instead of the PS5's clamp behavior.
+	// The DB clamps depth to the viewport range after polygon offset is applied. MoltenVK does
+	// not enable depthClamp, so it keeps Vulkan's default clipping.
 #if !defined(__APPLE__)
-	// The DB clamps depth to the viewport range after polygon offset is applied.
 	rasterizer.depthClampEnable = VK_TRUE;
-	rasterizer.pNext = &clip_ext;
 #endif
+	// Without VK_EXT_depth_clip_enable the struct is omitted, which leaves Vulkan's default depth
+	// clipping in place. Where depthClampEnable is set, that clamp already covers the PS5 behavior.
+	if (graphics.optional_features.depth_clip_enable) {
+		rasterizer.pNext = &clip_ext;
+	} else if (!static_params.depth_clip_enable) {
+		static std::atomic_bool s_warned = false;
+		if (!s_warned.exchange(true)) {
+			LOGF("WARNING: depth clip disable requested but VK_EXT_depth_clip_enable is "
+			     "unsupported; per-pipeline depth clip control is not applied\n");
+		}
+	}
 	vk::PipelineRasterizationProvokingVertexStateCreateInfoEXT provoking_vertex {};
 	EXIT_NOT_IMPLEMENTED(static_params.provoking_vtx_last &&
 	                     !graphics.provoking_vertex_last_enabled);
@@ -425,11 +435,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	color_write.pColorWriteEnables = color_write_enable;
 
 	vk::PipelineColorBlendStateCreateInfo color_blending {};
-	// MoltenVK lacks VK_EXT_color_write_enable; drop the dynamic color-write struct on macOS
-	// and rely on each attachment's static colorWriteMask (all channels enabled by default).
-#if !defined(__APPLE__)
-	color_blending.pNext = &color_write;
-#endif
+	// Without VK_EXT_color_write_enable the struct is omitted. Each attachment then uses only its
+	// static guest colorWriteMask; attachments without an image view are not written anyway.
+	if (graphics.optional_features.color_write_enable) {
+		color_blending.pNext = &color_write;
+	}
 	color_blending.logicOp         = vk::LogicOp::eCopy;
 	color_blending.attachmentCount = rendering.color_count;
 	color_blending.pAttachments    = color_blend_attachment;
@@ -491,13 +501,13 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	    vk::DynamicState::eStencilWriteMask,
 	    vk::DynamicState::eBlendConstants,
 	};
-#if !defined(__APPLE__)
-	dynamic_states.push_back(vk::DynamicState::eDepthBoundsTestEnable);
-	dynamic_states.push_back(vk::DynamicState::eDepthBounds);
-	if (rendering.color_count != 0) {
+	if (graphics.optional_features.depth_bounds) {
+		dynamic_states.push_back(vk::DynamicState::eDepthBoundsTestEnable);
+		dynamic_states.push_back(vk::DynamicState::eDepthBounds);
+	}
+	if (rendering.color_count != 0 && graphics.optional_features.color_write_enable) {
 		dynamic_states.push_back(vk::DynamicState::eColorWriteEnableEXT);
 	}
-#endif
 	if (graphics.attachment_feedback_loop_enabled) {
 		dynamic_states.push_back(vk::DynamicState::eAttachmentFeedbackLoopEnableEXT);
 	}

@@ -11,6 +11,15 @@ namespace Libs::Graphics::ShaderRecompiler::Spirv {
 
 namespace {
 
+// Rejection is fatal, matching the other unsupported-shader paths. Emitting SPIR-V that declares a
+// capability the device does not expose would only fail later inside vkCreateShaderModule.
+[[noreturn]] void RejectUnsupportedShader(const IR::Program& program, const char* feature) {
+	EXIT("native shader rejected: hash=0x%016" PRIx64 " stage=%u needs %s, which this Vulkan "
+	     "device does not support\n",
+	     program.shader_hash, static_cast<unsigned>(program.stage), feature);
+	std::abort();
+}
+
 [[noreturn]] void Fail(const IR::Program& program, const char* reason) {
 	EXIT("SPIR-V validation failed: hash=0x%016" PRIx64 " stage=%u reason=%s\n",
 	     program.shader_hash, static_cast<unsigned>(program.stage), reason);
@@ -197,7 +206,8 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 } // namespace
 
 std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo input_info,
-                                  uint32_t push_data_start_dword, bool maintenance8_enabled) {
+                                  uint32_t push_data_start_dword, bool maintenance8_enabled,
+                                  const ShaderDeviceFeatures& device_features) {
 	using namespace Emitter;
 
 	if (program.stage != ShaderType::Compute && program.stage != ShaderType::Vertex &&
@@ -215,7 +225,16 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	}
 	IR::ValidateProgram(program, true);
 	program.bindings = {.push_data_start_dword = push_data_start_dword};
-	EmitterState state(program, input_info, maintenance8_enabled);
+	if (program.info.float64 && !device_features.shader_float64) {
+		RejectUnsupportedShader(program, "Float64 arithmetic (shaderFloat64)");
+	}
+	EmitterState state(program, input_info, maintenance8_enabled, device_features);
+	// 64-bit atomics on StorageBuffer-backed LDS only need shaderBufferInt64Atomics, which is
+	// always required. Workgroup-class LDS additionally needs shaderSharedInt64Atomics.
+	if (program.info.shared_int64_atomics && state.lds_storage_class == spv::StorageClassWorkgroup &&
+	    !device_features.shader_shared_int64_atomics) {
+		RejectUnsupportedShader(program, "64-bit LDS atomics (shaderSharedInt64Atomics)");
+	}
 	const auto* workgroup = ShaderWorkgroupInput(program.stage, input_info);
 	state.lane_count =
 	    workgroup != nullptr && program.wave_size == 64u && workgroup->host_subgroup_size == 32u
