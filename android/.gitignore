@@ -1,0 +1,7 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+app/src/main/jniLibs/arm64-v8a/libmain.so
+.kotlin/

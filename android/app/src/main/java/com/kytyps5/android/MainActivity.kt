@@ -1,0 +1,247 @@
+package com.kytyps5.android
+
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.graphics.Typeface
+import android.net.Uri
+import android.os.Bundle
+import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.text.InputType
+import android.view.Gravity
+import android.view.View
+import android.view.WindowInsets
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
+import android.widget.TextView
+import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+/** Game picker: checks all-files access, scans the games folder and launches [GameActivity]. */
+class MainActivity : Activity() {
+
+    private lateinit var settings: LauncherSettings
+    private val worker: ExecutorService = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var scanRequest = 0
+
+    private lateinit var nativeStatus: TextView
+    private lateinit var storageStatus: TextView
+    private lateinit var grantButton: Button
+    private lateinit var rootInput: EditText
+    private lateinit var resolutionGroup: RadioGroup
+    private lateinit var message: TextView
+    private lateinit var gameList: LinearLayout
+
+    private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        settings = LauncherSettings(this)
+        setContentView(buildUi())
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshStorageState()
+        if (Environment.isExternalStorageManager()) {
+            scanGames(settings.gamesRoot)
+        } else {
+            showMessage("Grant all-files access to scan for games.")
+        }
+    }
+
+    override fun onDestroy() {
+        worker.shutdownNow()
+        super.onDestroy()
+    }
+
+    private fun buildUi(): View {
+        nativeStatus = label(
+            if (NativeLibrary.isInstalled(this)) {
+                "Emulator library: installed"
+            } else {
+                "Emulator library: missing (${NativeLibrary.FILE_NAME} is not in this build)"
+            },
+        )
+        storageStatus = label("")
+        grantButton = Button(this).apply {
+            text = "Grant all-files access"
+            setOnClickListener { openAllFilesAccessSettings() }
+        }
+        rootInput = EditText(this).apply {
+            setText(settings.gamesRoot)
+            hint = LauncherSettings.DEFAULT_GAMES_ROOT
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            isSingleLine = true
+        }
+        resolutionGroup = buildResolutionGroup()
+        message = label("", secondary = true)
+        gameList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16.dp, 16.dp, 16.dp, 16.dp)
+            addView(label("KytyPS5", sizeSp = 22f, bold = true))
+            addView(nativeStatus)
+            addView(storageStatus)
+            addView(grantButton)
+            addView(label("Games folder", bold = true))
+            addView(
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(rootInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(Button(context).apply {
+                        text = "Scan"
+                        setOnClickListener { onScanRequested() }
+                    })
+                },
+            )
+            addView(label("Resolution", bold = true))
+            addView(resolutionGroup)
+            addView(message)
+            addView(
+                ScrollView(context).apply { addView(gameList) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
+            )
+        }
+        // Edge-to-edge (targetSdk 35): keep content below the status bar and above the nav bar.
+        content.setOnApplyWindowInsetsListener { view, insets ->
+            val bars = insets.getInsets(WindowInsets.Type.systemBars())
+            view.setPadding(16.dp + bars.left, 16.dp + bars.top, 16.dp + bars.right, 16.dp + bars.bottom)
+            insets
+        }
+        return content
+    }
+
+    private fun buildResolutionGroup(): RadioGroup {
+        val group = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        Resolution.entries.forEach { resolution ->
+            group.addView(
+                RadioButton(this).apply {
+                    id = View.generateViewId()
+                    text = resolution.label
+                    tag = resolution
+                    isChecked = resolution == settings.resolution
+                },
+            )
+        }
+        group.setOnCheckedChangeListener { _, checkedId ->
+            (group.findViewById<View>(checkedId)?.tag as? Resolution)?.let { settings.resolution = it }
+        }
+        return group
+    }
+
+    private fun onScanRequested() {
+        val root = rootInput.text.toString().trim()
+        if (!root.startsWith("/")) {
+            showMessage("The games folder must be an absolute path, e.g. ${LauncherSettings.DEFAULT_GAMES_ROOT}")
+            return
+        }
+        if (!Environment.isExternalStorageManager()) {
+            showMessage("Grant all-files access before scanning.")
+            return
+        }
+        settings.gamesRoot = root
+        scanGames(root)
+    }
+
+    /** Scans off the main thread. Only the most recent request may update the list. */
+    private fun scanGames(root: String) {
+        val request = ++scanRequest
+        showMessage("Scanning $root ...")
+        worker.execute {
+            val result = GameLibrary.scan(File(root))
+            mainHandler.post {
+                if (request == scanRequest && !isFinishing) renderScan(result)
+            }
+        }
+    }
+
+    private fun renderScan(result: ScanResult) {
+        gameList.removeAllViews()
+        when (result) {
+            is ScanResult.Failure -> showMessage(result.message)
+            is ScanResult.Found -> when {
+                result.games.isEmpty() ->
+                    showMessage("No games found. Game folders need sce_sys/param.json.")
+                else -> {
+                    showMessage("${result.games.size} game(s) found.")
+                    result.games.forEach { gameList.addView(gameRow(it)) }
+                }
+            }
+        }
+    }
+
+    private fun gameRow(game: GameEntry): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, 8.dp, 0, 8.dp)
+        addView(
+            LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(label(game.title, sizeSp = 16f, bold = true))
+                addView(label(game.folder.path, sizeSp = 12f, secondary = true))
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        addView(Button(context).apply {
+            text = "Play"
+            setOnClickListener { launch(game) }
+        })
+    }
+
+    private fun launch(game: GameEntry) {
+        val args = LaunchArgs.forGame(game.path, settings.resolution)
+        startActivity(Intent(this, GameActivity::class.java).putExtra(LaunchArgs.EXTRA_GAME_ARGS, args))
+    }
+
+    private fun refreshStorageState() {
+        val granted = Environment.isExternalStorageManager()
+        storageStatus.text = if (granted) {
+            "All-files access: granted"
+        } else {
+            "All-files access: not granted. Games live on shared storage, so the launcher needs it."
+        }
+        grantButton.visibility = if (granted) View.GONE else View.VISIBLE
+    }
+
+    private fun openAllFilesAccessSettings() {
+        val appScoped = Intent(
+            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+            Uri.fromParts("package", packageName, null),
+        )
+        try {
+            startActivity(appScoped)
+        } catch (e: ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+        }
+    }
+
+    private fun showMessage(text: String) {
+        message.text = text
+    }
+
+    private fun label(
+        text: String,
+        sizeSp: Float = 14f,
+        bold: Boolean = false,
+        secondary: Boolean = false,
+    ): TextView = TextView(this).apply {
+        this.text = text
+        textSize = sizeSp
+        if (bold) setTypeface(typeface, Typeface.BOLD)
+        if (secondary) alpha = 0.7f
+        setPadding(0, 4.dp, 0, 4.dp)
+    }
+}

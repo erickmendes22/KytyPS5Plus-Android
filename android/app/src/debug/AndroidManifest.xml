@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: export GameActivity so on-device tests can start it from adb with the
+     emulator arguments as the string-array extra com.kytyps5.android.extra.GAME_ARGS
+     (see android/README or the am start example in the port notes). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <activity
+            android:name=".GameActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+    </application>
+</manifest>

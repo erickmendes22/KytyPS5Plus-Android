@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Simple gamepad glyph on a transparent background. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M34,44 L74,44 Q88,44 92,58 L96,76 Q98,88 86,88 Q78,88 74,80 L68,72 L40,72 L34,80 Q30,88 22,88 Q10,88 12,76 L16,58 Q20,44 34,44 Z" />
+</vector>
