@@ -3,6 +3,10 @@
 
 #include "common/abi.h"
 #include "common/common.h"
+#include "loader/guestAbi.h"
+
+#include <array>
+
 namespace Libs::Audio {
 
 void Initialize();
@@ -37,7 +41,6 @@ struct AudioOut2PortParam;
 struct AudioOut2Attribute;
 struct AudioOut2PortState;
 struct AudioOut2SystemState;
-struct AudioOut2Position;
 struct AudioOut2SpeakerInfo;
 struct AudioOut2SystemDebugStateParam;
 struct AudioOut2MasteringParamsHeader;
@@ -47,6 +50,12 @@ using AudioOut2ContextHandle      = uint64_t;
 using AudioOut2PortHandle         = uint64_t;
 using AudioOut2UserHandle         = uintptr_t;
 using AudioOut2SpeakerArrayHandle = void*;
+
+struct AudioOut2Position {
+	float x;
+	float y;
+	float z;
+};
 
 int KYTY_SYSV_ABI AudioOut2Initialize();
 int KYTY_SYSV_ABI AudioOut2ContextQueryMemory(const AudioOut2ContextParam* params,
@@ -238,5 +247,13 @@ int KYTY_SYSV_ABI      AvPlayerSetLogCallback(void* callback, void* user_data);
 } // namespace AvPlayer
 
 } // namespace Libs::Audio
+
+// {x, y} share the first eightbyte and z is alone in the second: two SSE eightbytes.
+namespace Loader::GuestAbi {
+template <>
+struct HleAggregate<Libs::Audio::AudioOut2::AudioOut2Position> {
+	static constexpr std::array<ArgClass, 2> kEightbytes {ArgClass::Sse, ArgClass::Sse};
+};
+} // namespace Loader::GuestAbi
 
 #endif /* EMULATOR_INCLUDE_EMULATOR_AUDIO_H_ */

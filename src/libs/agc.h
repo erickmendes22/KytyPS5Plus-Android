@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/common.h"
 #include "kernel/eventQueue.h"
+#include "loader/guestAbi.h"
 
 namespace Libs::Graphics {
 
@@ -14,6 +15,18 @@ struct SizeAlign {
 	uint64_t m_size;
 	size_t   m_align;
 };
+
+} // namespace Libs::Graphics
+
+namespace Loader::GuestAbi {
+// Two INTEGER eightbytes: returned in RAX and RDX.
+template <>
+struct HleAggregate<Libs::Graphics::SizeAlign> {
+	static constexpr std::array<ArgClass, 2> kEightbytes {ArgClass::Integer, ArgClass::Integer};
+};
+} // namespace Loader::GuestAbi
+
+namespace Libs::Graphics {
 
 struct MemoryRange {
 	void*    m_base;

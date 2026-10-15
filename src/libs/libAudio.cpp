@@ -12,12 +12,6 @@
 #include <cstring>
 #include <memory>
 
-// Opt-outs for GuestAbi/guestAbiInvoke.h: these cannot be marshaled by the generic thunk.
-namespace Loader::GuestAbi {
-template <>
-struct HleManualThunk<&Libs::Audio::AudioOut2::AudioOut2GetSpeakerArrayCoefficients> : std::true_type {};
-} // namespace Loader::GuestAbi
-
 namespace Libs {
 
 namespace LibAudioPropagation {

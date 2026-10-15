@@ -1,11 +1,15 @@
+#include "libs/vaThunk.h"
 #include "loader/guestAbiInvoke.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 #include <utility>
 
 namespace GuestAbiTestFns {
@@ -113,11 +117,125 @@ int32_t SumPair(Pair p) {
 	return p.a + p.b;
 }
 
+// Same shape as ShaderRegister / AgcDcbSet*RegisterDirect: 8 bytes of integers.
+struct Reg8 {
+	uint32_t offset;
+	uint32_t value;
+};
+
+int64_t WriteReg(int64_t* buf, Reg8 reg, int64_t tail) {
+	return buf[0] + reg.offset * 100 + reg.value * 1000 + tail * 100000;
+}
+
+// Same shape as AudioOut2Position: three floats, so two SSE eightbytes ({x, y} and {z}).
+struct Vec3 {
+	float x;
+	float y;
+	float z;
+};
+
+// Parameter order matches AudioOut2GetSpeakerArrayCoefficients: ints in RDI, RSI, RDX, RCX; pos in
+// XMM0 (x, y) and XMM1 (z); spread in XMM2; radius in XMM3.
+double Weigh(int32_t handle, Vec3 pos, float spread, float* out, uint32_t n, uint8_t height,
+             float radius) {
+	[[maybe_unused]] float* sink = out;
+	return handle * 1.0 + pos.x * 2.0 + pos.y * 4.0 + pos.z * 8.0 + spread * 16.0 + n * 32.0 +
+	       height * 64.0 + radius * 128.0;
+}
+
+// Two INTEGER eightbytes (16 bytes): 2 registers when they fit, else two stack slots.
+struct Quad {
+	int64_t p;
+	int64_t q;
+};
+
+int64_t SumQuadAndTail(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, Quad quad,
+                       int64_t tail) {
+	return a + b + c + d + e + quad.p * 10 + quad.q * 100 + tail * 1000;
+}
+
+// {double, int64}: one SSE eightbyte and one INTEGER eightbyte.
+struct Mix {
+	double  d;
+	int64_t i;
+};
+
+double UseMix(Mix m, int64_t k) {
+	return m.d * 10.0 + static_cast<double>(m.i) + static_cast<double>(k);
+}
+
+// 24 bytes: MEMORY class, passed in three stack slots.
+struct Big {
+	int64_t a;
+	int64_t b;
+	int64_t c;
+};
+
+int64_t BigSum(Big big, int64_t x) {
+	return big.a + big.b * 10 + big.c * 100 + x * 1000;
+}
+
+// Returns {size, align}: two INTEGER eightbytes, returned in RAX and RDX.
+struct SizeAlignLike {
+	uint64_t m_size;
+	size_t   m_align;
+};
+
+SizeAlignLike MakeSizeAlign(uint64_t size) {
+	return {size, 16};
+}
+
+Mix MakeMix(double d) {
+	return {d * 2.0, 9};
+}
+
+Big MakeBig(int64_t base) {
+	return {base, base + 1, base + 2};
+}
+
+// Variadic-style helpers: only the register/stack image matters; the formatting is done by the
+// ctx consumers below.
+int32_t OptedOut(int32_t x) {
+	return x + 1;
+}
+
 } // namespace GuestAbiTestFns
 
-// SumPair takes a struct by value, so it cannot be marshaled generically.
+// Aggregate eightbyte classes (SysV 3.2.3), declared the way the project declares its own structs.
 template <>
-struct Loader::GuestAbi::HleManualThunk<&GuestAbiTestFns::SumPair> : std::true_type {};
+struct Loader::GuestAbi::HleAggregate<GuestAbiTestFns::Pair> {
+	static constexpr std::array<Loader::GuestAbi::ArgClass, 1> kEightbytes {
+	    Loader::GuestAbi::ArgClass::Integer};
+};
+template <>
+struct Loader::GuestAbi::HleAggregate<GuestAbiTestFns::Reg8> {
+	static constexpr std::array<Loader::GuestAbi::ArgClass, 1> kEightbytes {
+	    Loader::GuestAbi::ArgClass::Integer};
+};
+template <>
+struct Loader::GuestAbi::HleAggregate<GuestAbiTestFns::Vec3> {
+	static constexpr std::array<Loader::GuestAbi::ArgClass, 2> kEightbytes {
+	    Loader::GuestAbi::ArgClass::Sse, Loader::GuestAbi::ArgClass::Sse};
+};
+template <>
+struct Loader::GuestAbi::HleAggregate<GuestAbiTestFns::Quad> {
+	static constexpr std::array<Loader::GuestAbi::ArgClass, 2> kEightbytes {
+	    Loader::GuestAbi::ArgClass::Integer, Loader::GuestAbi::ArgClass::Integer};
+};
+template <>
+struct Loader::GuestAbi::HleAggregate<GuestAbiTestFns::Mix> {
+	static constexpr std::array<Loader::GuestAbi::ArgClass, 2> kEightbytes {
+	    Loader::GuestAbi::ArgClass::Sse, Loader::GuestAbi::ArgClass::Integer};
+};
+template <>
+struct Loader::GuestAbi::HleAggregate<GuestAbiTestFns::SizeAlignLike> {
+	static constexpr std::array<Loader::GuestAbi::ArgClass, 2> kEightbytes {
+	    Loader::GuestAbi::ArgClass::Integer, Loader::GuestAbi::ArgClass::Integer};
+};
+
+// Variadic functions cannot be marshaled generically; this one opts out to test the flag itself.
+template <>
+struct Loader::GuestAbi::HleManualThunk<&GuestAbiTestFns::OptedOut> : std::true_type {};
 
 namespace {
 
@@ -161,6 +279,9 @@ public:
 	void SetVecReturn(Xmm value) override {
 		xmm0     = value;
 		xmm0_set = true;
+	}
+	[[nodiscard]] uint64_t StackArgAddress(int index) const override {
+		return reinterpret_cast<uint64_t>(&stack[static_cast<std::size_t>(index)]);
 	}
 
 	// Places values in declaration order: the first six in the integer registers, the rest in
@@ -320,6 +441,13 @@ void TestNarrowIntegers() {
 	CHECK(frame.rax == 0x00000000FFFFFFFFull); // uint32 return zero-extended
 }
 
+void TestOptOutFlag() {
+	static_assert(Loader::GuestAbi::HleManualThunk<&Fns::OptedOut>::value);
+	CHECK(HleThunkFor<&Fns::OptedOut>() == nullptr);
+	CHECK(HleThunkFor<&Fns::Half>() != nullptr);
+	CHECK(HleThunkFor<&Fns::SumPair>() != nullptr);
+}
+
 void TestVoidReturn() {
 	int64_t       value = 0;
 	FakeCallFrame frame;
@@ -383,10 +511,245 @@ void TestWideReturn() {
 }
 #endif
 
-void TestManualOptOut() {
-	static_assert(Loader::GuestAbi::HleManualThunk<&Fns::SumPair>::value);
-	CHECK(HleThunkFor<&Fns::SumPair>() == nullptr);
-	CHECK(HleThunkFor<&Fns::Half>() != nullptr);
+void TestPairByValue() {
+	// Pair is one INTEGER eightbyte: it takes RDI.
+	FakeCallFrame frame;
+	frame.ints[0] = static_cast<uint64_t>(static_cast<uint32_t>(-4)) |
+	                (static_cast<uint64_t>(10) << 32); // a = -4 in the low half, b = 10
+	InvokeHle<&Fns::SumPair>(frame);
+	CHECK(static_cast<int64_t>(frame.rax) == 6);
+}
+
+void TestRegisterAggregateInteger() {
+	// WriteReg(buf, Reg8 reg, tail): buf -> RDI, reg -> RSI, tail -> RDX.
+	int64_t       buf[1] = {7};
+	FakeCallFrame frame;
+	frame.ints[0] = reinterpret_cast<uintptr_t>(buf);
+	frame.ints[1] = (static_cast<uint64_t>(5) << 32) | 3u; // offset = 3, value = 5
+	frame.ints[2] = 2;
+	InvokeHle<&Fns::WriteReg>(frame);
+	CHECK(static_cast<int64_t>(frame.rax) == 7 + 300 + 5000 + 200000);
+}
+
+void TestAggregateSseEightbytes() {
+	// Vec3 pos takes XMM0 (x, y packed in its low eightbyte) and XMM1 (z); spread XMM2; radius XMM3.
+	// Integer args: handle RDI, out RSI, n RDX, height RCX.
+	FakeCallFrame frame;
+	frame.ints[0] = 1;
+	frame.ints[1] = 0;
+	frame.ints[2] = 3;
+	frame.ints[3] = 1;
+	frame.vecs[0] = Xmm {static_cast<uint64_t>(std::bit_cast<uint32_t>(1.0f)) |
+	                         (static_cast<uint64_t>(std::bit_cast<uint32_t>(2.0f)) << 32),
+	                     0};
+	frame.vecs[1] = F32(3.0f);
+	frame.vecs[2] = F32(0.5f);
+	frame.vecs[3] = F32(0.25f);
+	InvokeHle<&Fns::Weigh>(frame);
+	// 1 + 2*1 + 4*2 + 8*3 + 16*0.5 + 32*3 + 64*1 + 128*0.25
+	CHECK(std::bit_cast<double>(frame.xmm0.lo) == 235.0);
+	CHECK(!frame.rax_set);
+}
+
+void TestAggregateSpillsWhenRegistersRunOut() {
+	// Quad needs two INTEGER registers but only one is left (RDI..RCX hold a..e minus one), so Quad
+	// goes to stack slots 0 and 1; tail still takes the last free register (R9).
+	FakeCallFrame frame;
+	frame.ints = {1, 2, 3, 4, 5, 0};
+	frame.stack[0] = 6; // quad.p
+	frame.stack[1] = 7; // quad.q
+	frame.ints[5]  = 8; // tail
+	InvokeHle<&Fns::SumQuadAndTail>(frame);
+	CHECK(static_cast<int64_t>(frame.rax) == 15 + 60 + 700 + 8000);
+}
+
+void TestMixedAggregateClasses() {
+	// Mix: d in XMM0, i in RDI; k in RSI.
+	FakeCallFrame frame;
+	frame.vecs[0] = F64(1.5);
+	frame.ints[0] = 4;
+	frame.ints[1] = 2;
+	InvokeHle<&Fns::UseMix>(frame);
+	CHECK(std::bit_cast<double>(frame.xmm0.lo) == 15.0 + 4.0 + 2.0);
+}
+
+void TestMemoryAggregateOnStack() {
+	// Big (24 bytes) is MEMORY class: stack slots 0..2, no register; x still takes RDI.
+	FakeCallFrame frame;
+	frame.ints[0] = 100;
+	frame.stack   = {1, 2, 3, 0, 0, 0, 0, 0};
+	InvokeHle<&Fns::BigSum>(frame);
+	CHECK(static_cast<int64_t>(frame.rax) == 100000 + 1 + 20 + 300);
+}
+
+void TestAggregateReturnInRegisters() {
+	FakeCallFrame frame;
+	frame.ints[0] = 77;
+	InvokeHle<&Fns::MakeSizeAlign>(frame);
+	CHECK(frame.rax == 77);
+	CHECK(frame.rdx_set && frame.rdx == 16);
+	CHECK(!frame.xmm0_set);
+
+	frame.rdx_set = false;
+	frame.vecs[0] = F64(2.5);
+	InvokeHle<&Fns::MakeMix>(frame);
+	CHECK(std::bit_cast<double>(frame.xmm0.lo) == 5.0); // d * 2 in XMM0
+	CHECK(frame.rax == 9);                             // i in RAX
+	CHECK(!frame.rdx_set);
+}
+
+void TestAggregateReturnHiddenPointer() {
+	// MakeBig returns through a hidden pointer in RDI; base is RSI.
+	Fns::Big out {};
+	FakeCallFrame frame;
+	frame.ints[0] = reinterpret_cast<uintptr_t>(&out);
+	frame.ints[1] = 5;
+	InvokeHle<&Fns::MakeBig>(frame);
+	CHECK(out.a == 5 && out.b == 6 && out.c == 7);
+	CHECK(frame.rax == reinterpret_cast<uintptr_t>(&out)); // RAX echoes the hidden pointer
+	CHECK(!frame.rdx_set);
+	CHECK(!frame.xmm0_set);
+}
+
+// Variadic consumers. They read their arguments the way the guest-side printf/snprintf does: a
+// format-driven walk over the VaList built by BuildVaContext.
+std::string FormatVa(Libs::VaList* list, const char* fmt) {
+	std::string text;
+	for (const char* p = fmt; *p != '\0'; ++p) {
+		if (*p != '%') {
+			text += *p;
+			continue;
+		}
+		++p;
+		char tmp[64] = {};
+		switch (*p) {
+		case 'd':
+			text += std::to_string(Libs::VaArg_int(list));
+			break;
+		case 'l':
+			++p; // %ld
+			text += std::to_string(Libs::VaArg_long(list));
+			break;
+		case 's':
+			text += Libs::VaArg_ptr<const char>(list);
+			break;
+		case 'f':
+			std::snprintf(tmp, sizeof(tmp), "%.2f", Libs::VaArg_double(list));
+			text += tmp;
+			break;
+		default:
+			text += *p;
+			break;
+		}
+	}
+	return text;
+}
+
+std::string g_printed;
+
+int MiniPrintf(Libs::VaContext* ctx) {
+	const char* fmt = Libs::VaArg_ptr<const char>(&ctx->va_list);
+	g_printed       = FormatVa(&ctx->va_list, fmt);
+	return static_cast<int>(g_printed.size());
+}
+
+int MiniSnprintf(Libs::VaContext* ctx) {
+	char*       buf = Libs::VaArg_ptr<char>(&ctx->va_list);
+	std::size_t n   = Libs::VaArg_size_t(&ctx->va_list);
+	const char* fmt = Libs::VaArg_ptr<const char>(&ctx->va_list);
+	std::string text = FormatVa(&ctx->va_list, fmt);
+	if (n > 0) {
+		const std::size_t count = std::min(text.size(), n - 1);
+		std::memcpy(buf, text.data(), count);
+		buf[count] = '\0';
+	}
+	return static_cast<int>(text.size());
+}
+
+void TestPrintfVariadicRegisters() {
+	// printf("%d %s %f", 5, "abc", 2.5): fmt RDI, 5 RSI, "abc" RDX, 2.5 XMM0.
+	const char text[] = "abc";
+	FakeCallFrame frame;
+	frame.ints[0] = reinterpret_cast<uintptr_t>("%d %s %f");
+	frame.ints[1] = 5;
+	frame.ints[2] = reinterpret_cast<uintptr_t>(text);
+	frame.vecs[0] = F64(2.5);
+	Libs::SetIntResult(frame, Libs::RunVariadic(frame, MiniPrintf));
+	CHECK(g_printed == "5 abc 2.50");
+	CHECK(frame.rax == 10);
+}
+
+void TestPrintfVariadicStackSpill() {
+	// Six integer registers hold fmt and five values; the sixth and seventh go to stack slots 0 and 1.
+	FakeCallFrame frame;
+	frame.ints[0] = reinterpret_cast<uintptr_t>("%d %d %d %d %d %d %d");
+	frame.ints[1] = 1;
+	frame.ints[2] = 2;
+	frame.ints[3] = 3;
+	frame.ints[4] = 4;
+	frame.ints[5] = 5;
+	frame.stack[0] = 6;
+	frame.stack[1] = 7;
+	Libs::SetIntResult(frame, Libs::RunVariadic(frame, MiniPrintf));
+	CHECK(g_printed == "1 2 3 4 5 6 7");
+
+	// Doubles: XMM0..XMM7 hold the first eight; the ninth is stack slot 0 (shared with integers).
+	FakeCallFrame doubles;
+	doubles.ints[0] = reinterpret_cast<uintptr_t>("%f %f %f %f %f %f %f %f %f");
+	for (std::size_t k = 0; k < 8; ++k) {
+		doubles.vecs[k] = F64(static_cast<double>(k + 1));
+	}
+	doubles.stack[0] = std::bit_cast<uint64_t>(9.0);
+	Libs::SetIntResult(doubles, Libs::RunVariadic(doubles, MiniPrintf));
+	CHECK(g_printed == "1.00 2.00 3.00 4.00 5.00 6.00 7.00 8.00 9.00");
+}
+
+void TestSnprintfVariadic() {
+	// snprintf(buf, 16, "%d:%s:%ld", 42, "xy", -7): buf RDI, size RSI, fmt RDX, 42 RCX, "xy" R8, -7 R9.
+	char          buf[16] = {};
+	const char    text[]  = "xy";
+	FakeCallFrame frame;
+	frame.ints[0] = reinterpret_cast<uintptr_t>(buf);
+	frame.ints[1] = sizeof(buf);
+	frame.ints[2] = reinterpret_cast<uintptr_t>("%d:%s:%ld");
+	frame.ints[3] = 42;
+	frame.ints[4] = reinterpret_cast<uintptr_t>(text);
+	frame.ints[5] = static_cast<uint64_t>(-7);
+	Libs::SetIntResult(frame, Libs::RunVariadic(frame, MiniSnprintf));
+	CHECK(std::strcmp(buf, "42:xy:-7") == 0);
+	CHECK(frame.rax == 8);
+}
+
+void TestSnprintfVariadicStackSpill() {
+	// snprintf(buf, 32, "%d %d %d %d", 1, 2, 3, 4): the fourth value spills to stack slot 0.
+	char          buf[32] = {};
+	FakeCallFrame frame;
+	frame.ints[0] = reinterpret_cast<uintptr_t>(buf);
+	frame.ints[1] = sizeof(buf);
+	frame.ints[2] = reinterpret_cast<uintptr_t>("%d %d %d %d");
+	frame.ints[3] = 1;
+	frame.ints[4] = 2;
+	frame.ints[5] = 3;
+	frame.stack[0] = 4;
+	Libs::SetIntResult(frame, Libs::RunVariadic(frame, MiniSnprintf));
+	CHECK(std::strcmp(buf, "1 2 3 4") == 0);
+}
+
+void TestVaContextMatchesVaArgs() {
+	// Overflow area is stack slot 0 exactly, the gp/fp save areas hold the raw registers, and
+	// reads consume them in order.
+	FakeCallFrame frame;
+	frame.ints = {11, 12, 13, 14, 15, 16};
+	frame.vecs[7] = F64(7.5);
+	frame.stack[0] = 17;
+	alignas(16) Libs::VaContext ctx {};
+	Libs::BuildVaContext(frame, ctx);
+	CHECK(ctx.va_list.overflow_arg_area == &frame.stack[0]);
+	CHECK(Libs::VaArg_int(&ctx.va_list) == 11);
+	for (int expected = 12; expected <= 16; ++expected) {
+		CHECK(Libs::VaArg_int(&ctx.va_list) == expected);
+	}
+	CHECK(Libs::VaArg_int(&ctx.va_list) == 17);
 }
 
 void RunAll() {
@@ -394,6 +757,19 @@ void RunAll() {
 	TestDoublesSpill();
 	TestMixedClassOrdering();
 	TestMixedSpill();
+	TestPairByValue();
+	TestRegisterAggregateInteger();
+	TestAggregateSseEightbytes();
+	TestAggregateSpillsWhenRegistersRunOut();
+	TestMixedAggregateClasses();
+	TestMemoryAggregateOnStack();
+	TestAggregateReturnInRegisters();
+	TestAggregateReturnHiddenPointer();
+	TestPrintfVariadicRegisters();
+	TestPrintfVariadicStackSpill();
+	TestSnprintfVariadic();
+	TestSnprintfVariadicStackSpill();
+	TestVaContextMatchesVaArgs();
 	TestPointers();
 	TestBoolIgnoresUpperBits();
 	TestNarrowIntegers();
@@ -405,7 +781,7 @@ void RunAll() {
 #if defined(__SIZEOF_INT128__)
 	TestWideReturn();
 #endif
-	TestManualOptOut();
+	TestOptOutFlag();
 }
 
 } // namespace
