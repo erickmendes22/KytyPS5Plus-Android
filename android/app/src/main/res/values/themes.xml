@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.KytyPS5" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+
+    <!-- Fullscreen, no action bar. The emulator draws edge to edge through SDL. -->
+    <style name="Theme.KytyPS5.Game" parent="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>
