@@ -3,6 +3,7 @@
 
 #include "common/bitArray.h"
 #include "common/common.h"
+#include "kernel/addressLayout.h"
 #include "kernel/memory.h"
 
 #include <compare>
@@ -11,8 +12,8 @@ namespace Libs::Graphics {
 
 constexpr uint64_t TRACKER_PAGE_SIZE    = 4ull * 1024ull;
 constexpr uint64_t TRACKER_REGION_SIZE  = 4ull * 1024ull * 1024ull;
-constexpr uint64_t TRACKER_ADDRESS_SIZE = 1ull << 44u;
-constexpr uint64_t LOWER_ADDRESS_SIZE   = 1ull << 40u;
+constexpr uint64_t TRACKER_ADDRESS_SIZE = Common::AddressLayout::kTrackerAddressSize;
+constexpr uint64_t LOWER_ADDRESS_SIZE   = Common::AddressLayout::kLowerAddressSize;
 constexpr size_t   TRACKER_REGION_PAGES = TRACKER_REGION_SIZE / TRACKER_PAGE_SIZE;
 
 struct GuestRange {

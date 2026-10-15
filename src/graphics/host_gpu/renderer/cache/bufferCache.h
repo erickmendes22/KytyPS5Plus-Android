@@ -6,6 +6,7 @@
 #include "common/lruCache.h"
 #include "common/slotVector.h"
 #include "graphics/host_gpu/memoryTracker.h"
+#include "kernel/addressLayout.h"
 #include "graphics/host_gpu/rangeSet.h"
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
@@ -100,7 +101,8 @@ private:
 		bool                has_stream_leap;
 	};
 
-	using PageTable = MultiLevelPageTable<BufferId, CACHING_PAGEBITS, 44, 20>;
+	using PageTable = MultiLevelPageTable<BufferId, CACHING_PAGEBITS,
+	                                      Common::AddressLayout::kTrackerAddressBits, 20>;
 	static_assert(CACHING_PAGESIZE == (uint64_t {1} << PageTable::kPageBits));
 	void WriteDataBuffer(Buffer& buffer, uint64_t address, const void* source, uint64_t size);
 	void TouchBuffer(const Buffer& buffer);

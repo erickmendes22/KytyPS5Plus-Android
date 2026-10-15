@@ -6,6 +6,7 @@
 
 #include "common/assert.h"
 #include "common/virtualMemory.h"
+#include "kernel/addressLayout.h"
 
 #include <atomic>
 #include <map>
@@ -67,12 +68,12 @@ static int get_protection_flag(Mode mode) {
 
 // Keep automatic mappings inside the guest and GPU-addressable low window.
 #ifdef KYTY_FIXED_NOREPLACE
-static constexpr uintptr_t LOW_ARENA_LIMIT = 0x000000FC00000000ULL; // libc mspace window ceiling
-static constexpr uintptr_t LOW_ARENA_FLOOR = 0x000000A000000000ULL; // 640 GiB
+static constexpr uintptr_t LOW_ARENA_LIMIT = Common::AddressLayout::kLowArenaLimit;
+static constexpr uintptr_t LOW_ARENA_FLOOR = Common::AddressLayout::kLowArenaFloor;
 static constexpr uintptr_t LOW_ARENA_GRAIN = 0x0000000000010000ULL; // 64 KiB
 
-static_assert(LOW_ARENA_LIMIT <= 0x0000010000000000ULL,
-              "arena must stay inside the GPU page tracker's 1<<40 window");
+static_assert(LOW_ARENA_LIMIT <= Common::AddressLayout::kLowerAddressSize,
+              "arena must stay inside the GPU page tracker's lower window");
 static_assert(LOW_ARENA_FLOOR < LOW_ARENA_LIMIT, "arena floor must sit below its ceiling");
 
 static std::atomic<uintptr_t> g_low_arena_next {LOW_ARENA_LIMIT};

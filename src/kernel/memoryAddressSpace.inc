@@ -1,16 +1,11 @@
 // Internal memory address-space helpers included by memory.cpp.
 // Kept in the same translation unit because they depend on memory.cpp-local helpers.
 
-static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = 0x0000040000ull;
-static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = 0x07ffffbfffull;
-#if defined(__APPLE__) && (defined(__x86_64__) || defined(_M_X64))
-static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x0fbfffffffull;
-static constexpr uint64_t HOST_USER_MIN            = 0x7000000000ull;
-#else
-static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x0fffffffffull;
-static constexpr uint64_t HOST_USER_MIN            = 0x1000000000ull;
-#endif
-static constexpr uint64_t HOST_USER_MAX = 0xfbffffffffull;
+static constexpr uint64_t HOST_SYSTEM_MANAGED_MIN  = Common::AddressLayout::kHostSystemManagedMin;
+static constexpr uint64_t HOST_SYSTEM_MANAGED_MAX  = Common::AddressLayout::kHostSystemManagedMax;
+static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = Common::AddressLayout::kHostSystemReservedMax;
+static constexpr uint64_t HOST_USER_MIN            = Common::AddressLayout::kHostUserMin;
+static constexpr uint64_t HOST_USER_MAX            = Common::AddressLayout::kHostUserMax;
 
 static bool GuestFreeRangeContains(uint64_t base, uint64_t range_size, uint64_t candidate,
                                    uint64_t size) {
@@ -1251,7 +1246,15 @@ private:
 				if (ptr != MAP_FAILED) {
 					munmap(ptr, size);
 				}
+#if KYTY_HOST_ARM64
+				// The ARM64 layout is packed tightly; a silently missing range would break guest
+				// address assumptions later, so fail here with the exact range.
+				EXIT("failed to reserve guest address space at 0x%016" PRIx64 ", size 0x%016" PRIx64
+				     "\n",
+				     start, size);
+#else
 				return;
+#endif
 			}
 
 			AddFreeUnlocked(start, size);
