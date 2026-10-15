@@ -10,9 +10,11 @@ namespace Libs::Graphics::ShaderRecompiler::Frontend {
 class Translator {
 public:
 	Translator(IR::Program& program, IR::Block* block, uint32_t vector_limit,
-	           bool flush_f32_inputs, bool graphics_compute)
+	           bool flush_f32_inputs, bool graphics_compute,
+	           const ShaderPixelInputInfo* pixel_input = nullptr)
 	    : program(program), ir(block), current_vector_limit(vector_limit),
-	      flush_f32_inputs(flush_f32_inputs), graphics_compute(graphics_compute) {}
+	      flush_f32_inputs(flush_f32_inputs), graphics_compute(graphics_compute),
+	      pixel_input(pixel_input) {}
 
 	void TranslateInstruction(const Decoder::Instruction& inst);
 	void TranslateEmbeddedFetch(const Decoder::Instruction& inst, uint32_t attribute,
@@ -248,6 +250,7 @@ private:
 	void V_WRITELANE_B32(const Decoder::Instruction& inst);
 	void V_PERMLANE16_B32(const Decoder::Instruction& inst, bool x16);
 	void V_INTERP_P1_F32();
+	IR::PixelInterpolationSampling PixelSamplingForJ(uint32_t j) const;
 	void V_INTERP_P2_F32(const Decoder::Instruction& inst);
 	void V_INTERP_MOV_F32(const Decoder::Instruction& inst);
 	void EXP(const Decoder::Instruction& inst);
@@ -266,6 +269,8 @@ private:
 	uint32_t        current_vector_limit = 1;
 	bool            flush_f32_inputs;
 	bool            graphics_compute;
+	// Pixel-stage metadata for I/J pair identification; null outside pixel shaders.
+	const ShaderPixelInputInfo* pixel_input;
 };
 
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend

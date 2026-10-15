@@ -1409,7 +1409,8 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 	for (const auto& cfg_block: cfg.blocks) {
 		auto*      block = blocks_by_id.at(cfg_block.id);
 		Translator translator(result, block, vector_limit, flush_f32_inputs,
-		    options.stage == ShaderType::Compute && !options.input_info.compute->async_compute);
+		    options.stage == ShaderType::Compute && !options.input_info.compute->async_compute,
+		    options.stage == ShaderType::Pixel ? options.input_info.pixel : nullptr);
 		for (uint32_t index = cfg_block.inst_begin; index < cfg_block.inst_end; index++) {
 			const auto& instruction = decoded.instructions[index];
 			if (IsCodeTableLoad(cfg, instruction.pc)) {

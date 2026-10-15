@@ -285,12 +285,22 @@ inline PositionExportComponent DecodePositionExportComponent(uint32_t control,
 	return result;
 }
 
+// Sampling position requested by a fragment-stage interpolation. Ordered so that merging several
+// requests on one parameter slot is a maximum: sample subsumes centroid, which subsumes center.
+enum class PixelInterpolationSampling : uint8_t {
+	Center,
+	Centroid,
+	Sample,
+};
+
 struct StageInput {
 	StageInputKind kind            = StageInputKind::VertexIndex;
 	uint32_t       location        = 0;
 	uint32_t       component_count = 1;
 	std::string    debug_name;
 	bool           per_vertex = false;
+	// Native (non-barycentric) pixel parameters only: qualifies the interpolated input.
+	PixelInterpolationSampling pixel_sampling = PixelInterpolationSampling::Center;
 
 	bool operator==(const StageInput& other) const = default;
 };
