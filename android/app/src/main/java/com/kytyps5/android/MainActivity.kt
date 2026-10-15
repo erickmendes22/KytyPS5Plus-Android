@@ -9,14 +9,13 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.provider.Settings
-import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -26,7 +25,7 @@ import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-/** Game picker: checks all-files access, scans the games folder and launches [GameActivity]. */
+/** Game picker: checks all-files access, picks and scans the games folder, launches [GameActivity]. */
 class MainActivity : Activity() {
 
     private lateinit var settings: LauncherSettings
@@ -37,7 +36,7 @@ class MainActivity : Activity() {
     private lateinit var nativeStatus: TextView
     private lateinit var storageStatus: TextView
     private lateinit var grantButton: Button
-    private lateinit var rootInput: EditText
+    private lateinit var folderPath: TextView
     private lateinit var resolutionGroup: RadioGroup
     private lateinit var message: TextView
     private lateinit var gameList: LinearLayout
@@ -54,6 +53,7 @@ class MainActivity : Activity() {
         super.onResume()
         refreshStorageState()
         if (Environment.isExternalStorageManager()) {
+            ensureDefaultGamesFolder()
             scanGames(settings.gamesRoot)
         } else {
             showMessage("Grant all-files access to scan for games.")
@@ -78,12 +78,7 @@ class MainActivity : Activity() {
             text = "Grant all-files access"
             setOnClickListener { openAllFilesAccessSettings() }
         }
-        rootInput = EditText(this).apply {
-            setText(settings.gamesRoot)
-            hint = LauncherSettings.DEFAULT_GAMES_ROOT
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            isSingleLine = true
-        }
+        folderPath = label(settings.gamesRoot, sizeSp = 16f)
         resolutionGroup = buildResolutionGroup()
         message = label("", secondary = true)
         gameList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -100,9 +95,13 @@ class MainActivity : Activity() {
                 LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    addView(rootInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(folderPath, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                     addView(Button(context).apply {
-                        text = "Scan"
+                        text = "Choose folder…"
+                        setOnClickListener { openFolderPicker() }
+                    })
+                    addView(Button(context).apply {
+                        text = "Rescan"
                         setOnClickListener { onScanRequested() }
                     })
                 },
@@ -143,17 +142,47 @@ class MainActivity : Activity() {
     }
 
     private fun onScanRequested() {
-        val root = rootInput.text.toString().trim()
-        if (!root.startsWith("/")) {
-            showMessage("The games folder must be an absolute path, e.g. ${LauncherSettings.DEFAULT_GAMES_ROOT}")
-            return
-        }
         if (!Environment.isExternalStorageManager()) {
             showMessage("Grant all-files access before scanning.")
             return
         }
-        settings.gamesRoot = root
-        scanGames(root)
+        scanGames(settings.gamesRoot)
+    }
+
+    /** First run: create the default games folder so the picker and the scan start somewhere useful. */
+    private fun ensureDefaultGamesFolder() {
+        if (settings.gamesRoot != LauncherSettings.DEFAULT_GAMES_ROOT) return
+        val folder = File(LauncherSettings.DEFAULT_GAMES_ROOT)
+        if (!folder.isDirectory && !folder.mkdirs()) {
+            showMessage("Could not create ${folder.path}; choose a games folder instead.")
+        }
+    }
+
+    /** System folder picker, opened at the current games folder (or its closest existing parent). */
+    private fun openFolderPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+        StoragePaths.nearestExistingFolder(settings.gamesRoot)
+            ?.let(StoragePaths::initialUriFor)
+            ?.let { intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
+        try {
+            startActivityForResult(intent, REQUEST_PICK_GAMES_FOLDER)
+        } catch (e: ActivityNotFoundException) {
+            showMessage("No folder picker is available on this device.")
+        }
+    }
+
+    @Deprecated("Platform Activity result API; this launcher has no AndroidX dependency.")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_PICK_GAMES_FOLDER || resultCode != RESULT_OK) return
+        val path = data?.data?.let(StoragePaths::treeUriToPath)
+        if (path == null) {
+            showMessage("Pick a folder on device storage or an SD card (cloud folders can't be used).")
+            return
+        }
+        settings.gamesRoot = path
+        folderPath.text = path
+        onScanRequested()
     }
 
     /** Scans off the main thread. Only the most recent request may update the list. */
@@ -174,7 +203,7 @@ class MainActivity : Activity() {
             is ScanResult.Failure -> showMessage(result.message)
             is ScanResult.Found -> when {
                 result.games.isEmpty() ->
-                    showMessage("No games found. Game folders need sce_sys/param.json.")
+                    showMessage("No games found here. Choose a folder containing game dumps (a folder with sce_sys/param.json, or a .zar file).")
                 else -> {
                     showMessage("${result.games.size} game(s) found.")
                     result.games.forEach { gameList.addView(gameRow(it)) }
@@ -230,6 +259,10 @@ class MainActivity : Activity() {
 
     private fun showMessage(text: String) {
         message.text = text
+    }
+
+    private companion object {
+        const val REQUEST_PICK_GAMES_FOLDER = 1
     }
 
     private fun label(

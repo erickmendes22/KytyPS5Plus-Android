@@ -77,6 +77,29 @@ class GameLibraryTest {
     }
 
     @Test
+    fun scanFindsNestedDumpsAndTreatsAGameRootAsOneGame() {
+        val outer = File(root, "PPSA21567 ASTRO BOT (01.019.000)")
+        File(outer, "PPSA21567 ASTRO BOT (01.019.000)/sce_sys").mkdirs()
+        File(outer, "PPSA21567 ASTRO BOT (01.019.000)/sce_sys/param.json").writeText("""{"titleName":"ASTRO BOT"}""")
+        File(outer, "PPSA21567 ASTRO BOT (01.019.000)/sce_module").mkdirs() // not descended into
+
+        val fromParent = GameLibrary.scan(root) as ScanResult.Found
+        assertEquals(listOf("ASTRO BOT"), fromParent.games.map { it.title })
+
+        val gameDir = File(outer, "PPSA21567 ASTRO BOT (01.019.000)")
+        val fromGame = GameLibrary.scan(gameDir) as ScanResult.Found
+        assertEquals(gameDir.absolutePath, fromGame.games.single().path)
+    }
+
+    @Test
+    fun scanStopsAtMaxDepth() {
+        val deep = File(root, "a/b/c/d/game")
+        File(deep, "sce_sys").mkdirs()
+        File(deep, "sce_sys/param.json").writeText("""{"titleName":"Too Deep"}""")
+        assertTrue((GameLibrary.scan(root) as ScanResult.Found).games.isEmpty())
+    }
+
+    @Test
     fun scanReportsMissingAndNonDirectoryRoots() {
         val missing = GameLibrary.scan(File(root, "nope"))
         assertTrue(missing is ScanResult.Failure)

@@ -24,21 +24,36 @@ object GameLibrary {
     const val PARAM_JSON = "sce_sys/param.json"
     const val ZARCHIVE_EXTENSION = "zar"
 
+    /** How deep below the chosen folder to look; dumps are often nested one or two levels. */
+    const val MAX_SCAN_DEPTH = 3
+
     fun scan(root: File): ScanResult {
         if (!root.exists()) return ScanResult.Failure("Folder not found: ${root.path}")
         if (!root.isDirectory) return ScanResult.Failure("Not a folder: ${root.path}")
-        val children = root.listFiles()
-            ?: return ScanResult.Failure("Cannot read ${root.path}. Check all-files access.")
-        val folders = children
-            .filter { it.isDirectory && File(it, PARAM_JSON).isFile }
-            .map { GameEntry(folder = it, title = readTitle(it)) }
-        // A .zar's param.json lives inside the archive; show the file name until the emulator reads it.
-        val archives = children
-            .filter { it.isFile && it.extension.equals(ZARCHIVE_EXTENSION, ignoreCase = true) }
-            .map { GameEntry(folder = it, title = it.nameWithoutExtension) }
-        val games = (folders + archives).sortedBy { it.title.lowercase() }
-        return ScanResult.Found(games)
+        if (root.listFiles() == null) {
+            return ScanResult.Failure("Cannot read ${root.path}. Check all-files access.")
+        }
+        val games = mutableListOf<GameEntry>()
+        collect(root, depth = 0, into = games)
+        return ScanResult.Found(games.sortedBy { it.title.lowercase() })
     }
+
+    /** The chosen folder may itself be a game; otherwise look below it, without entering games. */
+    private fun collect(folder: File, depth: Int, into: MutableList<GameEntry>) {
+        if (isGameFolder(folder)) {
+            into += GameEntry(folder = folder, title = readTitle(folder))
+            return
+        }
+        val children = folder.listFiles() ?: return
+        children
+            .filter { it.isFile && it.extension.equals(ZARCHIVE_EXTENSION, ignoreCase = true) }
+            .mapTo(into) { GameEntry(folder = it, title = it.nameWithoutExtension) }
+        if (depth >= MAX_SCAN_DEPTH) return
+        children.filter { it.isDirectory && !it.name.startsWith(".") }
+            .forEach { collect(it, depth + 1, into) }
+    }
+
+    private fun isGameFolder(folder: File): Boolean = File(folder, PARAM_JSON).isFile
 
     fun readTitle(folder: File): String {
         val fallback = folder.name
