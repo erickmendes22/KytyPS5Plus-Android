@@ -1,17 +1,8 @@
 #include "common/abi.h"
 #include "libs/agc.h"
+#include "graphics/shader/shader.h"
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
-
-// Opt-outs for GuestAbi/guestAbiInvoke.h: these cannot be marshaled by the generic thunk.
-namespace Loader::GuestAbi {
-template <>
-struct HleManualThunk<&Libs::Graphics::Gen5::AgcDcbSetShRegisterDirect> : std::true_type {};
-template <>
-struct HleManualThunk<&Libs::Graphics::Gen5::AgcDcbSetCxRegisterDirect> : std::true_type {};
-template <>
-struct HleManualThunk<&Libs::Graphics::Gen5::AgcDcbSetUcRegisterDirect> : std::true_type {};
-} // namespace Loader::GuestAbi
 
 namespace Libs {
 

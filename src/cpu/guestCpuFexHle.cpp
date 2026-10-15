@@ -78,6 +78,10 @@ public:
 		return value;
 	}
 
+	uint64_t StackArgAddress(int index) const override {
+		return stack_args_ + 8 * static_cast<uint64_t>(index);
+	}
+
 	void SetIntReturn(uint64_t rax) override {
 		rax_ = rax;
 	}

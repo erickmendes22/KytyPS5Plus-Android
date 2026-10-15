@@ -64,12 +64,6 @@ struct AudioOut2Pcm {
 	const void* data;
 };
 
-struct AudioOut2Position {
-	float x;
-	float y;
-	float z;
-};
-
 struct AudioOut2PortState {
 	uint16_t output;
 	uint8_t  num_channels;

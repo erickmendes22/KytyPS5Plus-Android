@@ -11,6 +11,7 @@
 #include "libs/guestPrintf.h"
 #include "libs/libs.h"
 #include "libs/vaContext.h"
+#include "libs/vaThunk.h"
 #include "loader/runtimeLinker.h"
 #include "loader/symbolDatabase.h"
 
@@ -303,6 +304,13 @@ static KYTY_SYSV_ABI int libc_printf(VA_ARGS) {
 	PRINT_NAME();
 
 	return GetGuestPrintfCtxFunc()(&ctx);
+}
+
+// ARM64 guest entry for libc_printf: the same ctx consumer, fed from the trapped register image.
+[[maybe_unused]] static void libc_printf_hle(Loader::GuestAbi::CallFrame& frame) {
+	PRINT_NAME();
+
+	SetIntResult(frame, RunVariadic(frame, GetGuestPrintfCtxFunc()));
 }
 
 static KYTY_SYSV_ABI int puts(const char* s) {
@@ -633,6 +641,13 @@ static KYTY_SYSV_ABI int snprintf(VA_ARGS) {
 	return GetGuestSnprintfCtxFunc()(&ctx);
 }
 
+// ARM64 guest entry for snprintf: the same ctx consumer, fed from the trapped register image.
+[[maybe_unused]] static void snprintf_hle(Loader::GuestAbi::CallFrame& frame) {
+	PRINT_NAME();
+
+	SetIntResult(frame, RunVariadic(frame, GetGuestSnprintfCtxFunc()));
+}
+
 int KYTY_SYSV_ABI fflush(FILE* stream) {
 	PRINT_NAME();
 
@@ -768,14 +783,6 @@ int KYTY_SYSV_ABI LibcHeapErrorReportForGame(uint64_t msp, uint64_t ptr, uint64_
 } // namespace LibcInternal
 } // namespace Libs
 
-// Opt-outs for GuestAbi/guestAbiInvoke.h: these cannot be marshaled by the generic thunk.
-namespace Loader::GuestAbi {
-template <>
-struct HleManualThunk<&Libs::LibC::libc_printf> : std::true_type {};
-template <>
-struct HleManualThunk<&Libs::LibcInternal::snprintf> : std::true_type {};
-} // namespace Loader::GuestAbi
-
 namespace Libs {
 namespace LibcInternal {
 
@@ -810,7 +817,7 @@ LIB_DEFINE(InitLibcInternal_1) {
 	LIB_FUNC("H8ya2H00jbI", LibcInternal::sin);
 	LIB_FUNC("2WE3BTYVwKM", LibcInternal::cos);
 	LIB_FUNC("jMB7EFyu30Y", LibcInternal::sincos);
-	LIB_FUNC("eLdDw6l0-bU", LibcInternal::snprintf);
+	LIB_FUNC_BOUND("eLdDw6l0-bU", LibcInternal::snprintf, LibcInternal::snprintf_hle);
 
 	LIB_FUNC("L1SBTkC+Cvw", LibC::abort);
 	LIB_FUNC("tsvEmnenz48", LibC::cxa_atexit);
@@ -834,7 +841,7 @@ LIB_DEFINE(InitLibC_1) {
 	LIB_FUNC("9BcDykPmo1I", LibC::libc_error);
 	LIB_FUNC("bzQExy189ZI", LibC::init_env);
 	LIB_FUNC("8G2LB+A3rzg", LibC::atexit);
-	LIB_FUNC("hcuQgD53UxM", LibC::libc_printf);
+	LIB_FUNC_BOUND("hcuQgD53UxM", LibC::libc_printf, LibC::libc_printf_hle);
 	LIB_FUNC("YQ0navp+YIc", LibC::puts);
 	LIB_FUNC("M4YYbSFfJ8g", LibC::setenv);
 	LIB_FUNC("wLlFkwG9UcQ", LibC::libc_time);

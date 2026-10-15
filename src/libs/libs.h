@@ -60,6 +60,15 @@
 #define LIB_OBJECT(n, f) LIB_ADD(n, f, Loader::SymbolType::Object)
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define LIB_FUNC(n, f) LIB_ADD_THUNK(n, f, Loader::SymbolType::Func, LIB_HLE_THUNK(f))
+// Function whose guest entry is a hand-written thunk `thunk` (for functions that opt out of the
+// generic marshaler, such as variadic ones). Like LIB_HLE_THUNK, the thunk exists only on ARM64.
+#if KYTY_HOST_ARM64
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define LIB_FUNC_BOUND(n, f, thunk) LIB_ADD_THUNK(n, f, Loader::SymbolType::Func, thunk)
+#else
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define LIB_FUNC_BOUND(n, f, thunk) LIB_ADD_THUNK(n, f, Loader::SymbolType::Func, nullptr)
+#endif
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define PRINT_NAME()                                                                               \

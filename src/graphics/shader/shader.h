@@ -6,6 +6,7 @@
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/shader/recompiler/ir/ResourceSnapshot.h"
 #include "graphics/shader/shaderBindings.h"
+#include "loader/guestAbi.h"
 
 #include <array>
 #include <span>
@@ -266,6 +267,18 @@ struct ShaderRegister {
 	uint32_t offset;
 	uint32_t value;
 };
+
+} // namespace Libs::Graphics
+
+namespace Loader::GuestAbi {
+// Eight bytes of integers: one INTEGER eightbyte.
+template <>
+struct HleAggregate<Libs::Graphics::ShaderRegister> {
+	static constexpr std::array<ArgClass, 1> kEightbytes {ArgClass::Integer};
+};
+} // namespace Loader::GuestAbi
+
+namespace Libs::Graphics {
 
 struct ShaderSpecialRegs {
 	ShaderRegister      ge_cntl;
