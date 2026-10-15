@@ -30,10 +30,16 @@ void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr) {
 }
 
 void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr, const std::string& dbg_name) {
+	Add(s, vaddr, dbg_name, nullptr);
+}
+
+void SymbolDatabase::Add(const SymbolResolve& s, uint64_t vaddr, const std::string& dbg_name,
+                         GuestAbi::HleThunk thunk) {
 	SymbolRecord r {};
 	r.name     = GenerateName(s);
 	r.vaddr    = vaddr;
 	r.dbg_name = dbg_name;
+	r.thunk    = thunk;
 	m_map.insert_or_assign(r.name, m_symbols.size());
 	m_symbols.push_back(r);
 }

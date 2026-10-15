@@ -765,6 +765,20 @@ int KYTY_SYSV_ABI LibcHeapErrorReportForGame(uint64_t msp, uint64_t ptr, uint64_
 	return 0;
 }
 
+} // namespace LibcInternal
+} // namespace Libs
+
+// Opt-outs for GuestAbi/guestAbiInvoke.h: these cannot be marshaled by the generic thunk.
+namespace Loader::GuestAbi {
+template <>
+struct HleManualThunk<&Libs::LibC::libc_printf> : std::true_type {};
+template <>
+struct HleManualThunk<&Libs::LibcInternal::snprintf> : std::true_type {};
+} // namespace Loader::GuestAbi
+
+namespace Libs {
+namespace LibcInternal {
+
 LIB_DEFINE(InitLibcInternal_1) {
 	LibcInternalExt::InitLibcInternalExt_1(s);
 
