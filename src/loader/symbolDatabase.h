@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/common.h"
 #include "common/stringUtils.h"
+#include "loader/guestAbi.h"
 
 #include <unordered_map>
 #include <vector>
@@ -19,9 +20,11 @@ enum class SymbolType {
 };
 
 struct SymbolRecord {
-	std::string name;
-	std::string dbg_name;
-	uint64_t    vaddr;
+	std::string           name;
+	std::string           dbg_name;
+	uint64_t              vaddr;
+	// Guest-to-host entry for HLE functions (ARM64 host only); nullptr otherwise.
+	GuestAbi::HleThunk    thunk = nullptr;
 };
 
 struct SymbolResolve {
@@ -41,6 +44,8 @@ public:
 
 	void Add(const SymbolResolve& s, uint64_t vaddr);
 	void Add(const SymbolResolve& s, uint64_t vaddr, const std::string& dbg_name);
+	void Add(const SymbolResolve& s, uint64_t vaddr, const std::string& dbg_name,
+	         GuestAbi::HleThunk thunk);
 
 	[[nodiscard]] const SymbolRecord* Find(const SymbolResolve& s) const;
 	[[nodiscard]] const SymbolRecord* FindByNid(const std::string& nid, SymbolType type,

@@ -10,7 +10,8 @@ namespace {
 std::vector<Loader::SymbolResolve> registrations;
 }
 namespace Loader {
-void SymbolDatabase::Add(const SymbolResolve& symbol, uint64_t, const std::string&) {
+void SymbolDatabase::Add(const SymbolResolve& symbol, uint64_t, const std::string&,
+                          GuestAbi::HleThunk) {
 	registrations.push_back(symbol);
 }
 }

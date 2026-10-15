@@ -5,6 +5,7 @@
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "loader/guestAbiInvoke.h"
 #include "loader/timer.h" // IWYU pragma: keep
 
 #include <fmt/format.h>
@@ -28,8 +29,18 @@
 	static constexpr int g_library_version      = lv;                                              \
 	static constexpr int g_module_version_major = mv1;                                             \
 	static constexpr int g_module_version_minor = mv2;
+// Guest-callable entry for a native HLE function f: its marshaling thunk on ARM64 (see
+// guestAbiInvoke.h), nullptr on x86 hosts where guest code runs natively.
+#if KYTY_HOST_ARM64
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define LIB_ADD(n, f, t)                                                                           \
+#define LIB_HLE_THUNK(f) Loader::GuestAbi::HleThunkFor<f>()
+#else
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define LIB_HLE_THUNK(f) nullptr
+#endif
+
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define LIB_ADD_THUNK(n, f, t, thunk)                                                              \
 	{                                                                                              \
 		Loader::SymbolResolve sr {};                                                               \
 		sr.name                 = n;                                                               \
@@ -41,12 +52,14 @@
 		sr.type                 = t;                                                               \
 		auto        func        = reinterpret_cast<uint64_t>(f);                                   \
 		const char* dbg_name    = "" #f;                                                           \
-		s->Add(sr, func, dbg_name);                                                                \
+		s->Add(sr, func, dbg_name, thunk);                                                         \
 	}
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define LIB_ADD(n, f, t) LIB_ADD_THUNK(n, f, t, nullptr)
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define LIB_OBJECT(n, f) LIB_ADD(n, f, Loader::SymbolType::Object)
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define LIB_FUNC(n, f) LIB_ADD(n, f, Loader::SymbolType::Func)
+#define LIB_FUNC(n, f) LIB_ADD_THUNK(n, f, Loader::SymbolType::Func, LIB_HLE_THUNK(f))
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define PRINT_NAME()                                                                               \

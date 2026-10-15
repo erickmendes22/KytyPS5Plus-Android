@@ -3371,7 +3371,7 @@ LIB_DEFINE(InitLibKernel_1_Pthread) {
 }
 
 static void AddLibkernelUnityFunc(Loader::SymbolDatabase* s, const char* nid, uint64_t func,
-                                  const std::string& dbg_name) {
+                                  Loader::GuestAbi::HleThunk thunk, const std::string& dbg_name) {
 	Loader::SymbolResolve sr {};
 	sr.name                 = nid;
 	sr.library              = "libkernel_unity";
@@ -3380,7 +3380,7 @@ static void AddLibkernelUnityFunc(Loader::SymbolDatabase* s, const char* nid, ui
 	sr.module_version_major = 1;
 	sr.module_version_minor = 1;
 	sr.type                 = Loader::SymbolType::Func;
-	s->Add(sr, func, dbg_name);
+	s->Add(sr, func, dbg_name, thunk);
 }
 
 LIB_DEFINE(InitLibKernel_1) {
@@ -3466,12 +3466,15 @@ LIB_DEFINE(InitLibKernel_1) {
 
 	AddLibkernelUnityFunc(s, "Qhv5ARAoOEc",
 	                      reinterpret_cast<uint64_t>(LibKernel::KernelRemoveExceptionHandler),
+	                      LIB_HLE_THUNK(LibKernel::KernelRemoveExceptionHandler),
 	                      "LibKernel::KernelRemoveExceptionHandler");
 	AddLibkernelUnityFunc(s, "il03nluKfMk",
 	                      reinterpret_cast<uint64_t>(LibKernel::KernelRaiseException),
+	                      LIB_HLE_THUNK(LibKernel::KernelRaiseException),
 	                      "LibKernel::KernelRaiseException");
 	AddLibkernelUnityFunc(s, "WkwEd3N7w0Y",
 	                      reinterpret_cast<uint64_t>(LibKernel::KernelInstallExceptionHandler),
+	                      LIB_HLE_THUNK(LibKernel::KernelInstallExceptionHandler),
 	                      "LibKernel::KernelInstallExceptionHandler");
 }
 

@@ -226,6 +226,18 @@ static int32_t KYTY_SYSV_ABI Hmd2ReprojectionSetTiming(int32_t timing) {
 
 } // namespace Hmd2
 
+} // namespace Libs
+
+// Opt-outs for GuestAbi/guestAbiInvoke.h: these cannot be marshaled by the generic thunk.
+namespace Loader::GuestAbi {
+template <>
+struct HleManualThunk<&Libs::Hmd2::Hmd2ReprojectionQueryBufferSizeAlign> : std::true_type {};
+template <>
+struct HleManualThunk<&Libs::Hmd2::Hmd2ReprojectionQueryDisplayBufferSizeAlign> : std::true_type {};
+} // namespace Loader::GuestAbi
+
+namespace Libs {
+
 LIB_DEFINE(InitHmd2_1) {
 	LIB_FUNC("c812oYs7Vsc", Hmd2::Hmd2Initialize);
 	LIB_FUNC("bIi4YUfSRys", Hmd2::Hmd2GetDeviceInformation);

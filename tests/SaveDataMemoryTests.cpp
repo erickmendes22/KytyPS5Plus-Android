@@ -25,7 +25,8 @@ bool SystemContentParamSfoGetString(const char*, std::string* value) {
 	*value = g_test_title;
 	return true;
 }
-void SymbolDatabase::Add(const SymbolResolve&, uint64_t, const std::string&) {}
+void SymbolDatabase::Add(const SymbolResolve&, uint64_t, const std::string&,
+                          GuestAbi::HleThunk) {}
 namespace Timer {
 double GetTimeMs() {
 	return 0.0;
