@@ -17,6 +17,12 @@
 #include <fmt/format.h>
 #include <magic_enum.hpp>
 
+#if defined(KYTY_ANDROID)
+// SDLActivity calls the exported SDL_main() of libmain.so. SDL_main.h renames
+// main() below to SDL_main() and exports it on Android.
+#include <SDL3/SDL_main.h>
+#endif
+
 using namespace Common;
 using namespace Emulator;
 

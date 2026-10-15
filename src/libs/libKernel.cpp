@@ -1,5 +1,6 @@
 #include "common/abi.h"
 #include "common/assert.h"
+#include "common/atomicRef.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
@@ -2429,11 +2430,11 @@ static void FiberSetThreadContext(FiberThreadContext* context) {
 
 static uint32_t FiberLoadState(const FiberObject* fiber) {
 	auto& state = const_cast<uint32_t&>(fiber->state);
-	return std::atomic_ref<uint32_t>(state).load(std::memory_order_acquire);
+	return Common::AtomicRef<uint32_t>(state).load(std::memory_order_acquire);
 }
 
 static void FiberStoreState(FiberObject* fiber, uint32_t state) {
-	std::atomic_ref<uint32_t>(fiber->state).store(state, std::memory_order_release);
+	Common::AtomicRef<uint32_t>(fiber->state).store(state, std::memory_order_release);
 }
 
 static void FiberCompleteSwitch(FiberObject* current) {
@@ -2448,7 +2449,7 @@ static void FiberCompleteSwitch(FiberObject* current) {
 }
 
 static bool FiberCompareExchangeState(FiberObject* fiber, uint32_t expected, uint32_t desired) {
-	return std::atomic_ref<uint32_t>(fiber->state)
+	return Common::AtomicRef<uint32_t>(fiber->state)
 	    .compare_exchange_strong(expected, desired, std::memory_order_acq_rel,
 	                             std::memory_order_acquire);
 }

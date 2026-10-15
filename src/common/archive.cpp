@@ -15,7 +15,8 @@
 
 // POSIX hosts and MinGW's pthread-backed libstdc++ have cancellable condition waits.
 // MSVC/ClangCL and MinGW's native Win32 threading backend do not use pthread waits.
-#if !defined(_WIN32) || defined(_GLIBCXX_GCC_GTHR_POSIX_H)
+// Bionic has no thread cancellation at all, so there is nothing to defer there.
+#if (!defined(_WIN32) || defined(_GLIBCXX_GCC_GTHR_POSIX_H)) && !defined(__ANDROID__)
 #include <pthread.h>
 #define KYTY_ARCHIVE_PTHREAD_CANCELLATION
 #endif

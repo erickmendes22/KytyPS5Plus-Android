@@ -36,7 +36,7 @@ void Init() {
 	pthread_mutexattr_t attr {};
 
 	pthread_mutexattr_init(&attr);
-#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__) && !defined(__ANDROID__)
 	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_FAST_NP); // glibc-only fast mutex
 #else
 	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_NORMAL);

@@ -93,7 +93,12 @@ else()
 	target_compile_options(zarchive PRIVATE -w)
 endif()
 
-set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+if(ANDROID)
+	# SDLActivity loads libSDL3.so before libmain.so (the emulator).
+	set(SDL_SHARED ON CACHE BOOL "" FORCE)
+else()
+	set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+endif()
 if(APPLE)
 	# SDL's built-in iconv fallback does not support CP932.
 	set(SDL_SYSTEM_ICONV ON CACHE BOOL "Use system iconv for CP932 conversion" FORCE)
