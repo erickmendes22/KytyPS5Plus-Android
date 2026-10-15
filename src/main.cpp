@@ -12,7 +12,10 @@
 #include <charconv>
 #include <cstdio>
 #include <filesystem>
+#include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <vector>
 #include <fmt/format.h>
 #include <magic_enum.hpp>
@@ -21,6 +24,14 @@
 // SDLActivity calls the exported SDL_main() of libmain.so. SDL_main.h renames
 // main() below to SDL_main() and exports it on Android.
 #include <SDL3/SDL_main.h>
+
+#include <android/log.h>
+#include <unistd.h>
+#endif
+
+#if defined(KYTY_ANDROID) && defined(__aarch64__)
+#define KYTY_FEX_SELFTEST 1
+#include "cpu/guestCpuSelfTest.h"
 #endif
 
 using namespace Common;
@@ -46,11 +57,61 @@ static std::string GetBuildString() {
 	return str;
 }
 
+#if defined(KYTY_ANDROID)
+// Android discards a process's stdout/stderr, so all Kyty console output is routed through a pipe
+// that a detached thread drains into logcat under the "Kyty" tag, one line per record.
+constexpr size_t kLogcatMaxLineLength = 1000; // __android_log_write truncates longer lines
+
+static void WriteLogcatLine(std::string& line) {
+	__android_log_write(ANDROID_LOG_INFO, "Kyty", line.c_str());
+	line.clear();
+}
+
+static void DrainPipeToLogcat(int read_fd) {
+	std::string line;
+	char        buffer[512];
+	ssize_t     count = 0;
+
+	while ((count = ::read(read_fd, buffer, sizeof(buffer))) > 0) {
+		for (ssize_t i = 0; i < count; i++) {
+			if (buffer[i] == '\n') {
+				WriteLogcatLine(line);
+			} else {
+				line.push_back(buffer[i]);
+				if (line.size() >= kLogcatMaxLineLength) {
+					WriteLogcatLine(line);
+				}
+			}
+		}
+	}
+
+	if (!line.empty()) {
+		WriteLogcatLine(line);
+	}
+}
+
+static void RedirectStdioToLogcat() {
+	int fds[2] = {-1, -1};
+	if (::pipe(fds) != 0) {
+		return;
+	}
+
+	::dup2(fds[1], STDOUT_FILENO);
+	::dup2(fds[1], STDERR_FILENO);
+	::close(fds[1]);
+	::setvbuf(stdout, nullptr, _IOLBF, 0);
+
+	std::thread([read_fd = fds[0]] { DrainPipeToLogcat(read_fd); }).detach();
+}
+#endif
+
 static void PrintUsage() {
 	::printf("%s\n", GetBuildString().c_str());
 	::printf("kyty_emulator --game <dir|elf|zar> [options]\n\n");
 	::printf("Options:\n");
 	::printf("  --game <dir|elf|zar>                 Game directory, ELF, or ZArchive to load.\n");
+	::printf("  --data-dir <path>                    Working directory for logs, shader dumps,\n"
+	         "                                       and caches. Default: the process directory.\n");
 	::printf("  --game-patch <json>                  ETAHen cheat file.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
@@ -201,8 +262,10 @@ static bool ParseUserId(const std::string& value, int32_t& out) {
 	return true;
 }
 
-static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_help) {
-	show_help = false;
+static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_help,
+                      bool& fex_selftest, std::filesystem::path& data_dir) {
+	show_help    = false;
+	fex_selftest = false;
 
 	for (int i = 1; i < argc; i++) {
 		std::string arg = std::string(argv[i]);
@@ -212,6 +275,13 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			show_help = true;
 			continue;
 		}
+
+#if defined(KYTY_FEX_SELFTEST)
+		if (arg == "--fex-selftest") {
+			fex_selftest = true;
+			continue;
+		}
+#endif
 
 		if (arg == "--rd") {
 			options.config.renderdoc_enabled = true;
@@ -478,6 +548,8 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.config.keymap.push_back(value);
+		} else if (arg == "--data-dir") {
+			data_dir = Common::PathFromUtf8(Common::FixFilenameSlash(value));
 		} else {
 			::printf("unknown option: %s\n", arg.c_str());
 			return false;
@@ -488,22 +560,40 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		options.config.vulkan_validation_enabled = true;
 	}
 
-	return show_help || (!options.app0_dir.empty() && !options.elf.empty());
+	// Applied after the whole command line is read so relative --game paths keep their meaning.
+	// Relative default output paths (_kyty.txt, _Shaders, saves, caches) then resolve here.
+	if (!data_dir.empty()) {
+		std::error_code ec;
+		std::filesystem::current_path(data_dir, ec);
+		if (ec) {
+			::printf("cannot use data directory %s: %s\n", data_dir.string().c_str(),
+			         ec.message().c_str());
+			return false;
+		}
+	}
+
+	return show_help || fex_selftest || (!options.app0_dir.empty() && !options.elf.empty());
 }
 
 static int Main(int argc, char* argv[]) {
+#if defined(KYTY_ANDROID)
+	RedirectStdioToLogcat();
+#endif
+
 	VirtualMemory::Init();
 	InitializeThreads();
 
-	RunOptions options;
-	bool       show_help = false;
+	RunOptions            options;
+	bool                  show_help    = false;
+	bool                  fex_selftest = false;
+	std::filesystem::path data_dir;
 
 	if (argc < 2) {
 		PrintUsage();
 		return 0;
 	}
 
-	if (!ParseArgs(argc, argv, options, show_help)) {
+	if (!ParseArgs(argc, argv, options, show_help, fex_selftest, data_dir)) {
 		PrintUsage();
 		return 1;
 	}
@@ -512,6 +602,12 @@ static int Main(int argc, char* argv[]) {
 		PrintUsage();
 		return 0;
 	}
+
+#if defined(KYTY_FEX_SELFTEST)
+	if (fex_selftest) {
+		return Cpu::GuestCpu::RunGuestCpuSelfTest() ? 0 : 1;
+	}
+#endif
 
 	Run(options);
 

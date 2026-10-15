@@ -131,7 +131,8 @@ if(KYTY_GUEST_CPU_FEX)
 	# the compile definitions FEX itself uses for LinuxEmulation/FEXCore on AArch64.
 	add_library(kyty_guest_cpu STATIC
 		"${KYTY_SOURCE_DIR}/cpu/guestCpuFex.cpp"
-		"${KYTY_SOURCE_DIR}/cpu/guestCpuFexHle.cpp")
+		"${KYTY_SOURCE_DIR}/cpu/guestCpuFexHle.cpp"
+		"${KYTY_SOURCE_DIR}/cpu/guestCpuSelfTest.cpp")
 	add_dependencies(kyty_guest_cpu kyty_fex)
 	target_include_directories(kyty_guest_cpu BEFORE PRIVATE
 		${kyty_fex_bin}/Source/Tools/LinuxEmulation

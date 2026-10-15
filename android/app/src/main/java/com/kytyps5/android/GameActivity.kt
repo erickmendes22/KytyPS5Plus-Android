@@ -15,9 +15,15 @@ class GameActivity : SDLActivity() {
     /** SDL loads these in order in onCreate: shared SDL3 first, then the emulator. */
     override fun getLibraries(): Array<String> = arrayOf("SDL3", "main")
 
-    /** Command line for the emulator, placed on the launching Intent by MainActivity. */
-    override fun getArguments(): Array<String> =
-        intent?.getStringArrayExtra(LaunchArgs.EXTRA_GAME_ARGS) ?: emptyArray()
+    /**
+     * Command line for the emulator, placed on the launching Intent by MainActivity. The app's
+     * private files directory is passed first as --data-dir so logs, shader dumps and caches land
+     * in app storage instead of the (unwritable) process directory.
+     */
+    override fun getArguments(): Array<String> {
+        val launchArgs = intent?.getStringArrayExtra(LaunchArgs.EXTRA_GAME_ARGS) ?: emptyArray()
+        return arrayOf(LaunchArgs.FLAG_DATA_DIR, filesDir.absolutePath) + launchArgs
+    }
 
     /**
      * Runs inside SDL's onCreate before any native call. Throwing here makes SDL show its
