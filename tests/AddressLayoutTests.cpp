@@ -1,6 +1,7 @@
 #include "common/hostArch.h"
 #include "kernel/addressLayout.h"
 
+#include <initializer_list>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
