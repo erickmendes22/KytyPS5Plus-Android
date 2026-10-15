@@ -345,6 +345,15 @@ uint64_t AllocateGuestCode(std::span<const uint8_t> code) {
 	return address;
 }
 
+void RegisterGuestCodeRange(uint64_t base, uint64_t size) {
+	if (!Init()) {
+		Die("RegisterGuestCodeRange before translator init");
+	}
+	auto* state = t_attached.state;
+	Fex::GetRuntime().syscalls->AddVirtualPage(state != nullptr ? state->Thread : nullptr, base, size,
+	                                           PROT_READ | PROT_WRITE | PROT_EXEC);
+}
+
 void RegisterHostFaultHandler(HostFaultHandler handler) {
 	if (!Init()) {
 		Die("RegisterHostFaultHandler before translator init");

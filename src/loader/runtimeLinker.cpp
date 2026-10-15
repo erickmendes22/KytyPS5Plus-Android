@@ -14,6 +14,7 @@
 #include "common/threads.h"
 #include "common/virtualMemory.h"
 #include "cpu/guestCpu.h"
+#include "kernel/addressLayout.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
@@ -1756,6 +1757,18 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 		EXIT_IF(INSTRUCTION_TRAMPOLINE_SIZE > UINT64_MAX - program->mapped_size);
 		program->mapped_size += INSTRUCTION_TRAMPOLINE_SIZE;
 	}
+
+#if KYTY_HOST_ARM64
+	// Guest code may live anywhere in the guest window (modules, JIT-style dynamic code), and FEX
+	// refuses to decode addresses it does not know as executable ("NoExec instruction in entry block").
+	static const bool guest_code_range_registered = [] {
+		using namespace Common::AddressLayout;
+		Cpu::GuestCpu::RegisterGuestCodeRange(
+		    kHostSystemManagedMin, kExtendedMemoryBase + kExtendedMemorySize - kHostSystemManagedMin);
+		return true;
+	}();
+	(void)guest_code_range_registered;
+#endif
 
 	program->base_vaddr = Libs::LibKernel::Memory::AllocateProgramMemory(
 	    g_desired_base_addr, program->mapped_size, Common::VirtualMemory::Mode::ExecuteReadWrite,

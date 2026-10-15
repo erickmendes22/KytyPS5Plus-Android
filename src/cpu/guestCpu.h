@@ -71,6 +71,12 @@ uint32_t CurrentHleId();
 // Installs the process-wide host SIGSEGV hook. Only one handler is kept; later calls replace it.
 void RegisterHostFaultHandler(HostFaultHandler handler);
 
+// Tells the translator that [base, base + size) may hold guest code. FEX only decodes addresses
+// its VMA table knows about, and Kyty maps guest memory with host mmap (bypassing FEX's syscall
+// layer), so the guest address window is registered once. This is bookkeeping only: it maps
+// nothing and does not change host page protections.
+void RegisterGuestCodeRange(uint64_t base, uint64_t size);
+
 } // namespace Cpu::GuestCpu
 
 #endif /* KYTY_CPU_GUEST_CPU_H_ */
