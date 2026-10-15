@@ -702,6 +702,8 @@ static SignalUcontext CreateSignalUcontext(
 	ctx.uc_mcontext.mc_cs     = cs;
 	ctx.uc_mcontext.mc_ss     = ss;
 #else
+	// TODO(fex): map the host mcontext to the FEX guest state for the faulting thread (FEX keeps it on
+	// the SignalDelegator side). Needed before guest signal handlers can run on ARM64.
 	KYTY_ARM64_TODO("capturing guest register context from host signal");
 #endif
 #endif
@@ -732,6 +734,8 @@ static SignalUcontext CreateSignalUcontext(
 	             : "memory");
 
 #else
+	// TODO(fex): read the guest register file from the current FEX frame (g_hle_frame / attached thread)
+	// instead of host registers. Only used by self-raised signals on x86-64 today.
 	KYTY_ARM64_TODO("capturing guest call register context");
 #endif
 
@@ -1205,6 +1209,8 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 		WaitForSignalDispatch(thread, signum);
 		return OK;
 #else
+		// TODO(fex): build the guest ucontext from the FEX frame and run the guest handler with
+		// GuestCpu::CallGuest; depends on the signal-context capture above.
 		KYTY_ARM64_TODO("dispatching guest exception handler");
 		return KERNEL_ERROR_EINVAL;
 #endif
@@ -2497,6 +2503,8 @@ FiberRestoreContext(FiberCpuContext* /*ctx*/, uint64_t /*ret*/) {
 #else
 static int FiberSaveContext(FiberCpuContext* ctx) {
 	(void)ctx;
+	// TODO(fex): a fiber switch swaps host RSP under a live HandleCallback frame, which FEX does not
+	// support yet. Needs a guest-state snapshot per fiber and a re-entry point.
 	KYTY_ARM64_TODO("fiber context save");
 	return 0;
 }
@@ -2504,6 +2512,7 @@ static int FiberSaveContext(FiberCpuContext* ctx) {
 [[noreturn]] static void FiberRestoreContext(FiberCpuContext* ctx, uint64_t ret) {
 	(void)ctx;
 	(void)ret;
+	// TODO(fex): see FiberSaveContext.
 	KYTY_ARM64_TODO("fiber context restore");
 	std::abort();
 }

@@ -13,6 +13,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
+#include "cpu/guestCpu.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
@@ -359,12 +360,19 @@ static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_fu
 	               "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
 #endif
 #else
-	// A native call into guest code is impossible on ARM64; the FEXCore path replaces it.
-	(void)addr;
-	(void)params;
-	(void)atexit_func;
-	(void)stack_top;
-	KYTY_ARM64_TODO("guest module entry (RunEntry)");
+	// Guest code runs under FEXCore on ARM64. The entry takes (EntryParams*, atexit_func) like on x86.
+	const uint64_t args[2] = {reinterpret_cast<uint64_t>(params),
+	                          reinterpret_cast<uint64_t>(atexit_func)};
+	if (stack_top != nullptr) {
+		const auto top = reinterpret_cast<uint64_t>(stack_top);
+		if (!Cpu::GuestCpu::AttachCurrentThread(top)) {
+			std::fprintf(stderr, "RunEntry: guest CPU attach failed\n");
+			std::abort();
+		}
+		Cpu::GuestCpu::CallGuestOnStack(top, addr, args);
+	} else {
+		Cpu::GuestCpu::CallGuest(addr, args);
+	}
 #endif
 }
 

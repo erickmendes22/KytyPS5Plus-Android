@@ -338,6 +338,9 @@ endif()
 
 set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL3::SDL3-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak opus)
 
+# Guest CPU backend: FEXCore on ARM64 hosts (adds kyty_guest_cpu to kyty_emulator_link_libraries).
+include("${KYTY_SOURCE_DIR}/cpu/fex.cmake")
+
 # Linux system libraries.
 if(LINUX)
 	find_package(Threads REQUIRED)
@@ -745,6 +748,17 @@ if(APPLE AND (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR
 		add_test(NAME macos_sse4a COMMAND $<TARGET_FILE:macos_sse4a_tests>)
 		set_tests_properties(macos_sse4a PROPERTIES TIMEOUT 15)
 		add_dependencies(kyty_tests macos_sse4a_tests)
+	endif()
+endif()
+
+if(KYTY_GUEST_CPU_FEX)
+	add_executable(guest_cpu_fex_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/GuestCpuFexTests.cpp")
+	target_link_libraries(guest_cpu_fex_tests kyty_guest_cpu)
+	target_include_directories(guest_cpu_fex_tests PRIVATE ${inc_headers})
+	if(BUILD_TESTING)
+		add_test(NAME guest_cpu_fex COMMAND $<TARGET_FILE:guest_cpu_fex_tests>)
+		set_tests_properties(guest_cpu_fex PROPERTIES TIMEOUT 300)
+		add_dependencies(kyty_tests guest_cpu_fex_tests)
 	endif()
 endif()
 

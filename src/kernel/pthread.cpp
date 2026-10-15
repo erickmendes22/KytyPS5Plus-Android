@@ -11,6 +11,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/timer.h"
+#include "cpu/guestCpu.h"
 #include "kernel/memory.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -23,6 +24,8 @@
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <memory>
@@ -939,11 +942,18 @@ static KYTY_SYSV_ABI void* RunOnGuestStack(void* arg, pthread_entry_func_t func,
 
 	return ret;
 #else
-	(void)arg;
-	(void)func;
-	(void)stack_top;
-	KYTY_ARM64_TODO("running guest thread entry on guest stack");
-	return nullptr;
+	// The host thread already exists (created by pthread_create); bind it to a guest context whose
+	// stack is this thread's guest stack, then run the entry as an ordinary guest call.
+	const auto top = reinterpret_cast<uint64_t>(stack_top);
+	if (!Cpu::GuestCpu::AttachCurrentThread(top)) {
+		std::fprintf(stderr, "pthread: guest CPU attach failed\n");
+		std::abort();
+	}
+	const uint64_t args[1] = {reinterpret_cast<uint64_t>(arg)};
+	const uint64_t result =
+	    Cpu::GuestCpu::CallGuestOnStack(top, reinterpret_cast<uint64_t>(func), args);
+	Cpu::GuestCpu::DetachCurrentThread();
+	return reinterpret_cast<void*>(result);
 #endif
 }
 
