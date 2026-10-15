@@ -2,6 +2,10 @@
 // memory (no guest ELF, no RootFS). Ported from the phase-0 spike: T1, T3, T4, T5, T7.
 
 #include "cpu/guestCpu.h"
+#include "libs/libs.h"
+#include "loader/guestCall.h"
+#include "loader/guestHostFunction.h"
+#include "loader/symbolDatabase.h"
 
 #include <sys/mman.h>
 
@@ -94,6 +98,11 @@ void CallbackThunk(CallFrame& frame) {
 void SetFsThunk(CallFrame& frame) {
   SetGuestFsBase(frame.IntArg(0));
   frame.SetIntReturn(0);
+}
+
+// Native function with a guest callback argument. The callback runs through the production helper.
+int DoubleViaGuestCallback(int (*fn)(int), int value) {
+  return 2 * Loader::GuestHost::CallGuestFunction(fn, value);
 }
 
 // --- Guest-visible state --------------------------------------------------------------------------
@@ -224,6 +233,53 @@ void TestHostCreatedGuestThread() {
 
 } // namespace
 
+// Resolves a real libC function from the import database, as a relocation would, and calls it from
+// translated x86 code through the trap. Also checks that a data symbol keeps its host address.
+void TestImportedHleFunction() {
+  Loader::SymbolDatabase db;
+  Libs::InitAll(&db);
+
+  const auto* strlen_rec = db.FindByNid("j4ViWNHEgww", Loader::SymbolType::Func);
+  Check(strlen_rec != nullptr, "libC strlen record present");
+  Check(strlen_rec->host_function && strlen_rec->thunk != nullptr, "strlen is an HLE function with a thunk");
+  const uint64_t guest_strlen = Loader::GuestHost::SymbolAddress(*strlen_rec);
+  Check(guest_strlen != strlen_rec->vaddr, "guest sees a trap, not the host address");
+
+  const auto* guard_rec = db.FindByNid("f7uOxY9mM1U", Loader::SymbolType::Object);
+  Check(guard_rec != nullptr && Loader::GuestHost::SymbolAddress(*guard_rec) == guard_rec->vaddr,
+        "data symbol keeps its host address");
+
+  static const char text[] = "astro bot";
+  const uint64_t caller = X86Code()
+                              .MovRdiImm64(reinterpret_cast<uint64_t>(text))
+                              .MovRaxImm64(guest_strlen)
+                              .CallRax()
+                              .Ret()
+                              .Install();
+  Check(CallGuest(caller, {}) == sizeof(text) - 1, "T8 imported libC strlen through trap");
+  std::puts("PASS T8 imported HLE function through trap");
+}
+
+// Guest -> native HLE (through the import trap) -> guest callback via CallGuestFunction.
+void TestImportedCallbackRoundTrip() {
+  const uint64_t square_plus = X86Code()
+                                   .Op({0x48, 0x89, 0xF8})       // mov rax, rdi
+                                   .Op({0x48, 0x0F, 0xAF, 0xC0}) // imul rax, rax
+                                   .Op({0x48, 0x83, 0xC0, 0x07}) // add rax, 7
+                                   .Ret()
+                                   .Install();
+  const uint64_t doubler = Loader::GuestHost::AddressOf<DoubleViaGuestCallback>("test.DoubleViaGuestCallback");
+  const uint64_t caller = X86Code()
+                              .MovRdiImm64(square_plus)
+                              .MovEsiImm(9)
+                              .MovRaxImm64(doubler)
+                              .CallRax()
+                              .Ret()
+                              .Install();
+  Check(CallGuest(caller, {}) == 2 * (81 + 7), "T9 guest->HLE->guest callback round trip");
+  std::puts("PASS T9 guest->HLE->guest callback round trip");
+}
+
 int main() {
   Check(Init(), "translator init");
   Check(AttachCurrentThread(MapStack()), "attach main thread");
@@ -237,6 +293,9 @@ int main() {
   TestFsBase(MakeHleStub(kSetFs));
   TestHostFaultHandler();
   TestHostCreatedGuestThread();
+  Check(AttachCurrentThread(MapStack()), "re-attach main thread");
+  TestImportedHleFunction();
+  TestImportedCallbackRoundTrip();
 
   DetachCurrentThread();
   std::puts("GuestCpuFexTests: all cases passed");

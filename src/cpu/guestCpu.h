@@ -12,6 +12,7 @@
 
 #include "loader/guestAbi.h"
 
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -56,6 +57,16 @@ uint64_t MakeHleStub(uint32_t id);
 
 // Registers the thunk for id. Re-registering an id replaces the previous thunk.
 void RegisterHle(uint32_t id, HleThunk thunk);
+
+// Ids below kFirstDynamicHleId are for fixed, hand-chosen registrations. AllocateHleId hands out ids
+// from kFirstDynamicHleId upward, for traps created at run time (one per host function a guest sees).
+inline constexpr uint32_t kFirstDynamicHleId = 64;
+uint32_t AllocateHleId();
+
+// Id of the trap whose thunk is running on the calling thread, or kNoHleId outside a thunk.
+inline constexpr uint32_t kNoHleId = UINT32_MAX;
+uint32_t CurrentHleId();
+
 
 // Installs the process-wide host SIGSEGV hook. Only one handler is kept; later calls replace it.
 void RegisterHostFaultHandler(HostFaultHandler handler);

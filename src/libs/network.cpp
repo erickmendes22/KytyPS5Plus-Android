@@ -34,6 +34,7 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
+#include "loader/guestCall.h"
 
 #include <algorithm>
 #include <array>
@@ -3652,7 +3653,7 @@ int KYTY_SYSV_ABI NetCtlCheckCallback() {
 	const int event = (NetCtlConnected() ? NET_CTL_EVENT_IPOBTAINED : NET_CTL_EVENT_DISCONNECTED);
 	for (auto& cb: g_net_ctl_callbacks) {
 		if (cb.func != nullptr && cb.last_event != event) {
-			cb.func(event, cb.arg);
+			Loader::GuestHost::CallGuestFunction(cb.func, event, cb.arg);
 			cb.last_event = event;
 		}
 	}
@@ -3967,7 +3968,8 @@ int KYTY_SYSV_ABI NpCheckCallback() {
 		}
 	}
 	for (const auto& entry: pending) {
-		entry.callback(Config::GetUserId(), np_state_signed_out, entry.userdata);
+		Loader::GuestHost::CallGuestFunction(entry.callback, Config::GetUserId(), np_state_signed_out,
+		                                     entry.userdata);
 	}
 
 	return OK;

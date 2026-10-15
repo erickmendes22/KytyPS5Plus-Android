@@ -1,5 +1,7 @@
 #include "libs/imeCommon.h"
 
+#include "loader/guestCall.h"
+
 #include <algorithm>
 #include <vector>
 
@@ -122,8 +124,8 @@ bool RunTextFilter(TextFilter filter, const std::u16string& source, uint32_t out
 	}
 	std::vector<char16_t> buffer(static_cast<size_t>(output_capacity) + 1, u'\0');
 	uint32_t              output_length = output_capacity;
-	if (filter(buffer.data(), &output_length, source.c_str(),
-	           static_cast<uint32_t>(source.size())) != 0 ||
+	if (Loader::GuestHost::CallGuestFunction(filter, buffer.data(), &output_length, source.c_str(),
+	                                         static_cast<uint32_t>(source.size())) != 0 ||
 	    output_length > output_capacity ||
 	    !IsValidUtf16(std::u16string_view(buffer.data(), output_length))) {
 		return false;

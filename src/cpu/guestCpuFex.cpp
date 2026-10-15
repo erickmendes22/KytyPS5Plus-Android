@@ -143,6 +143,10 @@ void SetupTranslatorConfig() {
 	FEX::Config::LoadConfig("kyty-guest", environ, FEX::ReadPortabilityInformation());
 	FEXCore::Config::ReloadMetaLayer();
 	FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
+	// Page-tracking SMC checks write-protect every translated code page, so host code writing a new stub
+	// into an already-executed page (AllocateGuestCode) would fault. Kyty patches guest code before it runs
+	// and never writes it afterwards, so the checks are turned off.
+	FEXCore::Config::Set(FEXCore::Config::CONFIG_SMCCHECKS, "none");
 	FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_FILENAME, "kyty-guest");
 	FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_CONFIG_NAME, "kyty-guest");
 	FEXCore::Config::Set(FEXCore::Config::CONFIG_INTERPRETER_INSTALLED, "0");

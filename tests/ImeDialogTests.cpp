@@ -1,4 +1,5 @@
 #include "libs/imeDialog.h"
+#include "GuestFunctionPointer.h"
 
 #include <array>
 #include <cstdint>
@@ -180,7 +181,7 @@ void TestFilteringAndInputPolicy() {
   std::array<char16_t, 32> text{u'1'};
   auto param = MakeParam(text.data());
   param.type = Ime::Type::Number;
-  param.filter = CopyFilter;
+  param.filter = GuestFunctionPointer<CopyFilter>("ime_test.CopyFilter");
   g_filter_calls = 0;
   CHECK(Ime::ImeDialogInit(&param, nullptr) == 0);
   CHECK(Ime::ImeDialogGetStatus() == static_cast<int>(Ime::Status::Running));
@@ -205,7 +206,7 @@ void TestExternalKeyboardFilter() {
   std::array<char16_t, 32> text{};
   auto param = MakeParam(text.data());
   Ime::ExtendedParam extended{};
-  extended.ext_keyboard_filter = KeyboardFilter;
+  extended.ext_keyboard_filter = GuestFunctionPointer<KeyboardFilter>("ime_test.KeyboardFilter");
   CHECK(Ime::ImeDialogInit(&param, &extended) == 0);
   Ime::HostSnapshot snapshot;
   CHECK(Ime::GetHostSnapshot(&snapshot));
@@ -289,7 +290,7 @@ void TestExternalKeyboardFilter() {
 void TestFilteredCursorBoundary() {
   std::array<char16_t, 8> text{};
   auto param = MakeParam(text.data());
-  param.filter = SupplementaryFilter;
+  param.filter = GuestFunctionPointer<SupplementaryFilter>("ime_test.SupplementaryFilter");
   CHECK(Ime::ImeDialogInit(&param, nullptr) == 0);
   Ime::HostSnapshot snapshot;
   CHECK(Ime::GetHostSnapshot(&snapshot));

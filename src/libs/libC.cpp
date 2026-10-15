@@ -11,6 +11,7 @@
 #include "libs/guestPrintf.h"
 #include "libs/libs.h"
 #include "libs/vaContext.h"
+#include "loader/guestCall.h"
 #include "loader/runtimeLinker.h"
 #include "loader/symbolDatabase.h"
 
@@ -509,7 +510,7 @@ static KYTY_SYSV_ABI int std_execute_once(int* flag, execute_once_func_t func, v
 	}
 
 	void* callback_context = nullptr;
-	int   result           = func(nullptr, arg, &callback_context);
+	int   result           = Loader::GuestHost::CallGuestFunction(func, nullptr, arg, &callback_context);
 
 	{
 		std::lock_guard lock(g_execute_once_mutex);
@@ -546,7 +547,7 @@ void KYTY_SYSV_ABI cxa_finalize(void* d) {
 			auto* func        = c.destructor_func;
 			auto* object      = c.destructor_object;
 			c.destructor_func = nullptr;
-			func(object);
+			Loader::GuestHost::CallGuestFunction(func, object);
 		}
 	}
 }
@@ -601,7 +602,7 @@ void RunThreadAtexitDestructors() {
 		g_thread_atexit_destructors.pop_back();
 
 		if (destructor.destructor != nullptr) {
-			destructor.destructor(destructor.object);
+			Loader::GuestHost::CallGuestFunction(destructor.destructor, destructor.object);
 		}
 	}
 }

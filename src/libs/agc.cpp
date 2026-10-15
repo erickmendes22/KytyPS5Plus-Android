@@ -24,6 +24,7 @@
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "loader/guestCall.h"
 
 #include <algorithm>
 #include <array>
@@ -282,7 +283,7 @@ struct CommandBuffer {
 				return false;
 			}
 
-			bool result = callback(this, num_dw + reserved_dw, user_data);
+			bool result = Loader::GuestHost::CallGuestFunction(callback, this, num_dw + reserved_dw, user_data);
 			if (!result) {
 				LOGF_COLOR(Log::Color::Red,
 				           "\t command buffer grow callback failed: requested = %" PRIu32

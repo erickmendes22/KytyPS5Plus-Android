@@ -25,6 +25,9 @@ struct SymbolRecord {
 	uint64_t              vaddr;
 	// Guest-to-host entry for HLE functions (ARM64 host only); nullptr otherwise.
 	GuestAbi::HleThunk    thunk = nullptr;
+	// True for records of native (HLE) symbols, whose vaddr is a host address. Guest exports are false.
+	bool                  host_function = false;
+	SymbolType            type          = SymbolType::Unknown;
 };
 
 struct SymbolResolve {

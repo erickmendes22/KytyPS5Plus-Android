@@ -3,6 +3,7 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
+#include "loader/guestCall.h"
 
 #include <algorithm>
 #include <atomic>
@@ -455,7 +456,7 @@ int KYTY_SYSV_ABI ImeUpdate(EventHandler handler) {
 			SyncGuestText(item.work, item.input, item.max_length, item.queued.text);
 			item.queued.event.param.text.str = item.work;
 		}
-		handler(item.arg, &item.queued.event);
+		Loader::GuestHost::CallGuestFunction(handler, item.arg, &item.queued.event);
 	}
 	return OK;
 }
@@ -819,7 +820,7 @@ void ApplyExternalInputs() {
 		if (filter != nullptr && input.key.status != 0) {
 			uint16_t keycode = input.key.keycode;
 			uint32_t status  = input.key.status;
-			if (filter(&input.key, &keycode, &status, nullptr) == 0) {
+			if (Loader::GuestHost::CallGuestFunction(filter, &input.key, &keycode, &status, nullptr) == 0) {
 				accepted = ImeCommon::ApplyKeyboardFilterOutput(&input, keycode, status, multiline);
 			}
 		}

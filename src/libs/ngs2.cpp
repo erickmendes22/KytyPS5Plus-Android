@@ -6,6 +6,7 @@
 #include "libs/ajm/atrac9_decoder.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "loader/guestCall.h"
 
 #include <algorithm>
 #include <array>
@@ -1093,7 +1094,7 @@ int KYTY_SYSV_ABI Ngs2SystemCreateWithAllocator(const Ngs2SystemOption*    optio
 	buf.host_buffer_size = sizeof(Ngs2Internal);
 	buf.user_data        = allocator->user_data;
 
-	int result = allocator->alloc_handler(&buf);
+	int result = Loader::GuestHost::CallGuestFunction(allocator->alloc_handler, &buf);
 
 	EXIT_NOT_IMPLEMENTED(result != OK);
 	EXIT_NOT_IMPLEMENTED(buf.host_buffer == nullptr);
@@ -1361,7 +1362,7 @@ int KYTY_SYSV_ABI Ngs2RackCreateWithAllocator(uintptr_t system_handle, uint32_t 
 
 	EXIT_NOT_IMPLEMENTED(buf.host_buffer_size == 0);
 
-	int result = allocator->alloc_handler(&buf);
+	int result = Loader::GuestHost::CallGuestFunction(allocator->alloc_handler, &buf);
 
 	EXIT_NOT_IMPLEMENTED(result != OK);
 	EXIT_NOT_IMPLEMENTED(buf.host_buffer == nullptr);
@@ -1441,7 +1442,7 @@ int KYTY_SYSV_ABI Ngs2RackDestroy(uintptr_t rack_handle, Ngs2ContextBufferInfo* 
 	}
 
 	if (allocator.free_handler != nullptr) {
-		return allocator.free_handler(&context_buffer);
+		return Loader::GuestHost::CallGuestFunction(allocator.free_handler, &context_buffer);
 	}
 	if (buffer_info != nullptr) {
 		*buffer_info = context_buffer;
@@ -1523,7 +1524,8 @@ static bool Ngs2FinishBlock(Ngs2VoiceInternal& voice) {
 		voice.blocks.pop_front();
 	}
 	if (voice.callback != 0 && (voice.callback_flags & info.flag) != 0) {
-		reinterpret_cast<void KYTY_SYSV_ABI (*)(const Ngs2VoiceCallbackInfo*)>(voice.callback)(
+		Loader::GuestHost::CallGuestFunction(
+		    reinterpret_cast<void KYTY_SYSV_ABI (*)(const Ngs2VoiceCallbackInfo*)>(voice.callback),
 		    &info);
 	}
 	return voice.source_generation == generation;

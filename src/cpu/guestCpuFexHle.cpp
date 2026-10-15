@@ -18,6 +18,7 @@ constexpr size_t kStubSize   = 20;
 constexpr size_t kStackSlotOffset = 16; // [RSP] = id, [RSP+8] = return address, [RSP+16] = first stack arg
 
 std::array<std::atomic<HleThunk>, kMaxHleIds> g_thunks {};
+std::atomic<uint32_t>                         g_next_dynamic_id {kFirstDynamicHleId};
 
 // Stub layout (x86-64):
 //   mov r10, rcx          49 89 CA        ; SYSCALL clobbers RCX, so the fourth argument moves to R10
@@ -34,6 +35,22 @@ std::array<uint8_t, kStubSize> EncodeStub(uint32_t id) {
 	}
 	return code;
 }
+
+// Records the id of the trap being serviced, restoring the previous one on exit (thunks may re-enter).
+class ScopedHleId {
+public:
+	explicit ScopedHleId(uint32_t id) : previous_(Cpu::GuestCpu::Fex::g_hle_id) {
+		Cpu::GuestCpu::Fex::g_hle_id = id;
+	}
+	~ScopedHleId() {
+		Cpu::GuestCpu::Fex::g_hle_id = previous_;
+	}
+	ScopedHleId(const ScopedHleId&)            = delete;
+	ScopedHleId& operator=(const ScopedHleId&) = delete;
+
+private:
+	uint32_t previous_;
+};
 
 // Saves the trapped frame as the innermost one for CallGuest, restoring the previous on exit.
 class ScopedHleFrame {
@@ -131,6 +148,7 @@ uint64_t HleSyscall(FEXCore::Core::CpuStateFrame* frame, uint64_t arg0, uint64_t
 	}
 
 	const bool sve256 = Cpu::GuestCpu::Fex::GetRuntime().sve256;
+	ScopedHleId    id_scope(id);
 	ScopedHleFrame scope(frame);
 	FexCallFrame   call_frame(frame, {arg0, arg1, arg2, arg3, arg4, arg5}, guest_rsp + kStackSlotOffset, sve256);
 	thunk(call_frame);
@@ -142,6 +160,19 @@ uint64_t HleSyscall(FEXCore::Core::CpuStateFrame* frame, uint64_t arg0, uint64_t
 uint64_t MakeHleStub(uint32_t id) {
 	const auto code = EncodeStub(id);
 	return AllocateGuestCode(code);
+}
+
+uint32_t AllocateHleId() {
+	const uint32_t id = g_next_dynamic_id.fetch_add(1, std::memory_order_relaxed);
+	if (id >= kMaxHleIds) {
+		std::fprintf(stderr, "kyty guest cpu: HLE stub id space exhausted\n");
+		std::abort();
+	}
+	return id;
+}
+
+uint32_t CurrentHleId() {
+	return Fex::g_hle_id;
 }
 
 void RegisterHle(uint32_t id, HleThunk thunk) {
