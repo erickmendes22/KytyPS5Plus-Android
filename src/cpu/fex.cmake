@@ -32,6 +32,25 @@ if(KYTY_GUEST_CPU_FEX)
 		set(kyty_fex_fetch)
 	else()
 		set(kyty_fex_fetch GIT_REPOSITORY "${KYTY_FEX_GIT_REPOSITORY}" GIT_TAG "${KYTY_FEX_GIT_TAG}" GIT_SHALLOW OFF)
+		# The Android port is applied to our own clone only; a KYTY_FEX_SOURCE_DIR checkout is taken as patched.
+		# applyFexPatch.cmake is idempotent (it skips the patch when it is already applied).
+		if(ANDROID)
+			list(APPEND kyty_fex_fetch PATCH_COMMAND ${CMAKE_COMMAND}
+				"-DFEX_SOURCE_DIR=${kyty_fex_src}"
+				"-DFEX_PATCH=${KYTY_SOURCE_DIR}/cpu/patches/fex-android.patch"
+				-P "${KYTY_SOURCE_DIR}/cpu/patches/applyFexPatch.cmake")
+		endif()
+	endif()
+
+	# Android: FEX is cross-compiled with the same NDK toolchain and ABI as Kyty. Its static archives are linked
+	# into the shared libmain.so, so they must be position-independent (ExternalProject does not inherit this).
+	set(kyty_fex_android_args)
+	if(ANDROID)
+		set(kyty_fex_android_args
+			"-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
+			"-DANDROID_ABI=${ANDROID_ABI}"
+			"-DANDROID_PLATFORM=${ANDROID_PLATFORM}"
+			-DCMAKE_POSITION_INDEPENDENT_CODE=ON)
 	endif()
 
 	# CMake's compiler detection already located clang-scan-deps for the Kyty compiler.
@@ -79,6 +98,7 @@ if(KYTY_GUEST_CPU_FEX)
 			-DCMAKE_C_COMPILER_CLANG_SCAN_DEPS=${KYTY_CLANG_SCAN_DEPS}
 			-DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=${KYTY_CLANG_SCAN_DEPS}
 			-DCMAKE_ASM_COMPILER_CLANG_SCAN_DEPS=${KYTY_CLANG_SCAN_DEPS}
+			${kyty_fex_android_args}
 			"-DCMAKE_C_FLAGS=-include ${kyty_fex_prefix_header}"
 			"-DCMAKE_CXX_FLAGS=-include ${kyty_fex_prefix_header}"
 			-DBUILD_THUNKS=FALSE
@@ -132,6 +152,16 @@ if(KYTY_GUEST_CPU_FEX)
 		${kyty_fex_src}/External/tiny-json
 		${kyty_fex_src}/Source/Common/cpp-optparse
 		${kyty_fex_src}/Source/Tools/CommonTools)
+	# Configure-time probe results FEX bakes into its headers. The Android build (patched) sees no
+	# program_invocation_name and no getcpu() declaration at API 31, so these must match what FEX was built with.
+	set(kyty_fex_probe_defs HAS_PROGRAM_INVOCATION_NAME=1 HAS_SYSCALL_GETCPU=1)
+	set(kyty_fex_sys_libs pthread dl)
+	if(ANDROID)
+		set(kyty_fex_probe_defs HAS_PROGRAM_INVOCATION_NAME=0)
+		# pthread lives in bionic's libc on Android; there is no libpthread to link.
+		set(kyty_fex_sys_libs dl)
+	endif()
+
 	target_compile_definitions(kyty_guest_cpu PRIVATE
 		ARCHITECTURE_arm64=1
 		JIT_ARM64=1
@@ -140,8 +170,7 @@ if(KYTY_GUEST_CPU_FEX)
 		"FEXCORE_PRESERVE_ALL_ATTR=__attribute__((preserve_all))"
 		FEX_HAS_PRESERVE_ALL_ATTR=1
 		"FEX_PRESERVE_ALL_ATTR=__attribute__((preserve_all))"
-		HAS_PROGRAM_INVOCATION_NAME=1
-		HAS_SYSCALL_GETCPU=1
+		${kyty_fex_probe_defs}
 		HAS_SYSCALL_GETTID=1
 		HAS_SYSCALL_RENAMEAT2=1
 		HAS_SYSCALL_STATX=1
@@ -153,7 +182,7 @@ if(KYTY_GUEST_CPU_FEX)
 	target_compile_options(kyty_guest_cpu PRIVATE -fno-operator-names -fno-strict-aliasing)
 	# FEX's archives reference each other in both directions (FEXCore <-> LinuxEmulation), so the
 	# whole set is one link group.
-	target_link_libraries(kyty_guest_cpu PUBLIC -Wl,--start-group ${kyty_fex_imported} -Wl,--end-group pthread dl)
+	target_link_libraries(kyty_guest_cpu PUBLIC -Wl,--start-group ${kyty_fex_imported} -Wl,--end-group ${kyty_fex_sys_libs})
 
 	list(APPEND kyty_emulator_link_libraries kyty_guest_cpu)
 endif()
