@@ -1,0 +1,377 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2d2dfdebe..680117a6a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -61,9 +61,9 @@ if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+   message(FATAL_ERROR "Unsupported pointer size ${CMAKE_SIZEOF_VOID_P}."
+     " FEX only supports 64-bit (8-byte pointer) systems."
+     " If you believe this is in error, file an issue.")
+-elseif (NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
++elseif (NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android"))
+   message(FATAL_ERROR "Unsupported system type ${CMAKE_SYSTEM_NAME}."
+-    " FEX only supports Linux and Windows."
++    " FEX only supports Linux, Android and Windows."
+     " If you believe this is in error, file an issue.")
+ endif()
+ 
+@@ -246,6 +246,10 @@ check_cxx_source_compiles(
+   return program_invocation_name == nullptr;
+   }"
+   HAS_PROGRAM_INVOCATION_NAME)
++if (NOT HAS_PROGRAM_INVOCATION_NAME)
++  # bionic has no program_invocation_name; the probe leaves the value empty, which breaks #if
++  set(HAS_PROGRAM_INVOCATION_NAME 0)
++endif()
+ add_compile_definitions("HAS_PROGRAM_INVOCATION_NAME=${HAS_PROGRAM_INVOCATION_NAME}")
+ 
+ if (ENABLE_VIXL_SIMULATOR)
+@@ -278,7 +282,11 @@ if (ENABLE_COMPILE_TIME_TRACE)
+   link_libraries(-ftime-trace)
+ endif()
+ 
+-set(PTHREAD_LIB pthread)
++if (CMAKE_SYSTEM_NAME STREQUAL "Android")
++  set(PTHREAD_LIB "") # pthread is part of bionic libc
++else()
++  set(PTHREAD_LIB pthread)
++endif()
+ 
+ if (USE_LINKER)
+   message(STATUS "Overriding linker to: ${USE_LINKER}")
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index ef7e33299..181dcac29 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -11,6 +11,7 @@ desc: Main glue logic of the arm64 splatter backend
+ $end_info$
+ */
+ 
++#include <FEXCore/Utils/AtomicRefCompat.h>
+ #include "Interface/Context/Context.h"
+ #include "Interface/Core/LookupCache.h"
+ #include "Interface/Core/Dispatcher/Dispatcher.h"
+diff --git a/FEXCore/Source/Utils/AllocatorHooks.cpp b/FEXCore/Source/Utils/AllocatorHooks.cpp
+index 63f84a824..7bdec4966 100644
+--- a/FEXCore/Source/Utils/AllocatorHooks.cpp
++++ b/FEXCore/Source/Utils/AllocatorHooks.cpp
+@@ -230,7 +230,12 @@ void* memalign(size_t align, size_t s) {
+   return ::memalign(align, s);
+ }
+ void* valloc(size_t size) {
++#if defined(__ANDROID__)
++  // NDK 28 bionic no longer declares valloc; page-aligned memalign is the same thing.
++  return ::memalign(static_cast<size_t>(sysconf(_SC_PAGESIZE)), size);
++#else
+   return ::valloc(size);
++#endif
+ }
+ int posix_memalign(void** r, size_t a, size_t s) {
+   return ::posix_memalign(r, a, s);
+diff --git a/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp b/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
+index 01e5bb22e..b10c56ebd 100644
+--- a/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
++++ b/FEXCore/Source/Utils/ArchHelpers/Arm64.cpp
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ 
++#include <FEXCore/Utils/AtomicRefCompat.h>
+ #include "Interface/Core/CPUBackend.h"
+ #include "Interface/Context/Context.h"
+ #include <FEXCore/Utils/SpinWaitLock.h>
+diff --git a/FEXCore/Source/Utils/FileUtils.cpp b/FEXCore/Source/Utils/FileUtils.cpp
+index d3e62cacd..83e503eb5 100644
+--- a/FEXCore/Source/Utils/FileUtils.cpp
++++ b/FEXCore/Source/Utils/FileUtils.cpp
+@@ -9,6 +9,13 @@
+ #include <dirent.h>
+ #include <fcntl.h>
+ #include <unistd.h>
++#if defined(__ANDROID__)
++#include <sys/syscall.h>
++// Bionic (NDK 28) does not declare getdents64, so issue the syscall directly.
++static ssize_t getdents64(int fd, void* buf, size_t count) {
++  return syscall(SYS_getdents64, fd, buf, count);
++}
++#endif
+ #else
+ #include <windows.h>
+ #include <winnt.h>
+diff --git a/FEXCore/Source/Utils/atomic_bitset.h b/FEXCore/Source/Utils/atomic_bitset.h
+index b4add119c..ee2423446 100644
+--- a/FEXCore/Source/Utils/atomic_bitset.h
++++ b/FEXCore/Source/Utils/atomic_bitset.h
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ #pragma once
++#include <FEXCore/Utils/AtomicRefCompat.h>
+ #include <FEXCore/Utils/Allocator.h>
+ #include <FEXCore/Utils/LogManager.h>
+ #include <FEXCore/Utils/MathUtils.h>
+diff --git a/FEXCore/include/FEXCore/Utils/AtomicRefCompat.h b/FEXCore/include/FEXCore/Utils/AtomicRefCompat.h
+new file mode 100644
+index 000000000..d28d8429b
+--- /dev/null
++++ b/FEXCore/include/FEXCore/Utils/AtomicRefCompat.h
+@@ -0,0 +1,81 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++// Android NDK libc++ (28.x) does not ship std::atomic_ref (C++20). FEX uses it for
++// futex-style waits, shared stats and JIT patch sites. This provides the subset FEX
++// needs, built on the __atomic builtins, and is only compiled for bionic targets.
++#include <atomic>
++#include <cstddef>
++
++#if defined(__ANDROID__) && !defined(__cpp_lib_atomic_ref)
++namespace std {
++template<typename T>
++class atomic_ref {
++public:
++  using value_type = T;
++  static constexpr size_t required_alignment = alignof(T);
++
++  explicit atomic_ref(T& Obj) noexcept : Ptr(&Obj) {}
++  atomic_ref(const atomic_ref&) noexcept = default;
++  atomic_ref& operator=(const atomic_ref&) = delete;
++
++  void store(T Desired, memory_order Order = memory_order_seq_cst) const noexcept {
++    __atomic_store_n(Ptr, Desired, static_cast<int>(Order));
++  }
++  T load(memory_order Order = memory_order_seq_cst) const noexcept {
++    return __atomic_load_n(Ptr, static_cast<int>(Order));
++  }
++  T exchange(T Desired, memory_order Order = memory_order_seq_cst) const noexcept {
++    return __atomic_exchange_n(Ptr, Desired, static_cast<int>(Order));
++  }
++  bool compare_exchange_weak(T& Expected, T Desired, memory_order Success, memory_order Failure) const noexcept {
++    return __atomic_compare_exchange_n(Ptr, &Expected, Desired, true, static_cast<int>(Success), static_cast<int>(Failure));
++  }
++  bool compare_exchange_weak(T& Expected, T Desired, memory_order Order = memory_order_seq_cst) const noexcept {
++    return compare_exchange_weak(Expected, Desired, Order, FailureOrder(Order));
++  }
++  bool compare_exchange_strong(T& Expected, T Desired, memory_order Success, memory_order Failure) const noexcept {
++    return __atomic_compare_exchange_n(Ptr, &Expected, Desired, false, static_cast<int>(Success), static_cast<int>(Failure));
++  }
++  bool compare_exchange_strong(T& Expected, T Desired, memory_order Order = memory_order_seq_cst) const noexcept {
++    return compare_exchange_strong(Expected, Desired, Order, FailureOrder(Order));
++  }
++  T fetch_add(T Arg, memory_order Order = memory_order_seq_cst) const noexcept {
++    return __atomic_fetch_add(Ptr, Arg, static_cast<int>(Order));
++  }
++  T fetch_sub(T Arg, memory_order Order = memory_order_seq_cst) const noexcept {
++    return __atomic_fetch_sub(Ptr, Arg, static_cast<int>(Order));
++  }
++  T fetch_and(T Arg, memory_order Order = memory_order_seq_cst) const noexcept {
++    return __atomic_fetch_and(Ptr, Arg, static_cast<int>(Order));
++  }
++  T fetch_or(T Arg, memory_order Order = memory_order_seq_cst) const noexcept {
++    return __atomic_fetch_or(Ptr, Arg, static_cast<int>(Order));
++  }
++  T fetch_xor(T Arg, memory_order Order = memory_order_seq_cst) const noexcept {
++    return __atomic_fetch_xor(Ptr, Arg, static_cast<int>(Order));
++  }
++
++  operator T() const noexcept { return load(); }
++  T operator=(T Desired) const noexcept {
++    store(Desired);
++    return Desired;
++  }
++  T operator++(int) const noexcept { return fetch_add(T {1}); }
++  T operator--(int) const noexcept { return fetch_sub(T {1}); }
++  T operator++() const noexcept { return fetch_add(T {1}) + T {1}; }
++  T operator--() const noexcept { return fetch_sub(T {1}) - T {1}; }
++
++private:
++  // Failure ordering used by the single-order compare_exchange overloads (as in the standard).
++  static memory_order FailureOrder(memory_order Order) noexcept {
++    switch (Order) {
++      case memory_order_acq_rel: return memory_order_acquire;
++      case memory_order_release: return memory_order_relaxed;
++      default: return Order;
++    }
++  }
++
++  T* Ptr;
++};
++} // namespace std
++#endif
+diff --git a/FEXCore/include/FEXCore/Utils/SHMStats.h b/FEXCore/include/FEXCore/Utils/SHMStats.h
+index c5844fe10..2f49eaa39 100644
+--- a/FEXCore/include/FEXCore/Utils/SHMStats.h
++++ b/FEXCore/include/FEXCore/Utils/SHMStats.h
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ #pragma once
++#include <FEXCore/Utils/AtomicRefCompat.h>
+ #include <atomic>
+ #include <cstddef>
+ #include <cstdint>
+diff --git a/FEXCore/include/FEXCore/Utils/SpinWaitLock.h b/FEXCore/include/FEXCore/Utils/SpinWaitLock.h
+index af59a6efb..9d36a2451 100644
+--- a/FEXCore/include/FEXCore/Utils/SpinWaitLock.h
++++ b/FEXCore/include/FEXCore/Utils/SpinWaitLock.h
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: MIT
+ #pragma once
+ 
++#include <FEXCore/Utils/AtomicRefCompat.h>
+ #include <atomic>
+ #include <chrono>
+ #include <mutex>
+diff --git a/FEXCore/include/FEXCore/Utils/WritePriorityMutex.h b/FEXCore/include/FEXCore/Utils/WritePriorityMutex.h
+index bf1bd2bbc..51e8e1319 100644
+--- a/FEXCore/include/FEXCore/Utils/WritePriorityMutex.h
++++ b/FEXCore/include/FEXCore/Utils/WritePriorityMutex.h
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: MIT
+ #pragma once
++#include <FEXCore/Utils/AtomicRefCompat.h>
+ #include <atomic>
+ #include <cstdint>
+ #include <limits.h>
+diff --git a/FEXCore/include/FEXCore/fextl/functional.h b/FEXCore/include/FEXCore/fextl/functional.h
+index 8e8ed659a..4c20e7f60 100644
+--- a/FEXCore/include/FEXCore/fextl/functional.h
++++ b/FEXCore/include/FEXCore/fextl/functional.h
+@@ -52,9 +52,13 @@ public:
+ 
+       // Third, assign the result to std::function, ensuring it's indeed
+       // allocation-free by checking for nothrow-constructibility
++#if !defined(__ANDROID__)
++      // libc++ (Android NDK) does not mark std::function's converting assignment noexcept, even though
++      // the single-pointer capture fits its small-buffer storage. Skip the check there.
+       static_assert(noexcept(internal = std::move(wrapped_lambda)), "This implementation of std::function "
+                                                                     "does not support implementing "
+                                                                     "fextl::move_only_function");
++#endif
+       internal = std::move(wrapped_lambda);
+ 
+       // Finally, if a destructor must be called, generate a pointer to its destructor
+diff --git a/Source/Tools/FEXInterpreter/ELFCodeLoader.h b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+index 5850c83d5..621ecd4f4 100644
+--- a/Source/Tools/FEXInterpreter/ELFCodeLoader.h
++++ b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+@@ -65,8 +65,8 @@ class ELFCodeLoader final : public FEX::CodeLoader {
+       }
+ 
+       had_pt_load = true;
+-      min_map_address = std::min(min_map_address, PAGE_START(it.p_vaddr));
+-      max_map_address = std::max(max_map_address, it.p_vaddr + it.p_memsz);
++      min_map_address = std::min<size_t>(min_map_address, PAGE_START(it.p_vaddr));
++      max_map_address = std::max<size_t>(max_map_address, it.p_vaddr + it.p_memsz);
+     }
+ 
+     if (!had_pt_load) {
+diff --git a/Source/Tools/FEXServer/Main.cpp b/Source/Tools/FEXServer/Main.cpp
+index 86345a61a..cffdacb46 100644
+--- a/Source/Tools/FEXServer/Main.cpp
++++ b/Source/Tools/FEXServer/Main.cpp
+@@ -190,11 +190,17 @@ int main(int argc, char** argv, char** const envp) {
+   }
+ #endif
+ 
++#if defined(__ANDROID__)
++  // Android: SELinux can deny creating a filesystem socket (EACCES) for shell/app contexts.
++  // The abstract socket above is enough for clients, so the path socket is best-effort here.
++  ProcessPipe::InitializeServerSocket(false);
++#else
+   if (!ProcessPipe::InitializeServerSocket(false)) {
+     // Couldn't create server socket for some reason
+     PipeScanner::ClosePipes();
+     return -1;
+   }
++#endif
+ 
+   // Switch this process over to a new session id
+   // Probably not required but allows this to become the process group leader of its session
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp
+index 7b0e9f91c..b36dbeae7 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp
+@@ -5,6 +5,7 @@ tags: LinuxSyscalls|syscalls-shared
+ $end_info$
+ */
+ 
++#include <FEXCore/Utils/AtomicRefCompat.h>
+ #include "LinuxSyscalls/Seccomp/BPFEmitter.h"
+ #include "LinuxSyscalls/Seccomp/SeccompEmulator.h"
+ 
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp
+index 0a51b98a3..02eb034bd 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp
+@@ -5,6 +5,7 @@ tags: LinuxSyscalls|syscalls-shared
+ $end_info$
+ */
+ 
++#include <FEXCore/Utils/AtomicRefCompat.h>
+ #include "CodeLoader.h"
+ 
+ #include "LinuxSyscalls/SignalDelegator.h"
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
+index 94bdd378b..2e01e5a9a 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
+@@ -678,8 +678,8 @@ SyscallHandler::TrackMmap(FEXCore::Core::InternalThreadState* Thread, uint64_t a
+                 MinAddress = ProgramHeader.p_vaddr;
+                 MaxAddress = ProgramHeader.p_vaddr + ProgramHeader.p_memsz;
+               }
+-              MinAddress = std::min(MinAddress, ProgramHeader.p_vaddr);
+-              MaxAddress = std::max(MaxAddress, ProgramHeader.p_vaddr + ProgramHeader.p_memsz);
++              MinAddress = std::min<uint64_t>(MinAddress, ProgramHeader.p_vaddr);
++              MaxAddress = std::max<uint64_t>(MaxAddress, ProgramHeader.p_vaddr + ProgramHeader.p_memsz);
+             }
+           }
+           if (MaxAddress > MinAddress) {
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
+index 69e10b3d2..dce926a38 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
+@@ -17,6 +17,23 @@
+ #include <fcntl.h>
+ #include <git_version.h>
+ 
++#if defined(__ANDROID__)
++// Bionic has no POSIX shm_open/shm_unlink. Stats regions are opt-in and only read locally,
++// so named regions are emulated as plain files under $TMPDIR (or /data/local/tmp).
++#include <cstdlib>
++#include <string>
++static std::string FEXAndroidShmPath(const char* Name) {
++  const char* Dir = std::getenv("TMPDIR");
++  return std::string(Dir ? Dir : "/data/local/tmp") + "/" + Name;
++}
++static int shm_open(const char* Name, int Flags, mode_t Mode) {
++  return open(FEXAndroidShmPath(Name).c_str(), Flags, Mode);
++}
++static int shm_unlink(const char* Name) {
++  return unlink(FEXAndroidShmPath(Name).c_str());
++}
++#endif
++
+ namespace FEX::HLE {
+ 
+ ThreadManager::StatAlloc::StatAlloc() {
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Utils/Threads.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Utils/Threads.cpp
+index 8b9c25948..04e2755a3 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Utils/Threads.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Utils/Threads.cpp
+@@ -1,4 +1,5 @@
+ // SPDX-License-Identifier: MIT
++#include <FEXCore/Utils/AtomicRefCompat.h>
+ #include "LinuxSyscalls/Utils/Threads.h"
+ #include "LinuxSyscalls/Syscalls.h"
+ 
+diff --git a/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp b/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp
+index 50a9bae57..4edeb9454 100644
+--- a/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp
++++ b/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp
+@@ -16,6 +16,10 @@
+ #include <FEXCore/fextl/map.h>
+ #include <FEXHeaderUtils/Syscalls.h>
+ 
++#ifndef ELF32_ST_VISIBILITY
++#define ELF32_ST_VISIBILITY(o) ((o) & 0x3) // bionic <elf.h> lacks this macro
++#endif
++
+ #include <array>
+ #include <dlfcn.h>
+ #include <elf.h>
