@@ -351,7 +351,7 @@ index 69e10b3d2..dce926a38 100644
  
  ThreadManager::StatAlloc::StatAlloc() {
 diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Utils/Threads.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Utils/Threads.cpp
-index 8b9c25948..04e2755a3 100644
+index 8b9c25948..ebd286c2b 100644
 --- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Utils/Threads.cpp
 +++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Utils/Threads.cpp
 @@ -1,4 +1,5 @@
@@ -360,6 +360,28 @@ index 8b9c25948..04e2755a3 100644
  #include "LinuxSyscalls/Utils/Threads.h"
  #include "LinuxSyscalls/Syscalls.h"
  
+@@ -315,6 +316,21 @@ namespace PThreads {
+   };
+ 
+   void* InitializeThread(void* Ptr) {
++#if defined(__ANDROID__)
++    // PThread blocks every signal around pthread_create, so this thread starts with the whole mask set.
++    // A synchronous fault (SIGSEGV/SIGBUS/SIGILL) on a thread that blocks it is killed by the kernel
++    // without running FEX's handler, so keep the synchronous signals deliverable.
++    {
++      sigset_t SyncSignals {};
++      sigemptyset(&SyncSignals);
++      sigaddset(&SyncSignals, SIGSEGV);
++      sigaddset(&SyncSignals, SIGBUS);
++      sigaddset(&SyncSignals, SIGILL);
++      sigaddset(&SyncSignals, SIGFPE);
++      sigaddset(&SyncSignals, SIGTRAP);
++      pthread_sigmask(SIG_UNBLOCK, &SyncSignals, nullptr);
++    }
++#endif
+     void* StackBase {};
+     StackTracker* STracker {};
+     PThread* Thread {reinterpret_cast<PThread*>(Ptr)};
 diff --git a/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp b/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp
 index 50a9bae57..4edeb9454 100644
 --- a/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp

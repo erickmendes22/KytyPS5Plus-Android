@@ -2231,9 +2231,14 @@ void RuntimeLinker::SetupTlsHandler(Program* program) {
 		stub->SetOutputReg(reg);
 	}
 
+#if KYTY_HOST_ARM64
+	// FEX reads guest code bytes to translate them, so the host page needs read access too.
+	constexpr auto kTlsHandlerMode = Common::VirtualMemory::Mode::ExecuteRead;
+#else
+	constexpr auto kTlsHandlerMode = Common::VirtualMemory::Mode::Execute;
+#endif
 	EXIT_IF(!Libs::LibKernel::Memory::ProtectGuestMemory(program->tls.handler_vaddr,
-	                                                     Jit::SafeCall::GetSize(),
-	                                                     Common::VirtualMemory::Mode::Execute));
+	                                                     Jit::SafeCall::GetSize(), kTlsHandlerMode));
 	Common::VirtualMemory::FlushInstructionCache(program->tls.handler_vaddr,
 	                                             Jit::SafeCall::GetSize());
 }

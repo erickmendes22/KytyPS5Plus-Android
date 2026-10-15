@@ -10,6 +10,7 @@
 #include "kytyGitVersion.h"
 
 #include <charconv>
+#include <csignal>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -19,6 +20,7 @@
 #include <vector>
 #include <fmt/format.h>
 #include <magic_enum.hpp>
+#include <pthread.h>
 
 #if defined(KYTY_ANDROID)
 // SDLActivity calls the exported SDL_main() of libmain.so. SDL_main.h renames
@@ -575,8 +577,78 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 	return show_help || fex_selftest || (!options.app0_dir.empty() && !options.elf.empty());
 }
 
+#if defined(KYTY_ANDROID)
+// SDLActivity starts SDL_main on a thread that inherits a blocked signal mask. A synchronous fault
+// (SIGSEGV/SIGBUS/SIGILL) on such a thread kills the process before any handler runs.
+static void UnblockSynchronousSignals() {
+	sigset_t set {};
+	sigemptyset(&set);
+	sigaddset(&set, SIGSEGV);
+	sigaddset(&set, SIGBUS);
+	sigaddset(&set, SIGILL);
+	sigaddset(&set, SIGFPE);
+	sigaddset(&set, SIGTRAP);
+	pthread_sigmask(SIG_UNBLOCK, &set, nullptr);
+}
+#endif
+
+// DIAG-TEMP begin
+#if defined(KYTY_ANDROID)
+#include <dirent.h>
+#include <fcntl.h>
+#include <cstring>
+#include <cstdlib>
+#include <thread>
+static void DiagWriteFile(const char* text, int len) {
+	const int fd = open("/data/user/0/com.kytyps5.android/files/kyty_diag.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+	if (fd >= 0) {
+		[[maybe_unused]] auto w = write(fd, text, static_cast<size_t>(len));
+		close(fd);
+	}
+}
+static void DiagWatchBlocked() {
+	std::thread([] {
+		for (int iter = 0; iter < 3000; iter++) {
+			DIR* dir = opendir("/proc/self/task");
+			if (dir != nullptr) {
+				while (dirent* ent = readdir(dir)) {
+					if (ent->d_name[0] == '.') continue;
+					char path[96];
+					std::snprintf(path, sizeof path, "/proc/self/task/%s/status", ent->d_name);
+					const int fd = open(path, O_RDONLY);
+					if (fd < 0) continue;
+					char st[2048];
+					const ssize_t r = read(fd, st, sizeof st - 1);
+					close(fd);
+					if (r <= 0) continue;
+					st[r] = 0;
+					const char* p = std::strstr(st, "SigBlk:");
+					if (p == nullptr) continue;
+					const unsigned long long m = std::strtoull(p + 7, nullptr, 16);
+					if ((m >> 10) & 1ull) {
+						char name[64] = {};
+						char cpath[96];
+						std::snprintf(cpath, sizeof cpath, "/proc/self/task/%s/comm", ent->d_name);
+						const int cfd = open(cpath, O_RDONLY);
+						if (cfd >= 0) { [[maybe_unused]] auto cr = read(cfd, name, sizeof name - 1); close(cfd); }
+						char buf[160];
+						const int n = std::snprintf(buf, sizeof buf, "SEGVBLOCKED tid=%s comm=%s mask=%llx\n", ent->d_name, name, m);
+						DiagWriteFile(buf, n);
+					}
+				}
+				closedir(dir);
+			}
+			usleep(20000);
+		}
+	}).detach();
+}
+#endif
+// DIAG-TEMP end
+
 static int Main(int argc, char* argv[]) {
 #if defined(KYTY_ANDROID)
+	DiagWatchBlocked(); // DIAG-TEMP
+	UnblockSynchronousSignals();
 	RedirectStdioToLogcat();
 #endif
 

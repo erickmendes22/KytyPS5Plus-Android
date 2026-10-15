@@ -27,6 +27,7 @@ extern char** environ;
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <pthread.h>
 
 namespace Cpu::GuestCpu {
 namespace {
@@ -258,7 +259,23 @@ bool Init() {
 	return ok;
 }
 
+// Guest code faults must reach FEX's SIGSEGV handler. A thread that blocks a synchronous fault signal is
+// killed by the kernel instead, with no handler and no tombstone, so keep these deliverable.
+static void UnblockSynchronousSignals() {
+#if defined(__ANDROID__)
+	sigset_t set {};
+	sigemptyset(&set);
+	sigaddset(&set, SIGSEGV);
+	sigaddset(&set, SIGBUS);
+	sigaddset(&set, SIGILL);
+	sigaddset(&set, SIGFPE);
+	sigaddset(&set, SIGTRAP);
+	pthread_sigmask(SIG_UNBLOCK, &set, nullptr);
+#endif
+}
+
 bool AttachCurrentThread(uint64_t guest_stack_top) {
+	UnblockSynchronousSignals();
 	if (!Init()) {
 		return false;
 	}
