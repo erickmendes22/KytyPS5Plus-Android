@@ -6,7 +6,7 @@
 //
 // Once a second a "[perf]" line reports guest flips, HLE calls, GPU write-tracking faults and
 // where the sampled CPU time went (FEX JIT code, Kyty, the Vulkan driver, libc, ...). Every
-// kProfileDumpSeconds the hottest leaf addresses are written to _perf_profile.txt as
+// kProfileDumpSeconds the hottest leaf addresses of that window are written to _perf_profile.txt as
 // "module+offset" lines that llvm-symbolizer resolves against the unstripped libraries.
 
 #include <atomic>
@@ -38,11 +38,9 @@ inline void CountGpuFault() {
 	}
 }
 
-inline void CountFlip() {
-	if (Enabled()) {
-		Detail::g_flips.fetch_add(1, std::memory_order_relaxed);
-	}
-}
+// One presented guest flip: how long it waited since the guest submitted it, and how long the
+// host present call blocked.
+void CountFlip(uint64_t submit_to_present_us, uint64_t present_call_us);
 
 // A primed audio output port found its host queue (nearly) drained: the listener hears a gap.
 inline void CountAudioUnderrun() {

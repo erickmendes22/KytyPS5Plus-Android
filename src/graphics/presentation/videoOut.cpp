@@ -1207,6 +1207,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 		return false;
 	}
 	const uint64_t group = owner->id;
+	const uint64_t owner_submit_ptc = owner->submit_ptc;
 	if (std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(),
 	                [group](const auto& r) { return r.group == group; }) ||
 	    std::any_of(m_requests.begin(), m_requests.end(), [group](const auto& r) {
@@ -1242,8 +1243,14 @@ bool FlipQueue::Flip(uint32_t micros) {
 		layers[i] = {r.frame, r.cfg->bus, r.premultiplied_alpha};
 	}
 	if (due) {
+		const uint64_t present_begin = LibKernel::KernelGetProcessTimeCounter();
 		m_presenter.Present(std::span(layers.data(), count));
-		Common::PerfStats::CountFlip();
+		if (Common::PerfStats::Enabled()) {
+			const uint64_t now  = LibKernel::KernelGetProcessTimeCounter();
+			const uint64_t freq = std::max<uint64_t>(LibKernel::KernelGetProcessTimeCounterFrequency(), 1);
+			const auto     to_us = [freq](uint64_t ticks) { return ticks * 1000000 / freq; };
+			Common::PerfStats::CountFlip(to_us(present_begin - owner_submit_ptc), to_us(now - present_begin));
+		}
 	}
 
 	m_mutex.Lock();

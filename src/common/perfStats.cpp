@@ -15,11 +15,24 @@ std::atomic<uint64_t> g_audio_underruns {0};
 } // namespace Common::PerfStats::Detail
 
 #include <chrono>
+#include <string>
 
 namespace Common::PerfStats {
 namespace {
 
 std::atomic<int64_t>  g_input_mark_ns {0};
+std::atomic<uint64_t> g_flip_latency_sum_us {0};
+std::atomic<uint64_t> g_flip_latency_max_us {0};
+std::atomic<uint64_t> g_present_sum_us {0};
+std::atomic<uint64_t> g_present_max_us {0};
+std::atomic<int64_t>  g_last_flip_ns {0};
+std::atomic<uint64_t> g_flip_gap_max_us {0};
+
+void StoreMax(std::atomic<uint64_t>& target, uint64_t value) {
+	uint64_t current = target.load(std::memory_order_relaxed);
+	while (value > current && !target.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+	}
+}
 std::atomic<uint64_t> g_input_queue_ns {0};
 
 int64_t NowNs() {
@@ -29,6 +42,38 @@ int64_t NowNs() {
 }
 
 } // namespace
+
+void CountFlip(uint64_t submit_to_present_us, uint64_t present_call_us) {
+	if (!Enabled()) {
+		return;
+	}
+	Detail::g_flips.fetch_add(1, std::memory_order_relaxed);
+	g_flip_latency_sum_us.fetch_add(submit_to_present_us, std::memory_order_relaxed);
+	StoreMax(g_flip_latency_max_us, submit_to_present_us);
+	g_present_sum_us.fetch_add(present_call_us, std::memory_order_relaxed);
+	StoreMax(g_present_max_us, present_call_us);
+	const int64_t now  = NowNs();
+	const int64_t last = g_last_flip_ns.exchange(now, std::memory_order_relaxed);
+	if (last != 0) {
+		StoreMax(g_flip_gap_max_us, static_cast<uint64_t>(now - last) / 1000);
+	}
+}
+
+// Frame pacing over the last period, as text for the report line; resets the period.
+std::string TakeFrameSummary(uint64_t flips) {
+	const uint64_t latency_sum = g_flip_latency_sum_us.exchange(0, std::memory_order_relaxed);
+	const uint64_t latency_max = g_flip_latency_max_us.exchange(0, std::memory_order_relaxed);
+	const uint64_t present_sum = g_present_sum_us.exchange(0, std::memory_order_relaxed);
+	const uint64_t present_max = g_present_max_us.exchange(0, std::memory_order_relaxed);
+	const uint64_t gap_max     = g_flip_gap_max_us.exchange(0, std::memory_order_relaxed);
+	const double   n           = flips == 0 ? 1.0 : static_cast<double>(flips);
+	char           buf[160];
+	std::snprintf(buf, sizeof(buf), "flip_gap_max=%.1fms submit->present avg=%.1f max=%.1fms present_call avg=%.1f max=%.1fms",
+	              static_cast<double>(gap_max) / 1000.0, static_cast<double>(latency_sum) / n / 1000.0,
+	              static_cast<double>(latency_max) / 1000.0, static_cast<double>(present_sum) / n / 1000.0,
+	              static_cast<double>(present_max) / 1000.0);
+	return buf;
+}
 
 void MarkInput(uint64_t queue_delay_ns) {
 	if (!Enabled()) {
@@ -88,7 +133,7 @@ constexpr long     kSampleIntervalNs   = 1'000'000; // 1 ms of thread CPU time p
 constexpr size_t   kMaxFrames          = 10;
 constexpr size_t   kRingSize           = size_t {1} << 16;
 constexpr uint64_t kMaxFrameSpan       = 1u << 20; // a caller frame lies within 1 MiB above the callee's
-constexpr int      kProfileDumpSeconds = 10;
+constexpr int      kProfileDumpSeconds = 5;
 constexpr size_t   kTopEntries         = 80;
 
 struct Sample {
@@ -360,7 +405,7 @@ void DumpProfile(const Profile& profile, Symbolizer& symbolizer, int seconds) {
 	if (out == nullptr) {
 		return;
 	}
-	std::fprintf(out, "# %d s, %llu samples (1 sample = 1 ms thread CPU time)\n", seconds,
+	std::fprintf(out, "# last %d s, %llu samples (1 sample = 1 ms thread CPU time)\n", seconds,
 	             static_cast<unsigned long long>(profile.total));
 	std::fprintf(out, "## threads\n");
 	std::map<std::string, uint64_t> threads;
@@ -450,7 +495,7 @@ void Reporter() {
 			              static_cast<double>(n) / (dt * 10.0));
 			line += part;
 		}
-		line += " | busiest:";
+		line += " | " + TakeFrameSummary(flips - last_flips) + " | busiest:";
 		std::unordered_map<std::string, uint64_t> threads;
 		for (const auto& [tid, n]: window.per_thread) {
 			threads[std::to_string(tid) + "/" + ThreadName(tid)] = n;
@@ -467,7 +512,8 @@ void Reporter() {
 		last_flips  = flips;
 		last_audio  = audio;
 		if (++seconds % kProfileDumpSeconds == 0) {
-			DumpProfile(profile, symbolizer, seconds);
+			DumpProfile(profile, symbolizer, kProfileDumpSeconds);
+			profile = {};
 		}
 	}
 }
