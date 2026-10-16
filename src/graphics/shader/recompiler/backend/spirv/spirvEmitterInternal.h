@@ -27,6 +27,8 @@ namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 
 struct InputBinding : IR::StageInput {
 	uint32_t variable_id = 0;
+	// Barycentric emulation: the input location the generated geometry stage writes.
+	uint32_t emulated_location = UINT32_MAX;
 };
 
 struct OutputBinding : IR::StageOutput {
@@ -154,6 +156,7 @@ struct EmitterState {
 	uint32_t                   cull_distance_variable                = 0;
 	uint32_t                   layer_variable                        = 0;
 	uint32_t                   viewport_index_variable               = 0;
+	uint32_t                   layer_viewport_mirror_variable        = 0;
 	uint32_t                   depth_variable                        = 0;
 	uint32_t                   sample_mask_variable                  = 0;
 	std::vector<InputBinding>  inputs;
@@ -292,6 +295,16 @@ uint32_t PixelParameterLocation(const EmitterState& state, uint32_t attr);
 bool PixelParameterIsFlat(const EmitterState& state, uint32_t attr);
 
 bool PixelParameterIsCustom(const EmitterState& state, uint32_t attr);
+
+// The pixel shader reads barycentrics and per-vertex parameters from a generated geometry stage.
+inline bool BarycentricsEmulated(const EmitterState& state) {
+	return state.program.stage == ShaderType::Pixel &&
+	       state.program.info.barycentric_emulation.enabled;
+}
+
+// One component of one vertex of a per-vertex pixel parameter, as an f32 value.
+uint32_t EmitPerVertexComponentF32(EmitterState& state, const InputBinding& input, uint32_t vertex,
+                                   uint32_t component);
 
 VertexInputScalarKind VertexParameterScalarKind(const EmitterState& state, uint32_t location);
 

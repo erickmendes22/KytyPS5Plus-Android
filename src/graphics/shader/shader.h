@@ -211,6 +211,12 @@ union ShaderStageInputInfo {
 // everything available (the pre-mobile behaviour); the renderer overrides them from the device.
 struct ShaderDeviceFeatures {
 	bool fragment_shader_barycentric      = true; // BaryCoord inputs and PerVertexKHR reads
+	// Varying locations a generated pass-through geometry stage can carry between the last
+	// pre-rasterization stage and the pixel shader: the smallest of the vertex/tessellation
+	// output, geometry input/output and fragment input limits, in vec4 locations. Without
+	// fragment_shader_barycentric, a non-zero value lets the pixel shader read barycentrics and
+	// per-vertex parameters that such a geometry stage supplies. 0 means no geometryShader.
+	uint32_t geometry_varying_locations   = 32;
 	bool shader_float64                   = true; // Float64 arithmetic
 	bool shader_shared_int64_atomics      = true; // Int64 atomics on Workgroup (LDS) memory
 	bool signed_zero_inf_nan_preserve_f32 = true; // SignedZeroInfNanPreserve at width 32

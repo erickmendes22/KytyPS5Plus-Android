@@ -346,6 +346,15 @@ private:
 
 } // namespace
 
+uint32_t RectListParameterLocations(const ShaderVertexInputInfo& vertex_info,
+                                    const ShaderPixelInputInfo*  pixel_info) {
+	uint32_t locations = 0;
+	for (const auto& parameter: GetParameters(vertex_info, pixel_info)) {
+		locations |= 1u << parameter.output_location;
+	}
+	return locations;
+}
+
 RectListShaders BuildRectListShaders(const ShaderVertexInputInfo& vertex_info,
                                      const ShaderPixelInputInfo*  pixel_info) {
 	const auto      parameters = GetParameters(vertex_info, pixel_info);

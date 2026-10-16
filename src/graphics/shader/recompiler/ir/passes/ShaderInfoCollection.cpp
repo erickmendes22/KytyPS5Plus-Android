@@ -678,6 +678,61 @@ uint32_t DropCarriedBarycentrics(Program& program) {
 	return replaced;
 }
 
+namespace {
+
+bool MixesFlatAndSmoothInUse(const ShaderPixelInputInfo& pixel, const std::array<bool, 32>& used) {
+	for (uint32_t input = 0; input < pixel.input_num; input++) {
+		for (uint32_t alias = 0; alias < pixel.input_num; alias++) {
+			if (!SameParameterSlot(pixel, input, alias)) {
+				continue;
+			}
+			const bool same_mode =
+			    ShaderPixelParameterIsFlat(pixel, input) == ShaderPixelParameterIsFlat(pixel, alias);
+			if (pixel.parameter_mode == ShaderPixelParameterMode::Rectangle && !same_mode) {
+				continue;
+			}
+			if (!same_mode && (used[input] || used[alias])) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+} // namespace
+
+bool PixelShaderNeedsBarycentrics(const Program& program, const ShaderPixelInputInfo& pixel) {
+	std::array<bool, 32> used {};
+	const auto mark_used = [&](const Inst& inst) {
+		if (inst.Arg(0).IsImmediate() && inst.Arg(0).U32() < used.size()) {
+			used[inst.Arg(0).U32()] = true;
+		}
+	};
+	for (const auto* block: program.blocks) {
+		for (const auto& inst: *block) {
+			switch (inst.GetOpcode()) {
+				case ValueOpcode::GetAttribute: mark_used(inst); break;
+				case ValueOpcode::GetInterpolationParameter:
+					mark_used(inst);
+					if (!inst.Arg(0).IsImmediate() ||
+					    !ShaderPixelParameterIsFlat(pixel, inst.Arg(0).U32())) {
+						return true;
+					}
+					break;
+				default:
+					if (IsRawBarycentricRead(inst) && inst.HasUses()) {
+						std::vector<const Inst*> visited;
+						if (!OnlyCarriedThroughExecMerges(inst, visited)) {
+							return true;
+						}
+					}
+					break;
+			}
+		}
+	}
+	return MixesFlatAndSmoothInUse(pixel, used);
+}
+
 void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info,
                        bool barycentric_available) {
 	if (!program.resource_tracking_complete || program.shader_info_complete) {

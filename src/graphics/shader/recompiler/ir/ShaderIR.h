@@ -322,6 +322,52 @@ struct StageOutput {
 	bool operator==(const StageOutput& other) const = default;
 };
 
+// Fragment barycentric emulation. Without VK_KHR_fragment_shader_barycentric a generated
+// pass-through geometry stage supplies what the pixel shader would read from the extension:
+// every vertex of the primitive carries flat copies of all its vertices' per-vertex parameters
+// and a barycentric vector that is (1,0,0), (0,1,0) and (0,0,1) at the three vertices.
+enum class EmulatedVaryingKind : uint8_t {
+	Interpolated,           // Forwarded unchanged from source_location.
+	PerVertex,              // Flat uvec4[3]: the source_location value of each vertex.
+	BaryCoord,              // Perspective-correct vec3 barycentric (BaryCoordKHR).
+	BaryCoordNoPerspective, // Linear vec3 barycentric (BaryCoordNoPerspKHR).
+};
+
+struct EmulatedVarying {
+	EmulatedVaryingKind        kind            = EmulatedVaryingKind::Interpolated;
+	uint32_t                   source_location = UINT32_MAX; // Previous-stage output location.
+	uint32_t                   location        = 0;          // Pixel shader input location.
+	bool                       flat            = false;
+	bool                       no_perspective  = false;
+	PixelInterpolationSampling sampling        = PixelInterpolationSampling::Center;
+
+	bool operator==(const EmulatedVarying& other) const = default;
+};
+
+struct BarycentricEmulation {
+	bool                         enabled      = false;
+	bool                         primitive_id = false; // The pixel shader reads gl_PrimitiveID.
+	bool                         layer        = false; // The pixel shader reads gl_Layer.
+	std::vector<EmulatedVarying> varyings;              // The pixel shader's whole varying input.
+
+	bool operator==(const BarycentricEmulation& other) const = default;
+};
+
+// Built-in outputs of a pre-rasterization stage that a following geometry stage must forward.
+// Filled by the SPIR-V emitter.
+struct PreRasterOutputs {
+	uint32_t clip_distance_count = 0;
+	uint32_t cull_distance_count = 0;
+	bool     point_size          = false;
+	bool     layer               = false;
+	bool     viewport_index      = false;
+	// A geometry stage cannot read gl_Layer/gl_ViewportIndex, so stages that write them also
+	// write a flat uvec2 (layer, viewport index) here when barycentric emulation is possible.
+	uint32_t layer_viewport_location = UINT32_MAX;
+
+	bool operator==(const PreRasterOutputs& other) const = default;
+};
+
 inline constexpr uint32_t FirstImageBinding           = 1u;
 inline constexpr uint32_t FirstComparisonImageBinding = 22u;
 inline constexpr uint32_t FirstStorageImageBinding    = 29u;
@@ -519,6 +565,8 @@ struct ShaderInfo {
 	bool                            shared_int64_atomics          = false;
 	bool                            coherent_buffers              = false;
 	bool                            float64                       = false;
+	BarycentricEmulation            barycentric_emulation;
+	PreRasterOutputs                raster_outputs;
 
 	bool operator==(const ShaderInfo& other) const = default;
 };

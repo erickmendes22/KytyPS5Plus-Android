@@ -873,13 +873,26 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	}
 	ir.value_storage.clear();
 	IR::RemoveIdentities(ir.blocks);
-	if (ir.stage == ShaderType::Pixel && !options.device_features.fragment_shader_barycentric) {
-		IR::DropCarriedBarycentrics(ir);
-	}
 	IR::EliminateDeadCode(ir.blocks);
+	// Without the barycentric extension a pixel shader takes native interpolated inputs when it
+	// can. One that needs barycentrics or per-vertex data instead gets them from a generated
+	// geometry stage (see BarycentricEmulation) when the device has one.
+	const bool native_barycentrics = options.device_features.fragment_shader_barycentric;
+	const bool emulate_barycentrics =
+	    ir.stage == ShaderType::Pixel && !native_barycentrics &&
+	    options.device_features.geometry_varying_locations != 0 &&
+	    IR::PixelShaderNeedsBarycentrics(ir, *options.input_info.pixel);
+	if (ir.stage == ShaderType::Pixel && !native_barycentrics && !emulate_barycentrics &&
+	    IR::DropCarriedBarycentrics(ir) != 0) {
+		IR::EliminateDeadCode(ir.blocks);
+	}
 
-	IR::CollectShaderInfo(ir, options.input_info,
-	                      options.device_features.fragment_shader_barycentric);
+	IR::CollectShaderInfo(ir, options.input_info, native_barycentrics || emulate_barycentrics);
+	ir.info.barycentric_emulation = {.enabled = emulate_barycentrics};
+	if (emulate_barycentrics) {
+		LOGF("%s barycentrics emulated through a geometry stage: hash=0x%016" PRIx64 "\n",
+		     GetDumpLabel(options), ir.shader_hash);
+	}
 	std::string ir_dump;
 	if (options.dump_ir) {
 		ir_dump = MakeIrDump(translated.cfg_dump, ir);

@@ -392,6 +392,7 @@ struct PipelineCache::ProgramCache {
 		options.maintenance8_enabled = graphics.maintenance8_enabled;
 		options.device_features      = {
 		         .fragment_shader_barycentric = graphics.optional_features.fragment_shader_barycentric,
+		         .geometry_varying_locations  = graphics.optional_features.geometry_varying_locations,
 		         .shader_float64              = graphics.optional_features.shader_float64,
 		         .shader_shared_int64_atomics = graphics.optional_features.shader_shared_int64_atomics,
 		         .signed_zero_inf_nan_preserve_f32 =

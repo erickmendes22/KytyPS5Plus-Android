@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
+#include "graphics/shader/barycentricGeometryShader.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
@@ -40,8 +41,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <map>
 #include <span>
 #include <sstream>
 #include <string>
@@ -6719,10 +6722,12 @@ void TestNativePixelInterpolationFallback() {
   constexpr uint32_t kSample = 17u;
   constexpr uint32_t kPerVertexKhr = 5285u;
 
+  // No geometry stage either, so nothing can emulate barycentrics.
   const auto native_options = [](ShaderPixelInputInfo &info) {
     auto options = MakeCompileOptions(ShaderType::Pixel);
     options.input_info.pixel = &info;
     options.device_features.fragment_shader_barycentric = false;
+    options.device_features.geometry_varying_locations = 0;
     return options;
   };
   const auto desktop_options = [](ShaderPixelInputInfo &info) {
@@ -6889,6 +6894,387 @@ void TestNativePixelInterpolationFallback() {
     const auto options = native_options(mixed_info);
     ExpectFatal([&] { (void)RecompileForTest(mixed_slot_shader, options); },
                 "native mixed flat/smooth slot was not rejected");
+  }
+}
+
+// Location-decorated interface variables of one storage class, keyed by location. The type is
+// spelled out (e.g. "u32x4[3]") so stages can be matched the way Vulkan matches them;
+// strip_outer_array drops the per-vertex array level of geometry inputs.
+struct SpirvLocationVariable {
+  std::string type;
+  bool flat = false;
+  bool no_perspective = false;
+};
+
+std::map<uint32_t, SpirvLocationVariable>
+SpirvLocationInterface(const std::vector<uint32_t> &binary, uint32_t storage_class,
+                       bool strip_outer_array = false) {
+  std::unordered_map<uint32_t, std::vector<uint32_t>> types;
+  std::unordered_map<uint32_t, uint32_t> constants;
+  std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> pointers;
+  std::unordered_map<uint32_t, uint32_t> locations;
+  std::unordered_map<uint32_t, std::vector<uint32_t>> decorations;
+  std::vector<std::pair<uint32_t, uint32_t>> variables; // id, pointer type
+  for (size_t i = 5; i < binary.size();) {
+    const uint32_t opcode = binary[i] & 0xffffu;
+    const uint32_t word_count = binary[i] >> 16u;
+    Check(word_count != 0 && i + word_count <= binary.size(), "malformed SPIR-V");
+    const auto *words = &binary[i];
+    switch (opcode) {
+    case 21u: case 22u: case 23u: case 28u:
+      types[words[1]] = std::vector<uint32_t>(words, words + word_count);
+      break;
+    case 32u: pointers[words[1]] = {words[2], words[3]}; break;
+    case 43u: constants[words[2]] = words[3]; break;
+    case 59u:
+      if (words[3] == storage_class) {
+        variables.emplace_back(words[2], words[1]);
+      }
+      break;
+    case 71u:
+      if (words[2] == 30u) {
+        locations[words[1]] = words[3];
+      } else {
+        decorations[words[1]].push_back(words[2]);
+      }
+      break;
+    default: break;
+    }
+    i += word_count;
+  }
+  const std::function<std::string(uint32_t, bool)> spell = [&](uint32_t id, bool strip) {
+    const auto &type = types.at(id);
+    switch (type[0] & 0xffffu) {
+    case 21u: return std::string(type[3] != 0 ? "i" : "u") + std::to_string(type[2]);
+    case 22u: return "f" + std::to_string(type[2]);
+    case 23u: return spell(type[2], false) + "x" + std::to_string(type[3]);
+    default:
+      return strip ? spell(type[2], false)
+                   : spell(type[2], false) + "[" + std::to_string(constants.at(type[3])) + "]";
+    }
+  };
+  std::map<uint32_t, SpirvLocationVariable> result;
+  for (const auto &[id, pointer] : variables) {
+    if (!locations.contains(id)) {
+      continue;
+    }
+    const auto &variable_decorations = decorations[id];
+    const auto has = [&](uint32_t decoration) {
+      return std::ranges::find(variable_decorations, decoration) != variable_decorations.end();
+    };
+    result[locations[id]] = {spell(pointers.at(pointer).second, strip_outer_array), has(14u),
+                             has(13u)};
+  }
+  return result;
+}
+
+// Every location the consumer reads is written by the producer with the same type.
+void CheckStageInterfaceMatches(const std::vector<uint32_t> &producer,
+                                const std::vector<uint32_t> &consumer, bool consumer_is_geometry,
+                                const char *text) {
+  const auto outputs = SpirvLocationInterface(producer, 3u);
+  for (const auto &[location, input] : SpirvLocationInterface(consumer, 1u, consumer_is_geometry)) {
+    const auto output = outputs.find(location);
+    if (output == outputs.end() || output->second.type != input.type) {
+      std::fprintf(stderr, "location %u: consumer %s, producer %s\n", location,
+                   input.type.c_str(),
+                   output == outputs.end() ? "(none)" : output->second.type.c_str());
+      Check(false, text);
+    }
+  }
+}
+
+// Without VK_KHR_fragment_shader_barycentric, pixel shaders that need barycentrics or per-vertex
+// data read them from a generated pass-through geometry stage. Covers each pattern that needs
+// them, the generated stage for every input primitive class, the vertex-stage layer mirror, the
+// location budget, and that desktop output does not depend on the geometry-stage setting.
+void TestEmulatedBarycentricGeometryStage() {
+  using ShaderRecompiler::IR::EmulatedVaryingKind;
+  constexpr uint32_t kFragmentBarycentricCapability = 5284u;
+  constexpr uint32_t kGeometryCapability = 2u;
+  constexpr uint32_t kSampleRateShadingCapability = 35u;
+  constexpr uint32_t kBuiltIn = 11u;
+  constexpr uint32_t kBaryCoordKhr = 5286u;
+  constexpr uint32_t kBaryCoordNoPerspKhr = 5287u;
+  constexpr uint32_t kOutputVertices = 26u;
+  constexpr uint32_t kInterpolateAtCentroid = 76u;
+  constexpr uint32_t kInterpolateAtSample = 77u;
+
+  const auto emulated_options = [](ShaderPixelInputInfo &info, uint32_t locations = 32u) {
+    auto options = MakeCompileOptions(ShaderType::Pixel);
+    options.input_info.pixel = &info;
+    options.device_features.fragment_shader_barycentric = false;
+    options.device_features.geometry_varying_locations = locations;
+    return options;
+  };
+  const auto desktop_options = [](ShaderPixelInputInfo &info, uint32_t locations) {
+    auto options = MakeCompileOptions(ShaderType::Pixel);
+    options.input_info.pixel = &info;
+    options.device_features.geometry_varying_locations = locations;
+    return options;
+  };
+  // Builds and validates the geometry stage for an emulated pixel shader and checks that it
+  // feeds every pixel shader input.
+  const auto check_geometry = [&](const TestCompileResult &pixel, BarycentricPrimitive primitive,
+                                  const char *text) {
+    const auto &emulation = pixel.program.info.barycentric_emulation;
+    Check(emulation.enabled, text);
+    BarycentricGeometryStage stage{.primitive = primitive, .fragment = &emulation,
+                                   .previous_locations = 0xffffffffu};
+    const auto geometry = BuildBarycentricGeometryShader(stage);
+    CheckSpirvBinaryValidates(geometry);
+    Check(SpirvContainsCapability(geometry, kGeometryCapability), text);
+    CheckStageInterfaceMatches(geometry, pixel.spirv, false, text);
+    return geometry;
+  };
+  // Compiles one pattern with emulation, and checks desktop output is the barycentric
+  // extension path whatever the geometry-stage setting.
+  const auto compile = [&](std::span<const uint32_t> code, ShaderPixelInputInfo &info,
+                           const char *text) {
+    auto emulated = RecompileForTest(code, emulated_options(info));
+    CheckSpirvBinaryValidates(emulated.spirv);
+    Check(!SpirvContainsCapability(emulated.spirv, kFragmentBarycentricCapability) &&
+              !SpirvHasDecorationValue(emulated.spirv, kBuiltIn, kBaryCoordKhr) &&
+              !SpirvHasDecorationValue(emulated.spirv, kBuiltIn, kBaryCoordNoPerspKhr) &&
+              DisassembleSpirvBinary(emulated.spirv).find("PerVertexKHR") == std::string::npos,
+          text);
+    const auto desktop = RecompileForTest(code, desktop_options(info, 32u));
+    const auto desktop_without_gs = RecompileForTest(code, desktop_options(info, 0u));
+    CheckSpirvBinaryValidates(desktop.spirv);
+    Check(desktop.spirv == desktop_without_gs.spirv &&
+              !desktop.program.info.barycentric_emulation.enabled &&
+              SpirvContainsCapability(desktop.spirv, kFragmentBarycentricCapability),
+          "desktop barycentric output depends on the geometry-stage setting");
+    check_geometry(emulated, BarycentricPrimitive::Triangles, text);
+    return emulated;
+  };
+  const auto varyings_of = [](const TestCompileResult &result, EmulatedVaryingKind kind) {
+    std::vector<ShaderRecompiler::IR::EmulatedVarying> found;
+    for (const auto &varying : result.program.info.barycentric_emulation.varyings) {
+      if (varying.kind == kind) {
+        found.push_back(varying);
+      }
+    }
+    return found;
+  };
+
+  // Smooth P10/P20/P0 via v_interp_mov: three flat vertex copies, no barycentric vector.
+  const uint32_t smooth_mov_shader[] = {
+      EncodeVintrp(2, 12, 0, 0, 0), EncodeVintrp(2, 13, 0, 0, 1),
+      EncodeVintrp(2, 14, 0, 0, 2), EncodeExp0(0x00, 0xf),
+      EncodeExp1(12, 13, 14, 14),   0xbf810000u,
+  };
+  ShaderPixelInputInfo smooth_info{};
+  smooth_info.input_num = 1;
+  SetIdentityInterpolatorSettings(&smooth_info);
+  {
+    const auto result = compile(smooth_mov_shader, smooth_info, "smooth v_interp_mov emulation");
+    const auto per_vertex = varyings_of(result, EmulatedVaryingKind::PerVertex);
+    Check(per_vertex.size() == 1u && per_vertex[0].source_location == 0u &&
+              varyings_of(result, EmulatedVaryingKind::BaryCoord).empty(),
+          "smooth v_interp_mov did not become one per-vertex varying");
+    const auto inputs = SpirvLocationInterface(result.spirv, 1u);
+    const auto input = inputs.find(per_vertex[0].location);
+    Check(input != inputs.end() && input->second.type == "u32x4[3]" && input->second.flat,
+          "per-vertex parameter is not a flat uvec4[3] input");
+  }
+
+  // Raw I read next to an ordinary P1/P2 pair: the parameter stays interpolated and the raw
+  // value comes from a perspective barycentric vector.
+  const uint32_t raw_ij_shader[] = {
+      EncodeVintrp(0, 6, 0, 0, 4), EncodeVintrp(1, 6, 0, 0, 5),
+      EncodeVop2(0x03, 7, 4 + 256, 6), EncodeExp0(0x00, 0x1), EncodeExp1(7, 7, 7, 7),
+      0xbf810000u,
+  };
+  ShaderPixelInputInfo center_info{};
+  center_info.input_num = 1;
+  center_info.ps_perspective_center_vgpr = 4;
+  SetIdentityInterpolatorSettings(&center_info);
+  {
+    const auto result = compile(raw_ij_shader, center_info, "raw I/J emulation");
+    const auto bary = varyings_of(result, EmulatedVaryingKind::BaryCoord);
+    const auto interpolated = varyings_of(result, EmulatedVaryingKind::Interpolated);
+    Check(bary.size() == 1u && interpolated.size() == 1u && interpolated[0].location == 0u &&
+              bary[0].location != 0u,
+          "raw I/J did not add a barycentric vector beside the native parameter");
+    const auto inputs = SpirvLocationInterface(result.spirv, 1u);
+    Check(inputs.at(bary[0].location).type == "f32x3" &&
+              !inputs.at(bary[0].location).no_perspective,
+          "barycentric vector is not a perspective vec3 input");
+    // Every primitive class gets a valid stage with the matching vertex count.
+    const std::pair<BarycentricPrimitive, uint32_t> primitives[] = {
+        {BarycentricPrimitive::Points, 1u},
+        {BarycentricPrimitive::Lines, 2u},
+        {BarycentricPrimitive::Triangles, 3u},
+    };
+    for (const auto [primitive, vertices] : primitives) {
+      const auto geometry = check_geometry(result, primitive, "primitive class geometry stage");
+      Check(SpirvContainsExecutionMode(geometry, kOutputVertices) &&
+                SpirvInstructionOpcodeCount(geometry, 218u) == vertices &&
+                SpirvInstructionOpcodeCount(geometry, 219u) == 1u,
+            "geometry stage emitted the wrong vertex count");
+    }
+  }
+
+  // Centroid and sample raw I/J reads interpolate the barycentric vector at the centroid/sample.
+  const uint32_t centroid_shader[] = {
+      EncodeVintrp(0, 6, 0, 0, 2), EncodeVintrp(1, 6, 0, 0, 3),
+      EncodeVop2(0x03, 7, 2 + 256, 6), EncodeExp0(0x00, 0x1), EncodeExp1(7, 7, 7, 7),
+      0xbf810000u,
+  };
+  ShaderPixelInputInfo centroid_info{};
+  centroid_info.input_num = 1;
+  centroid_info.ps_perspective_centroid_vgpr = 2;
+  SetIdentityInterpolatorSettings(&centroid_info);
+  {
+    const auto result = compile(centroid_shader, centroid_info, "centroid I/J emulation");
+    Check(SpirvContainsExtInst(result.spirv, kInterpolateAtCentroid),
+          "centroid raw I/J did not interpolate the emulated vector at the centroid");
+  }
+  const uint32_t sample_shader[] = {
+      EncodeVintrp(0, 6, 0, 0, 0), EncodeVintrp(1, 6, 0, 0, 1),
+      EncodeVop2(0x03, 7, 0 + 256, 6), EncodeExp0(0x00, 0x1), EncodeExp1(7, 7, 7, 7),
+      0xbf810000u,
+  };
+  ShaderPixelInputInfo sample_info{};
+  sample_info.input_num = 1;
+  sample_info.ps_perspective_sample_vgpr = 0;
+  SetIdentityInterpolatorSettings(&sample_info);
+  {
+    const auto result = compile(sample_shader, sample_info, "sample I/J emulation");
+    Check(SpirvContainsExtInst(result.spirv, kInterpolateAtSample) &&
+              SpirvContainsCapability(result.spirv, kSampleRateShadingCapability),
+          "sample raw I/J did not interpolate the emulated vector at the sample");
+  }
+
+  // A flat and a smooth parameter sharing one slot read the slot's vertices; with
+  // NoPerspective the barycentric vector is linear.
+  const uint32_t mixed_slot_shader[] = {
+      EncodeVintrp(1, 6, 0, 0, 5), EncodeVintrp(1, 7, 1, 0, 5),
+      EncodeExp0(0x00, 0x3),       EncodeExp1(6, 7, 0, 0),
+      0xbf810000u,
+  };
+  for (const bool linear : {false, true}) {
+    ShaderPixelInputInfo mixed_info{};
+    mixed_info.input_num = 2;
+    mixed_info.ps_perspective_center_vgpr = 4;
+    mixed_info.ps_no_perspective = linear;
+    mixed_info.interpolator_settings[0] = 0u;
+    mixed_info.interpolator_settings[1] = 0x00000400u;
+    const auto result = compile(mixed_slot_shader, mixed_info, "mixed flat/smooth emulation");
+    const auto per_vertex = varyings_of(result, EmulatedVaryingKind::PerVertex);
+    const auto bary = varyings_of(result, linear ? EmulatedVaryingKind::BaryCoordNoPerspective
+                                                 : EmulatedVaryingKind::BaryCoord);
+    Check(per_vertex.size() == 1u && bary.size() == 1u &&
+              SpirvLocationInterface(result.spirv, 1u).at(bary[0].location).no_perspective ==
+                  linear,
+          "mixed flat/smooth slot did not share one vertex copy and the right barycentrics");
+  }
+
+  // Custom interpolation: raw P0/P10/P20 combined with raw I/J by the shader itself.
+  const uint32_t custom_shader[] = {
+      EncodeVintrp(2, 12, 0, 3, 2),      EncodeVintrp(2, 13, 0, 3, 0),
+      EncodeVintrp(2, 14, 0, 3, 1),      EncodeVop2(0x03, 15, 12 + 256, 0),
+      EncodeVop2(0x03, 16, 13 + 256, 1), EncodeExp0(0x00, 0xf),
+      EncodeExp1(15, 16, 14, 12),        0xbf810000u,
+  };
+  ShaderPixelInputInfo custom_info{};
+  custom_info.input_num = 1;
+  custom_info.ps_system_input_base = 2;
+  custom_info.custom_interpolation_mask = 1;
+  custom_info.ps_perspective_center_vgpr = 0;
+  SetIdentityInterpolatorSettings(&custom_info);
+  custom_info.interpolator_settings[0] = 0x00000420u;
+  {
+    const auto result = compile(custom_shader, custom_info, "custom interpolation emulation");
+    Check(varyings_of(result, EmulatedVaryingKind::PerVertex).size() == 1u &&
+              varyings_of(result, EmulatedVaryingKind::BaryCoord).size() == 1u,
+          "custom interpolation did not get vertex copies and barycentrics");
+  }
+
+  // A shader that native inputs cover takes no geometry stage.
+  const uint32_t linear_shader[] = {
+      EncodeVintrp(0, 6, 0, 0, 4), EncodeVintrp(1, 6, 0, 0, 5),
+      EncodeExp0(0x00, 0x1),       EncodeExp1(6, 6, 6, 6),
+      0xbf810000u,
+  };
+  {
+    const auto result = RecompileForTest(linear_shader, emulated_options(center_info));
+    CheckSpirvBinaryValidates(result.spirv);
+    Check(!result.program.info.barycentric_emulation.enabled,
+          "a native-input pixel shader asked for a geometry stage");
+  }
+
+  // Locations: the per-vertex copies need three; two are not enough.
+  {
+    const auto options = emulated_options(smooth_info, 2u);
+    ExpectFatal([&] { (void)RecompileForTest(smooth_mov_shader, options); },
+                "emulation beyond the varying location budget was not rejected");
+  }
+
+  // The vertex stage mirrors gl_Layer for the geometry stage, which forwards it with every
+  // other built-in, the primitive ID, and zeros for parameters the vertex stage never writes.
+  const uint32_t vertex_shader[] = {
+      EncodeExp0(0x0c, 0xf, false), EncodeExp1(0, 1, 2, 3),
+      EncodeExp0(0x0d, 0x5, false), EncodeExp1(4, 5, 6, 7),
+      EncodeExp0(0x0e, 0xb, false), EncodeExp1(8, 9, 10, 11),
+      EncodeExp0(0x0f, 0x6, false), EncodeExp1(12, 13, 14, 15),
+      EncodeExp0(0x20, 0xf),        EncodeExp1(0, 1, 2, 3),
+      0xbf810000u,
+  };
+  ShaderVertexInputInfo vertex_info{};
+  vertex_info.pa_cl_vs_out_cntl = 0x00e5aa55u;
+  auto vertex_options = MakeCompileOptions(ShaderType::Vertex);
+  vertex_options.input_info.vertex = &vertex_info;
+  const auto desktop_vertex = RecompileForTest(vertex_shader, vertex_options);
+  vertex_options.device_features.fragment_shader_barycentric = false;
+  const auto vertex = RecompileForTest(vertex_shader, vertex_options);
+  CheckSpirvBinaryValidates(vertex.spirv);
+  const auto &raster = vertex.program.info.raster_outputs;
+  Check(raster.layer && raster.point_size && raster.clip_distance_count != 0u &&
+            raster.cull_distance_count != 0u && raster.layer_viewport_location == 31u &&
+            SpirvLocationInterface(vertex.spirv, 3u).at(31u).type == "u32x2",
+        "vertex stage did not mirror its layer for the geometry stage");
+  Check(desktop_vertex.program.info.raster_outputs.layer_viewport_location == UINT32_MAX &&
+            !SpirvLocationInterface(desktop_vertex.spirv, 3u).contains(31u),
+        "desktop vertex stage gained a layer mirror");
+  {
+    const auto pixel = RecompileForTest(raw_ij_shader, emulated_options(center_info));
+    auto emulation = pixel.program.info.barycentric_emulation;
+    emulation.primitive_id = true;
+    for (const auto primitive : {BarycentricPrimitive::Points, BarycentricPrimitive::Lines,
+                                 BarycentricPrimitive::Triangles}) {
+      for (const uint32_t previous_locations : {1u, 0u}) {
+        BarycentricGeometryStage stage{.primitive = primitive, .fragment = &emulation,
+                                       .previous = raster,
+                                       .previous_locations = previous_locations,
+                                       .point_size = true};
+        const auto geometry = BuildBarycentricGeometryShader(stage);
+        CheckSpirvBinaryValidates(geometry);
+        CheckStageInterfaceMatches(vertex.spirv, geometry, true,
+                                   "geometry stage reads a location the vertex stage lacks");
+        CheckStageInterfaceMatches(geometry, pixel.spirv, false,
+                                   "geometry stage does not feed the pixel shader");
+        // Adreno links only gl_PerVertex members, not separate geometry input arrays.
+        Check(SpirvHasDecorationValue(geometry, kBuiltIn, 9u /* Layer */) &&
+                  SpirvHasMemberDecorationValue(geometry, kBuiltIn, 3u /* ClipDistance */) &&
+                  SpirvHasMemberDecorationValue(geometry, kBuiltIn, 4u /* CullDistance */) &&
+                  !SpirvHasDecorationValue(geometry, kBuiltIn, 3u) &&
+                  !SpirvHasDecorationValue(geometry, kBuiltIn, 4u) &&
+                  SpirvHasDecorationValue(geometry, kBuiltIn, 7u /* PrimitiveId */) &&
+                  SpirvHasMemberDecorationValue(geometry, kBuiltIn, 1u /* PointSize */) ==
+                      (primitive == BarycentricPrimitive::Points),
+              "geometry stage dropped a pre-rasterization built-in");
+      }
+    }
+    // A pixel shader reading gl_Layer still gets one when the vertex stage writes none.
+    emulation.layer = true;
+    const BarycentricGeometryStage bare{.fragment = &emulation, .previous_locations = 1u};
+    const auto geometry = BuildBarycentricGeometryShader(bare);
+    CheckSpirvBinaryValidates(geometry);
+    Check(SpirvHasDecorationValue(geometry, kBuiltIn, 9u /* Layer */) &&
+              !SpirvHasMemberDecorationValue(geometry, kBuiltIn, 3u),
+          "geometry stage did not supply gl_Layer to the pixel shader");
   }
 }
 
@@ -16096,6 +16482,7 @@ int main() {
   TestPerspectiveCentroidInputs();
   TestPerspectiveSampleInputs();
   TestNativePixelInterpolationFallback();
+  TestEmulatedBarycentricGeometryStage();
   TestSubgroupIsolatedVertexStage();
   TestGraphicsCreateInterpolantMapping();
   TestNewShaderRecompilerPixelPipelineEntry();

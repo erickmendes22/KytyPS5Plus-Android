@@ -168,13 +168,7 @@ uint32_t EmitAttribute(EmitterState& state, uint32_t attr, uint32_t chan) {
 		return EmitVertexParameterComponentU32(state, *input, chan & 3u);
 	}
 	const auto load_per_vertex = [&](uint32_t vertex) {
-		const auto pointer = state.builder.AllocateId();
-		const auto value   = state.builder.AllocateId();
-		state.builder.AddFunction(
-		    spv::OpAccessChain, TypePointer(state, spv::StorageClassInput, TypeF32(state)), pointer,
-		    input->variable_id, ConstantU32(state, vertex), ConstantU32(state, chan & 3u));
-		state.builder.AddFunction(spv::OpLoad, TypeF32(state), value, pointer);
-		return value;
+		return EmitPerVertexComponentF32(state, *input, vertex, chan & 3u);
 	};
 	if (input->per_vertex) {
 		if (PixelParameterIsFlat(state, attr)) {
@@ -234,13 +228,7 @@ uint32_t EmitInterpolationParameter(ValueEmitContext& ctx, uint32_t attr, uint32
 		return EmitAttribute(ctx.state, attr, chan);
 	}
 	const auto load_vertex = [&](uint32_t vertex) {
-		const auto pointer = state.builder.AllocateId();
-		const auto value   = state.builder.AllocateId();
-		state.builder.AddFunction(
-		    spv::OpAccessChain, TypePointer(state, spv::StorageClassInput, TypeF32(state)), pointer,
-		    input->variable_id, ConstantU32(state, vertex), ConstantU32(state, chan & 3u));
-		state.builder.AddFunction(spv::OpLoad, TypeF32(state), value, pointer);
-		return value;
+		return EmitPerVertexComponentF32(state, *input, vertex, chan & 3u);
 	};
 
 	uint32_t selected_vertex = (mode + 1u) % 3u;
@@ -352,6 +340,19 @@ uint32_t ExportVector(ValueEmitContext& ctx, uint32_t data, const IR::ExportInfo
 	return vector;
 }
 
+// Copies a layer (component 0) or viewport index (component 1) write to the varying an
+// emulated-barycentric geometry stage reads them from.
+void StoreLayerViewportMirror(EmitterState& state, uint32_t component, uint32_t value) {
+	if (state.layer_viewport_mirror_variable == 0) {
+		return;
+	}
+	const auto pointer = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAccessChain,
+	                          TypePointer(state, spv::StorageClassOutput, TypeU32(state)), pointer,
+	                          state.layer_viewport_mirror_variable, ConstantU32(state, component));
+	state.builder.AddFunction(spv::OpStore, pointer, value);
+}
+
 void EmitAuxPositionExport(ValueEmitContext& ctx, uint32_t data, const IR::ExportInfo& exp) {
 	auto& state = ctx.state;
 	for (uint32_t component = 0; component < 4; component++) {
@@ -370,6 +371,7 @@ void EmitAuxPositionExport(ValueEmitContext& ctx, uint32_t data, const IR::Expor
 				                         ? MeshOutputPointer(state, IR::StageOutputKind::Layer)
 				                         : state.layer_variable;
 				state.builder.AddFunction(spv::OpStore, pointer, layer);
+				StoreLayerViewportMirror(state, 0u, layer);
 			}
 			if (output.viewport) {
 				// GFX10 MISC.z packs the viewport index in bits 16..19 alongside the layer.
@@ -377,6 +379,7 @@ void EmitAuxPositionExport(ValueEmitContext& ctx, uint32_t data, const IR::Expor
 				state.builder.AddFunction(spv::OpBitFieldUExtract, TypeU32(state), viewport, raw,
 				                          ConstantU32(state, 16), ConstantU32(state, 4));
 				state.builder.AddFunction(spv::OpStore, state.viewport_index_variable, viewport);
+				StoreLayerViewportMirror(state, 1u, viewport);
 			}
 			continue;
 		}
@@ -448,6 +451,25 @@ uint32_t ConvertPositionToClipSpace(EmitterState& state, uint32_t position) {
 }
 
 } // namespace
+
+uint32_t EmitPerVertexComponentF32(EmitterState& state, const InputBinding& input, uint32_t vertex,
+                                   uint32_t component) {
+	const bool emulated = BarycentricsEmulated(state);
+	const auto type     = emulated ? TypeU32(state) : TypeF32(state);
+	const auto pointer  = state.builder.AllocateId();
+	const auto value    = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAccessChain, TypePointer(state, spv::StorageClassInput, type),
+	                          pointer, input.variable_id, ConstantU32(state, vertex),
+	                          ConstantU32(state, component));
+	state.builder.AddFunction(spv::OpLoad, type, value, pointer);
+	if (!emulated) {
+		return value;
+	}
+	const auto bits = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpBitcast, TypeF32(state), bits, value);
+	return bits;
+}
+
 uint32_t EmitWqmU64(EmitterState& state, uint32_t value) {
 	const auto shifted_one = state.builder.AllocateId();
 	const auto merged_one  = state.builder.AllocateId();
