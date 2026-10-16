@@ -110,15 +110,17 @@ int DoubleViaGuestCallback(int (*fn)(int), int value) {
 uint64_t g_tls_block[4] = {0, 0, 0xC0FFEE1234ull, 0};
 
 std::atomic<int> g_guard_faults {0};
+std::atomic<int> g_guard_writes {0};
 void*            g_guard_page  = nullptr;
 
-bool GuardFault(uintptr_t address) {
+bool GuardFault(uintptr_t address, bool is_write) {
   const auto page = reinterpret_cast<uintptr_t>(g_guard_page);
   if (g_guard_page == nullptr || address < page || address >= page + 4096) {
     return false;
   }
   mprotect(g_guard_page, 4096, PROT_READ | PROT_WRITE);
   g_guard_faults.fetch_add(1);
+  g_guard_writes.fetch_add(is_write ? 1 : 0);
   return true;
 }
 
@@ -201,7 +203,8 @@ void TestHostFaultHandler() {
   const uint64_t args[1] = {reinterpret_cast<uint64_t>(page)};
   CallGuest(store, args);
 
-  const bool ok = reinterpret_cast<volatile uint64_t*>(page)[3] == 0xABCDEF && g_guard_faults.load() == 1;
+  const bool ok = reinterpret_cast<volatile uint64_t*>(page)[3] == 0xABCDEF && g_guard_faults.load() == 1 &&
+                  g_guard_writes.load() == 1;
   Check(ok, "T5 host fault handler first (GPU page tracking)");
   std::puts("PASS T5 host fault handler first (GPU page tracking)");
 }

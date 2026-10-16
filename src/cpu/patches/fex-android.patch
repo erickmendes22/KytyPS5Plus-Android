@@ -331,7 +331,7 @@ index 7b0e9f91c..b36dbeae7 100644
  #include "LinuxSyscalls/Seccomp/SeccompEmulator.h"
  
 diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
-index b4c7b24b3..b8103df85 100644
+index b4c7b24b3..96600af53 100644
 --- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
 +++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
 @@ -30,6 +30,7 @@ $end_info$
@@ -412,7 +412,20 @@ index b4c7b24b3..b8103df85 100644
    FEXCORE_PROFILE_ACCUMULATION(ThreadObject->Thread, AccumulatedSignalTime);
    ThreadObject->SignalInfo.Delegator->HandleSignal(ThreadObject, Signal, Info, UContext);
  }
-@@ -896,6 +948,10 @@ SignalDelegator::SignalDelegator(FEXCore::Context::Context* _CTX, const std::str
+@@ -103,6 +155,12 @@ void SignalDelegator::RegisterHostSignalHandler(int Signal, HostSignalDelegatorF
+   FrontendRegisterHostSignalHandler(Signal, Required);
+ }
+ 
++void SignalDelegator::RegisterHostSignalHandlerFirst(int Signal, HostSignalDelegatorFunction Func, bool Required) {
++  auto& Handlers = HostHandlers[Signal].Handlers;
++  Handlers.insert(Handlers.begin(), std::move(Func));
++  FrontendRegisterHostSignalHandler(Signal, Required);
++}
++
+ void SignalDelegator::SpillSRA(FEXCore::Core::InternalThreadState* Thread, void* ucontext, uint32_t IgnoreMask) {
+ #ifdef ARCHITECTURE_arm64
+   Thread->CurrentFrame->State.rip = CTX->RestoreRIPFromHostPC(Thread, ArchHelpers::Context::GetPc(ucontext));
+@@ -896,6 +954,10 @@ SignalDelegator::SignalDelegator(FEXCore::Context::Context* _CTX, const std::str
    , ApplicationName {ApplicationName}
    , SupportsAVX {SupportsAVX}
    , SupportsSVE256 {SupportsSVE256} {
@@ -423,7 +436,7 @@ index b4c7b24b3..b8103df85 100644
    // Signal zero isn't real
    HostHandlers[0].Installed = true;
  
-@@ -1051,6 +1107,10 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
+@@ -1051,6 +1113,10 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
    // Get the current host signal mask
    ::syscall(SYS_rt_sigprocmask, 0, nullptr, &Thread->SignalInfo.CurrentSignalMask.Val, 8);
  
@@ -434,7 +447,7 @@ index b4c7b24b3..b8103df85 100644
    if (Thread->Thread) {
      // Reserve a small amount of deferred signal frames. Usually the stack won't be utilized beyond
      // 1 or 2 signals but add a few more just in case.
-@@ -1059,6 +1119,9 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
+@@ -1059,6 +1125,9 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
  }
  
  void SignalDelegator::UninstallTLSState(FEX::HLE::ThreadStateObject* Thread) {
@@ -445,7 +458,7 @@ index b4c7b24b3..b8103df85 100644
  
    Thread->SignalInfo.AltStackPtr = nullptr;
 diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h
-index c37d82c3e..ee46858aa 100644
+index c37d82c3e..81c935363 100644
 --- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h
 +++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h
 @@ -63,6 +63,16 @@ public:
@@ -464,6 +477,21 @@ index c37d82c3e..ee46858aa 100644
 +
    /**
     * @brief Registers a signal handler for the host to handle a signal
+    *
+@@ -70,6 +80,14 @@ public:
+    */
+   void RegisterHostSignalHandler(int Signal, HostSignalDelegatorFunction Func, bool Required);
+ 
++  /**
++   * @brief Like RegisterHostSignalHandler, but the handler runs before those already registered
++   *
++   * For an embedder that write-protects guest memory itself: FEX's SMC tracking would otherwise claim
++   * every write fault in a writable guest mapping and unprotect the page.
++   */
++  void RegisterHostSignalHandlerFirst(int Signal, HostSignalDelegatorFunction Func, bool Required);
++
+   /**
+    * @brief Registers a signal handler for the host to handle a signal specifically for guest handling
     *
 diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp
 index 0a51b98a3..02eb034bd 100644

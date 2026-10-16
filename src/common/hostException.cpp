@@ -1,4 +1,5 @@
 #include "common/hostException.h"
+#include "common/hostFaultAccess.h"
 
 #include "common/hostArch.h"
 
@@ -263,6 +264,11 @@ static AccessViolationType DecodeArm64Access(uint64_t esr) {
 	return (esr & ESR_DATA_ABORT_WNR) != 0 ? AccessViolationType::Write : AccessViolationType::Read;
 }
 
+bool IsWriteFault(const void* native_context) {
+	return DecodeArm64Access(FindFaultEsr(static_cast<const ucontext_t*>(native_context))) ==
+	       AccessViolationType::Write;
+}
+
 // ARM64 host: faults here come from host code (e.g. GPU page tracking touching guest memory). Guest
 // x86 register state lives in the guest CPU translator, so the x86 register fields stay zero.
 static void SignalHandler(int signal_number, siginfo_t* signal_info, void* native_context) {
@@ -292,6 +298,13 @@ static void SignalHandler(int signal_number, siginfo_t* signal_info, void* nativ
 	ChainToDefault(signal_number);
 }
 #else
+bool IsWriteFault(const void* native_context) {
+	const auto error_code = static_cast<uint64_t>(
+	    static_cast<const ucontext_t*>(native_context)->uc_mcontext.gregs[REG_ERR]);
+	return (error_code & PAGE_FAULT_ERROR_INSTRUCTION) == 0 &&
+	       (error_code & PAGE_FAULT_ERROR_WRITE) != 0;
+}
+
 static void SignalHandler(int signal_number, siginfo_t* signal_info, void* native_context) {
 	auto* context = static_cast<ucontext_t*>(native_context);
 	auto* gregs   = context->uc_mcontext.gregs;

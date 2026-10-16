@@ -22,8 +22,10 @@ namespace Cpu::GuestCpu {
 using HleThunk = Loader::GuestAbi::HleThunk;
 
 // Host-first SIGSEGV hook. Runs before the translator's own handling; return true to claim the
-// fault (the faulting guest instruction is then retried), false to pass it on.
-using HostFaultHandler = bool (*)(uintptr_t fault_address);
+// fault (the faulting guest instruction is then retried), false to pass it on. The translator treats
+// unclaimed write faults in the guest code window as self-modifying code and unprotects the page, so
+// a host that write-protects guest memory (GPU write tracking) must claim its faults here.
+using HostFaultHandler = bool (*)(uintptr_t fault_address, bool is_write);
 
 // Largest number of integer arguments CallGuest passes in registers (RDI, RSI, RDX, RCX, R8, R9).
 inline constexpr size_t kMaxCallArgs = 6;

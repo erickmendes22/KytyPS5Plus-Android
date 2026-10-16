@@ -98,7 +98,7 @@ void CallbackThunk(CallFrame& frame) {
 void*            g_guard_page   = nullptr;
 std::atomic<int> g_guard_faults {0};
 
-bool GuardFault(uintptr_t address) {
+bool GuardFault(uintptr_t address, bool /*is_write*/) {
 	const auto page = reinterpret_cast<uintptr_t>(g_guard_page);
 	if (g_guard_page == nullptr || address < page || address >= page + kPageSize) {
 		return false;

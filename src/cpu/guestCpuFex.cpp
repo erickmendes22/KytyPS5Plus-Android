@@ -3,6 +3,8 @@
 
 #include "cpu/guestCpuFex.h"
 
+#include "common/hostFaultAccess.h"
+
 #include "CodeLoader.h"
 #include "Common/Config.h"
 #include "Common/HostFeatures.h"
@@ -92,13 +94,14 @@ struct SavedGuestRegs {
 };
 
 // FEX delivers Kyty's SIGSEGV hook through the signal delegator, before its own handling.
-bool HostSigsegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/, void* info, void* /*ucontext*/) {
+bool HostSigsegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/, void* info, void* ucontext) {
 	auto* handler = g_fault_handler.load(std::memory_order_acquire);
 	if (handler == nullptr) {
 		return false;
 	}
-	const auto* si = static_cast<const siginfo_t*>(info);
-	return handler(reinterpret_cast<uintptr_t>(si->si_addr));
+	const auto* si       = static_cast<const siginfo_t*>(info);
+	const bool  is_write = Common::HostException::IsWriteFault(ucontext);
+	return handler(reinterpret_cast<uintptr_t>(si->si_addr), is_write);
 }
 
 void FexMsgHandler(LogMan::DebugLevels /*level*/, const char* message) {
@@ -378,7 +381,7 @@ void RegisterHostFaultHandler(HostFaultHandler handler) {
 	static std::once_flag once;
 	g_fault_handler.store(handler, std::memory_order_release);
 	std::call_once(once, [] {
-		Fex::GetRuntime().signals->RegisterHostSignalHandler(SIGSEGV, HostSigsegv, true);
+		Fex::GetRuntime().signals->RegisterHostSignalHandlerFirst(SIGSEGV, HostSigsegv, true);
 	});
 }
 

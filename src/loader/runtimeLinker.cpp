@@ -692,6 +692,14 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 	return true;
 }
 
+#if KYTY_HOST_ARM64
+static bool GuestGpuFault(uintptr_t fault_address, bool is_write) {
+	return Libs::LibKernel::Memory::HandleGpuFault(
+	    is_write ? Libs::Graphics::PageFaultAccess::Write : Libs::Graphics::PageFaultAccess::Read,
+	    fault_address);
+}
+#endif
+
 static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exception_info) {
 	const auto* info = &exception_info;
 
@@ -1814,6 +1822,12 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	if (!Common::HostException::InstallHandler(KytyExceptionHandler)) {
 		EXIT("Failed to install the required vectored exception handler\n");
 	}
+#if KYTY_HOST_ARM64
+	// Faults raised by translated guest code reach the translator's signal handler, not the one
+	// above. Claim the ones GPU write tracking caused; the translator would otherwise unprotect the
+	// page as self-modifying code and the GPU caches would never see the CPU write.
+	Cpu::GuestCpu::RegisterHostFaultHandler(GuestGpuFault);
+#endif
 
 	std::vector<std::pair<uint64_t, uint64_t>> executable_segments;
 	uint64_t                                   eh_frame_header_addr = 0;
