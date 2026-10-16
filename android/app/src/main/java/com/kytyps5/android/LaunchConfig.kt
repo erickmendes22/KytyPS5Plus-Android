@@ -31,9 +31,25 @@ object LaunchArgs {
     private const val FLAG_SCREEN_WIDTH = "--screen-width"
     private const val FLAG_SCREEN_HEIGHT = "--screen-height"
 
-    fun forGame(gamePath: String, resolution: Resolution): Array<String> = arrayOf(
-        FLAG_GAME, gamePath,
-        FLAG_SCREEN_WIDTH, resolution.width.toString(),
-        FLAG_SCREEN_HEIGHT, resolution.height.toString(),
-    )
+    /** Directory of an imported Vulkan driver package; omitted for the system driver. */
+    const val FLAG_GPU_DRIVER = "--gpu-driver"
+
+    fun forGame(gamePath: String, resolution: Resolution, gpuDriverDir: String? = null): Array<String> =
+        arrayOf(
+            FLAG_GAME, gamePath,
+            FLAG_SCREEN_WIDTH, resolution.width.toString(),
+            FLAG_SCREEN_HEIGHT, resolution.height.toString(),
+        ) + (gpuDriverDir?.let { arrayOf(FLAG_GPU_DRIVER, it) } ?: emptyArray())
+}
+
+/** Which GPU driver a launch uses: a per-game override wins over the global choice. */
+object GpuDriverChoice {
+    /**
+     * Effective driver id: [gameOverride] when set, else [globalId]. "" (or an id that is no longer
+     * imported, per [isImported]) means the system driver and resolves to null.
+     */
+    fun resolve(globalId: String, gameOverride: String?, isImported: (String) -> Boolean): String? {
+        val id = gameOverride ?: globalId
+        return id.takeIf { it != LauncherSettings.SYSTEM_DRIVER && isImported(it) }
+    }
 }

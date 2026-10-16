@@ -13,10 +13,14 @@ val kytyNativeDir: File = rootProject.file(
     providers.gradleProperty("kytyNativeDir").getOrElse("../_Build/android")
 )
 // SDL3 is built shared and must ship beside libmain.so (SDLActivity loads it first).
+// libadrenotools' hook libraries are dlopen()ed from nativeLibraryDir when --gpu-driver selects a
+// custom Vulkan driver.
+val adrenotoolsHookDir: File = kytyNativeDir.resolve("3rdparty/libadrenotools/src/hook")
 val kytyNativeLibs: Map<String, File> = mapOf(
     "libSDL3.so" to kytyNativeDir.resolve("3rdparty/SDL3/libSDL3.so"),
     "libmain.so" to kytyNativeDir.resolve("libmain.so"),
-)
+) + listOf("libhook_impl.so", "libmain_hook.so", "libfile_redirect_hook.so", "libgsl_alloc_hook.so")
+    .associateWith { adrenotoolsHookDir.resolve(it) }
 val kytyJniLibsDir: File = layout.projectDirectory.dir("src/main/jniLibs/arm64-v8a").asFile
 
 val syncKytyNativeLibs = tasks.register("syncKytyNativeLibs") {

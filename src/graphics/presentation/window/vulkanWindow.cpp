@@ -18,6 +18,7 @@
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
+#include "graphics/presentation/window/vulkanDriverLoader.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "kernel/memory.h"
 #include "libs/controller.h"
@@ -905,8 +906,7 @@ void WindowContext::CreateVulkan() {
 	EXIT_IF(graphic_ctx.device != nullptr);
 	EXIT_IF(surface != nullptr);
 
-	auto get_instance_proc_addr =
-	    reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+	auto get_instance_proc_addr = VulkanDriver::LoadInstanceProcAddr();
 	if (get_instance_proc_addr == nullptr) {
 		EXIT("Could not load Vulkan: %s\n", SDL_GetError());
 	}
@@ -981,7 +981,16 @@ void WindowContext::CreateVulkan() {
 	inst_info.ppEnabledLayerNames =
 	    (r.enable_validation_layers ? r.required_layers.data() : nullptr);
 
-	const vk::Result result = vk::createInstance(&inst_info, nullptr, &graphic_ctx.instance);
+	vk::Result result = vk::createInstance(&inst_info, nullptr, &graphic_ctx.instance);
+	if (result != vk::Result::eSuccess) {
+		// A custom driver (--gpu-driver) that loads but cannot create an instance falls back to the
+		// system driver once, with the same instance parameters.
+		if (auto system_gipa = VulkanDriver::FallBackToSystemDriver(); system_gipa != nullptr) {
+			LOGF("vkCreateInstance with the custom driver failed: %s\n", vk::to_string(result).c_str());
+			VULKAN_HPP_DEFAULT_DISPATCHER.init(system_gipa);
+			result = vk::createInstance(&inst_info, nullptr, &graphic_ctx.instance);
+		}
+	}
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eErrorIncompatibleDriver:
@@ -1000,9 +1009,8 @@ void WindowContext::CreateVulkan() {
 	}
 
 	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
-	if (!SDL_Vulkan_CreateSurface(window, static_cast<vk::Instance::CType>(graphic_ctx.instance),
-	                              nullptr, &native_surface)) {
-		EXIT("Could not create a Vulkan surface");
+	if (!VulkanDriver::CreateSurface(window, graphic_ctx.instance, &native_surface)) {
+		EXIT("Could not create a Vulkan surface: %s\n", SDL_GetError());
 	}
 	surface = native_surface;
 
@@ -1043,6 +1051,7 @@ void WindowContext::CreateVulkan() {
 	const auto& device_properties = graphic_ctx.GetPhysicalDeviceProperties();
 
 	LOGF("Select device: %s\n", device_properties.deviceName.data());
+	VulkanDriver::LogDeviceCaps(graphic_ctx.physical_device);
 
 	const vk::PhysicalDeviceImageFormatInfo2 block_texel_view_info {
 	    .format = vk::Format::eBc1RgbaUnormBlock,
@@ -1119,8 +1128,7 @@ void WindowContext::RecreateSurface() {
 		surface = nullptr;
 	}
 	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
-	if (!SDL_Vulkan_CreateSurface(window, static_cast<vk::Instance::CType>(graphic_ctx.instance),
-	                              nullptr, &native_surface)) {
+	if (!VulkanDriver::CreateSurface(window, graphic_ctx.instance, &native_surface)) {
 		EXIT("Could not recreate the Vulkan surface: %s\n", SDL_GetError());
 	}
 	surface = native_surface;

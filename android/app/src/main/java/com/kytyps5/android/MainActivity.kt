@@ -29,6 +29,7 @@ import java.util.concurrent.Executors
 class MainActivity : Activity() {
 
     private lateinit var settings: LauncherSettings
+    private lateinit var drivers: GpuDriverPanel
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var scanRequest = 0
@@ -46,6 +47,14 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = LauncherSettings(this)
+        drivers = GpuDriverPanel(
+            activity = this,
+            settings = settings,
+            worker = worker,
+            post = { mainHandler.post(it) },
+            showMessage = ::showMessage,
+            label = { label(it) },
+        )
         setContentView(buildUi())
     }
 
@@ -108,6 +117,8 @@ class MainActivity : Activity() {
             )
             addView(label("Resolution", bold = true))
             addView(resolutionGroup)
+            addView(label("GPU driver", bold = true))
+            addView(drivers.build(onChanged = {}))
             addView(message)
             addView(
                 ScrollView(context).apply { addView(gameList) },
@@ -174,6 +185,10 @@ class MainActivity : Activity() {
     @Deprecated("Platform Activity result API; this launcher has no AndroidX dependency.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == GpuDriverPanel.REQUEST_PICK_DRIVER && resultCode == RESULT_OK) {
+            data?.data?.let(drivers::onPicked)
+            return
+        }
         if (requestCode != REQUEST_PICK_GAMES_FOLDER || resultCode != RESULT_OK) return
         val path = data?.data?.let(StoragePaths::treeUriToPath)
         if (path == null) {
@@ -225,13 +240,17 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
         addView(Button(context).apply {
+            text = drivers.gameButtonText(game.path)
+            setOnClickListener { drivers.chooseForGame(game) { text = drivers.gameButtonText(game.path) } }
+        })
+        addView(Button(context).apply {
             text = "Play"
             setOnClickListener { launch(game) }
         })
     }
 
     private fun launch(game: GameEntry) {
-        val args = LaunchArgs.forGame(game.path, settings.resolution)
+        val args = LaunchArgs.forGame(game.path, settings.resolution, drivers.driverDirFor(game.path))
         startActivity(Intent(this, GameActivity::class.java).putExtra(LaunchArgs.EXTRA_GAME_ARGS, args))
     }
 

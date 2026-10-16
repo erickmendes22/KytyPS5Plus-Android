@@ -106,6 +106,13 @@ if(APPLE)
 endif()
 add_subdirectory(SDL3)
 
+if(ANDROID)
+	# libadrenotools (BSD-2-Clause, pinned submodule): loads a user-supplied Vulkan driver such as
+	# Mesa Turnip through a private linker namespace. Its hook libraries (libhook_impl.so,
+	# libmain_hook.so, ...) must ship beside libmain.so in the APK's nativeLibraryDir.
+	add_subdirectory(libadrenotools EXCLUDE_FROM_ALL)
+endif()
+
 add_library(Vulkan-Headers INTERFACE)
 add_library(Vulkan::Headers ALIAS Vulkan-Headers)
 target_include_directories(Vulkan-Headers INTERFACE
