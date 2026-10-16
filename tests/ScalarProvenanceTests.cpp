@@ -208,6 +208,31 @@ void TestNestedSrtWalk() {
         "nested typed SRT reads were not evaluated in dependency order");
 }
 
+void TestUnmappedSrtPointerReadsZero() {
+  // A host walk also visits EXEC-masked blocks the GPU skips, so a null table
+  // pointer must read as zero (unmapped page) instead of being dereferenced.
+  Fixture fixture;
+  const auto memory = fixture.AddMemory(ResourceKind::ScalarAddress);
+  const auto pointer = RawRead(
+      fixture, Address(fixture, Value(0x1000u), Value(0u)), Value(0u), memory);
+  const auto value =
+      RawRead(fixture, Address(fixture, pointer, Value(0u)), Value(24u), memory);
+  LoadBuffer(fixture, {value, Value(0u), Value(16u), Value(0u)});
+  fixture.Plan();
+
+  TestMemory memory_image{{{0x1000u, 0u}, {0x18u, 0xdeadbeefu}}};
+  SrtRuntime runtime{.read_memory = ReadMemory,
+                     .userdata = &memory_image,
+                     .mapped = [](uint64_t address, uint64_t size) {
+                       return address >= 0x1000u && address + size <= 0x2000u;
+                     }};
+  std::vector<uint32_t> flat;
+  Check(SrtWalker(ExtractResourcePlan(fixture.program), runtime).RefreshFlatBuffer(flat),
+        "SRT walk through an unmapped pointer failed");
+  Check(flat == std::vector<uint32_t>({0u, 0u}) && memory_image.reads == 1,
+        "an unmapped SRT read was not zero or touched guest memory");
+}
+
 void TestShaderBaseAndUserData() {
   Fixture fixture;
   const auto base = fixture.Emit(ValueOpcode::GetShaderBase);
@@ -745,6 +770,7 @@ int main() {
     TestScalarMemoryDomainMismatchFails();
     TestDynamicReadRemainsTyped();
     TestNestedSrtWalk();
+    TestUnmappedSrtPointerReadsZero();
     TestShaderBaseAndUserData();
     TestCarryAndBitFields();
     TestInvariantAndDivergentPhi();

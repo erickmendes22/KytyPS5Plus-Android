@@ -11,6 +11,8 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 class Value;
 
 using SrtMemoryReader = bool (*)(void* userdata, uint64_t address, std::span<uint32_t> values);
+// Reports whether [address, address + size) is mapped guest memory.
+using SrtAddressProbe = bool (*)(uint64_t address, uint64_t size);
 
 struct SrtRuntime {
 	std::span<const uint32_t> user_data;
@@ -19,6 +21,10 @@ struct SrtRuntime {
 	void*                     userdata                   = nullptr;
 	SrtMemoryReader           read_specialization_memory = nullptr;
 	std::span<const uint32_t> workgroup_counts;
+	// Optional. Host evaluation also reads blocks the GPU may skip (EXEC-masked branches), so
+	// a scalar address there can be unmapped (e.g. a null pointer the guest never follows).
+	// Such a read yields zero instead of a host fault, as an AMD GPU's unmapped-page read does.
+	SrtAddressProbe           mapped                     = nullptr;
 };
 
 class SrtReadCapture {
