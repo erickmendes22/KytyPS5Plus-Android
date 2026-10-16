@@ -18,6 +18,34 @@ data class FrameStats(val frame: Long, val fps: Double) {
     }
 }
 
+/**
+ * Physical RAM and swap from /proc/meminfo, all in kB (the file's own unit). Used RAM is
+ * MemTotal - MemAvailable, so it can never exceed the total; zram/swap is reported separately
+ * instead of being mixed into RAM.
+ */
+data class MemInfo(val totalKb: Long, val availableKb: Long, val swapTotalKb: Long, val swapFreeKb: Long) {
+    val usedKb: Long get() = (totalKb - availableKb).coerceIn(0L, totalKb)
+    val swapUsedKb: Long get() = (swapTotalKb - swapFreeKb).coerceIn(0L, swapTotalKb)
+
+    companion object {
+        private val LINE = Regex("""^(\w+):\s+(\d+)\s*kB""", RegexOption.MULTILINE)
+
+        /** Null when MemTotal is missing; MemAvailable falls back to MemFree + Buffers + Cached (pre-3.14 kernels). */
+        fun parse(text: String): MemInfo? {
+            val values = LINE.findAll(text).associate { it.groupValues[1] to it.groupValues[2].toLong() }
+            val total = values["MemTotal"]?.takeIf { it > 0 } ?: return null
+            val available = values["MemAvailable"]
+                ?: ((values["MemFree"] ?: 0L) + (values["Buffers"] ?: 0L) + (values["Cached"] ?: 0L))
+            return MemInfo(
+                totalKb = total,
+                availableKb = available.coerceIn(0L, total),
+                swapTotalKb = values["SwapTotal"] ?: 0L,
+                swapFreeKb = values["SwapFree"] ?: 0L,
+            )
+        }
+    }
+}
+
 /** Filesystem access for [SysfsSensors]; the real one reads files, tests use a map. */
 interface SensorFiles {
     fun read(path: String): String?

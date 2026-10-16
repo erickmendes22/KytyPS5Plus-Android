@@ -53,10 +53,11 @@ class GameOverlays(
 
     val root: View = FrameLayout(activity).apply {
         addView(controller, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        // Top centre, just below the touch-pad button, clear of the shoulder buttons in the corners.
-        addView(performanceHud.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+        // Top-left corner just below L2/L1: game titles and HUDs are usually centred at the top.
+        addView(performanceHud.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
             val metrics = activity.resources.displayMetrics
             topMargin = (minOf(metrics.widthPixels, metrics.heightPixels) * HUD_TOP_FRACTION).toInt()
+            leftMargin = 12.dp
         })
         addView(editor.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
             topMargin = 8.dp

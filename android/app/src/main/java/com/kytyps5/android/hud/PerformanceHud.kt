@@ -1,6 +1,5 @@
 package com.kytyps5.android.hud
 
-import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -80,9 +79,6 @@ class PerformanceHud(context: Context) {
     }
 
     private fun sample(): HudSample {
-        val memory = ActivityManager.MemoryInfo().also {
-            (appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(it)
-        }
         val battery = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
         val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
@@ -94,8 +90,7 @@ class PerformanceHud(context: Context) {
             cpuTempC = sensors.cpuTempC(),
             gpuTempC = sensors.gpuTempC(),
             gpuLoadPercent = sensors.gpuLoadPercent(),
-            ramUsedMiB = ((memory.totalMem - memory.availMem) shr 20).toInt(),
-            ramTotalMiB = (memory.totalMem shr 20).toInt(),
+            memory = RealSensorFiles.read(PROC_MEMINFO)?.let(MemInfo::parse),
             appRssMiB = RealSensorFiles.read(PROC_STATUS)?.let(SysfsSensors::parseVmRssMiB),
             batteryPercent = if (level >= 0 && scale > 0) level * 100 / scale else null,
             batteryTempC = if (temp != Int.MIN_VALUE) temp / 10f else null,
@@ -108,5 +103,6 @@ class PerformanceHud(context: Context) {
         const val INTERVAL_MS = 1000L
         const val STALE_FPS_MS = 3000L
         val PROC_STATUS = File("/proc/self/status").path
+        val PROC_MEMINFO = File("/proc/meminfo").path
     }
 }

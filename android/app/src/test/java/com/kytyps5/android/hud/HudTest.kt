@@ -63,6 +63,44 @@ class HudTest {
         assertNull(SysfsSensors.parseTemperature("n/a"))
     }
 
+    /** Shape of the OnePlus Pad 3's /proc/meminfo: 16 GB RAM plus a large zram swap. */
+    private val padMeminfo = """
+        MemTotal:       15833884 kB
+        MemFree:          402116 kB
+        MemAvailable:    6123456 kB
+        Buffers:            2048 kB
+        Cached:          5700000 kB
+        SwapCached:       120000 kB
+        SwapTotal:      12582908 kB
+        SwapFree:        4194304 kB
+    """.trimIndent()
+
+    @Test
+    fun meminfoUsedIsTotalMinusAvailableAndSwapIsSeparate() {
+        val mem = MemInfo.parse(padMeminfo)!!
+        assertEquals(15833884L - 6123456L, mem.usedKb)
+        assertEquals(12582908L - 4194304L, mem.swapUsedKb)
+        val lines = HudFormatter.lines(HudSample(memory = mem))
+        assertEquals(listOf("FPS --", "RAM 9.3/15.1 GB", "SWAP 8.0/12.0 GB"), lines)
+    }
+
+    @Test
+    fun usedRamNeverExceedsTotal() {
+        val mem = MemInfo.parse("MemTotal: 1000 kB\nMemAvailable: 5000 kB\nSwapTotal: 0 kB")!!
+        assertEquals(0L, mem.usedKb)
+        val bogus = MemInfo(totalKb = 1000, availableKb = -50, swapTotalKb = 10, swapFreeKb = 99)
+        assertEquals(1000L, bogus.usedKb)
+        assertEquals(0L, bogus.swapUsedKb)
+        assertEquals(listOf("FPS --", "RAM 0.0/0.0 GB"), HudFormatter.lines(HudSample(memory = mem)))
+    }
+
+    @Test
+    fun meminfoWithoutMemAvailableFallsBackAndGarbageIsNull() {
+        val old = MemInfo.parse("MemTotal: 4000 kB\nMemFree: 1000 kB\nBuffers: 500 kB\nCached: 500 kB")!!
+        assertEquals(2000L, old.usedKb)
+        assertNull(MemInfo.parse("nothing here"))
+    }
+
     @Test
     fun parsesVmRss() {
         assertEquals(2048, SysfsSensors.parseVmRssMiB("Name:\tmain\nVmRSS:\t 2097152 kB\nThreads: 9"))
@@ -78,8 +116,7 @@ class HudTest {
                 cpuTempC = 70.4f,
                 gpuTempC = 61f,
                 gpuLoadPercent = 88,
-                ramUsedMiB = 8192,
-                ramTotalMiB = 16384,
+                memory = MemInfo(totalKb = 16L shl 20, availableKb = 8L shl 20, swapTotalKb = 8L shl 20, swapFreeKb = 6L shl 20),
                 appRssMiB = 3000,
                 batteryPercent = 77,
                 batteryTempC = 36f,
@@ -87,7 +124,7 @@ class HudTest {
             ),
         )
         assertEquals(
-            listOf("FPS 60 16.7 ms", "CPU 70°C", "GPU 88% 61°C", "RAM 8.0/16.0 GB · app 3000 MB", "BAT 77%⚡ 36°C"),
+            listOf("FPS 60 16.7 ms", "CPU 70°C", "GPU 88% 61°C", "RAM 8.0/16.0 GB · app 3000 MB", "SWAP 2.0/8.0 GB", "BAT 77%⚡ 36°C"),
             full,
         )
     }
