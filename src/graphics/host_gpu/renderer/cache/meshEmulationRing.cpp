@@ -37,10 +37,15 @@ MeshEmulationRing::MeshEmulationRing(GraphicContext& graphics, CommandScheduler&
 
 MeshEmulationRing::~MeshEmulationRing() = default;
 
+// Pruning only consults GPU progress the renderer already observed. CommandScheduler::IsFree
+// would query the timeline for every unfinished range on every emulated mesh draw, a kernel call
+// that blocks for ~0.8 ms on Turnip (KGSL) while the GPU is busy.
+bool MeshEmulationRing::KnownFree(uint64_t tick) const {
+	return m_scheduler.GetMasterSemaphore().IsFree(tick);
+}
+
 void MeshEmulationRing::ReleaseRetired() {
-	std::erase_if(m_retired, [this](const auto& retired) {
-		return m_scheduler.IsFree(retired.second);
-	});
+	std::erase_if(m_retired, [this](const auto& retired) { return KnownFree(retired.second); });
 }
 
 void MeshEmulationRing::Grow(uint64_t size) {
@@ -75,11 +80,11 @@ MeshEmulationRing::Reservation MeshEmulationRing::Reserve(uint64_t size) {
 	// Ranges are in allocation order; any of them may overlap after a wrap.
 	std::erase_if(m_ranges, [&](const Range& range) {
 		if (range.end <= begin || range.begin >= end) {
-			return m_scheduler.IsFree(range.tick);
+			return KnownFree(range.tick);
 		}
 		if (range.tick == current) {
 			result.reuses_current = true;
-		} else if (!m_scheduler.IsFree(range.tick)) {
+		} else if (!KnownFree(range.tick)) {
 			const Common::PerfStats::ScopedWaitSite wait_site(Common::PerfStats::Wait::SemMeshRing);
 			m_scheduler.Wait(range.tick);
 		}

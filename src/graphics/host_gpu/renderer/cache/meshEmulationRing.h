@@ -50,8 +50,9 @@ private:
 		uint64_t end   = 0;
 	};
 
-	void Grow(uint64_t size);
-	void ReleaseRetired();
+	void               Grow(uint64_t size);
+	void               ReleaseRetired();
+	[[nodiscard]] bool KnownFree(uint64_t tick) const;
 
 	GraphicContext&                                       m_graphics;
 	CommandScheduler&                                     m_scheduler;
