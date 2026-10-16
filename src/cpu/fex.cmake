@@ -65,7 +65,7 @@ if(KYTY_GUEST_CPU_FEX)
 	# Symbol-prefix header keeps FEX's fmt and xxHash from clashing with Kyty's copies.
 	set(kyty_fex_prefix_header "${KYTY_SOURCE_DIR}/cpu/fexSymbolPrefix.h")
 
-	# Libraries FEXCore/LinuxEmulation need. JemallocLibs is FEX's fextl allocator hook (rpmalloc-backed),
+	# Libraries FEXCore/LinuxEmulation need. JemallocLibs is FEX's fextl allocator hook (rpmalloc-backed unless disabled below),
 	# not the glibc jemalloc: that one replaces malloc process-wide and is disabled (thunks are off).
 	set(kyty_fex_lib_files
 		FEXCore/Source/libFEXCore.a
@@ -77,10 +77,20 @@ if(KYTY_GUEST_CPU_FEX)
 		Source/Common/cpp-optparse/libcpp-optparse.a
 		External/fmt/libfmt.a
 		External/xxhash/cmake_unofficial/libxxhash.a
-		External/rpmalloc/librpmalloc.a
 		External/tiny-json/libtiny-json.a
 		External/SoftFloat-3e/libsoftfloat_3e.a
 		External/cephes/libcephes_128bit.a)
+	# rpmalloc gives every translator thread its own heap of 256 MiB spans (about 1 GiB of address space
+	# per thread). Android's 39-bit address space cannot afford that next to the guest windows, and the
+	# allocator only matters for 32-bit guests, so FEX's fextl allocations use the system allocator there.
+	if(ANDROID)
+		set(kyty_fex_allocator FALSE)
+		set(kyty_fex_rpmalloc_target)
+	else()
+		set(kyty_fex_allocator TRUE)
+		set(kyty_fex_rpmalloc_target rpmalloc)
+		list(APPEND kyty_fex_lib_files External/rpmalloc/librpmalloc.a)
+	endif()
 	set(kyty_fex_byproducts)
 	foreach(file IN LISTS kyty_fex_lib_files)
 		list(APPEND kyty_fex_byproducts "${kyty_fex_bin}/${file}")
@@ -109,9 +119,10 @@ if(KYTY_GUEST_CPU_FEX)
 			-DENABLE_LTO=FALSE
 			-DENABLE_CCACHE=FALSE
 			-DENABLE_JEMALLOC_GLIBC_ALLOC=FALSE
+			-DENABLE_FEX_ALLOCATOR=${kyty_fex_allocator}
 			-DTUNE_ARCH=generic
 			-DTUNE_CPU=none
-		BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target FEXCore LinuxEmulation Common CommonTools cpp-optparse fmt xxhash rpmalloc tiny-json softfloat_3e cephes_128bit JemallocLibs
+		BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target FEXCore LinuxEmulation Common CommonTools cpp-optparse fmt xxhash ${kyty_fex_rpmalloc_target} tiny-json softfloat_3e cephes_128bit JemallocLibs
 		INSTALL_COMMAND ""
 		BUILD_BYPRODUCTS ${kyty_fex_byproducts}
 	)

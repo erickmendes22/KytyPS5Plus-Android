@@ -38,6 +38,41 @@ index 2d2dfdebe..680117a6a 100644
  
  if (USE_LINKER)
    message(STATUS "Overriding linker to: ${USE_LINKER}")
+diff --git a/FEXCore/Source/CMakeLists.txt b/FEXCore/Source/CMakeLists.txt
+index dd8e4aa24..cff7bf3fc 100644
+--- a/FEXCore/Source/CMakeLists.txt
++++ b/FEXCore/Source/CMakeLists.txt
+@@ -305,10 +305,10 @@ endif()
+ # Meta-library to link jemalloc libraries enabled in the build configuration.
+ # Only needed for targets that run emulation. For others, use JemallocDummy.
+ add_library(JemallocLibs STATIC Utils/AllocatorHooks.cpp)
++target_include_directories(JemallocLibs PRIVATE "${PROJECT_SOURCE_DIR}/include/")
+ if (ENABLE_FEX_ALLOCATOR)
+   target_compile_definitions(JemallocLibs PRIVATE ENABLE_FEX_ALLOCATOR=1)
+   target_link_libraries(JemallocLibs PUBLIC rpmalloc)
+-  target_include_directories(JemallocLibs PRIVATE "${PROJECT_SOURCE_DIR}/include/")
+ endif()
+ if (ENABLE_JEMALLOC_GLIBC_ALLOC)
+   set_source_files_properties(Interface/HLE/Thunks/Thunks.cpp PROPERTIES COMPILE_DEFINITIONS ENABLE_JEMALLOC_GLIBC=1)
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+index 9f427da20..442797b3f 100644
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -344,7 +344,14 @@ public:
+   TrackingStructure BlockDebuggerTracker {};
+ public:
+   struct {
++#ifdef __ANDROID__
++    // Span of guest addresses the per-thread L2 lookup table indexes directly (8 bytes of address space
++    // per 4 KiB guest page; higher addresses alias, lookups still compare the full address). A 39-bit
++    // host cannot spend 128 MiB of address space per guest thread on it.
++    uint64_t VirtualMemSize {1ULL << 34};
++#else
+     uint64_t VirtualMemSize {1ULL << 36};
++#endif
+     uint64_t TSCScale = 0;
+ 
+     // Used if the JIT needs to have its interrupt fault code emitted.
 diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
 index ef7e33299..181dcac29 100644
 --- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
@@ -295,6 +330,141 @@ index 7b0e9f91c..b36dbeae7 100644
  #include "LinuxSyscalls/Seccomp/BPFEmitter.h"
  #include "LinuxSyscalls/Seccomp/SeccompEmulator.h"
  
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+index b4c7b24b3..b8103df85 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+@@ -30,6 +30,7 @@ $end_info$
+ #include <cstring>
+ #include <functional>
+ #include <linux/futex.h>
++#include <pthread.h>
+ #include <syscall.h>
+ #include <sys/mman.h>
+ #include <sys/signalfd.h>
+@@ -50,16 +51,67 @@ __attribute__((naked)) static void sigrestore() {
+ 
+ constexpr static uint32_t X86_MINSIGSTKSZ = 2048;
+ 
+-static FEX::HLE::ThreadStateObject* GetThreadFromAltStack(const stack_t& alt_stack) {
++[[maybe_unused]] static FEX::HLE::ThreadStateObject* GetThreadFromAltStack(const stack_t& alt_stack) {
+   // The thread object lives just before the alt-stack begin.
+   FEX::HLE::ThreadStateObject* ThreadObject {};
+   memcpy(&ThreadObject, reinterpret_cast<void*>(reinterpret_cast<uint64_t>(alt_stack.ss_sp) - 8), sizeof(void*));
+   return ThreadObject;
+ }
+ 
++#ifdef __ANDROID__
++// pthread_getspecific does not allocate, so unlike dynamic-model thread_local it is safe in a handler.
++static pthread_key_t ThreadObjectKey;
++static pthread_once_t ThreadObjectKeyOnce = PTHREAD_ONCE_INIT;
++static std::atomic<SignalDelegator*> ActiveDelegator {};
++
++static void CreateThreadObjectKey() {
++  if (pthread_key_create(&ThreadObjectKey, nullptr) != 0) {
++    LogMan::Msg::AFmt("Failed to create the signal thread-object key");
++  }
++}
++
++FEX::HLE::ThreadStateObject* SignalDelegator::GetRegisteredThreadObject() {
++  return static_cast<FEX::HLE::ThreadStateObject*>(pthread_getspecific(ThreadObjectKey));
++}
++
++SignalDelegator* SignalDelegator::GetActiveDelegator() {
++  return ActiveDelegator.load(std::memory_order_acquire);
++}
++
++void SignalDelegator::ForwardToPreviousHandler(int Signal, siginfo_t* Info, void* UContext) {
++  const kernel_sigaction& Old = HostHandlers[Signal].OldAction;
++  if (Old.sa_flags & SA_SIGINFO) {
++    Old.sigaction(Signal, Info, UContext);
++  } else if (Old.handler == SIG_IGN) {
++    // Ignored before FEX took over.
++  } else if (Old.handler == SIG_DFL) {
++    if (HostHandlers[Signal].DefaultBehaviour == DEFAULT_IGNORE) {
++      return;
++    }
++    // Put the default action back: a synchronous fault re-executes and terminates, anything else is re-raised.
++    ::syscall(SYS_rt_sigaction, Signal, &Old, nullptr, 8);
++    if (Info->si_code <= SI_USER) {
++      FHU::Syscalls::tgkill(::getpid(), FHU::Syscalls::gettid(), Signal);
++    }
++  } else {
++    Old.handler(Signal);
++  }
++}
++#endif
++
+ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
+-  ucontext_t* _context = (ucontext_t*)UContext;
++  [[maybe_unused]] ucontext_t* _context = (ucontext_t*)UContext;
++#ifdef __ANDROID__
++  auto ThreadObject = SignalDelegator::GetRegisteredThreadObject();
++  if (!ThreadObject) {
++    if (auto* Delegator = SignalDelegator::GetActiveDelegator()) {
++      Delegator->ForwardToPreviousHandler(Signal, Info, UContext);
++    }
++    return;
++  }
++#else
+   auto ThreadObject = GetThreadFromAltStack(_context->uc_stack);
++#endif
+   FEXCORE_PROFILE_ACCUMULATION(ThreadObject->Thread, AccumulatedSignalTime);
+   ThreadObject->SignalInfo.Delegator->HandleSignal(ThreadObject, Signal, Info, UContext);
+ }
+@@ -896,6 +948,10 @@ SignalDelegator::SignalDelegator(FEXCore::Context::Context* _CTX, const std::str
+   , ApplicationName {ApplicationName}
+   , SupportsAVX {SupportsAVX}
+   , SupportsSVE256 {SupportsSVE256} {
++#ifdef __ANDROID__
++  pthread_once(&ThreadObjectKeyOnce, CreateThreadObjectKey);
++  ActiveDelegator.store(this, std::memory_order_release);
++#endif
+   // Signal zero isn't real
+   HostHandlers[0].Installed = true;
+ 
+@@ -1051,6 +1107,10 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
+   // Get the current host signal mask
+   ::syscall(SYS_rt_sigprocmask, 0, nullptr, &Thread->SignalInfo.CurrentSignalMask.Val, 8);
+ 
++#ifdef __ANDROID__
++  pthread_setspecific(ThreadObjectKey, Thread);
++#endif
++
+   if (Thread->Thread) {
+     // Reserve a small amount of deferred signal frames. Usually the stack won't be utilized beyond
+     // 1 or 2 signals but add a few more just in case.
+@@ -1059,6 +1119,9 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
+ }
+ 
+ void SignalDelegator::UninstallTLSState(FEX::HLE::ThreadStateObject* Thread) {
++#ifdef __ANDROID__
++  pthread_setspecific(ThreadObjectKey, nullptr);
++#endif
+   FEXCore::Allocator::munmap(Thread->SignalInfo.AltStackPtr, SIGSTKSZ * 16);
+ 
+   Thread->SignalInfo.AltStackPtr = nullptr;
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h
+index c37d82c3e..ee46858aa 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.h
+@@ -63,6 +63,16 @@ public:
+   void RegisterTLSState(FEX::HLE::ThreadStateObject* Thread);
+   void UninstallTLSState(FEX::HLE::ThreadStateObject* Thread);
+ 
++#ifdef __ANDROID__
++  // FEX shares the process with threads it never runs guest code on (ART, render and other host threads).
++  // Their alt stack is not FEX's, so the thread object cannot be found through it. Signals on those
++  // threads go to the handler installed before FEX (ART's sigchain, which also reports crashes through
++  // debuggerd).
++  static FEX::HLE::ThreadStateObject* GetRegisteredThreadObject();
++  static SignalDelegator* GetActiveDelegator();
++  void ForwardToPreviousHandler(int Signal, siginfo_t* Info, void* UContext);
++#endif
++
+   /**
+    * @brief Registers a signal handler for the host to handle a signal
+    *
 diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp
 index 0a51b98a3..02eb034bd 100644
 --- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp
