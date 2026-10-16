@@ -1,6 +1,7 @@
 package com.kytyps5.android
 
 import android.os.Bundle
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -11,6 +12,8 @@ import org.libsdl.app.SDLActivity
  * native main thread; this class only supplies the library name and command-line arguments.
  */
 class GameActivity : SDLActivity() {
+
+    private var overlays: GameOverlays? = null
 
     /** SDL loads these in order in onCreate: shared SDL3 first, then the emulator. */
     override fun getLibraries(): Array<String> = arrayOf("SDL3", "main")
@@ -37,8 +40,42 @@ class GameActivity : SDLActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Before super.onCreate: SDL loads the emulator (and Mesa reads TU_DEBUG etc.) from there on.
+        GameEnvironment.apply(intent?.getStringArrayExtra(LaunchArgs.EXTRA_ENV))
         super.onCreate(savedInstanceState)
         enterImmersiveMode()
+        if (!mBrokenLibraries) installOverlays()
+    }
+
+    private fun installOverlays() {
+        val launch = intent ?: return
+        val created = GameOverlays(
+            activity = this,
+            gamePath = launch.getStringExtra(LaunchArgs.EXTRA_GAME_PATH),
+            touchControls = launch.getBooleanExtra(LaunchArgs.EXTRA_TOUCH_CONTROLS, true),
+            hud = launch.getBooleanExtra(LaunchArgs.EXTRA_HUD, false),
+        )
+        addContentView(
+            created.root,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+        overlays = created
+    }
+
+    override fun onResume() {
+        super.onResume()
+        overlays?.onResume()
+    }
+
+    override fun onPause() {
+        overlays?.onPause()
+        super.onPause()
+    }
+
+    /** SDL_SetWindowTitle lands here; the emulator puts its frame counter and FPS in the title. */
+    override fun onTitleChanged(title: CharSequence?, color: Int) {
+        super.onTitleChanged(title, color)
+        overlays?.onTitle(title)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

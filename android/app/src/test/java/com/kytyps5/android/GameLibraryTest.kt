@@ -115,6 +115,26 @@ class GameLibraryTest {
         assertEquals("BROKEN", result.games.single().title)
     }
 
+    @Test
+    fun readEntryReadsTitleIdAndIcon() {
+        makeGame("PPSA21567", """{"titleId":"PPSA21567","titleName":"ASTRO BOT"}""")
+        val icon = File(root, "PPSA21567/" + GameLibrary.ICON).apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val game = (GameLibrary.scan(root) as ScanResult.Found).games.single()
+        assertEquals("PPSA21567", game.titleId)
+        assertEquals(icon, game.icon)
+    }
+
+    @Test
+    fun paramSfoSuppliesTitleAndIdWhenParamJsonLacksThem() {
+        makeGame("CUSA1", "{}")
+        File(root, "CUSA1/" + GameLibrary.PARAM_SFO)
+            .writeBytes(com.kytyps5.android.library.SfoFixture.build("TITLE" to "From SFO", "TITLE_ID" to "CUSA00001"))
+        val game = (GameLibrary.scan(root) as ScanResult.Found).games.single()
+        assertEquals("From SFO", game.title)
+        assertEquals("CUSA00001", game.titleId)
+        assertEquals(null, game.icon)
+    }
+
     private fun makeGame(folderName: String, paramJson: String?) {
         val folder = File(root, folderName)
         File(folder, "sce_sys").mkdirs()

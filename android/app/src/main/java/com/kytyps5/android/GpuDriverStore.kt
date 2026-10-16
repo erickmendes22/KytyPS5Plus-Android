@@ -41,13 +41,13 @@ data class GpuDriverMeta(
             } catch (e: JSONException) {
                 return null
             }
-            val library = obj.optString("libraryName", "")
+            val library = obj.stringOr("libraryName")
             if (!isPlainSoName(library)) return null
             return GpuDriverMeta(
-                name = obj.optString("name", "").ifBlank { library },
-                driverVersion = obj.optString("driverVersion", ""),
-                description = obj.optString("description", ""),
-                author = obj.optString("author", ""),
+                name = obj.stringOr("name").ifBlank { library },
+                driverVersion = obj.stringOr("driverVersion"),
+                description = obj.stringOr("description"),
+                author = obj.stringOr("author"),
                 libraryName = library,
             )
         }
