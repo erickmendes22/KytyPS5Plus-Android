@@ -8,6 +8,7 @@
 #include "common/threads.h"
 #include "common/virtualMemory.h"
 #include "emulator.h"
+#include "graphics/presentation/window/vulkanDriver.h"
 #include "kytyGitVersion.h"
 
 #include <charconv>
@@ -131,6 +132,10 @@ static void PrintUsage() {
 	    "  --present-mode <value>               Fifo, Mailbox, or Immediate. Default: Mailbox.\n");
 	::printf(
 	    "  --gpu <index>                        Vulkan physical device index. Default: auto.\n");
+	::printf("  --gpu-driver <dir>                   Android: load the Vulkan driver package in <dir>\n"
+	         "                                       (meta.json + .so, e.g. Mesa Turnip) via\n"
+	         "                                       libadrenotools. Default: system driver.\n");
+	::printf("  --print-vulkan-caps                  Log the device's extensions and key features.\n");
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
 	::printf("  --hdr                                Enable HDR10 output when supported.\n");
 	::printf(
@@ -331,6 +336,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 
 		if (arg == "--tessellation") {
 			options.config.tessellation_enabled = true;
+			continue;
+		}
+
+		if (arg == "--print-vulkan-caps") {
+			Libs::Graphics::VulkanDriver::SetPrintCaps(true);
 			continue;
 		}
 
@@ -572,6 +582,8 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.config.keymap.push_back(value);
+		} else if (arg == "--gpu-driver") {
+			Libs::Graphics::VulkanDriver::SetCustomDriverDirectory(value);
 		} else if (arg == "--data-dir") {
 			data_dir = Common::PathFromUtf8(Common::FixFilenameSlash(value));
 		} else {
