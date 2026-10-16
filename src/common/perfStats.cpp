@@ -224,7 +224,7 @@ constexpr uint64_t kMaxFrameSpan       = 1u << 20; // a caller frame lies within
 constexpr int      kProfileDumpSeconds = 5;
 constexpr size_t   kTopEntries         = 80;
 constexpr int      kWallTag            = 0x57a11;
-constexpr size_t   kWallStackFrames    = 4;
+constexpr size_t   kWallStackFrames    = 8;
 
 struct Sample {
 	std::atomic<uint64_t> seq {0};
@@ -544,6 +544,7 @@ void Reporter() {
 	uint64_t     last_audio   = 0;
 	int          seconds      = 0;
 	auto         last_time    = std::chrono::steady_clock::now();
+	std::unordered_map<int, std::string> wall_names;
 
 	for (;;) {
 		timers.Sync();
@@ -566,7 +567,11 @@ void Reporter() {
 			const uint64_t pc = s.frames[0];
 			const uint64_t w  = s.weight;
 			if (s.wall) {
-				std::string stack = symbolizer.Locate(pc);
+				auto& thread_name = wall_names[s.tid];
+				if (thread_name.empty()) {
+					thread_name = ThreadName(s.tid) + ": ";
+				}
+				std::string stack = thread_name + symbolizer.Locate(pc);
 				size_t      kyty  = 0;
 				for (uint32_t i = 1; i < s.depth && kyty < kWallStackFrames; i++) {
 					if (std::strcmp(Category(symbolizer.Module(s.frames[i])), "kyty") == 0) {
@@ -642,6 +647,29 @@ void Reporter() {
 
 } // namespace
 
+void SampleThisThreadWallClockIfNamed(const std::string& name) {
+	static const std::string filter = [] {
+		const char* value = std::getenv("KYTY_PERF_WALL_THREADS");
+		return value != nullptr ? std::string(value) : std::string();
+	}();
+	if (filter.empty() || name.empty()) {
+		return;
+	}
+	size_t begin = 0;
+	while (begin <= filter.size()) {
+		const size_t end   = filter.find_first_of(",;|", begin);
+		const auto   token = filter.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+		if (!token.empty() && name.find(token) != std::string::npos) {
+			SampleThisThreadWallClock();
+			return;
+		}
+		if (end == std::string::npos) {
+			break;
+		}
+		begin = end + 1;
+	}
+}
+
 void SampleThisThreadWallClock() {
 	if (!Enabled()) {
 		return;
@@ -684,6 +712,7 @@ void Start() {
 namespace Common::PerfStats {
 
 void SampleThisThreadWallClock() {}
+void SampleThisThreadWallClockIfNamed(const std::string& /*name*/) {}
 
 void Start() {
 	Detail::g_enabled.store(true, std::memory_order_relaxed);

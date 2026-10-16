@@ -1,4 +1,6 @@
 #include "kernel/pthread.h"
+
+#include "common/perfStats.h"
 #include "kernel/syncOnAddress.h"
 
 #include "common/assert.h"
@@ -3309,6 +3311,8 @@ static void* RunThread(void* arg) {
 #endif
 	}
 #endif
+
+	Common::PerfStats::SampleThisThreadWallClockIfNamed(thread->name);
 
 	LOGF("\tPthread run begin: %s, id = %d, os_thread_id = %" PRIu64 ", entry = 0x%016" PRIx64
 	     ", arg = 0x%016" PRIx64 ", stack_addr = 0x%016" PRIx64 ", stack_size = %" PRIu64 "\n",

@@ -10,6 +10,7 @@
 // "module+offset" lines that llvm-symbolizer resolves against the unstripped libraries.
 
 #include <atomic>
+#include <string>
 #include <cstdint>
 
 namespace Common::PerfStats {
@@ -88,6 +89,11 @@ void ObserveInput();
 // Also samples the calling thread on wall-clock time, sleeping included, into the profile's
 // "wall" sections: where the thread blocks. Meant for the GPU (command processor) thread.
 void SampleThisThreadWallClock();
+
+// SampleThisThreadWallClock for guest threads whose name contains one of the substrings in
+// KYTY_PERF_WALL_THREADS, separated by ',', ';' or '|' (Android's "am start --esa" splits its
+// list at commas, so use "Load|Streamer" there): shows where those threads block.
+void SampleThisThreadWallClockIfNamed(const std::string& name);
 
 // Starts the reporter thread and the sampler. Call once, early on the main thread, before the
 // threads to be profiled are created (they inherit the unblocked profiling signal).
