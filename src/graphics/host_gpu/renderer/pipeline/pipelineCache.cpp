@@ -551,7 +551,13 @@ void PipelineCache::InitializeDriverCache() {
 		PipelineCacheLog("Vulkan pipeline cache: disabled (non-Release build)");
 		return;
 	}
-	m_driver_cache_path     = std::filesystem::path("_PipelineCache") / (title_id + ".bin");
+	// One file per driver build: a cache written by another driver (the system driver vs an
+	// imported Turnip) fails the signature check, and alternating drivers would otherwise discard
+	// each other's cache on every launch and recompile every pipeline (seconds each on mobile).
+	const auto& device_properties = m_graphics.GetPhysicalDeviceProperties();
+	m_driver_cache_path           = std::filesystem::path("_PipelineCache") /
+	                      fmt::format("{}-{:08x}-{:08x}.bin", title_id, device_properties.deviceID,
+	                                  device_properties.driverVersion);
 	const auto path         = Common::PathToString(m_driver_cache_path);
 	const bool cache_exists = Common::File::IsFileExisting(m_driver_cache_path);
 	if (cache_exists) {

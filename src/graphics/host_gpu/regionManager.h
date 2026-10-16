@@ -32,26 +32,39 @@
 
 namespace Libs::Graphics {
 
+// Spins briefly, then sleeps in the kernel (futex) until the holder releases it: the texture
+// cache's lock can be held across long GPU-thread work while many guest threads take
+// write-tracking faults, and pure spinning burned several cores there.
 class TrackingSpinLock final {
 public:
 	void lock() noexcept {
 		const auto thread = CurrentThread();
-		while (m_lock.test_and_set(std::memory_order_acquire)) {
+		for (uint32_t spins = 0; m_lock.test_and_set(std::memory_order_acquire); spins++) {
 			EXIT_NOT_IMPLEMENTED(m_owner.load(std::memory_order_relaxed) == thread);
+			if (spins < SpinsBeforeSleep) {
 #if defined(__x86_64__) || defined(_M_X64)
-			_mm_pause();
+				_mm_pause();
 #elif defined(_M_ARM64)
-			__yield();
+				__yield();
 #elif defined(__aarch64__)
-			asm volatile("yield");
+				asm volatile("yield");
 #endif
+				continue;
+			}
+			// seq_cst pairs with unlock(): either it sees this waiter or the wait sees the clear.
+			m_waiters.fetch_add(1, std::memory_order_seq_cst);
+			m_lock.wait(true, std::memory_order_seq_cst);
+			m_waiters.fetch_sub(1, std::memory_order_relaxed);
 		}
 		m_owner.store(thread, std::memory_order_relaxed);
 	}
 	void unlock() noexcept {
 		EXIT_NOT_IMPLEMENTED(m_owner.load(std::memory_order_relaxed) != CurrentThread());
 		m_owner.store(0, std::memory_order_relaxed);
-		m_lock.clear(std::memory_order_release);
+		m_lock.clear(std::memory_order_seq_cst);
+		if (m_waiters.load(std::memory_order_seq_cst) != 0) {
+			m_lock.notify_one();
+		}
 	}
 
 private:
@@ -71,8 +84,11 @@ private:
 #endif
 	}
 
+	static constexpr uint32_t SpinsBeforeSleep = 128;
+
 	std::atomic_flag     m_lock = ATOMIC_FLAG_INIT;
 	std::atomic_uint32_t m_owner {0};
+	std::atomic_uint32_t m_waiters {0};
 };
 
 static_assert(std::atomic_uint32_t::is_always_lock_free);

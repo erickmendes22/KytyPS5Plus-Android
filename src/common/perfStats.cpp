@@ -487,6 +487,7 @@ struct Profile {
 	std::unordered_map<int, uint64_t>      threads;   // tid -> samples
 	std::unordered_map<uint32_t, uint64_t> hle;       // HLE id -> calls
 	std::map<std::string, uint64_t>        wall;      // wall-clock samples: leaf + kyty frames
+	std::map<std::string, uint64_t>        stacks;    // CPU samples: leaf + kyty frames
 	uint64_t                               wall_total = 0;
 	uint64_t                               total = 0;
 };
@@ -525,6 +526,10 @@ void DumpProfile(const Profile& profile, Symbolizer& symbolizer, int seconds) {
 		dump("hle-calls", by_thunk);
 	}
 	dump("innermost-kyty-frame", profile.kyty);
+	std::fprintf(out, "## cpu-stacks (leaf <- kyty callers)\n");
+	for (const auto& [stack, n]: Top(profile.stacks, kTopEntries)) {
+		std::fprintf(out, "%llu %s\n", static_cast<unsigned long long>(n), stack.c_str());
+	}
 	std::fprintf(out, "## wall-stacks (%llu wall-clock samples of 1 ms: leaf <- kyty callers)\n",
 	             static_cast<unsigned long long>(profile.wall_total));
 	for (const auto& [stack, n]: Top(profile.wall, kTopEntries)) {
@@ -566,12 +571,8 @@ void Reporter() {
 			}
 			const uint64_t pc = s.frames[0];
 			const uint64_t w  = s.weight;
-			if (s.wall) {
-				auto& thread_name = wall_names[s.tid];
-				if (thread_name.empty()) {
-					thread_name = ThreadName(s.tid) + ": ";
-				}
-				std::string stack = thread_name + symbolizer.Locate(pc);
+			const auto stack_of = [&](std::string stack) {
+				stack += symbolizer.Locate(pc);
 				size_t      kyty  = 0;
 				for (uint32_t i = 1; i < s.depth && kyty < kWallStackFrames; i++) {
 					if (std::strcmp(Category(symbolizer.Module(s.frames[i])), "kyty") == 0) {
@@ -579,10 +580,18 @@ void Reporter() {
 						kyty++;
 					}
 				}
-				profile.wall[stack] += w;
+				return stack;
+			};
+			if (s.wall) {
+				auto& thread_name = wall_names[s.tid];
+				if (thread_name.empty()) {
+					thread_name = ThreadName(s.tid) + ": ";
+				}
+				profile.wall[stack_of(thread_name)] += w;
 				profile.wall_total += w;
 				continue;
 			}
+			profile.stacks[stack_of({})] += w;
 			window.per_thread[s.tid] += w;
 			window.per_category[Category(symbolizer.Module(pc))] += w;
 			window.total += w;
