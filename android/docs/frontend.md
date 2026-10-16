@@ -28,8 +28,10 @@ FPS and frame time come from the emulator's window title (`frame: N, fps: X`, re
 second by window.cpp), which SDL forwards to `Activity.setTitle`; frame time is the 1 s average.
 GPU load (`/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage` or `gpubusy`), GPU/CPU temperature (kgsl
 `temp`, thermal zones named `gpu*`/`cpu*`) are shown only when readable; the sources found are
-logged once under the `KytyHud` tag. RAM comes from ActivityManager and `/proc/self/status`,
-battery from the sticky `ACTION_BATTERY_CHANGED` intent.
+logged once under the `KytyHud` tag. RAM is MemTotal − MemAvailable from `/proc/meminfo` (zram
+swap is shown on its own SWAP line, never added to RAM), the app's RSS comes from
+`/proc/self/status`, battery from the sticky `ACTION_BATTERY_CHANGED` intent. The HUD sits in the
+top-left corner below L2/L1.
 
 ## Per-game environment variables
 

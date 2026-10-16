@@ -8,8 +8,7 @@ data class HudSample(
     val cpuTempC: Float? = null,
     val gpuTempC: Float? = null,
     val gpuLoadPercent: Int? = null,
-    val ramUsedMiB: Int? = null,
-    val ramTotalMiB: Int? = null,
+    val memory: MemInfo? = null,
     val appRssMiB: Int? = null,
     val batteryPercent: Int? = null,
     val batteryTempC: Float? = null,
@@ -28,20 +27,23 @@ object HudFormatter {
         sample.gpuLoadPercent?.let { "GPU $it%" + (sample.gpuTempC?.let { t -> " ${deg(t)}" } ?: "") }
             ?: sample.gpuTempC?.let { "GPU ${deg(it)}" },
         ram(sample),
+        swap(sample.memory),
         battery(sample),
     )
 
     private fun temps(sample: HudSample): String? = sample.cpuTempC?.let { "CPU ${deg(it)}" }
 
     private fun ram(sample: HudSample): String? {
-        val system = if (sample.ramUsedMiB != null && sample.ramTotalMiB != null) {
-            String.format(Locale.US, "RAM %.1f/%.1f GB", sample.ramUsedMiB / 1024f, sample.ramTotalMiB / 1024f)
-        } else {
-            null
-        }
+        val system = sample.memory?.let { "RAM ${gib(it.usedKb)}/${gib(it.totalKb)} GB" }
         val app = sample.appRssMiB?.let { "app ${it} MB" }
         return listOfNotNull(system, app).joinToString(" · ").ifEmpty { null }
     }
+
+    private fun swap(memory: MemInfo?): String? =
+        memory?.takeIf { it.swapTotalKb > 0 }?.let { "SWAP ${gib(it.swapUsedKb)}/${gib(it.swapTotalKb)} GB" }
+
+    /** kB -> GiB with one decimal; RAM and swap use the same unit as their totals. */
+    private fun gib(kb: Long): String = String.format(Locale.US, "%.1f", kb / 1_048_576.0)
 
     private fun battery(sample: HudSample): String? {
         val percent = sample.batteryPercent ?: return null
