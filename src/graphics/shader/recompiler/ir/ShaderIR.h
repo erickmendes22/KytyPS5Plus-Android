@@ -391,6 +391,13 @@ static_assert(static_cast<uint32_t>(DescriptorBindingKind::Count) == 56u);
 struct PushData {
 	static constexpr uint32_t DwordCount = 32;
 	static constexpr uint32_t MeshDrawDwordCount = 6;
+	// Mesh emulation: after the draw prefix, the compute stage reads where it writes its vertex
+	// records and triangle indices and the workgroup count along x. The generated vertex shader
+	// reads the vertex record address from dwords 0..1 of its own pipeline's push data.
+	static constexpr uint32_t MeshEmulationVertexAddressDword = MeshDrawDwordCount;
+	static constexpr uint32_t MeshEmulationIndexAddressDword  = MeshDrawDwordCount + 2u;
+	static constexpr uint32_t MeshEmulationGroupCountDword    = MeshDrawDwordCount + 4u;
+	static constexpr uint32_t MeshEmulationDrawDwordCount     = MeshDrawDwordCount + 5u;
 	static constexpr uint32_t NoStart    = UINT32_MAX;
 	std::array<uint32_t, DwordCount> dwords {};
 
@@ -565,6 +572,8 @@ struct ShaderInfo {
 	bool                            shared_int64_atomics          = false;
 	bool                            coherent_buffers              = false;
 	bool                            float64                       = false;
+	// Filled by the SPIR-V emitter: a Mesh stage emitted as a compute shader (mesh emulation).
+	bool                            mesh_emulation                = false;
 	BarycentricEmulation            barycentric_emulation;
 	PreRasterOutputs                raster_outputs;
 
