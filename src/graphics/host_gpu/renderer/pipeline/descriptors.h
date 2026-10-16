@@ -24,6 +24,8 @@ struct TextureBinding {
 	TextureCache::ImageDesc    desc;
 	vk::ImageLayout            layout = vk::ImageLayout::eUndefined;
 	std::vector<vk::ImageView> mip_views;
+	// image_id is the texture cache's 1x1 placeholder for an unbound texture (no nullDescriptor).
+	bool placeholder = false;
 };
 
 struct PreparedBindings {
