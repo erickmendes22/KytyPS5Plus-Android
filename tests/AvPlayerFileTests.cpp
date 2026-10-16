@@ -18,7 +18,8 @@ struct PthreadPrivate {
 };
 int KYTY_SYSV_ABI PthreadCreate(Pthread* thread, const PthreadAttr*, pthread_entry_func_t entry,
                               void* arg, const char*) {
-	*thread = new PthreadPrivate {std::thread([=] { entry(arg); })};
+	// Worker entries are guest-visible functions (traps on ARM64), as for guest pthreads.
+	*thread = new PthreadPrivate {std::thread([=] { Loader::GuestHost::CallGuestFunction(entry, arg); })};
 	return 0;
 }
 int KYTY_SYSV_ABI PthreadJoin(Pthread thread, void**) {

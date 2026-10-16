@@ -6,6 +6,7 @@
 #include "libs/audio.h"
 #include "libs/libs.h"
 #include "loader/guestCall.h"
+#include "loader/guestHostFunction.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1222,8 +1223,11 @@ private:
 		static_cast<Source*>(arg)->AudioDecoder();
 		return nullptr;
 	}
-	bool CreateWorker(LibKernel::Pthread& thread, LibKernel::pthread_entry_func_t entry,
-	                  const char* name) {
+	// Workers are guest threads, so their native entry must be guest-callable (a trap on ARM64).
+	template <LibKernel::pthread_entry_func_t Entry>
+	bool CreateWorker(LibKernel::Pthread& thread, std::string_view key, const char* name) {
+		const auto entry = reinterpret_cast<LibKernel::pthread_entry_func_t>(
+		    Loader::GuestHost::AddressOf<Entry>(key));
 		LibKernel::Pthread created = nullptr;
 		if (LibKernel::PthreadCreate(&created, nullptr, entry, this, name) != 0) {
 			return false;
@@ -1239,9 +1243,11 @@ private:
 		demux_eof       = false;
 		video_done      = !video_id;
 		audio_done      = !audio_id;
-		if ((video_id && !CreateWorker(video_thread, VideoDecoderEntry, "AvPlayerVideoDecoder")) ||
-		    (audio_id && !CreateWorker(audio_thread, AudioDecoderEntry, "AvPlayerAudioDecoder")) ||
-		    !CreateWorker(demux_thread, DemuxEntry, "AvPlayerDemuxer")) {
+		if ((video_id && !CreateWorker<VideoDecoderEntry>(video_thread, "AvPlayer::VideoDecoderEntry",
+		                                                  "AvPlayerVideoDecoder")) ||
+		    (audio_id && !CreateWorker<AudioDecoderEntry>(audio_thread, "AvPlayer::AudioDecoderEntry",
+		                                                  "AvPlayerAudioDecoder")) ||
+		    !CreateWorker<DemuxEntry>(demux_thread, "AvPlayer::DemuxEntry", "AvPlayerDemuxer")) {
 			lock.unlock();
 			StopWorkers();
 			return false;

@@ -5,6 +5,7 @@
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
 #include "loader/guestCall.h"
+#include "loader/guestHostFunction.h"
 
 #include <condition_variable>
 #include <cstring>
@@ -248,8 +249,11 @@ static int KYTY_SYSV_ABI UltUlthreadCreate(void* ulthread, const char* name, Ult
 		g_ult_ulthreads[ulthread] = state;
 	}
 
-	const auto result = LibKernel::PthreadCreate(&state->thread, nullptr, UltUlthreadRun,
-	                                             state.get(), name != nullptr ? name : "");
+	// The ulthread is a guest thread: its native entry must be guest-callable (a trap on ARM64).
+	const auto run    = reinterpret_cast<LibKernel::pthread_entry_func_t>(
+	    Loader::GuestHost::AddressOf<UltUlthreadRun>("LibUlt::UltUlthreadRun"));
+	const auto result = LibKernel::PthreadCreate(&state->thread, nullptr, run, state.get(),
+	                                             name != nullptr ? name : "");
 	if (result != OK) {
 		std::scoped_lock lock(g_ult_mutex);
 		g_ult_ulthreads.erase(ulthread);
