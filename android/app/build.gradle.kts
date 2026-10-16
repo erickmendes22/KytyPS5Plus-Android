@@ -1,3 +1,7 @@
+import java.io.IOException
+import java.net.URI
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
 }
@@ -44,8 +48,59 @@ val syncKytyNativeLibs = tasks.register("syncKytyNativeLibs") {
     }
 }
 
+// GPU driver packages bundled as assets (DefaultGpuDriverSetup installs them on supported GPUs). They are
+// downloaded at build time and pinned by sha256 so no binary is committed; -PkytyBundleDrivers=false skips
+// them, and a failed download only warns (the app then falls back to the system driver).
+data class BundledDriverPackage(val fileName: String, val url: String, val sha256: String)
+
+val bundledDriverPackages = listOf(
+    BundledDriverPackage(
+        fileName = "mainline-turnip-v32.zip",
+        url = "https://github.com/whitebelyash/AdrenoToolsDrivers/releases/download/tu_v32/mainline-turnip-V32.zip",
+        sha256 = "a40b086926916e3960c832fce3014c26ec946b956c46681a726d927e2700ad10",
+    ),
+)
+val bundleDrivers: Boolean = providers.gradleProperty("kytyBundleDrivers").getOrElse("true").toBoolean()
+val bundledDriverAssetsDir: File = layout.buildDirectory.dir("generated/bundledDriverAssets").get().asFile
+val bundledDriverDir: File = bundledDriverAssetsDir.resolve("gpu_drivers")
+
+fun sha256Of(file: File): String = MessageDigest.getInstance("SHA-256")
+    .digest(file.readBytes())
+    .joinToString("") { "%02x".format(it) }
+
+val fetchBundledDrivers = tasks.register("fetchBundledDrivers") {
+    description = "Downloads the checksum-pinned GPU driver packages bundled into the APK's assets."
+    outputs.dir(bundledDriverDir)
+    onlyIf { bundleDrivers }
+    doLast {
+        bundledDriverDir.mkdirs()
+        bundledDriverPackages.forEach { pkg ->
+            val target = bundledDriverDir.resolve(pkg.fileName)
+            if (target.isFile && sha256Of(target) == pkg.sha256) return@forEach
+            val partial = bundledDriverDir.resolve(pkg.fileName + ".part")
+            try {
+                URI(pkg.url).toURL().openStream().use { input ->
+                    partial.outputStream().use { input.copyTo(it) }
+                }
+                val actual = sha256Of(partial)
+                if (actual != pkg.sha256) {
+                    throw GradleException("${pkg.fileName}: sha256 $actual does not match the pinned ${pkg.sha256}")
+                }
+                partial.renameTo(target)
+                logger.lifecycle("Bundled ${pkg.fileName}")
+            } catch (e: IOException) {
+                target.delete()
+                logger.warn("Could not download ${pkg.url} (${e.message}); building without ${pkg.fileName}")
+            } finally {
+                partial.delete()
+            }
+        }
+    }
+}
+
 tasks.named("preBuild") {
     dependsOn(syncKytyNativeLibs)
+    dependsOn(fetchBundledDrivers)
 }
 
 android {
@@ -85,6 +140,7 @@ android {
     sourceSets {
         getByName("main") {
             java.directories.add(sdlJavaDir.path)
+            assets.directories.add(bundledDriverAssetsDir.path)
         }
     }
 

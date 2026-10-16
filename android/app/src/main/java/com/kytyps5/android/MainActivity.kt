@@ -56,6 +56,19 @@ class MainActivity : Activity() {
             label = { label(it) },
         )
         setContentView(buildUi())
+        applyDefaultGpuDriver()
+    }
+
+    /** Installs the bundled Turnip on Adreno 8xx on first run (off the main thread: EGL probe + unzip). */
+    private fun applyDefaultGpuDriver() {
+        val setup = DefaultGpuDriverSetup(this, settings, drivers.store)
+        worker.execute {
+            val changed = setup.apply() ?: return@execute
+            mainHandler.post {
+                drivers.refresh()
+                showMessage(changed)
+            }
+        }
     }
 
     override fun onResume() {

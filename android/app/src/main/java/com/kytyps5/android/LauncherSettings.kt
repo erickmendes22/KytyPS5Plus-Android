@@ -26,6 +26,13 @@ class LauncherSettings(context: Context) {
             prefs.edit().putString(KEY_GPU_DRIVER, value).apply()
         }
 
+    /** Version of the bundled driver whose one-time default setup already ran (0 = never). */
+    var bundledDriverVersion: Int
+        get() = prefs.getInt(KEY_BUNDLED_DRIVER_VERSION, 0)
+        set(value) {
+            prefs.edit().putInt(KEY_BUNDLED_DRIVER_VERSION, value).apply()
+        }
+
     /** Per-game GPU driver override (keyed by game path): null follows [gpuDriverId]. */
     fun gameGpuDriverOverride(gamePath: String): String? =
         prefs.getString(KEY_GPU_DRIVER_GAME_PREFIX + gamePath, null)
@@ -44,5 +51,6 @@ class LauncherSettings(context: Context) {
         private const val KEY_RESOLUTION = "resolution"
         private const val KEY_GPU_DRIVER = "gpu_driver"
         private const val KEY_GPU_DRIVER_GAME_PREFIX = "gpu_driver_game:"
+        private const val KEY_BUNDLED_DRIVER_VERSION = "bundled_driver_version"
     }
 }

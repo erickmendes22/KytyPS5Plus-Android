@@ -152,7 +152,8 @@ class GpuDriverPanel(
         }
     }
 
-    private fun refresh() {
+    /** Re-reads the global choice, e.g. after the first-run default driver setup changed it. */
+    fun refresh() {
         current.text = "GPU driver: " + nameOf(settings.gpuDriverId)
     }
 
