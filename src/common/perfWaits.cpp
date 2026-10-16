@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <mutex>
 
 #if defined(__ANDROID__)
 #include <android/log.h>
@@ -67,6 +68,19 @@ void AppendWaits(std::string& out, const char* group, Wait first, Wait last, dou
 
 } // namespace
 
+void Detail::LogLongWait(Wait kind, int64_t start_ns, uint64_t ns) {
+	// Idle and background waits are not stalls.
+	if (kind == Wait::GpuIdle || kind == Wait::SemPriority || kind == Wait::GpuProcess) {
+		return;
+	}
+	char line[128];
+	std::snprintf(line, sizeof(line), "[perf-event] t=%.1f wait %s%s %.1fms",
+	              static_cast<double>(start_ns) / 1e6,
+	              Index(kind) >= Index(Wait::GuestFault) ? "guest:" : "", kWaitNames[Index(kind)],
+	              static_cast<double>(ns) / 1e6);
+	EmitLine(line);
+}
+
 ScopedWaitSite::ScopedWaitSite(Wait site): previous_(t_wait_site) {
 	t_wait_site = site;
 }
@@ -76,6 +90,14 @@ ScopedWaitSite::~ScopedWaitSite() {
 }
 
 void EmitLine(const std::string& line) {
+	// Also kept in a file: logcat drops lines under load.
+	static std::mutex file_mutex;
+	static FILE*      file = std::fopen("_perf_log.txt", "w");
+	if (file != nullptr) {
+		std::lock_guard lock(file_mutex);
+		std::fprintf(file, "%s\n", line.c_str());
+		std::fflush(file);
+	}
 #if defined(__ANDROID__)
 	__android_log_write(ANDROID_LOG_INFO, "KytyPerf", line.c_str());
 #else

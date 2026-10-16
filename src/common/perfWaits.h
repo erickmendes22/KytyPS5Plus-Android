@@ -73,6 +73,9 @@ extern std::atomic<uint64_t> g_wait_ns[static_cast<size_t>(Wait::Count)];
 extern std::atomic<uint64_t> g_wait_count[static_cast<size_t>(Wait::Count)];
 extern std::atomic<uint64_t> g_counters[static_cast<size_t>(Counter::Count)];
 int64_t                      MonotonicNs();
+// Blocking waits at least this long are logged one by one ("[perf-event]") to find hitches.
+constexpr uint64_t kLongWaitNs = 20'000'000;
+void               LogLongWait(Wait kind, int64_t start_ns, uint64_t ns);
 } // namespace Detail
 
 inline void AddWait(Wait kind, uint64_t ns) {
@@ -93,7 +96,11 @@ public:
 	explicit ScopedWait(Wait kind): kind_(kind), start_ns_(Enabled() ? Detail::MonotonicNs() : 0) {}
 	~ScopedWait() {
 		if (start_ns_ != 0) {
-			AddWait(kind_, static_cast<uint64_t>(Detail::MonotonicNs() - start_ns_));
+			const auto ns = static_cast<uint64_t>(Detail::MonotonicNs() - start_ns_);
+			AddWait(kind_, ns);
+			if (ns >= Detail::kLongWaitNs) {
+				Detail::LogLongWait(kind_, start_ns_, ns);
+			}
 		}
 	}
 	ScopedWait(const ScopedWait&)            = delete;
@@ -122,7 +129,8 @@ private:
 void SetGpuThread();
 [[nodiscard]] bool IsGpuThread();
 
-// Writes one report line to the perf log (logcat tag KytyPerf on Android, stderr elsewhere).
+// Writes one report line to the perf log (logcat tag KytyPerf on Android, stderr elsewhere) and
+// to _perf_log.txt.
 void EmitLine(const std::string& line);
 
 // The "[perf-wait]" report of the last period, per presented frame; resets the period.

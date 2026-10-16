@@ -17,8 +17,11 @@ std::atomic<uint32_t> g_hle_by_id[kMaxHleIds] {};
 
 } // namespace Common::PerfStats::Detail
 
+#include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace Common::PerfStats {
 namespace {
@@ -34,6 +37,22 @@ std::atomic<uint64_t> g_present_sum_us {0};
 std::atomic<uint64_t> g_present_max_us {0};
 std::atomic<int64_t>  g_last_flip_ns {0};
 std::atomic<uint64_t> g_flip_gap_max_us {0};
+constexpr uint64_t    kLongEventUs = 5000; // stalls logged individually with a timestamp
+std::mutex            g_frame_mutex;
+std::vector<uint32_t> g_frame_times_us; // flip intervals of the current period
+
+// Every flip interval also goes to _perf_frames.txt ("monotonic_ms interval_ms") for
+// whole-run percentiles and hitch timelines (long waits and stalls are logged on the same clock).
+void RecordFrameTime(int64_t now_ns, uint64_t gap_us) {
+	static FILE*    file = std::fopen("_perf_frames.txt", "w");
+	std::lock_guard      lock(g_frame_mutex);
+	g_frame_times_us.push_back(static_cast<uint32_t>(std::min<uint64_t>(gap_us, UINT32_MAX)));
+	if (file != nullptr) {
+		std::fprintf(file, "%.1f %.2f\n", static_cast<double>(now_ns) / 1e6,
+		             static_cast<double>(gap_us) / 1000.0);
+		std::fflush(file);
+	}
+}
 
 void StoreMax(std::atomic<uint64_t>& target, uint64_t value) {
 	uint64_t current = target.load(std::memory_order_relaxed);
@@ -62,11 +81,32 @@ void CountFlip(uint64_t submit_to_present_us, uint64_t present_call_us) {
 	const int64_t now  = NowNs();
 	const int64_t last = g_last_flip_ns.exchange(now, std::memory_order_relaxed);
 	if (last != 0) {
-		StoreMax(g_flip_gap_max_us, static_cast<uint64_t>(now - last) / 1000);
+		const auto gap_us = static_cast<uint64_t>(now - last) / 1000;
+		StoreMax(g_flip_gap_max_us, gap_us);
+		RecordFrameTime(now, gap_us);
 	}
 }
 
 // Frame pacing over the last period, as text for the report line; resets the period.
+std::string TakeFramePercentiles() {
+	std::vector<uint32_t> times;
+	{
+		std::lock_guard lock(g_frame_mutex);
+		times.swap(g_frame_times_us);
+	}
+	if (times.empty()) {
+		return "frame_ms p50=- p95=- max=-";
+	}
+	std::sort(times.begin(), times.end());
+	const auto at = [&times](double q) {
+		return static_cast<double>(times[static_cast<size_t>(q * static_cast<double>(times.size() - 1))]) / 1000.0;
+	};
+	char buf[96];
+	std::snprintf(buf, sizeof(buf), "frame_ms p50=%.1f p95=%.1f max=%.1f", at(0.5), at(0.95),
+	              static_cast<double>(times.back()) / 1000.0);
+	return buf;
+}
+
 std::string TakeFrameSummary(uint64_t flips) {
 	const uint64_t latency_sum = g_flip_latency_sum_us.exchange(0, std::memory_order_relaxed);
 	const uint64_t latency_max = g_flip_latency_max_us.exchange(0, std::memory_order_relaxed);
@@ -94,6 +134,14 @@ std::string TakeFrameSummary(uint64_t flips) {
 
 void CountStall(StallKind kind, uint64_t micros) {
 	if (Enabled() && kind < StallKind::Count) {
+		if (micros >= kLongEventUs) {
+			char line[96];
+			std::snprintf(line, sizeof(line), "[perf-event] t=%.1f %s %.1fms",
+			              static_cast<double>(NowNs()) / 1e6,
+			              kind == StallKind::PipelineCompile ? "pipeline_compile" : "shader_translate",
+			              static_cast<double>(micros) / 1000.0);
+			EmitLine(line);
+		}
 		g_stall_count[static_cast<size_t>(kind)].fetch_add(1, std::memory_order_relaxed);
 		g_stall_us[static_cast<size_t>(kind)].fetch_add(micros, std::memory_order_relaxed);
 	}
@@ -391,11 +439,7 @@ private:
 };
 
 void Emit(const std::string& line) {
-#if defined(__ANDROID__)
-	__android_log_write(ANDROID_LOG_INFO, "KytyPerf", line.c_str());
-#else
-	std::fprintf(stderr, "%s\n", line.c_str());
-#endif
+	EmitLine(line);
 }
 
 const char* Category(const std::string& module) {
@@ -572,7 +616,7 @@ void Reporter() {
 			              static_cast<double>(n) / (dt * 10.0));
 			line += part;
 		}
-		line += " | " + TakeFrameSummary(flips - last_flips) + " | busiest:";
+		line += " | " + TakeFramePercentiles() + " " + TakeFrameSummary(flips - last_flips) + " | busiest:";
 		std::unordered_map<std::string, uint64_t> threads;
 		for (const auto& [tid, n]: window.per_thread) {
 			threads[std::to_string(tid) + "/" + ThreadName(tid)] = n;
