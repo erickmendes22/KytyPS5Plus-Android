@@ -3,6 +3,8 @@
 
 #include "cpu/guestCpuFex.h"
 
+#include "common/perfStats.h"
+
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -146,6 +148,7 @@ uint64_t HleSyscall(FEXCore::Core::CpuStateFrame* frame, uint64_t arg0, uint64_t
 	std::memcpy(&id_slot, reinterpret_cast<const void*>(guest_rsp), sizeof(id_slot));
 	const auto id = static_cast<uint32_t>(id_slot);
 
+	Common::PerfStats::CountHleCall();
 	const HleThunk thunk = LookupHle(id);
 	if (thunk == nullptr) {
 		std::fprintf(stderr, "kyty guest cpu: no HLE thunk registered for stub id %u\n", id);

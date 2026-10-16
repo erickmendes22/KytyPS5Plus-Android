@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
+#include "common/perfStats.h"
 #include "common/logging/log.h"
 #include "common/threads.h"
 #include "kernel/pthread.h"
@@ -396,6 +397,7 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking, float 
 		while (queued > static_cast<int>(min_queued_size)) {
 			if (LibKernel::KernelGetProcessTime() - wait_start > 200000) {
 				SDL_ClearAudioStream(port->stream);
+				Common::PerfStats::CountAudioUnderrun();
 				port->queue_primed = false;
 				break;
 			}
@@ -403,6 +405,9 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking, float 
 			queued = SDL_GetAudioStreamQueued(port->stream);
 		}
 		if (queued < static_cast<int>(prepared_size)) {
+			if (port->queue_primed) {
+				Common::PerfStats::CountAudioUnderrun();
+			}
 			port->queue_primed = false;
 		}
 	}

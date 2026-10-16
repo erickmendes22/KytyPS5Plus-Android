@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/perfStats.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
@@ -936,7 +937,11 @@ void InstallGpuResources(Graphics::RenderContext* resources) noexcept {
 }
 
 bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept {
-	return g_gpu_resources != nullptr && g_gpu_resources->HandleFault(access, fault_vaddr);
+	const bool handled = g_gpu_resources != nullptr && g_gpu_resources->HandleFault(access, fault_vaddr);
+	if (handled) {
+		Common::PerfStats::CountGpuFault();
+	}
+	return handled;
 }
 
 struct PrtAperture {

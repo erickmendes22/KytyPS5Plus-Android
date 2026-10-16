@@ -3,6 +3,7 @@
 #include "common/dateTime.h"
 #include "common/debug.h"
 #include "common/file.h"
+#include "common/perfStats.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
@@ -12,6 +13,7 @@
 #include <charconv>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -153,6 +155,8 @@ static void PrintUsage() {
 	::printf("  --printf-direction <value>           Silent, Console, or File.\n");
 	::printf("  --printf-output-file <path>          Guest printf output file.\n");
 	::printf("  --profile                            Enable the Tracy profiler.\n");
+	::printf("  --perf-stats                         Log fps/HLE/fault rates and sample CPU time.\n");
+	::printf("  --env <NAME=VALUE>                   Set an environment variable (e.g. FEX_* options).\n");
 	::printf("  --spirv-debug-printf <true|false>    Enable SPIR-V debug printf.\n");
 	::printf(
 	    "  --readback-linear-images <true|false> Read back writable linear images on submit.\n");
@@ -327,6 +331,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 
 		if (arg == "--tessellation") {
 			options.config.tessellation_enabled = true;
+			continue;
+		}
+
+		if (arg == "--perf-stats") {
+			Common::PerfStats::Start();
 			continue;
 		}
 
@@ -543,6 +552,19 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid boolean for %s: %s\n", arg.c_str(), value.c_str());
 				return false;
 			}
+		} else if (arg == "--env") {
+			// NAME=VALUE for the emulator process, e.g. FEX_* translator overrides on hosts where
+			// the environment cannot be set by the launcher (Android intents).
+			const auto split = value.find('=');
+			if (split == std::string::npos || split == 0) {
+				::printf("invalid environment assignment: %s\n", value.c_str());
+				return false;
+			}
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+			::_putenv_s(value.substr(0, split).c_str(), value.substr(split + 1).c_str());
+#else
+			::setenv(value.substr(0, split).c_str(), value.substr(split + 1).c_str(), 1);
+#endif
 		} else if (arg == "--keymap") {
 			const auto split = value.find('=');
 			if (split == std::string::npos || split == 0 || split + 1 == value.size()) {

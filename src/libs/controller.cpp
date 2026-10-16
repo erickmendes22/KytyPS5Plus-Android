@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
+#include "common/perfStats.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -1131,6 +1132,9 @@ int KYTY_SYSV_ABI PadReadState(int handle, PadData* data) {
 	g_controller->ReadState(&state, &connected, &connected_count);
 
 	pad_fill_data(data, state, connected, connected_count);
+	if ((state.buttons & PAD_BUTTON_CROSS) != 0) {
+		Common::PerfStats::ObserveInput();
+	}
 
 	return OK;
 }
@@ -1163,6 +1167,9 @@ int KYTY_SYSV_ABI PadRead(int handle, PadData* data, int num) {
 
 	for (int i = 0; i < ret_num; i++) {
 		pad_fill_data(&data[i], states[i], connected, connected_count);
+		if ((states[i].buttons & PAD_BUTTON_CROSS) != 0) {
+			Common::PerfStats::ObserveInput();
+		}
 	}
 
 	return ret_num;

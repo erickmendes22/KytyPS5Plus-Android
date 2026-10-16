@@ -872,7 +872,9 @@ elseif(WIN32 OR LINUX)
 	target_link_options(kyty_emulator PRIVATE "-Wl,-Map=${KYTY_EMULATOR_MAP_LINK_PATH}")
 endif()
 
-if(LINUX)
+# Android keeps the symbols in the build tree for profiling and crash symbolization; the APK
+# packaging step strips the copy it installs.
+if(LINUX AND NOT ANDROID)
     target_link_options(kyty_emulator PRIVATE
         $<$<CONFIG:Release>:-Wl,--strip-all>
     )

@@ -5,6 +5,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
+#include "common/perfStats.h"
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -630,6 +631,10 @@ void WindowContext::ProcessEvent(double time_s) {
 			f.pressure          = event->tfinger.pressure;
 			f.timestamp_seconds = time_s;
 
+			if (f.down) {
+				const uint64_t now_ns = SDL_GetTicksNS();
+				Common::PerfStats::MarkInput(now_ns > event->tfinger.timestamp ? now_ns - event->tfinger.timestamp : 0);
+			}
 			GameEventFinger(f);
 
 			break;
