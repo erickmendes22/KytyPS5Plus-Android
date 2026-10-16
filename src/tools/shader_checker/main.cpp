@@ -8,6 +8,7 @@
 // device setup error. Records are checked in forked workers so a driver crash or hang only costs
 // the record that caused it.
 
+#include "graphics/shader/deviceQuirks.h"
 #include "tools/shader_checker/checkerPipeline.h"
 
 #include <algorithm>
@@ -293,9 +294,16 @@ int Main(int argc, char** argv) {
 					fmt::print(stderr, "device setup failed: {}\n", error);
 					_exit(3);
 				}
-				fmt::print("device: {} | driver {} {} | {} records\n",
-				           device->Properties().deviceName.data(), device->Driver().driverName.data(),
-				           device->Driver().driverInfo.data(), args.records.size());
+				const auto& props  = device->Properties();
+				const auto  quirks = Libs::Graphics::DetectShaderDeviceQuirks(
+                    {.vendor_id      = props.vendorID,
+				      .device_id      = props.deviceID,
+				      .driver_id      = static_cast<uint32_t>(device->Driver().driverID),
+				      .driver_version = props.driverVersion});
+				fmt::print("device: {} | driver {} {} | emulator shader quirks: {} | {} records\n",
+				           props.deviceName.data(), device->Driver().driverName.data(),
+				           device->Driver().driverInfo.data(),
+				           Libs::Graphics::DescribeShaderQuirks(quirks), args.records.size());
 				std::fflush(stdout);
 				_exit(0);
 			}

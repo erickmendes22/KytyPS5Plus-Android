@@ -477,6 +477,14 @@ add_executable(bit_array_tests EXCLUDE_FROM_ALL
 )
 target_include_directories(bit_array_tests PRIVATE ${inc_headers})
 
+add_executable(shader_check_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/ShaderCheckTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineRecord.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/deviceQuirks.cpp"
+)
+target_include_directories(shader_check_tests PRIVATE ${inc_headers})
+target_link_libraries(shader_check_tests Vulkan::Headers fmt::fmt nlohmann_json::nlohmann_json)
+
 add_executable(address_layout_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/AddressLayoutTests.cpp"
 )
@@ -682,6 +690,7 @@ if(BUILD_TESTING)
 	add_test(NAME avplayer_file COMMAND $<TARGET_FILE:avplayer_file_tests>)
 	add_test(NAME vdecsw COMMAND $<TARGET_FILE:vdecsw_tests>)
 	add_test(NAME bit_array COMMAND $<TARGET_FILE:bit_array_tests>)
+	add_test(NAME shader_check COMMAND $<TARGET_FILE:shader_check_tests>)
 	add_test(NAME address_layout COMMAND $<TARGET_FILE:address_layout_tests>)
 	add_test(NAME lru_cache COMMAND $<TARGET_FILE:lru_cache_tests>)
 	add_test(NAME guest_abi COMMAND $<TARGET_FILE:guest_abi_tests>)
@@ -761,6 +770,7 @@ if(BUILD_TESTING)
 		avplayer_file_tests
 		vdecsw_tests
 		bit_array_tests
+		shader_check_tests
 		lru_cache_tests
 		guest_abi_tests
 		shader_vertex_metadata_tests
@@ -818,7 +828,8 @@ if(UNIX)
 		"${KYTY_SOURCE_DIR}/tools/shader_checker/main.cpp"
 		"${KYTY_SOURCE_DIR}/tools/shader_checker/checkerDevice.cpp"
 		"${KYTY_SOURCE_DIR}/tools/shader_checker/checkerPipeline.cpp"
-		"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineRecord.cpp")
+		"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineRecord.cpp"
+		"${KYTY_SOURCE_DIR}/graphics/shader/deviceQuirks.cpp")
 	target_include_directories(shader_checker PRIVATE ${inc_headers})
 	target_link_libraries(shader_checker Vulkan::Headers spirv-tools fmt::fmt
 		nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})

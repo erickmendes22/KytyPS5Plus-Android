@@ -13,6 +13,7 @@
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
+#include "graphics/host_gpu/renderer/pipeline/hostShaderQuirks.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -404,6 +405,7 @@ struct PipelineCache::ProgramCache {
 		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationEvaluation),
 		         .subgroup_fragment = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eFragment),
 		};
+		options.device_quirks = device_quirks;
 		options.shader_hash = params.hash;
 		options.user_data   = user_data;
 		options.back_code      = params.back_code;
@@ -477,7 +479,8 @@ struct PipelineCache::ProgramCache {
 		return permutation.handle;
 	}
 
-	explicit ProgramCache(GraphicContext& graphics): graphics(graphics) {
+	explicit ProgramCache(GraphicContext& graphics)
+	    : graphics(graphics), device_quirks(ResolveShaderDeviceQuirks(graphics.physical_device)) {
 		lookup_key.static_state.reserve(MaxStaticKeyWords);
 	}
 	~ProgramCache() {
@@ -492,6 +495,7 @@ struct PipelineCache::ProgramCache {
 	std::unordered_map<ProgramKey, SourceEntry, ProgramKeyHash> programs;
 	ProgramKey                                                  lookup_key;
 	GraphicContext&                                             graphics;
+	ShaderDeviceQuirks                                          device_quirks;
 	uint64_t                                                    next_shader_id = 0;
 };
 
