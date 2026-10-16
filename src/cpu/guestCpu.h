@@ -84,6 +84,14 @@ struct GuestRegisters {
 // the caller's stack pointer after the call returns. Returns false outside a thunk.
 bool CaptureTrappedGuestRegisters(GuestRegisters* out);
 
+// Finishes the trapped import in another guest context: when the thunk returns, guest execution
+// continues at regs.rip with RSP = regs.rsp and the other integer registers taken from regs, except
+// RAX, which still receives the thunk's return value. fs_base is ignored. The host stack is not
+// involved, so a thunk can switch guest contexts (fibers) and still unwind normally. Writes the
+// return address to [regs.rsp - 8], a slot the guest ABI already treats as clobbered by a call.
+// Returns false outside a thunk.
+bool RedirectTrappedGuest(const GuestRegisters& regs);
+
 // Guest code cannot be interrupted at an arbitrary instruction from the host. Host events aimed at a
 // guest thread (emulated guest signals) are instead delivered at safe points; the return of every HLE
 // thunk is one. The hook runs on the trapping thread after the thunk, still inside the trap, so it may

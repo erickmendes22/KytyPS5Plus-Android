@@ -195,6 +195,23 @@ bool CaptureTrappedGuestRegisters(GuestRegisters* out) {
 	return true;
 }
 
+bool RedirectTrappedGuest(const GuestRegisters& regs) {
+	auto* frame = Fex::g_hle_frame;
+	if (frame == nullptr) {
+		return false;
+	}
+	// The stub epilogue after the trap is `add rsp, 8; ret` (see EncodeStub). Point RSP two slots below
+	// the target stack pointer, with the target RIP as the return address the epilogue pops.
+	const uint64_t trap_rsp = regs.gpr[GuestRegisters::kRsp] - kStackSlotOffset;
+	std::memcpy(reinterpret_cast<void*>(trap_rsp + 8), &regs.rip, sizeof(regs.rip));
+	// The syscall path spills the guest registers before the handler and refills them afterwards, so
+	// the new values take effect when the thunk returns. RAX is written from the handler's result.
+	static_assert(sizeof(regs.gpr) == sizeof(frame->State.gregs));
+	std::memcpy(frame->State.gregs, regs.gpr, sizeof(regs.gpr));
+	frame->State.gregs[FEXCore::X86State::REG_RSP] = trap_rsp;
+	return true;
+}
+
 void RegisterSafePointHook(SafePointHook hook) {
 	g_safe_point_hook.store(hook, std::memory_order_release);
 }
