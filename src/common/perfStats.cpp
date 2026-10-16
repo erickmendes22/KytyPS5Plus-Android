@@ -1,5 +1,7 @@
 #include "common/perfStats.h"
 
+#include "common/perfWaits.h"
+
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -173,12 +175,15 @@ constexpr size_t   kRingSize           = size_t {1} << 16;
 constexpr uint64_t kMaxFrameSpan       = 1u << 20; // a caller frame lies within 1 MiB above the callee's
 constexpr int      kProfileDumpSeconds = 5;
 constexpr size_t   kTopEntries         = 80;
+constexpr int      kWallTag            = 0x57a11;
+constexpr size_t   kWallStackFrames    = 4;
 
 struct Sample {
 	std::atomic<uint64_t> seq {0};
 	int32_t               tid = 0;
 	uint32_t              depth = 0;
 	uint32_t              weight = 1; // expirations covered: CPU-time timers only fire on scheduler ticks
+	bool                  wall   = false; // from a wall-clock timer (SampleThisThreadWallClock)
 	uint64_t              frames[kMaxFrames] {};
 };
 
@@ -214,6 +219,7 @@ void OnSample(int /*sig*/, siginfo_t* info, void* context) {
 	Sample&        s     = g_ring[index & (kRingSize - 1)];
 	s.tid                = static_cast<int32_t>(syscall(SYS_gettid));
 	s.weight             = 1 + static_cast<uint32_t>(info->si_overrun > 0 ? info->si_overrun : 0);
+	s.wall               = info->si_code == SI_TIMER && info->si_value.sival_int == kWallTag;
 	s.frames[0]          = pc;
 	s.frames[1]          = lr;
 	uint32_t depth       = 2;
@@ -436,6 +442,8 @@ struct Profile {
 	std::unordered_map<uint64_t, uint64_t> kyty;      // innermost libmain frame -> samples
 	std::unordered_map<int, uint64_t>      threads;   // tid -> samples
 	std::unordered_map<uint32_t, uint64_t> hle;       // HLE id -> calls
+	std::map<std::string, uint64_t>        wall;      // wall-clock samples: leaf + kyty frames
+	uint64_t                               wall_total = 0;
 	uint64_t                               total = 0;
 };
 
@@ -473,6 +481,11 @@ void DumpProfile(const Profile& profile, Symbolizer& symbolizer, int seconds) {
 		dump("hle-calls", by_thunk);
 	}
 	dump("innermost-kyty-frame", profile.kyty);
+	std::fprintf(out, "## wall-stacks (%llu wall-clock samples of 1 ms: leaf <- kyty callers)\n",
+	             static_cast<unsigned long long>(profile.wall_total));
+	for (const auto& [stack, n]: Top(profile.wall, kTopEntries)) {
+		std::fprintf(out, "%llu %s\n", static_cast<unsigned long long>(n), stack.c_str());
+	}
 	std::fclose(out);
 }
 
@@ -508,6 +521,19 @@ void Reporter() {
 			}
 			const uint64_t pc = s.frames[0];
 			const uint64_t w  = s.weight;
+			if (s.wall) {
+				std::string stack = symbolizer.Locate(pc);
+				size_t      kyty  = 0;
+				for (uint32_t i = 1; i < s.depth && kyty < kWallStackFrames; i++) {
+					if (std::strcmp(Category(symbolizer.Module(s.frames[i])), "kyty") == 0) {
+						stack += " <- " + symbolizer.Locate(s.frames[i]);
+						kyty++;
+					}
+				}
+				profile.wall[stack] += w;
+				profile.wall_total += w;
+				continue;
+			}
 			window.per_thread[s.tid] += w;
 			window.per_category[Category(symbolizer.Module(pc))] += w;
 			window.total += w;
@@ -557,6 +583,7 @@ void Reporter() {
 			line += part;
 		}
 		Emit(line);
+		Emit(TakeWaitSummary(dt, flips - last_flips));
 
 		last_hle    = hle;
 		last_faults = faults;
@@ -570,6 +597,25 @@ void Reporter() {
 }
 
 } // namespace
+
+void SampleThisThreadWallClock() {
+	if (!Enabled()) {
+		return;
+	}
+	sigevent sev {};
+	sev.sigev_notify          = SIGEV_THREAD_ID;
+	sev.sigev_signo           = kSampleSignal;
+	sev.sigev_value.sival_int = kWallTag;
+	sev._sigev_un._tid        = static_cast<pid_t>(syscall(SYS_gettid));
+	int timer                 = -1;
+	if (syscall(SYS_timer_create, CLOCK_MONOTONIC, &sev, &timer) != 0) {
+		return;
+	}
+	itimerspec spec {};
+	spec.it_interval.tv_nsec = kSampleIntervalNs;
+	spec.it_value.tv_nsec    = kSampleIntervalNs;
+	syscall(SYS_timer_settime, timer, 0, &spec, nullptr);
+}
 
 void Start() {
 	if (g_enabled.exchange(true)) {
@@ -592,6 +638,8 @@ void Start() {
 #else
 
 namespace Common::PerfStats {
+
+void SampleThisThreadWallClock() {}
 
 void Start() {
 	Detail::g_enabled.store(true, std::memory_order_relaxed);

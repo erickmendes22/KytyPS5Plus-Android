@@ -3,6 +3,7 @@
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
+#include "common/perfWaits.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -116,6 +117,7 @@ void GuestGpu::ProcessCommands() {
 			m_commands.pop_front();
 			EXIT_IF(m_pending_commands.fetch_sub(1, std::memory_order_acq_rel) == 0);
 		}
+		const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GpuSyncCommand);
 		command();
 	}
 }
@@ -131,6 +133,7 @@ void GuestGpu::SendCommandSync(Common::UniqueFunction<void>&& command) {
 		operation();
 		done.release();
 	});
+	const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GuestSyncCommand);
 	done.acquire();
 }
 
@@ -172,7 +175,10 @@ void GuestGpu::SuspendPoint() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
 	// Do not hold a queue lock while waiting: asynchronous work may be needed to
 	// finish the preceding graphics frame. The first point returns immediately.
-	m_suspend_point_ready->acquire();
+	{
+		const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GuestSuspendPoint);
+		m_suspend_point_ready->acquire();
+	}
 	Submission submission;
 	submission.type = SubmissionType::SuspendPoint;
 	Enqueue(std::move(submission));
@@ -433,6 +439,7 @@ void GuestGpu::Enqueue(Submission submission) {
 
 void GuestGpu::WaitForIdle() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
+	const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GuestIdle);
 	Common::LockGuard lock(m_queue_mutex);
 	while (m_processing || !m_commands.empty() || m_submission_count != 0) {
 		m_idle.Wait(&m_queue_mutex);
@@ -445,6 +452,8 @@ void GuestGpu::ThreadRun(void* data) {
 	KYTY_PROFILER_THREAD("Thread_Gpu");
 	g_gpu_thread = true;
 	g_gpu_state  = gpu;
+	Common::PerfStats::SetGpuThread();
+	Common::PerfStats::SampleThisThreadWallClock();
 
 	for (;;) {
 		Submission                   submission;
@@ -456,6 +465,7 @@ void GuestGpu::ThreadRun(void* data) {
 			while (gpu->m_commands.empty() && gpu->m_submission_count == 0 && !gpu->m_stopping) {
 				gpu->m_processing = false;
 				gpu->m_idle.Signal();
+				const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GpuIdle);
 				gpu->m_work_available.Wait(&gpu->m_queue_mutex);
 			}
 			if (gpu->m_stopping && gpu->m_commands.empty() && gpu->m_submission_count == 0) {
@@ -478,7 +488,10 @@ void GuestGpu::ThreadRun(void* data) {
 				}
 				if (selected_queue < 0) {
 					gpu->m_processing = false;
-					gpu->m_work_available.WaitFor(&gpu->m_queue_mutex, 100);
+					{
+						const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GpuBlocked);
+						gpu->m_work_available.WaitFor(&gpu->m_queue_mutex, 100);
+					}
 					for (auto& queue: gpu->m_queues) {
 						if (!queue.empty()) {
 							queue.front().blocked = false;
@@ -504,7 +517,10 @@ void GuestGpu::ThreadRun(void* data) {
 
 		if (command) {
 			EXIT_IF(g_current_processor != nullptr);
-			command();
+			{
+				const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GpuSyncCommand);
+				command();
+			}
 
 			Common::LockGuard lock(gpu->m_queue_mutex);
 			gpu->m_processing = false;
@@ -515,7 +531,11 @@ void GuestGpu::ThreadRun(void* data) {
 		}
 
 		EXIT_IF(!has_submission);
-		const bool complete = gpu->Process(submission);
+		bool complete = false;
+		{
+			const Common::PerfStats::ScopedWait process_timing(Common::PerfStats::Wait::GpuProcess);
+			complete = gpu->Process(submission);
+		}
 
 		Common::LockGuard lock(gpu->m_queue_mutex);
 		if (!complete) {
@@ -1018,6 +1038,7 @@ void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 }
 
 void CommandProcessor::WaitFlipDone(uint32_t video_out_handle, uint32_t display_buffer_index) {
+	const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GpuFlipDone);
 	BufferFlush();
 
 	m_renderer.GetVideoOut().WaitFlipDone(static_cast<int>(video_out_handle),

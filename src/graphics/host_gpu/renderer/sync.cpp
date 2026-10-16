@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/sync.h"
 
 #include "common/assert.h"
+#include "common/perfWaits.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -65,6 +66,7 @@ uint64_t PrepareVideoOutFlip(CommandBuffer& buffer, int handle, int index, int f
 			     "\n",
 			     result, handle, index, flip_mode, flip_arg);
 		}
+		const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GpuFlipSlot);
 		video_out.WaitForSubmitSlot(handle);
 	}
 }

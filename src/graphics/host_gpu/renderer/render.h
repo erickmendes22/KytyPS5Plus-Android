@@ -34,6 +34,7 @@ struct DrawIndexBufferSource;
 struct DrawRenderState;
 class RenderContext;
 class CommandScheduler;
+class GpuTimer;
 struct RenderExecutorTestAccess;
 
 enum class CommandBufferDebugOp : uint32_t {
@@ -107,6 +108,14 @@ public:
 	                  uint32_t arg2 = 0, uint32_t arg3 = 0, uint64_t arg4 = 0);
 	void BeginRendering(const RenderState& state) const;
 	void EndRendering() const;
+	// --perf-stats GPU timestamps: closes a timed region (see GpuTimer::Mark).
+	void MarkGpu(const char* kind, uint64_t hash = 0) const;
+	// Names the render pass in GPU timings after the first draw's shader.
+	void NotePassShader(uint64_t hash) const {
+		if (m_pass_shader == 0) {
+			m_pass_shader = hash;
+		}
+	}
 
 	[[nodiscard]] vk::CommandBuffer Handle() const;
 	[[nodiscard]] GraphicContext&   GetGraphics() const noexcept { return m_graphics; }
@@ -138,6 +147,8 @@ private:
 	uint64_t            m_debug_arg4      = 0;
 	mutable RenderState m_render_state;
 	mutable bool        m_rendering   = false;
+	mutable uint64_t    m_pass_shader = 0;
+	GpuTimer&           m_timer;
 	HW::Context*        m_registers   = nullptr;
 	HW::UserConfig*     m_user_config = nullptr;
 	HW::Shader*         m_shaders     = nullptr;
