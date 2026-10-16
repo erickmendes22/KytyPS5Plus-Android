@@ -840,7 +840,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
-	const auto guest_hash  = input_info.stage.program->shader_hash;
+	const auto guest_hash  = program.shader_hash;
 	const auto dump_record = ShaderDump::RecordComputePipeline(
 	    graphics, info,
 	    {descriptor_bindings, pipeline.uses_push_descriptors
