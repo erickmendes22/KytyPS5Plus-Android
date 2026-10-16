@@ -16,11 +16,16 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
+import android.widget.GridView
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
-import android.widget.ScrollView
 import android.widget.TextView
+import com.kytyps5.android.input.OverlayProfileStore
+import com.kytyps5.android.library.CoverLoader
+import com.kytyps5.android.library.GameGridAdapter
+import com.kytyps5.android.library.GameSettingsDialog
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -40,7 +45,9 @@ class MainActivity : Activity() {
     private lateinit var folderPath: TextView
     private lateinit var resolutionGroup: RadioGroup
     private lateinit var message: TextView
-    private lateinit var gameList: LinearLayout
+    private lateinit var covers: CoverLoader
+    private lateinit var grid: GameGridAdapter
+    private lateinit var gameSettings: GameSettingsDialog
 
     private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()
 
@@ -54,6 +61,15 @@ class MainActivity : Activity() {
             post = { mainHandler.post(it) },
             showMessage = ::showMessage,
             label = { label(it) },
+        )
+        covers = CoverLoader(targetPx = COVER_DP.dp)
+        grid = GameGridAdapter(this, covers, COVER_DP.dp, onPlay = ::launch, onSettings = { gameSettings.show(it) })
+        gameSettings = GameSettingsDialog(
+            activity = this,
+            settings = settings,
+            layouts = OverlayProfileStore(File(filesDir, OverlayProfileStore.DIRECTORY_NAME)),
+            driverLabel = { drivers.gameButtonText(it.path) },
+            chooseDriver = { game, done -> drivers.chooseForGame(game, done) },
         )
         setContentView(buildUi())
         applyDefaultGpuDriver()
@@ -84,6 +100,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         worker.shutdownNow()
+        covers.shutdown()
         super.onDestroy()
     }
 
@@ -103,7 +120,6 @@ class MainActivity : Activity() {
         folderPath = label(settings.gamesRoot, sizeSp = 16f)
         resolutionGroup = buildResolutionGroup()
         message = label("", secondary = true)
-        gameList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -128,13 +144,27 @@ class MainActivity : Activity() {
                     })
                 },
             )
-            addView(label("Resolution", bold = true))
-            addView(resolutionGroup)
+            addView(
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(label("Resolution  ", bold = true))
+                    addView(resolutionGroup)
+                    addView(toggle("Performance HUD", settings.hudEnabled) { settings.hudEnabled = it })
+                    addView(toggle("Touch controls", settings.touchControlsEnabled) { settings.touchControlsEnabled = it })
+                },
+            )
             addView(label("GPU driver", bold = true))
             addView(drivers.build(onChanged = {}))
             addView(message)
             addView(
-                ScrollView(context).apply { addView(gameList) },
+                GridView(context).apply {
+                    adapter = grid
+                    numColumns = GridView.AUTO_FIT
+                    columnWidth = (COVER_DP + 12).dp
+                    stretchMode = GridView.STRETCH_SPACING_UNIFORM
+                    verticalSpacing = 4.dp
+                },
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
             )
         }
@@ -226,45 +256,40 @@ class MainActivity : Activity() {
     }
 
     private fun renderScan(result: ScanResult) {
-        gameList.removeAllViews()
+        grid.games = (result as? ScanResult.Found)?.games.orEmpty()
         when (result) {
             is ScanResult.Failure -> showMessage(result.message)
             is ScanResult.Found -> when {
                 result.games.isEmpty() ->
                     showMessage("No games found here. Choose a folder containing game dumps (a folder with sce_sys/param.json, or a .zar file).")
-                else -> {
-                    showMessage("${result.games.size} game(s) found.")
-                    result.games.forEach { gameList.addView(gameRow(it)) }
-                }
+                else -> showMessage("${result.games.size} game(s) found. Tap to play, ⚙ or long-press for game settings.")
             }
         }
     }
 
-    private fun gameRow(game: GameEntry): View = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(0, 8.dp, 0, 8.dp)
-        addView(
-            LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(label(game.title, sizeSp = 16f, bold = true))
-                addView(label(game.folder.path, sizeSp = 12f, secondary = true))
-            },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+    private fun launch(game: GameEntry) {
+        val options = LaunchOptions.resolve(
+            globalResolution = settings.resolution,
+            globalHud = settings.hudEnabled,
+            globalTouch = settings.touchControlsEnabled,
+            game = settings.gameSettings(game.path),
         )
-        addView(Button(context).apply {
-            text = drivers.gameButtonText(game.path)
-            setOnClickListener { drivers.chooseForGame(game) { text = drivers.gameButtonText(game.path) } }
-        })
-        addView(Button(context).apply {
-            text = "Play"
-            setOnClickListener { launch(game) }
-        })
+        val args = LaunchArgs.forGame(game.path, options.resolution, drivers.driverDirFor(game.path))
+        startActivity(
+            Intent(this, GameActivity::class.java)
+                .putExtra(LaunchArgs.EXTRA_GAME_ARGS, args)
+                .putExtra(LaunchArgs.EXTRA_GAME_PATH, game.path)
+                .putExtra(LaunchArgs.EXTRA_ENV, options.env.map { it.toString() }.toTypedArray())
+                .putExtra(LaunchArgs.EXTRA_HUD, options.hud)
+                .putExtra(LaunchArgs.EXTRA_TOUCH_CONTROLS, options.touchControls),
+        )
     }
 
-    private fun launch(game: GameEntry) {
-        val args = LaunchArgs.forGame(game.path, settings.resolution, drivers.driverDirFor(game.path))
-        startActivity(Intent(this, GameActivity::class.java).putExtra(LaunchArgs.EXTRA_GAME_ARGS, args))
+    private fun toggle(text: String, checked: Boolean, onChange: (Boolean) -> Unit) = CheckBox(this).apply {
+        this.text = text
+        isChecked = checked
+        setPadding(0, 0, 12.dp, 0)
+        setOnCheckedChangeListener { _, value -> onChange(value) }
     }
 
     private fun refreshStorageState() {
@@ -295,6 +320,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQUEST_PICK_GAMES_FOLDER = 1
+        const val COVER_DP = 150
     }
 
     private fun label(

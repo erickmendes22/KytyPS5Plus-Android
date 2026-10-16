@@ -1,6 +1,7 @@
 package com.kytyps5.android
 
 import android.util.Log
+import com.kytyps5.android.library.ParamSfo
 import java.io.File
 import java.io.IOException
 import org.json.JSONException
@@ -9,8 +10,14 @@ import org.json.JSONObject
 /**
  * A game the emulator can load: an extracted dump folder (contains sce_sys/param.json) or a
  * ZArchive dump file (*.zar), which the emulator mounts read-only without extracting.
+ * [titleId] and [icon] (sce_sys/icon0.png) are known for extracted folders only.
  */
-data class GameEntry(val folder: File, val title: String) {
+data class GameEntry(
+    val folder: File,
+    val title: String,
+    val titleId: String? = null,
+    val icon: File? = null,
+) {
     val path: String get() = folder.absolutePath
 }
 
@@ -22,6 +29,9 @@ sealed interface ScanResult {
 object GameLibrary {
     private const val TAG = "GameLibrary"
     const val PARAM_JSON = "sce_sys/param.json"
+    const val PARAM_SFO = "sce_sys/param.sfo"
+    const val ICON = "sce_sys/icon0.png"
+    private const val MAX_SFO_BYTES = 64 * 1024
     const val ZARCHIVE_EXTENSION = "zar"
 
     /** How deep below the chosen folder to look; dumps are often nested one or two levels. */
@@ -41,7 +51,7 @@ object GameLibrary {
     /** The chosen folder may itself be a game; otherwise look below it, without entering games. */
     private fun collect(folder: File, depth: Int, into: MutableList<GameEntry>) {
         if (isGameFolder(folder)) {
-            into += GameEntry(folder = folder, title = readTitle(folder))
+            into += readEntry(folder)
             return
         }
         val children = folder.listFiles() ?: return
@@ -55,16 +65,34 @@ object GameLibrary {
 
     private fun isGameFolder(folder: File): Boolean = File(folder, PARAM_JSON).isFile
 
-    fun readTitle(folder: File): String {
-        val fallback = folder.name
+    /** Title (param.json, then param.sfo TITLE, then folder name), title id and icon of a game folder. */
+    fun readEntry(folder: File): GameEntry {
+        val json = readParamJson(folder)
+        val sfo = readParamSfo(folder)
+        val title = json?.let { titleFromParamJson(it, "") }?.ifEmpty { null }
+            ?: (sfo?.get("TITLE") as? String)?.trim()?.ifEmpty { null }
+            ?: folder.name
+        val titleId = json?.optString("titleId", "")?.trim()?.ifEmpty { null }
+            ?: (sfo?.get("TITLE_ID") as? String)?.trim()?.ifEmpty { null }
+        return GameEntry(folder, title, titleId, File(folder, ICON).takeIf { it.isFile })
+    }
+
+    private fun readParamJson(folder: File): JSONObject? = try {
+        JSONObject(File(folder, PARAM_JSON).readText())
+    } catch (e: JSONException) {
+        Log.w(TAG, "Malformed $PARAM_JSON in ${folder.path}", e)
+        null
+    } catch (e: IOException) {
+        null
+    }
+
+    private fun readParamSfo(folder: File): Map<String, Any>? {
+        val file = File(folder, PARAM_SFO)
+        if (!file.isFile || file.length() > MAX_SFO_BYTES) return null
         return try {
-            titleFromParamJson(JSONObject(File(folder, PARAM_JSON).readText()), fallback)
-        } catch (e: JSONException) {
-            Log.w(TAG, "Malformed $PARAM_JSON in ${folder.path}", e)
-            fallback
+            ParamSfo.parse(file.readBytes())
         } catch (e: IOException) {
-            Log.w(TAG, "Cannot read $PARAM_JSON in ${folder.path}", e)
-            fallback
+            null
         }
     }
 

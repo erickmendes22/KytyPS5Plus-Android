@@ -1,5 +1,8 @@
 package com.kytyps5.android
 
+import com.kytyps5.android.library.EnvVar
+import com.kytyps5.android.library.GameSettings
+
 /** Output resolution the emulator renders at. Values are passed as --screen-width / --screen-height. */
 enum class Resolution(
     val label: String,
@@ -31,6 +34,12 @@ object LaunchArgs {
     private const val FLAG_SCREEN_WIDTH = "--screen-width"
     private const val FLAG_SCREEN_HEIGHT = "--screen-height"
 
+    /** Launcher-only extras read by GameActivity (not emulator flags). */
+    const val EXTRA_GAME_PATH = "com.kytyps5.android.extra.GAME_PATH"
+    const val EXTRA_ENV = "com.kytyps5.android.extra.ENV"
+    const val EXTRA_HUD = "com.kytyps5.android.extra.HUD"
+    const val EXTRA_TOUCH_CONTROLS = "com.kytyps5.android.extra.TOUCH_CONTROLS"
+
     /** Directory of an imported Vulkan driver package; omitted for the system driver. */
     const val FLAG_GPU_DRIVER = "--gpu-driver"
 
@@ -51,5 +60,23 @@ object GpuDriverChoice {
     fun resolve(globalId: String, gameOverride: String?, isImported: (String) -> Boolean): String? {
         val id = gameOverride ?: globalId
         return id.takeIf { it != LauncherSettings.SYSTEM_DRIVER && isImported(it) }
+    }
+}
+
+/** Settings a launch actually uses after per-game overrides are applied to the global ones. */
+data class LaunchOptions(
+    val resolution: Resolution,
+    val hud: Boolean,
+    val touchControls: Boolean,
+    val env: List<EnvVar>,
+) {
+    companion object {
+        fun resolve(globalResolution: Resolution, globalHud: Boolean, globalTouch: Boolean, game: GameSettings) =
+            LaunchOptions(
+                resolution = game.resolution ?: globalResolution,
+                hud = game.hud ?: globalHud,
+                touchControls = game.touchControls ?: globalTouch,
+                env = game.envVars,
+            )
     }
 }

@@ -1,6 +1,7 @@
 package com.kytyps5.android
 
 import android.content.Context
+import com.kytyps5.android.library.GameSettings
 
 /** Launcher preferences persisted in SharedPreferences. Reads fall back to defaults on any failure. */
 class LauncherSettings(context: Context) {
@@ -33,6 +34,28 @@ class LauncherSettings(context: Context) {
             prefs.edit().putInt(KEY_BUNDLED_DRIVER_VERSION, value).apply()
         }
 
+    /** Show the performance HUD in game unless a game overrides it. */
+    var hudEnabled: Boolean
+        get() = prefs.getBoolean(KEY_HUD, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_HUD, value).apply()
+        }
+
+    /** Show the on-screen controller in game unless a game overrides it (hidden while a gamepad is attached). */
+    var touchControlsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_TOUCH_CONTROLS, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_TOUCH_CONTROLS, value).apply()
+        }
+
+    fun gameSettings(gamePath: String): GameSettings =
+        GameSettings.fromJson(prefs.getString(KEY_GAME_SETTINGS_PREFIX + gamePath, null))
+
+    fun setGameSettings(gamePath: String, settings: GameSettings) {
+        val key = KEY_GAME_SETTINGS_PREFIX + gamePath
+        prefs.edit().apply { if (settings == GameSettings.DEFAULT) remove(key) else putString(key, settings.toJson()) }.apply()
+    }
+
     /** Per-game GPU driver override (keyed by game path): null follows [gpuDriverId]. */
     fun gameGpuDriverOverride(gamePath: String): String? =
         prefs.getString(KEY_GPU_DRIVER_GAME_PREFIX + gamePath, null)
@@ -52,5 +75,8 @@ class LauncherSettings(context: Context) {
         private const val KEY_GPU_DRIVER = "gpu_driver"
         private const val KEY_GPU_DRIVER_GAME_PREFIX = "gpu_driver_game:"
         private const val KEY_BUNDLED_DRIVER_VERSION = "bundled_driver_version"
+        private const val KEY_HUD = "hud_enabled"
+        private const val KEY_TOUCH_CONTROLS = "touch_controls_enabled"
+        private const val KEY_GAME_SETTINGS_PREFIX = "game_settings:"
     }
 }
