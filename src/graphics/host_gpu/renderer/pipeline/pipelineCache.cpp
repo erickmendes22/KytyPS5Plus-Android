@@ -491,7 +491,8 @@ struct PipelineCache::ProgramCache {
 };
 
 PipelineCache::PipelineCache(GraphicContext& graphics)
-    : m_graphics(graphics), m_program_cache(std::make_unique<ProgramCache>(graphics)) {
+    : m_graphics(graphics), m_program_cache(std::make_unique<ProgramCache>(graphics)),
+      m_last_flush(std::chrono::steady_clock::now()) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 	InitializeDriverCache();
 }
@@ -528,10 +529,15 @@ void PipelineCache::InitializeDriverCache() {
 		PipelineCacheLog("Vulkan pipeline cache: disabled (unknown git revision)");
 		return;
 	}
+#if !defined(__ANDROID__)
 	if (git_hash.ends_with("-dirty")) {
 		PipelineCacheLog("Vulkan pipeline cache: disabled (dirty build)");
 		return;
 	}
+#endif
+	// Android builds are usually dev builds, and mobile drivers compile pipelines slowly enough that
+	// every new one is a visible hitch. Stale entries are harmless: the driver keys them by the full
+	// pipeline state and rejects a cache from another driver (checked through the file signature).
 
 	m_driver_cache_path     = std::filesystem::path("_PipelineCache") / (title_id + ".bin");
 	const auto path         = Common::PathToString(m_driver_cache_path);
@@ -599,9 +605,11 @@ void PipelineCache::InitializeDriverCache() {
 	}
 }
 
-void PipelineCache::Save() {
+// Serializes the driver cache to disk without releasing it. vkGetPipelineCacheData does not need
+// external synchronization against pipeline creation, so this may run on a worker thread.
+bool PipelineCache::WriteDriverCacheFile() const {
 	if (m_driver_cache == nullptr) {
-		return;
+		return false;
 	}
 
 	size_t               size = 0;
@@ -624,7 +632,7 @@ void PipelineCache::Save() {
 	    size > std::numeric_limits<uint32_t>::max()) {
 		PipelineCacheLog("Vulkan pipeline cache: save failed ({}, {} bytes)",
 		                 vk::to_string(result), size);
-		return;
+		return false;
 	}
 	payload.resize(size);
 	auto       prefix       = DriverCacheSignature(m_graphics.GetPhysicalDeviceProperties());
@@ -632,7 +640,7 @@ void PipelineCache::Save() {
 	prefix.append(reinterpret_cast<const char*>(&payload_hash), sizeof(payload_hash));
 	if (!Common::File::CreateDirectories(m_driver_cache_path.parent_path())) {
 		PipelineCacheLog("Vulkan pipeline cache: failed to create cache directory");
-		return;
+		return false;
 	}
 	auto temp_path = m_driver_cache_path;
 	temp_path += ".tmp";
@@ -649,12 +657,50 @@ void PipelineCache::Save() {
 	    !Common::File::RenameFile(temp_path, m_driver_cache_path)) {
 		PipelineCacheLog("Vulkan pipeline cache: failed to write {}",
 		                 Common::PathToString(m_driver_cache_path));
-		return;
+		return false;
 	}
 	PipelineCacheLog("Vulkan pipeline cache: saved {} bytes to {}", payload.size(),
 	                 Common::PathToString(m_driver_cache_path));
+	return true;
+}
+
+void PipelineCache::Save() {
+	if (m_flush_thread.joinable()) {
+		m_flush_thread.join();
+	}
+	if (m_driver_cache == nullptr) {
+		return;
+	}
+	(void)WriteDriverCacheFile();
 	m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
 	m_driver_cache = nullptr;
+}
+
+void PipelineCache::OnPipelineCreated() {
+	if (m_driver_cache != nullptr) {
+		m_unsaved_pipelines++;
+	}
+}
+
+void PipelineCache::MaybeFlushDriverCache() {
+#if defined(__ANDROID__)
+	// Android ends apps without running destructors, so new pipelines are written out in the
+	// background, at most once per kFlushInterval, instead of only at shutdown.
+	constexpr auto kFlushInterval = std::chrono::seconds(10);
+	if (m_unsaved_pipelines == 0) {
+		return;
+	}
+	const auto now = std::chrono::steady_clock::now();
+	if (now - m_last_flush < kFlushInterval) {
+		return;
+	}
+	if (m_flush_thread.joinable()) {
+		m_flush_thread.join();
+	}
+	m_last_flush        = now;
+	m_unsaved_pipelines = 0;
+	m_flush_thread      = std::thread([this] { (void)WriteDriverCacheFile(); });
+#endif
 }
 
 PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
@@ -783,6 +829,7 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 	const auto& vertex_program = programs.vertex[0];
 	const auto& pixel_program  = programs.pixel;
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Gfx)", profiler::colors::DeepOrangeA200);
+	MaybeFlushDriverCache();
 
 	EXIT_IF(colors.size() > RENDER_COLOR_ATTACHMENTS_MAX);
 	EXIT_IF(!vertex_program);
@@ -968,6 +1015,7 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 
 	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
+	OnPipelineCreated();
 
 	return *iter->second;
 }
@@ -976,6 +1024,7 @@ PipelineCache::Pipeline&
 PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
                                   const ShaderProgram&          compute_program) {
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Compute)", profiler::colors::RedA100);
+	MaybeFlushDriverCache();
 
 	EXIT_IF(!compute_program);
 
@@ -996,6 +1045,7 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 
 	auto [iter, inserted] = m_compute_pipelines.emplace(compute_program.id, std::move(cached));
 	EXIT_IF(!inserted);
+	OnPipelineCreated();
 
 	return *iter->second;
 }
