@@ -16,6 +16,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/barycentricGeometryShader.h"
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 
@@ -210,6 +211,80 @@ static void CreateDescriptorLayout(GraphicContext& graphics, PipelineCache::Pipe
 	            &create, nullptr, &pipeline.descriptor_set_layout) != vk::Result::eSuccess);
 }
 
+static BarycentricPrimitive BarycentricPrimitiveFor(vk::PrimitiveTopology topology) {
+	switch (topology) {
+		case vk::PrimitiveTopology::ePointList: return BarycentricPrimitive::Points;
+		case vk::PrimitiveTopology::eLineList:
+		case vk::PrimitiveTopology::eLineStrip: return BarycentricPrimitive::Lines;
+		case vk::PrimitiveTopology::eTriangleList:
+		case vk::PrimitiveTopology::eTriangleStrip:
+		case vk::PrimitiveTopology::eTriangleFan: return BarycentricPrimitive::Triangles;
+		default:
+			EXIT("emulated fragment barycentrics: topology %s has no geometry-stage input "
+			     "primitive\n",
+			     vk::to_string(topology).c_str());
+	}
+	return BarycentricPrimitive::Triangles;
+}
+
+// A pixel shader whose barycentrics are emulated (no VK_KHR_fragment_shader_barycentric) reads
+// them from a generated pass-through geometry stage. The stage is a pure function of the pixel
+// shader, the last pre-rasterization stage and the topology, which all key the pipeline.
+// Returns null when the pixel shader needs no such stage.
+static vk::ShaderModule CreateBarycentricGeometryModule(
+    GraphicContext& graphics, std::span<const ShaderVertexInputInfo> vertex_info,
+    const ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology, bool rect_list,
+    bool mesh) {
+	if (ps_input_info == nullptr) {
+		return nullptr;
+	}
+	const auto& pixel_program = *ps_input_info->stage.program;
+	const auto& emulation     = pixel_program.info.barycentric_emulation;
+	if (!emulation.enabled) {
+		return nullptr;
+	}
+	if (mesh) {
+		EXIT("pixel shader 0x%016" PRIx64 " needs emulated fragment barycentrics, which need a "
+		     "geometry stage, and a mesh pipeline cannot have one\n",
+		     pixel_program.shader_hash);
+	}
+	BarycentricGeometryStage stage {
+	    .fragment   = &emulation,
+	    .point_size = graphics.optional_features.geometry_point_size,
+	};
+	if (rect_list) {
+		// The rect-list evaluation stage emits triangles and forwards only the parameters.
+		stage.primitive          = BarycentricPrimitive::Triangles;
+		stage.previous_locations = RectListParameterLocations(vertex_info.front(), ps_input_info);
+	} else {
+		const auto& previous     = *vertex_info.back().stage.program;
+		stage.primitive          = vertex_info.size() == 3 ? BarycentricPrimitive::Triangles
+		                                                   : BarycentricPrimitiveFor(topology);
+		stage.previous           = previous.info.raster_outputs;
+		stage.previous_locations = previous.param_export_mask;
+	}
+	const auto& limits     = graphics.physical_device_properties.limits;
+	const auto  components = BarycentricGeometryOutputComponents(stage);
+	const auto  vertices   = stage.primitive == BarycentricPrimitive::Triangles ? 3u
+	                         : stage.primitive == BarycentricPrimitive::Lines   ? 2u
+	                                                                            : 1u;
+	if (components > limits.maxGeometryOutputComponents ||
+	    components * vertices > limits.maxGeometryTotalOutputComponents) {
+		EXIT("pixel shader 0x%016" PRIx64 " needs %u varying components per vertex for emulated "
+		     "fragment barycentrics; the device's geometry stage allows %u (%u in total)\n",
+		     pixel_program.shader_hash, components, limits.maxGeometryOutputComponents,
+		     limits.maxGeometryTotalOutputComponents);
+	}
+	const auto code   = BuildBarycentricGeometryShader(stage);
+	const auto module = CompileSPV(code, graphics.device);
+	static std::atomic_uint32_t s_pipelines = 0;
+	LOGF("Barycentric GS: pipeline #%u PS=0x%016" PRIx64 " primitive=%u varyings=%zu "
+	     "components=%u words=%zu\n",
+	     ++s_pipelines, pixel_program.shader_hash, static_cast<uint32_t>(stage.primitive),
+	     emulation.varyings.size(), components, code.size());
+	return module;
+}
+
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                             const PipelineRenderingState&          rendering,
@@ -255,7 +330,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	EXIT_NOT_IMPLEMENTED(
 	    rect_list && (tess_control_shader_module == nullptr || tess_eval_shader_module == nullptr));
 
-	vk::PipelineShaderStageCreateInfo shader_stages[4] {};
+	const auto geometry_shader_module = CreateBarycentricGeometryModule(
+	    graphics, vertex_info, ps_active ? ps_input_info : nullptr, static_params.topology,
+	    rect_list, mesh);
+
+	vk::PipelineShaderStageCreateInfo shader_stages[5] {};
 	uint32_t                          shader_stage_count = 0;
 	for (uint32_t i = 0; i < vertex_info.size(); i++) {
 		shader_stages[shader_stage_count++] = {.stage =
@@ -271,6 +350,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		shader_stages[shader_stage_count++] = {.stage =
 		                                           vk::ShaderStageFlagBits::eTessellationEvaluation,
 		                                       .module = tess_eval_shader_module,
+		                                       .pName  = "main"};
+	}
+	if (geometry_shader_module != nullptr) {
+		shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eGeometry,
+		                                       .module = geometry_shader_module,
 		                                       .pName  = "main"};
 	}
 	if (ps_active) {
@@ -570,6 +654,9 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	}
 	if (tess_eval_shader_module != nullptr) {
 		graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
+	}
+	if (geometry_shader_module != nullptr) {
+		graphics.device.destroyShaderModule(geometry_shader_module, nullptr);
 	}
 }
 

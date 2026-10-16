@@ -14,6 +14,10 @@ struct RectListShaders {
 	std::vector<uint32_t> evaluation;
 };
 
+// Parameter locations the rect-list evaluation stage writes, as a bit mask.
+uint32_t RectListParameterLocations(const ShaderVertexInputInfo& vertex_info,
+                                    const ShaderPixelInputInfo*  pixel_info);
+
 RectListShaders BuildRectListShaders(const ShaderVertexInputInfo& vertex_info,
                                      const ShaderPixelInputInfo*  pixel_info);
 
