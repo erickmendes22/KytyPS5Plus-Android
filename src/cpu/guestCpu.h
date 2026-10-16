@@ -68,6 +68,28 @@ inline constexpr uint32_t kNoHleId = UINT32_MAX;
 uint32_t CurrentHleId();
 
 
+// Guest integer register file, indexed in x86 encoding order (RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI,
+// R8..R15).
+struct GuestRegisters {
+	enum : uint32_t { kRax = 0, kRcx, kRdx, kRbx, kRsp, kRbp, kRsi, kRdi, kR8, kR9, kR10, kR11, kR12, kR13, kR14, kR15 };
+	uint64_t gpr[16] {};
+	uint64_t rip     = 0;
+	uint64_t fs_base = 0;
+};
+
+// Captures, from inside an HLE thunk, the guest state of the caller of the trapped import: the trap
+// stub's own frame (id slot and return address) is unwound, so RIP is the guest return address and RSP
+// the caller's stack pointer after the call returns. Returns false outside a thunk.
+bool CaptureTrappedGuestRegisters(GuestRegisters* out);
+
+// Guest code cannot be interrupted at an arbitrary instruction from the host. Host events aimed at a
+// guest thread (emulated guest signals) are instead delivered at safe points; the return of every HLE
+// thunk is one. The hook runs on the trapping thread after the thunk, still inside the trap, so it may
+// call CallGuest and CaptureTrappedGuestRegisters. It must be cheap when there is nothing to deliver.
+// Only one hook is kept; later calls replace it.
+using SafePointHook = void (*)();
+void RegisterSafePointHook(SafePointHook hook);
+
 // Installs the process-wide host SIGSEGV hook. Only one handler is kept; later calls replace it.
 void RegisterHostFaultHandler(HostFaultHandler handler);
 

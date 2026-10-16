@@ -19,6 +19,7 @@ constexpr size_t kStackSlotOffset = 16; // [RSP] = id, [RSP+8] = return address,
 
 std::array<std::atomic<HleThunk>, kMaxHleIds> g_thunks {};
 std::atomic<uint32_t>                         g_next_dynamic_id {kFirstDynamicHleId};
+std::atomic<SafePointHook>                    g_safe_point_hook {nullptr};
 
 // Stub layout (x86-64):
 //   mov r10, rcx          49 89 CA        ; SYSCALL clobbers RCX, so the fourth argument moves to R10
@@ -156,6 +157,10 @@ uint64_t HleSyscall(FEXCore::Core::CpuStateFrame* frame, uint64_t arg0, uint64_t
 	ScopedHleFrame scope(frame);
 	FexCallFrame   call_frame(frame, {arg0, arg1, arg2, arg3, arg4, arg5}, guest_rsp + kStackSlotOffset, sve256);
 	thunk(call_frame);
+	// Safe point: the trapped guest state is consistent and the thunk is done with it.
+	if (auto* hook = g_safe_point_hook.load(std::memory_order_acquire); hook != nullptr) {
+		hook();
+	}
 	return call_frame.IntReturn();
 }
 
@@ -173,6 +178,25 @@ uint32_t AllocateHleId() {
 		std::abort();
 	}
 	return id;
+}
+
+bool CaptureTrappedGuestRegisters(GuestRegisters* out) {
+	const auto* frame = Fex::g_hle_frame;
+	if (frame == nullptr || out == nullptr) {
+		return false;
+	}
+	static_assert(sizeof(out->gpr) == sizeof(frame->State.gregs));
+	std::memcpy(out->gpr, frame->State.gregs, sizeof(out->gpr));
+	// The stub left [RSP] = id and [RSP + 8] = return address (see EncodeStub).
+	const uint64_t trap_rsp = frame->State.gregs[FEXCore::X86State::REG_RSP];
+	std::memcpy(&out->rip, reinterpret_cast<const void*>(trap_rsp + 8), sizeof(out->rip));
+	out->gpr[GuestRegisters::kRsp] = trap_rsp + kStackSlotOffset;
+	out->fs_base                   = frame->State.fs_cached;
+	return true;
+}
+
+void RegisterSafePointHook(SafePointHook hook) {
+	g_safe_point_hook.store(hook, std::memory_order_release);
 }
 
 uint32_t CurrentHleId() {

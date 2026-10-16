@@ -25,6 +25,10 @@
 #include "loader/runtimeLinker.h"
 #include "loader/symbolDatabase.h"
 
+#if KYTY_HOST_ARM64
+#include "cpu/guestCpu.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -590,6 +594,42 @@ static_assert(offsetof(SignalUcontext, uc_mcontext) == 0x00);
 static_assert(offsetof(SignalMcontext, mc_rip) == 0xa0);
 static_assert(offsetof(SignalUcontext, uc_mcontext) + offsetof(SignalMcontext, mc_rsp) == 0xf8);
 
+#if KYTY_HOST_ARM64
+// Under the translator the host registers say nothing about the guest; signals are delivered at safe
+// points inside HLE traps, where the trapped guest caller's registers are the interrupted context.
+// Outside a trap the context stays empty and SanitizeNonGuestSignalUcontext substitutes a safe stack.
+static void FillSignalUcontextFromGuest(SignalUcontext* ctx) {
+	using Regs = Cpu::GuestCpu::GuestRegisters;
+	Regs regs {};
+	if (!Cpu::GuestCpu::CaptureTrappedGuestRegisters(&regs)) {
+		ctx->uc_mcontext.mc_rsp = 0;
+		ctx->uc_mcontext.mc_rbp = 0;
+		ctx->uc_mcontext.mc_rip = 0;
+		return;
+	}
+	auto& mc     = ctx->uc_mcontext;
+	mc.mc_rax    = regs.gpr[Regs::kRax];
+	mc.mc_rcx    = regs.gpr[Regs::kRcx];
+	mc.mc_rdx    = regs.gpr[Regs::kRdx];
+	mc.mc_rbx    = regs.gpr[Regs::kRbx];
+	mc.mc_rsp    = regs.gpr[Regs::kRsp];
+	mc.mc_rbp    = regs.gpr[Regs::kRbp];
+	mc.mc_rsi    = regs.gpr[Regs::kRsi];
+	mc.mc_rdi    = regs.gpr[Regs::kRdi];
+	mc.mc_r8     = regs.gpr[Regs::kR8];
+	mc.mc_r9     = regs.gpr[Regs::kR9];
+	mc.mc_r10    = regs.gpr[Regs::kR10];
+	mc.mc_r11    = regs.gpr[Regs::kR11];
+	mc.mc_r12    = regs.gpr[Regs::kR12];
+	mc.mc_r13    = regs.gpr[Regs::kR13];
+	mc.mc_r14    = regs.gpr[Regs::kR14];
+	mc.mc_r15    = regs.gpr[Regs::kR15];
+	mc.mc_rip    = regs.rip;
+	mc.mc_fsbase = regs.fs_base;
+	mc.mc_rflags = 0x202; // IF set; the translator keeps flags in a host-specific form.
+}
+#endif
+
 static SignalUcontext CreateSignalUcontext(
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
     const CONTEXT* source_ctx = nullptr
@@ -706,9 +746,7 @@ static SignalUcontext CreateSignalUcontext(
 	ctx.uc_mcontext.mc_cs     = cs;
 	ctx.uc_mcontext.mc_ss     = ss;
 #else
-	// TODO(fex): map the host mcontext to the FEX guest state for the faulting thread (FEX keeps it on
-	// the SignalDelegator side). Needed before guest signal handlers can run on ARM64.
-	KYTY_ARM64_TODO("capturing guest register context from host signal");
+	FillSignalUcontextFromGuest(&ctx);
 #endif
 #endif
 
@@ -716,6 +754,11 @@ static SignalUcontext CreateSignalUcontext(
 }
 
 [[maybe_unused]] static SignalUcontext CreateCurrentGuestCallSignalUcontext(uint64_t rip) {
+#if KYTY_HOST_ARM64
+	// The trapped guest caller is the context; see FillSignalUcontextFromGuest.
+	(void)rip;
+	return CreateSignalUcontext();
+#else
 	auto ctx = CreateSignalUcontext();
 
 	uint64_t rsp = 0;
@@ -737,10 +780,6 @@ static SignalUcontext CreateSignalUcontext(
 	             :
 	             : "memory");
 
-#else
-	// TODO(fex): read the guest register file from the current FEX frame (g_hle_frame / attached thread)
-	// instead of host registers. Only used by self-raised signals on x86-64 today.
-	KYTY_ARM64_TODO("capturing guest call register context");
 #endif
 
 	ctx.uc_mcontext.mc_rax = 0;
@@ -762,6 +801,7 @@ static SignalUcontext CreateSignalUcontext(
 	ctx.uc_mcontext.mc_rip = rip;
 
 	return ctx;
+#endif
 }
 
 static bool IsGuestCodeAddress(uint64_t addr) {
@@ -1105,6 +1145,17 @@ void KernelDispatchPendingSignalForCurrentThread() {
 	}
 }
 
+#if KYTY_HOST_ARM64
+// GuestCpu safe-point hook: runs after every HLE call, so a guest thread that is busy in guest code still
+// takes signals raised for it (KernelRaiseException) at its next import call.
+static void DispatchPendingSignalsAtSafePoint() {
+	Pthread current = PthreadSelfOrNull();
+	if (current != nullptr && PthreadHasAnyPendingSignal(current)) {
+		KernelDispatchPendingSignalForCurrentThread();
+	}
+}
+#endif
+
 static int KYTY_SYSV_ABI KernelInstallExceptionHandler(int signum, void* handler) {
 	PRINT_NAME();
 
@@ -1213,10 +1264,20 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 		WaitForSignalDispatch(thread, signum);
 		return OK;
 #else
-		// TODO(fex): build the guest ucontext from the FEX frame and run the guest handler with
-		// GuestCpu::CallGuest; depends on the signal-context capture above.
-		KYTY_ARM64_TODO("dispatching guest exception handler");
-		return KERNEL_ERROR_EINVAL;
+		if (thread == PthreadSelfOrNull()) {
+			SignalDispatchScope scope;
+			auto                ctx = CreateCurrentGuestCallSignalUcontext(0);
+			Loader::GuestHost::CallGuestFunction(handler, signum, &ctx);
+			return OK;
+		}
+
+		// Guest code running under the translator cannot be stopped at an arbitrary instruction. The
+		// target takes the signal at its next safe point: a blocking kernel wait (they poll for pending
+		// signals) or the return of any HLE call (DispatchPendingSignalsAtSafePoint).
+		PthreadQueuePendingSignal(thread, signum);
+		PthreadWakeForSignal(thread);
+		WaitForSignalDispatch(thread, signum);
+		return OK;
 #endif
 	}
 
@@ -3387,6 +3448,9 @@ static void AddLibkernelUnityFunc(Loader::SymbolDatabase* s, const char* nid, ui
 }
 
 LIB_DEFINE(InitLibKernel_1) {
+#if KYTY_HOST_ARM64
+	Cpu::GuestCpu::RegisterSafePointHook(LibKernel::DispatchPendingSignalsAtSafePoint);
+#endif
 	LIB_FUNC("04AjkP0jO9U", Posix::UmtxOp);
 	InitLibKernel_1_FS(s);
 	InitLibKernel_1_Mem(s);
