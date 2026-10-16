@@ -11,6 +11,7 @@ std::atomic<uint64_t> g_hle_calls {0};
 std::atomic<uint64_t> g_gpu_faults {0};
 std::atomic<uint64_t> g_flips {0};
 std::atomic<uint64_t> g_audio_underruns {0};
+std::atomic<uint32_t> g_hle_by_id[kMaxHleIds] {};
 
 } // namespace Common::PerfStats::Detail
 
@@ -21,6 +22,9 @@ namespace Common::PerfStats {
 namespace {
 
 std::atomic<int64_t>  g_input_mark_ns {0};
+std::atomic<HleAddressResolver> g_hle_resolver {nullptr};
+std::atomic<uint64_t> g_pipeline_count {0};
+std::atomic<uint64_t> g_pipeline_us {0};
 std::atomic<uint64_t> g_flip_latency_sum_us {0};
 std::atomic<uint64_t> g_flip_latency_max_us {0};
 std::atomic<uint64_t> g_present_sum_us {0};
@@ -67,12 +71,38 @@ std::string TakeFrameSummary(uint64_t flips) {
 	const uint64_t present_max = g_present_max_us.exchange(0, std::memory_order_relaxed);
 	const uint64_t gap_max     = g_flip_gap_max_us.exchange(0, std::memory_order_relaxed);
 	const double   n           = flips == 0 ? 1.0 : static_cast<double>(flips);
-	char           buf[160];
-	std::snprintf(buf, sizeof(buf), "flip_gap_max=%.1fms submit->present avg=%.1f max=%.1fms present_call avg=%.1f max=%.1fms",
+	const uint64_t pipelines   = g_pipeline_count.exchange(0, std::memory_order_relaxed);
+	const uint64_t pipeline_us = g_pipeline_us.exchange(0, std::memory_order_relaxed);
+	char           buf[224];
+	std::snprintf(buf, sizeof(buf), "pipelines=%llu (%.1fms) flip_gap_max=%.1fms submit->present avg=%.1f max=%.1fms present_call avg=%.1f max=%.1fms",
+	              static_cast<unsigned long long>(pipelines), static_cast<double>(pipeline_us) / 1000.0,
 	              static_cast<double>(gap_max) / 1000.0, static_cast<double>(latency_sum) / n / 1000.0,
 	              static_cast<double>(latency_max) / 1000.0, static_cast<double>(present_sum) / n / 1000.0,
 	              static_cast<double>(present_max) / 1000.0);
 	return buf;
+}
+
+void CountPipelineCompile(uint64_t micros) {
+	if (Enabled()) {
+		g_pipeline_count.fetch_add(1, std::memory_order_relaxed);
+		g_pipeline_us.fetch_add(micros, std::memory_order_relaxed);
+	}
+}
+
+ScopedPipelineCompile::ScopedPipelineCompile(): start_ns_(Enabled() ? NowNs() : 0) {}
+
+ScopedPipelineCompile::~ScopedPipelineCompile() {
+	if (start_ns_ != 0) {
+		CountPipelineCompile(static_cast<uint64_t>(NowNs() - start_ns_) / 1000);
+	}
+}
+
+void SetHleAddressResolver(HleAddressResolver resolver) {
+	g_hle_resolver.store(resolver, std::memory_order_release);
+}
+
+HleAddressResolver GetHleAddressResolver() {
+	return g_hle_resolver.load(std::memory_order_acquire);
 }
 
 void MarkInput(uint64_t queue_delay_ns) {
@@ -397,6 +427,7 @@ struct Profile {
 	std::unordered_map<uint64_t, uint64_t> leaf;      // pc -> samples
 	std::unordered_map<uint64_t, uint64_t> kyty;      // innermost libmain frame -> samples
 	std::unordered_map<int, uint64_t>      threads;   // tid -> samples
+	std::unordered_map<uint32_t, uint64_t> hle;       // HLE id -> calls
 	uint64_t                               total = 0;
 };
 
@@ -426,6 +457,13 @@ void DumpProfile(const Profile& profile, Symbolizer& symbolizer, int seconds) {
 		}
 	};
 	dump("leaf", profile.leaf);
+	if (auto resolver = GetHleAddressResolver(); resolver != nullptr) {
+		std::unordered_map<uint64_t, uint64_t> by_thunk;
+		for (const auto& [id, n]: profile.hle) {
+			by_thunk[resolver(id)] += n;
+		}
+		dump("hle-calls", by_thunk);
+	}
 	dump("innermost-kyty-frame", profile.kyty);
 	std::fclose(out);
 }
@@ -476,6 +514,11 @@ void Reporter() {
 			}
 		}
 
+		for (uint32_t id = 0; id < kMaxHleIds; id++) {
+			if (const uint32_t n = Detail::g_hle_by_id[id].exchange(0, std::memory_order_relaxed); n != 0) {
+				profile.hle[id] += n;
+			}
+		}
 		const uint64_t hle    = Detail::g_hle_calls.load(std::memory_order_relaxed);
 		const uint64_t faults = Detail::g_gpu_faults.load(std::memory_order_relaxed);
 		const uint64_t flips  = Detail::g_flips.load(std::memory_order_relaxed);

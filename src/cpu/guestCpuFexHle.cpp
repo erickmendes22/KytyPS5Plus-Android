@@ -148,7 +148,7 @@ uint64_t HleSyscall(FEXCore::Core::CpuStateFrame* frame, uint64_t arg0, uint64_t
 	std::memcpy(&id_slot, reinterpret_cast<const void*>(guest_rsp), sizeof(id_slot));
 	const auto id = static_cast<uint32_t>(id_slot);
 
-	Common::PerfStats::CountHleCall();
+	Common::PerfStats::CountHleCall(id);
 	const HleThunk thunk = LookupHle(id);
 	if (thunk == nullptr) {
 		std::fprintf(stderr, "kyty guest cpu: no HLE thunk registered for stub id %u\n", id);
@@ -224,6 +224,12 @@ uint32_t CurrentHleId() {
 }
 
 void RegisterHle(uint32_t id, HleThunk thunk) {
+	static const bool resolver_set = [] {
+		Common::PerfStats::SetHleAddressResolver(
+		    [](uint32_t hle_id) { return reinterpret_cast<uintptr_t>(Fex::LookupHle(hle_id)); });
+		return true;
+	}();
+	(void)resolver_set;
 	if (id >= kMaxHleIds) {
 		std::fprintf(stderr, "kyty guest cpu: HLE id %u exceeds the table size\n", id);
 		std::abort();

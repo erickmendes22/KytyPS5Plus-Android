@@ -26,11 +26,23 @@ inline bool Enabled() {
 	return Detail::g_enabled.load(std::memory_order_relaxed);
 }
 
-inline void CountHleCall() {
+constexpr uint32_t kMaxHleIds = 16384;
+namespace Detail {
+extern std::atomic<uint32_t> g_hle_by_id[kMaxHleIds];
+} // namespace Detail
+
+inline void CountHleCall(uint32_t id) {
 	if (Enabled()) {
 		Detail::g_hle_calls.fetch_add(1, std::memory_order_relaxed);
+		if (id < kMaxHleIds) {
+			Detail::g_hle_by_id[id].fetch_add(1, std::memory_order_relaxed);
+		}
 	}
 }
+
+// Maps an HLE id to its native thunk's address, so the busiest HLE functions can be named.
+using HleAddressResolver = uintptr_t (*)(uint32_t id);
+void SetHleAddressResolver(HleAddressResolver resolver);
 
 inline void CountGpuFault() {
 	if (Enabled()) {
@@ -48,6 +60,20 @@ inline void CountAudioUnderrun() {
 		Detail::g_audio_underruns.fetch_add(1, std::memory_order_relaxed);
 	}
 }
+
+// Host pipeline compilations (vkCreate*Pipelines) and the time they took.
+void CountPipelineCompile(uint64_t micros);
+
+class ScopedPipelineCompile {
+public:
+	ScopedPipelineCompile();
+	~ScopedPipelineCompile();
+	ScopedPipelineCompile(const ScopedPipelineCompile&)            = delete;
+	ScopedPipelineCompile& operator=(const ScopedPipelineCompile&) = delete;
+
+private:
+	int64_t start_ns_ = 0;
+};
 
 // Touch-to-guest latency probe. MarkInput is called when the event loop handles a press that
 // SDL queued queue_delay_ns earlier; ObserveInput when the guest reads pad state with that press
