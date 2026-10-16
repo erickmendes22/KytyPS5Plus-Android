@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <deque>
 #include <memory>
@@ -248,7 +249,19 @@ void CommandProcessor::BufferInit() {
 }
 
 void CommandProcessor::BufferFlush() {
+	m_interrupt_pending_ns = 0;
 	GetScheduler().Flush();
+}
+
+void CommandProcessor::FlushForInterrupt() {
+	const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+	                     std::chrono::steady_clock::now().time_since_epoch())
+	                     .count();
+	if (m_interrupt_pending_ns == 0) {
+		m_interrupt_pending_ns = now;
+	} else if (now - m_interrupt_pending_ns >= kInterruptFlushNs) {
+		BufferFlush();
+	}
 }
 
 void CommandProcessor::BufferWait() {

@@ -69,6 +69,11 @@ public:
 	void            BufferInit();
 	void            BufferFlush();
 	void            BufferWait();
+	// An end-of-pipe interrupt was queued: submit soon so it is delivered, but batch it with the
+	// rest of the current submission slice (which ends with a flush) unless the oldest pending
+	// interrupt has waited kInterruptFlushNs already. One host submit per interrupt costs about
+	// 0.07 ms on the Qualcomm driver and 0.45 ms on Turnip; guests raise hundreds per frame.
+	void            FlushForInterrupt();
 	HW::Context&    GetCtx() { return m_ctx; }
 	HW::UserConfig& GetUcfg() { return m_ucfg; }
 	HW::Shader&     GetShCtx() { return m_sh_ctx; }
@@ -176,6 +181,9 @@ private:
 	uint32_t m_de_count    = 0;
 	uint32_t m_ce_count    = 0;
 	bool     m_ce_complete = false;
+
+	static constexpr int64_t kInterruptFlushNs       = 1'000'000;
+	int64_t                  m_interrupt_pending_ns = 0; // first unflushed interrupt, 0 if none
 
 	uint32_t m_const_ram[0x3000] = {0};
 
