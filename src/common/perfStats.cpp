@@ -23,8 +23,9 @@ namespace {
 
 std::atomic<int64_t>  g_input_mark_ns {0};
 std::atomic<HleAddressResolver> g_hle_resolver {nullptr};
-std::atomic<uint64_t> g_pipeline_count {0};
-std::atomic<uint64_t> g_pipeline_us {0};
+constexpr size_t      kStallKinds = static_cast<size_t>(StallKind::Count);
+std::atomic<uint64_t> g_stall_count[kStallKinds] {};
+std::atomic<uint64_t> g_stall_us[kStallKinds] {};
 std::atomic<uint64_t> g_flip_latency_sum_us {0};
 std::atomic<uint64_t> g_flip_latency_max_us {0};
 std::atomic<uint64_t> g_present_sum_us {0};
@@ -71,10 +72,17 @@ std::string TakeFrameSummary(uint64_t flips) {
 	const uint64_t present_max = g_present_max_us.exchange(0, std::memory_order_relaxed);
 	const uint64_t gap_max     = g_flip_gap_max_us.exchange(0, std::memory_order_relaxed);
 	const double   n           = flips == 0 ? 1.0 : static_cast<double>(flips);
-	const uint64_t pipelines   = g_pipeline_count.exchange(0, std::memory_order_relaxed);
-	const uint64_t pipeline_us = g_pipeline_us.exchange(0, std::memory_order_relaxed);
-	char           buf[224];
-	std::snprintf(buf, sizeof(buf), "pipelines=%llu (%.1fms) flip_gap_max=%.1fms submit->present avg=%.1f max=%.1fms present_call avg=%.1f max=%.1fms",
+	const auto take = [](StallKind kind, uint64_t* micros) {
+		*micros = g_stall_us[static_cast<size_t>(kind)].exchange(0, std::memory_order_relaxed);
+		return g_stall_count[static_cast<size_t>(kind)].exchange(0, std::memory_order_relaxed);
+	};
+	uint64_t       pipeline_us = 0;
+	uint64_t       shader_us   = 0;
+	const uint64_t pipelines   = take(StallKind::PipelineCompile, &pipeline_us);
+	const uint64_t shaders     = take(StallKind::ShaderTranslate, &shader_us);
+	char           buf[256];
+	std::snprintf(buf, sizeof(buf), "shaders=%llu (%.1fms) pipelines=%llu (%.1fms) flip_gap_max=%.1fms submit->present avg=%.1f max=%.1fms present_call avg=%.1f max=%.1fms",
+	              static_cast<unsigned long long>(shaders), static_cast<double>(shader_us) / 1000.0,
 	              static_cast<unsigned long long>(pipelines), static_cast<double>(pipeline_us) / 1000.0,
 	              static_cast<double>(gap_max) / 1000.0, static_cast<double>(latency_sum) / n / 1000.0,
 	              static_cast<double>(latency_max) / 1000.0, static_cast<double>(present_sum) / n / 1000.0,
@@ -82,18 +90,18 @@ std::string TakeFrameSummary(uint64_t flips) {
 	return buf;
 }
 
-void CountPipelineCompile(uint64_t micros) {
-	if (Enabled()) {
-		g_pipeline_count.fetch_add(1, std::memory_order_relaxed);
-		g_pipeline_us.fetch_add(micros, std::memory_order_relaxed);
+void CountStall(StallKind kind, uint64_t micros) {
+	if (Enabled() && kind < StallKind::Count) {
+		g_stall_count[static_cast<size_t>(kind)].fetch_add(1, std::memory_order_relaxed);
+		g_stall_us[static_cast<size_t>(kind)].fetch_add(micros, std::memory_order_relaxed);
 	}
 }
 
-ScopedPipelineCompile::ScopedPipelineCompile(): start_ns_(Enabled() ? NowNs() : 0) {}
+ScopedStall::ScopedStall(StallKind kind): kind_(kind), start_ns_(Enabled() ? NowNs() : 0) {}
 
-ScopedPipelineCompile::~ScopedPipelineCompile() {
+ScopedStall::~ScopedStall() {
 	if (start_ns_ != 0) {
-		CountPipelineCompile(static_cast<uint64_t>(NowNs() - start_ns_) / 1000);
+		CountStall(kind_, static_cast<uint64_t>(NowNs() - start_ns_) / 1000);
 	}
 }
 

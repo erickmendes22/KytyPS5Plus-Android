@@ -553,7 +553,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		     dynamic_state.dynamicStateCount);
 	}
 	{
-		const Common::PerfStats::ScopedPipelineCompile timing;
+		const Common::PerfStats::ScopedStall timing(Common::PerfStats::StallKind::PipelineCompile);
 		result = graphics.device.createGraphicsPipelines(driver_cache, 1, &pipeline_info, nullptr,
 		                                                 &pipeline.pipeline);
 	}
@@ -627,7 +627,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
 	{
-		const Common::PerfStats::ScopedPipelineCompile timing;
+		const Common::PerfStats::ScopedStall timing(Common::PerfStats::StallKind::PipelineCompile);
 		result = graphics.device.createComputePipelines(driver_cache, 1, &info, nullptr,
 		                                                &pipeline.pipeline);
 	}

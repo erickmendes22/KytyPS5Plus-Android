@@ -61,18 +61,22 @@ inline void CountAudioUnderrun() {
 	}
 }
 
-// Host pipeline compilations (vkCreate*Pipelines) and the time they took.
-void CountPipelineCompile(uint64_t micros);
+// Timed one-off work that stalls the thread issuing it: host pipeline compilations
+// (vkCreate*Pipelines) and guest shader translations (GCN -> SPIR-V -> shader module).
+enum class StallKind { PipelineCompile, ShaderTranslate, Count };
 
-class ScopedPipelineCompile {
+void CountStall(StallKind kind, uint64_t micros);
+
+class ScopedStall {
 public:
-	ScopedPipelineCompile();
-	~ScopedPipelineCompile();
-	ScopedPipelineCompile(const ScopedPipelineCompile&)            = delete;
-	ScopedPipelineCompile& operator=(const ScopedPipelineCompile&) = delete;
+	explicit ScopedStall(StallKind kind);
+	~ScopedStall();
+	ScopedStall(const ScopedStall&)            = delete;
+	ScopedStall& operator=(const ScopedStall&) = delete;
 
 private:
-	int64_t start_ns_ = 0;
+	StallKind kind_;
+	int64_t   start_ns_ = 0;
 };
 
 // Touch-to-guest latency probe. MarkInput is called when the event loop handles a press that
