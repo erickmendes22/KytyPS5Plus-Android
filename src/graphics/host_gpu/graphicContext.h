@@ -30,6 +30,11 @@ struct OptionalDeviceFeatures {
 	// Vulkan 1.2 shaderSharedInt64Atomics plus workgroupMemoryExplicitLayout.
 	bool shader_shared_int64_atomics             = false;
 	bool shader_signed_zero_inf_nan_preserve_f32 = false; // float controls property
+	bool geometry_shader                         = false; // core geometryShader
+	bool geometry_point_size = false; // core shaderTessellationAndGeometryPointSize
+	// With geometry_shader: vec4 varying locations a geometry stage can pass from the last
+	// pre-rasterization stage to the fragment stage (see ShaderDeviceFeatures).
+	uint32_t geometry_varying_locations = 0;
 };
 
 struct GraphicContext {

@@ -586,6 +586,27 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	device_features.multiViewport                        = VK_TRUE;
 	device_features.fillModeNonSolid                      = VK_TRUE;
 	device_features.vertexPipelineStoresAndAtomics       = VK_TRUE;
+	// The geometry stage only emulates fragment barycentrics, so it is enabled only without them.
+	optional.geometry_shader = !optional.fragment_shader_barycentric &&
+	                           supported_features2.features.geometryShader == VK_TRUE;
+	device_features.geometryShader = optional.geometry_shader ? VK_TRUE : VK_FALSE;
+	optional.geometry_point_size =
+	    optional.geometry_shader &&
+	    supported_features2.features.shaderTessellationAndGeometryPointSize == VK_TRUE;
+	device_features.shaderTessellationAndGeometryPointSize =
+	    optional.geometry_point_size ? VK_TRUE : VK_FALSE;
+	if (optional.geometry_shader) {
+		const auto& limits = graphics.physical_device_properties.limits;
+		const auto  components =
+		    std::min({limits.maxVertexOutputComponents, limits.maxTessellationEvaluationOutputComponents,
+		              limits.maxGeometryInputComponents, limits.maxGeometryOutputComponents,
+		              limits.maxFragmentInputComponents});
+		optional.geometry_varying_locations = components / 4u;
+		LOGF("Vulkan geometry stage for emulated fragment barycentrics: varying locations=%u "
+		     "total output components=%u point size=%d\n",
+		     optional.geometry_varying_locations, limits.maxGeometryTotalOutputComponents,
+		     optional.geometry_point_size);
+	}
 	graphics.sample_rate_shading_enabled                 = true;
 	device_features.shaderInt64 = VK_TRUE;
 	device_features.shaderFloat64 =
