@@ -255,11 +255,12 @@ public:
 		return value;
 	}
 	uint32_t U32(const json& j) {
-		if (!j.is_number_unsigned()) {
-			Error("expected an unsigned number");
+		if (!j.is_number_integer() || j.get<int64_t>() < 0 ||
+		    j.get<int64_t>() > static_cast<int64_t>(UINT32_MAX)) {
+			Error("expected an unsigned 32-bit number");
 			return 0;
 		}
-		return j.get<uint32_t>();
+		return static_cast<uint32_t>(j.get<int64_t>());
 	}
 	float F32(const json& j) {
 		if (!j.is_number()) {
