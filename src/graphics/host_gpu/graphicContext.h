@@ -56,6 +56,8 @@ struct GraphicContext {
 	uint32_t                           max_subgroup_size                     = 0;
 	uint32_t                           max_push_descriptors                  = 0;
 	vk::ShaderStageFlags               required_subgroup_size_stages         = {};
+	vk::ShaderStageFlags               subgroup_supported_stages             = {};
+	vk::SubgroupFeatureFlags           subgroup_supported_operations         = {};
 	OptionalDeviceFeatures             optional_features                     = {};
 	Common::Mutex                      queue_mutex;
 	uint32_t                           queue_family = static_cast<uint32_t>(-1);
@@ -101,6 +103,16 @@ struct GraphicContext {
 
 	[[nodiscard]] bool SupportsComputeWave64() const noexcept {
 		return subgroup_size == 64u || compute_subgroup_size_control_enabled;
+	}
+
+	// Whether invocations of the stage may use the subgroup ballot and shuffle operations the
+	// shader recompiler emits for wave-level GCN semantics.
+	[[nodiscard]] bool SubgroupOpsSupported(vk::ShaderStageFlagBits stage) const noexcept {
+		constexpr auto required =
+		    vk::SubgroupFeatureFlagBits::eBasic | vk::SubgroupFeatureFlagBits::eBallot |
+		    vk::SubgroupFeatureFlagBits::eShuffle;
+		return (subgroup_supported_stages & stage) == stage &&
+		       (subgroup_supported_operations & required) == required;
 	}
 
 	[[nodiscard]] vk::DeviceSize StorageMinAlignment() const {

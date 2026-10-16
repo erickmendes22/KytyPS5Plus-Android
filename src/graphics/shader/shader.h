@@ -214,7 +214,26 @@ struct ShaderDeviceFeatures {
 	bool shader_float64                   = true; // Float64 arithmetic
 	bool shader_shared_int64_atomics      = true; // Int64 atomics on Workgroup (LDS) memory
 	bool signed_zero_inf_nan_preserve_f32 = true; // SignedZeroInfNanPreserve at width 32
+	// Graphics stages whose invocations may use subgroup ballot and shuffle
+	// (VkPhysicalDeviceVulkan11Properties::subgroupSupportedStages/Operations). In a stage
+	// without them each invocation is emitted as a one-lane wave instead.
+	bool subgroup_vertex         = true; // Vertex, Local
+	bool subgroup_tessellation   = true; // TessellationControl, TessellationEvaluation
+	bool subgroup_fragment       = true; // Pixel
 };
+
+// True when a shader of this stage may emit native subgroup operations on the device.
+[[nodiscard]] constexpr bool ShaderSubgroupOpsAvailable(const ShaderDeviceFeatures& features,
+                                                        ShaderType                  stage) {
+	switch (stage) {
+		case ShaderType::Vertex:
+		case ShaderType::Local: return features.subgroup_vertex;
+		case ShaderType::TessellationControl:
+		case ShaderType::TessellationEvaluation: return features.subgroup_tessellation;
+		case ShaderType::Pixel: return features.subgroup_fragment;
+		default: return true;
+	}
+}
 
 inline const ShaderWorkgroupInputInfo* ShaderWorkgroupInput(ShaderType           stage,
                                                             ShaderStageInputInfo input) {

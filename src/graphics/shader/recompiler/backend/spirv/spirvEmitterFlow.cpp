@@ -628,6 +628,15 @@ uint32_t EmitIdentity(ValueEmitContext&, uint32_t value) {
 void EmitVoid(ValueEmitContext&) {}
 
 void EmitStoreCompletion(EmitterState& state) {
+	if (state.subgroup_isolated) {
+		// A one-lane wave has nothing to wait for; keep only the release.
+		state.builder.AddFunction(
+		    spv::OpMemoryBarrier, ConstantU32(state, spv::ScopeDevice),
+		    ConstantU32(state, spv::MemorySemanticsReleaseMask |
+		                           spv::MemorySemanticsUniformMemoryMask |
+		                           spv::MemorySemanticsImageMemoryMask));
+		return;
+	}
 	state.builder.AddFunction(
 	    spv::OpControlBarrier, ConstantU32(state, spv::ScopeSubgroup),
 	    ConstantU32(state, spv::ScopeDevice),

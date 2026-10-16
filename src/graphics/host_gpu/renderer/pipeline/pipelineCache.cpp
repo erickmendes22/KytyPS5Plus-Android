@@ -394,6 +394,11 @@ struct PipelineCache::ProgramCache {
 		         .shader_shared_int64_atomics = graphics.optional_features.shader_shared_int64_atomics,
 		         .signed_zero_inf_nan_preserve_f32 =
 		             graphics.optional_features.shader_signed_zero_inf_nan_preserve_f32,
+		         .subgroup_vertex       = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eVertex),
+		         .subgroup_tessellation =
+		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationControl) &&
+		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationEvaluation),
+		         .subgroup_fragment = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eFragment),
 		};
 		options.shader_hash = params.hash;
 		options.user_data   = user_data;

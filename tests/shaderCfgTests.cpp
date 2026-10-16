@@ -6668,6 +6668,45 @@ void TestPerspectiveSampleInputs() {
   }
 }
 
+// Hosts may expose subgroup operations to compute only (Adreno: subgroupSupportedStages =
+// fragment|compute). A vertex shader there runs each invocation as a one-lane wave: no subgroup
+// capability, no SubgroupLocalInvocationId, and the ballot-derived exec mask collapses to lane 0.
+void TestSubgroupIsolatedVertexStage() {
+  constexpr uint32_t kGroupNonUniform = 61u;
+  constexpr uint32_t kGroupNonUniformBallot = 64u;
+  constexpr uint32_t kGroupNonUniformShuffle = 65u;
+  constexpr uint32_t kBuiltIn = 11u;
+  constexpr uint32_t kSubgroupLocalInvocationId = 41u;
+  // v_mov_b32 v0, s3 reads the vertex wave info, whose thread count comes from the EXEC ballot.
+  const uint32_t shader[] = {
+      EncodeVop1(0x01, 0, 3),
+      EncodeExp0(12, 0xf), EncodeExp1(0, 0, 0, 0), // export v0 to pos0
+      0xbf810000u,
+  };
+  const auto desktop = RecompileForTest(shader, MakeCompileOptions(ShaderType::Vertex));
+  CheckSpirvBinaryValidates(desktop.spirv);
+  Check(SpirvContainsCapability(desktop.spirv, kGroupNonUniformBallot),
+        "desktop vertex shader no longer derives EXEC from a subgroup ballot");
+
+  auto options = MakeCompileOptions(ShaderType::Vertex);
+  options.device_features.subgroup_vertex = false;
+  const auto isolated = RecompileForTest(shader, options);
+  CheckSpirvBinaryValidates(isolated.spirv);
+  Check(!SpirvContainsCapability(isolated.spirv, kGroupNonUniform) &&
+            !SpirvContainsCapability(isolated.spirv, kGroupNonUniformBallot) &&
+            !SpirvContainsCapability(isolated.spirv, kGroupNonUniformShuffle),
+        "subgroup-isolated vertex shader still requires subgroup operations");
+  Check(!SpirvHasDecorationValue(isolated.spirv, kBuiltIn, kSubgroupLocalInvocationId),
+        "subgroup-isolated vertex shader still reads SubgroupLocalInvocationId");
+
+  // The flag is per stage: compute keeps native subgroups.
+  auto compute = MakeCompileOptions(ShaderType::Compute);
+  compute.device_features.subgroup_vertex = false;
+  compute.device_features.subgroup_fragment = false;
+  const uint32_t compute_shader[] = {0xbf810000u};
+  CheckSpirvBinaryValidates(RecompileForTest(compute_shader, compute).spirv);
+}
+
 // Without VK_KHR_fragment_shader_barycentric, pixel parameters must be native interpolated inputs.
 // Ordinary I/J pairs take that path, centroid and sample requests become Centroid/Sample
 // qualifiers, flat P0/P10/P20 need no vertices, and anything needing vertex data is rejected.
@@ -16057,6 +16096,7 @@ int main() {
   TestPerspectiveCentroidInputs();
   TestPerspectiveSampleInputs();
   TestNativePixelInterpolationFallback();
+  TestSubgroupIsolatedVertexStage();
   TestGraphicsCreateInterpolantMapping();
   TestNewShaderRecompilerPixelPipelineEntry();
   TestComputeLdsAllocationIdentity();

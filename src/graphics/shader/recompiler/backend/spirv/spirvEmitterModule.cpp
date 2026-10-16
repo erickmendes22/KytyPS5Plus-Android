@@ -588,7 +588,7 @@ void DefineInputs(EmitterState& state) {
 			                            builtin);
 		}
 	}
-	if (state.program.info.subgroup_local_invocation_id) {
+	if (state.program.info.subgroup_local_invocation_id && !state.subgroup_isolated) {
 		const auto variable = DefineInterfaceVariable(state, TypeU32(state), spv::StorageClassInput,
 		                                              "gl_SubgroupInvocationID");
 		state.subgroup_local_invocation_id_variable = variable;
@@ -784,16 +784,18 @@ void DefineModule(EmitterState& state) {
 	if (state.program.info.image_gather_extended) {
 		state.builder.RequireCapability(spv::CapabilityImageGatherExtended);
 	}
-	if (state.lane_count == 2 || state.program.info.subgroup_barrier ||
-	    state.program.info.subgroup_ballot || state.program.info.subgroup_shuffle ||
-	    state.program.info.subgroup_local_invocation_id) {
-		state.builder.RequireCapability(spv::CapabilityGroupNonUniform);
-	}
-	if (state.lane_count == 2 || state.program.info.subgroup_ballot) {
-		state.builder.RequireCapability(spv::CapabilityGroupNonUniformBallot);
-	}
-	if (state.program.info.subgroup_shuffle) {
-		state.builder.RequireCapability(spv::CapabilityGroupNonUniformShuffle);
+	if (!state.subgroup_isolated) {
+		if (state.lane_count == 2 || state.program.info.subgroup_barrier ||
+		    state.program.info.subgroup_ballot || state.program.info.subgroup_shuffle ||
+		    state.program.info.subgroup_local_invocation_id) {
+			state.builder.RequireCapability(spv::CapabilityGroupNonUniform);
+		}
+		if (state.lane_count == 2 || state.program.info.subgroup_ballot) {
+			state.builder.RequireCapability(spv::CapabilityGroupNonUniformBallot);
+		}
+		if (state.program.info.subgroup_shuffle) {
+			state.builder.RequireCapability(spv::CapabilityGroupNonUniformShuffle);
+		}
 	}
 	if (state.program.info.compute_derivatives && state.program.stage == ShaderType::Compute) {
 		state.builder.RequireCapability(spv::CapabilityComputeDerivativeGroupQuadsKHR);

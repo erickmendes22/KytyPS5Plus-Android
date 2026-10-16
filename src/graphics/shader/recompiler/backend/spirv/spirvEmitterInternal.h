@@ -77,7 +77,8 @@ struct EmitterState {
 	             ShaderDeviceFeatures device_features_ = {})
 	    : builder(program_.stage == ShaderType::Mesh ? 0x00010400u : 0x00010300u),
 	      program(program_), input_info(input_info_), maintenance8_enabled(maintenance8_enabled_),
-	      device_features(device_features_) {
+	      device_features(device_features_),
+	      subgroup_isolated(!ShaderSubgroupOpsAvailable(device_features_, program_.stage)) {
 		if (ShaderWorkgroupInput(program.stage, input_info) != nullptr) {
 			lds_storage_class = spv::StorageClassWorkgroup;
 		}
@@ -92,6 +93,9 @@ struct EmitterState {
 	ShaderStageInputInfo                             input_info;
 	bool                                            maintenance8_enabled;
 	ShaderDeviceFeatures                            device_features {};
+	// The host cannot run subgroup operations in this stage: every invocation is lane 0 of a
+	// one-lane wave, so ballots, lane reads and the lane index never leave the invocation.
+	bool                                            subgroup_isolated = false;
 	uint32_t                                        void_type = 0;
 	uint32_t                                        bool_type = 0;
 	uint32_t                                        u32_type = 0;
@@ -391,6 +395,8 @@ uint32_t EmitLocalInvocationIndex(EmitterState& state);
 uint32_t EmitBallotLaneActiveBool(EmitterState& state, uint32_t ballot, uint32_t lane);
 
 uint32_t EmitSubgroupLaneActiveBool(EmitterState& state, uint32_t lane);
+uint32_t EmitSubgroupBallot(EmitterState& state, uint32_t predicate);
+uint32_t EmitSubgroupShuffle(EmitterState& state, uint32_t type, uint32_t value, uint32_t lane);
 
 inline constexpr auto EmitAddU32 = EmitNative<spv::OpIAdd, IR::Type::U32, uint32_t, uint32_t>;
 
