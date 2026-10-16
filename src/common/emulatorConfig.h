@@ -69,6 +69,8 @@ struct ConfigOptions {
 	bool                   command_buffer_dump_enabled = false;
 	std::filesystem::path  command_buffer_dump_folder  = "_Buffers";
 	bool                   graphics_debug_dump_enabled = false;
+	// Non-empty: write every host SPIR-V module and pipeline description here (shader_checker).
+	std::filesystem::path  shader_dump_folder;
 	LogDirection           printf_direction            = LogDirection::Silent;
 	std::filesystem::path  printf_output_file          = "_kyty.txt";
 	bool                   profiler_enabled            = false;
@@ -120,6 +122,9 @@ bool                  CommandBufferDumpEnabled();
 std::filesystem::path GetCommandBufferDumpFolder();
 
 bool GraphicsDebugDumpEnabled();
+
+// Empty when --dump-shaders is not given.
+const std::filesystem::path& GetShaderDumpFolder();
 
 LogDirection          GetPrintfDirection();
 std::filesystem::path GetPrintfOutputFile();

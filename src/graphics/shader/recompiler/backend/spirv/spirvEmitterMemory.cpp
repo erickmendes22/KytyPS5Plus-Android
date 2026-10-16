@@ -282,15 +282,41 @@ uint32_t LoadWordInBounds(ValueEmitContext& ctx, const MemoryResourceAccess& res
 uint32_t LoadSubwordInBounds(ValueEmitContext& ctx, const MemoryResourceAccess& resource,
                              uint32_t address, uint32_t index, uint32_t bits, bool sign_extend);
 
+// ShaderDeviceQuirks::branchless_bounds_checks: guarded loads read through an index clamped to
+// zero when the guard fails and select zero afterwards, instead of branching around the load.
+// Loads have no side effects, the clamped index stays inside LDS/scratch, and an empty storage
+// buffer is covered by robustBufferAccess, which the renderer always enables.
+bool BranchlessLoads(const EmitterState& state) {
+	return state.device_quirks.branchless_bounds_checks;
+}
+
+template <typename Load>
+uint32_t SelectGuardedLoad(EmitterState& state, uint32_t valid, uint32_t index, Load&& load) {
+	const auto zero = ConstantU32(state, 0);
+	return Select(state, TypeU32(state), valid,
+	              load(Select(state, TypeU32(state), valid, index, zero)), zero);
+}
+
 uint32_t LoadWordPrepared(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
-                          const MemoryResourceAccess& resource) {
-	const auto index = DwordIndex(ctx, inst, mem);
+                          const MemoryResourceAccess& resource, uint32_t guard = 0) {
+	const auto index     = DwordIndex(ctx, inst, mem);
+	auto       in_bounds = EmitMemoryElementInBounds(ctx.state, resource, index);
+	if (BranchlessLoads(ctx.state)) {
+		if (guard != 0) in_bounds = AndCondition(ctx.state, guard, in_bounds);
+		return SelectGuardedLoad(ctx.state, in_bounds, index, [&](uint32_t safe_index) {
+			return LoadWordInBounds(ctx, resource, safe_index);
+		});
+	}
 	return EmitValueOrZeroIfCondition(
-	    ctx.state, EmitMemoryElementInBounds(ctx.state, resource, index),
+	    ctx.state, in_bounds,
 	    [&]() { return LoadWordInBounds(ctx, resource, index); });
 }
 
 uint32_t LoadWord(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInfo mem) {
+	if (BranchlessLoads(ctx.state)) {
+		const auto resource = PrepareMemoryResourceAccess(ctx.state, mem);
+		return LoadWordPrepared(ctx, inst, mem, resource, ctx.Arg(inst, inst.NumArgs() - 1));
+	}
 	return EmitValueOrZeroIfCondition(ctx.state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
 		const auto resource = PrepareMemoryResourceAccess(ctx.state, mem);
 		return LoadWordPrepared(ctx, inst, mem, resource);
@@ -299,11 +325,18 @@ uint32_t LoadWord(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInfo me
 
 uint32_t LoadSubwordPrepared(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
                              const MemoryResourceAccess& resource, uint32_t bits,
-                             bool sign_extend) {
+                             bool sign_extend, uint32_t guard = 0) {
 	const auto address = ByteAddress(ctx, inst, mem);
 	const auto index = Binary(
 	    ctx.state, spv::OpShiftRightLogical, TypeU32(ctx.state), address,
 	    ConstantU32(ctx.state, std::countr_zero(resource.element_bits / 8u)));
+	if (BranchlessLoads(ctx.state)) {
+		auto in_bounds = EmitMemoryElementInBounds(ctx.state, resource, index);
+		if (guard != 0) in_bounds = AndCondition(ctx.state, guard, in_bounds);
+		return SelectGuardedLoad(ctx.state, in_bounds, index, [&](uint32_t safe_index) {
+			return LoadSubwordInBounds(ctx, resource, address, safe_index, bits, sign_extend);
+		});
+	}
 	return EmitValueOrZeroIfCondition(
 	    ctx.state, EmitMemoryElementInBounds(ctx.state, resource, index), [&]() {
 		    return LoadSubwordInBounds(ctx, resource, address, index, bits, sign_extend);
@@ -348,6 +381,11 @@ uint32_t LoadSubwordInBounds(ValueEmitContext& ctx, const MemoryResourceAccess& 
 
 uint32_t LoadSubword(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInfo mem, uint32_t bits,
                      bool sign_extend) {
+	if (BranchlessLoads(ctx.state)) {
+		const auto resource = PrepareMemoryResourceAccess(ctx.state, mem);
+		return LoadSubwordPrepared(ctx, inst, mem, resource, bits, sign_extend,
+		                           ctx.Arg(inst, inst.NumArgs() - 1));
+	}
 	return EmitValueOrZeroIfCondition(ctx.state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
 		const auto resource = PrepareMemoryResourceAccess(ctx.state, mem);
 		return LoadSubwordPrepared(ctx, inst, mem, resource, bits, sign_extend);

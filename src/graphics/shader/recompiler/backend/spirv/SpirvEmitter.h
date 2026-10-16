@@ -3,6 +3,7 @@
 
 #include "common/common.h"
 #include "common/stringUtils.h"
+#include "graphics/shader/deviceQuirks.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <vector>
@@ -13,7 +14,8 @@ namespace Libs::Graphics::ShaderRecompiler::Spirv {
 std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo input_info,
                                   uint32_t push_data_start_dword = 0,
                                   bool maintenance8_enabled = false,
-                                  const ShaderDeviceFeatures& device_features = {});
+                                  const ShaderDeviceFeatures& device_features = {},
+                                  const ShaderDeviceQuirks&   device_quirks   = {});
 
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv
 

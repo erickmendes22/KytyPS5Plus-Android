@@ -3,6 +3,7 @@
 
 #include "common/common.h"
 #include "common/stringUtils.h"
+#include "graphics/shader/deviceQuirks.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvBuilder.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
@@ -95,6 +96,8 @@ struct EmitterState {
 	ShaderStageInputInfo                             input_info;
 	bool                                            maintenance8_enabled;
 	ShaderDeviceFeatures                            device_features {};
+	// Host compiler workarounds (graphics/shader/deviceQuirks.h); all off on desktop drivers.
+	ShaderDeviceQuirks                              device_quirks {};
 	// The host cannot run subgroup operations in this stage: every invocation is lane 0 of a
 	// one-lane wave, so ballots, lane reads and the lane index never leave the invocation.
 	bool                                            subgroup_isolated = false;

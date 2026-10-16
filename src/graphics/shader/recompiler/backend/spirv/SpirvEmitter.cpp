@@ -207,7 +207,8 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 
 std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo input_info,
                                   uint32_t push_data_start_dword, bool maintenance8_enabled,
-                                  const ShaderDeviceFeatures& device_features) {
+                                  const ShaderDeviceFeatures& device_features,
+                                  const ShaderDeviceQuirks&   device_quirks) {
 	using namespace Emitter;
 
 	if (program.stage != ShaderType::Compute && program.stage != ShaderType::Vertex &&
@@ -229,6 +230,7 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 		RejectUnsupportedShader(program, "Float64 arithmetic (shaderFloat64)");
 	}
 	EmitterState state(program, input_info, maintenance8_enabled, device_features);
+	state.device_quirks = device_quirks;
 	// 64-bit atomics on StorageBuffer-backed LDS only need shaderBufferInt64Atomics, which is
 	// always required. Workgroup-class LDS additionally needs shaderSharedInt64Atomics.
 	if (program.info.shared_int64_atomics && state.lds_storage_class == spv::StorageClassWorkgroup &&

@@ -5,6 +5,7 @@
 #include "common/stringUtils.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
+#include "graphics/shader/deviceQuirks.h"
 #include "graphics/shader/shader.h"
 
 #include <array>
@@ -23,6 +24,7 @@ struct CompileOptions {
 	bool                        early_dump                 = false;
 	bool                        maintenance8_enabled       = false;
 	ShaderDeviceFeatures        device_features {};
+	ShaderDeviceQuirks          device_quirks {};
 	const char*                 dump_label                 = nullptr;
 	std::span<const uint32_t>   user_data;
 	std::span<const uint32_t>   back_code;

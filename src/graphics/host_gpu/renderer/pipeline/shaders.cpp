@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -22,6 +23,7 @@
 #include "graphics/shader/shader.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <limits>
@@ -328,12 +330,14 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		const auto shaders =
 		    BuildRectListShaders(vs_input_info, ps_active ? ps_input_info : nullptr);
 		tess_control_shader_module = CompileSPV(shaders.control, graphics.device);
+		ShaderDump::RecordModule(tess_control_shader_module, "rect_tcs", 0, shaders.control);
 		if (graphics_debug_dump_enabled()) {
 			LOGF("PipelineTrace: vkCreateShaderModule RectList TCS done module=%p\n",
 			     static_cast<void*>(tess_control_shader_module));
 		}
 
 		tess_eval_shader_module = CompileSPV(shaders.evaluation, graphics.device);
+		ShaderDump::RecordModule(tess_eval_shader_module, "rect_tes", 0, shaders.evaluation);
 		if (graphics_debug_dump_enabled()) {
 			LOGF("PipelineTrace: vkCreateShaderModule RectList TES done module=%p\n",
 			     static_cast<void*>(tess_eval_shader_module));
@@ -649,10 +653,35 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		     (with_depth ? "true" : "false"), (static_params.blend_enable[0] ? "true" : "false"),
 		     dynamic_state.dynamicStateCount);
 	}
+	std::array<uint64_t, 4> guest_hashes {};
+	uint32_t                guest_hash_count = 0;
+	for (const auto& stage: vertex_info) {
+		guest_hashes[guest_hash_count++] = stage.stage.program->shader_hash;
+	}
+	if (ps_active) {
+		guest_hashes[guest_hash_count++] = ps_input_info->stage.program->shader_hash;
+	}
+	const auto dump_record = ShaderDump::RecordGraphicsPipeline(
+	    graphics, pipeline_info,
+	    {descriptor_bindings, pipeline.uses_push_descriptors
+	                              ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+	                              : vk::DescriptorSetLayoutCreateFlags {},
+	     push_constants},
+	    std::span(guest_hashes).first(guest_hash_count));
 	{
 		const Common::PerfStats::ScopedStall timing(Common::PerfStats::StallKind::PipelineCompile);
 		result = graphics.device.createGraphicsPipelines(driver_cache, 1, &pipeline_info, nullptr,
 		                                                 &pipeline.pipeline);
+	}
+	ShaderDump::RecordResult(dump_record, result);
+	if (result != vk::Result::eSuccess) {
+		std::string stages;
+		for (uint32_t i = 0; i < guest_hash_count; i++) {
+			stages += fmt::format(" 0x{:016x}", guest_hashes[i]);
+		}
+		EXIT("vkCreateGraphicsPipelines failed: %s, guest shaders:%s%s%s\n",
+		     vk::to_string(result).c_str(), stages.c_str(),
+		     dump_record.empty() ? "" : ", dump record: ", dump_record.c_str());
 	}
 	if (graphics_debug_dump_enabled()) {
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
@@ -668,9 +697,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
 
 	if (tess_control_shader_module != nullptr) {
+		ShaderDump::ForgetModule(tess_control_shader_module);
 		graphics.device.destroyShaderModule(tess_control_shader_module, nullptr);
 	}
 	if (tess_eval_shader_module != nullptr) {
+		ShaderDump::ForgetModule(tess_eval_shader_module);
 		graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
 	}
 	if (geometry_shader_module != nullptr) {
@@ -731,6 +762,14 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
+	const auto guest_hash  = input_info.stage.program->shader_hash;
+	const auto dump_record = ShaderDump::RecordComputePipeline(
+	    graphics, info,
+	    {descriptor_bindings, pipeline.uses_push_descriptors
+	                              ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
+	                              : vk::DescriptorSetLayoutCreateFlags {},
+	     push_constants},
+	    guest_hash);
 	{
 		const Common::PerfStats::ScopedStall timing(Common::PerfStats::StallKind::PipelineCompile);
 		result = graphics.device.createComputePipelines(driver_cache, 1, &info, nullptr,
@@ -738,7 +777,12 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	}
 	LOGF("PipelineTrace: vkCreateComputePipelines done result=%s pipeline=%p\n",
 	     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	ShaderDump::RecordResult(dump_record, result);
+	if (result != vk::Result::eSuccess) {
+		EXIT("vkCreateComputePipelines failed: %s, guest shader 0x%016" PRIx64 "%s%s\n",
+		     vk::to_string(result).c_str(), guest_hash,
+		     dump_record.empty() ? "" : ", dump record: ", dump_record.c_str());
+	}
 
 	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
 }
