@@ -93,7 +93,12 @@ uint32_t GetVblankFrequency() {
 }
 
 uint32_t GetRenderPassMode() {
-	return std::min(g_config->render_pass_mode, 2u);
+	const auto mode = g_config->render_pass_mode;
+	return mode == RENDER_PASS_MODE_AUTO ? mode : std::min(mode, 2u);
+}
+
+uint32_t GetLayoutMode() {
+	return std::min(g_config->layout_mode, 2u);
 }
 
 uint32_t GetVideoDecoderThreads() {

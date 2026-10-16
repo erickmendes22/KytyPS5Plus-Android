@@ -65,7 +65,7 @@ RenderExecutor::EmulatedMeshDraw RenderExecutor::DispatchEmulatedMesh(
 
 	// The dispatch is recorded on the primary buffer, ahead of the deferred render pass, so
 	// consecutive emulated mesh draws keep sharing one pass (see CommandBuffer::BeginRendering).
-	if (output.reuses_current || Config::GetRenderPassMode() < 2) {
+	if (output.reuses_current || CommandBuffer::RenderPassMode(m_context.GetGraphics()) < 2) {
 		// Earlier draws of this command buffer still read the range being rewritten; draws of
 		// the open pass would otherwise execute after this dispatch.
 		m_context.GetCommandScheduler().EndRendering(PassEnd::Compute);

@@ -1,6 +1,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
+#include "common/logging/log.h"
 #include "common/perfWaits.h"
 #include "common/profiler.h"
 #include "common/threads.h"
@@ -22,7 +23,23 @@ namespace Libs::Graphics {
 
 CommandBuffer::CommandBuffer(CommandScheduler& scheduler)
     : m_context(scheduler.Context()), m_graphics(scheduler.Graphics()), m_scheduler(scheduler),
+      m_hoist_barriers(RenderPassMode(scheduler.Graphics()) != 0 && Config::GetLayoutMode() >= 2),
       m_timer(scheduler.Timer()) {}
+
+uint32_t CommandBuffer::RenderPassMode(const GraphicContext& graphics) {
+	static const uint32_t mode = [&graphics] {
+		const auto configured = Config::GetRenderPassMode();
+		// Auto: immediate passes. Deferred passes (secondary command buffers) were measured
+		// slower on Turnip v32 (Astro Bot intro: the hot 1080p single-draw pass went from
+		// 3.3 ms to 9.2 ms each), so modes 1/2 stay opt-in.
+		const auto resolved = configured == Config::RENDER_PASS_MODE_AUTO ? 0u : configured;
+		LOGF("Render pass mode: %u%s (vendor 0x%04x), layout mode %u\n", resolved,
+		     configured == Config::RENDER_PASS_MODE_AUTO ? " (auto)" : "",
+		     graphics.GetPhysicalDeviceProperties().vendorID, Config::GetLayoutMode());
+		return resolved;
+	}();
+	return mode;
+}
 
 void CommandBuffer::MarkGpu(const char* kind, uint64_t hash) const {
 	if (m_timer.Enabled()) {
@@ -46,8 +63,8 @@ vk::CommandBuffer CommandBuffer::PassHandle() const {
 	return m_pass_buffer != nullptr ? m_pass_buffer : Handle();
 }
 
-bool CommandBuffer::DefersRenderPasses() {
-	static const bool deferred = Config::GetRenderPassMode() != 0;
+bool CommandBuffer::DefersRenderPasses() const {
+	static const bool deferred = RenderPassMode(m_graphics) != 0;
 	return deferred;
 }
 
@@ -98,6 +115,7 @@ void CommandBuffer::BeginRendering(const RenderState& state) const {
 	}
 	m_render_state = state;
 	m_rendering    = true;
+	m_pass_serial++;
 }
 
 void CommandBuffer::BeginPassBuffer(const RenderState& state) const {
@@ -177,9 +195,10 @@ void CommandBuffer::EndRendering(PassEnd reason) const {
 	if (m_pass_draws != 0 && Common::PerfStats::Enabled()) {
 		using Common::PerfStats::Counter;
 		static constexpr std::array kReasonCounters {
-		    Counter::PassEndState,   Counter::PassEndTransit,     Counter::PassEndImageCopy,
-		    Counter::PassEndBuffer,  Counter::PassEndCompute,     Counter::PassEndShaderWrite,
-		    Counter::PassEndSubmit,  Counter::PassEndOther};
+		    Counter::PassEndState,  Counter::PassEndTransit,     Counter::PassEndAttach,
+		    Counter::PassEndImageCopy, Counter::PassEndBuffer,   Counter::PassEndCompute,
+		    Counter::PassEndShaderWrite, Counter::PassEndSubmit, Counter::PassEndOther};
+		static_assert(kReasonCounters.size() == static_cast<size_t>(PassEnd::Other) + 1);
 		Common::PerfStats::Count(kReasonCounters[static_cast<size_t>(reason)]);
 	}
 	if (m_pass_buffer != nullptr) {

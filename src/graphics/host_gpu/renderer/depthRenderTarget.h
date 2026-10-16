@@ -68,9 +68,10 @@ inline vk::ImageAspectFlags DepthReadableAspects(vk::ImageLayout layout) {
 	}
 }
 
-inline vk::ImageLayout depth_attachment_layout(const RenderDepthInfo& depth) {
-	const auto available     = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
-	const auto writes        = depth.AttachmentWriteAspects();
+// The attachment layout for a depth/stencil view with the given aspects when `writes` are the
+// aspects the draw (or its load clear) writes.
+inline vk::ImageLayout depth_attachment_layout(vk::ImageAspectFlags available,
+                                               vk::ImageAspectFlags writes) {
 	const bool has_depth     = static_cast<bool>(available & vk::ImageAspectFlagBits::eDepth);
 	const bool has_stencil   = static_cast<bool>(available & vk::ImageAspectFlagBits::eStencil);
 	// The attachment layout must permit load clears as well as draw writes.
@@ -94,6 +95,18 @@ inline vk::ImageLayout depth_attachment_layout(const RenderDepthInfo& depth) {
 		return vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal;
 	}
 	return vk::ImageLayout::eDepthStencilReadOnlyOptimal;
+}
+
+inline vk::ImageLayout depth_attachment_layout(const RenderDepthInfo& depth) {
+	return depth_attachment_layout(ImageViewOps::DepthAspectMask(depth.desc.view_info.format),
+	                               depth.AttachmentWriteAspects());
+}
+
+// A layout that permits writes to every aspect of the view: used when the depth image is not
+// sampled by the draw, so consecutive draws that toggle depth writes keep one render pass.
+inline vk::ImageLayout depth_writable_attachment_layout(const RenderDepthInfo& depth) {
+	const auto available = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
+	return depth_attachment_layout(available, available);
 }
 
 } // namespace Libs::Graphics

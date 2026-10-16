@@ -6,6 +6,7 @@
 #include "common/common.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/passEnd.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
@@ -96,17 +97,6 @@ struct SubmitInfo {
 	}
 };
 
-// Why a render pass is being ended; --perf-stats counts passes per reason.
-enum class PassEnd : uint8_t {
-	State,
-	Transit,
-	ImageCopy,
-	Buffer,
-	Compute,
-	ShaderWrite,
-	Submit,
-	Other,
-};
 
 class CommandBuffer {
 public:
@@ -126,6 +116,14 @@ public:
 	void BeginRendering(const RenderState& state) const;
 	void EndRendering(PassEnd reason = PassEnd::Other) const;
 	[[nodiscard]] bool IsRendering() const noexcept { return m_rendering; }
+	// Counts render passes; Image::pass_serial records the last pass that used an image.
+	[[nodiscard]] uint64_t PassSerial() const noexcept { return m_pass_serial; }
+	[[nodiscard]] uint32_t PassDraws() const noexcept { return m_pass_draws; }
+	// Whether an image barrier for an image the open pass does not use may be recorded on the
+	// primary buffer ahead of the pass (deferred passes and --layout-mode >= 2).
+	[[nodiscard]] bool HoistsBarriers() const noexcept { return m_hoist_barriers; }
+	// The effective --render-pass-mode (auto resolves per host driver).
+	[[nodiscard]] static uint32_t RenderPassMode(const GraphicContext& graphics);
 	// --perf-stats GPU timestamps: closes a timed region (see GpuTimer::Mark).
 	void MarkGpu(const char* kind, uint64_t hash = 0) const;
 	// Names the render pass in GPU timings after the first draw's shader; counts its draws.
@@ -160,7 +158,7 @@ private:
 
 	void BeginPassBuffer(const RenderState& state) const;
 	void RecordBeginRendering(const RenderState& state, bool secondary) const;
-	[[nodiscard]] static bool DefersRenderPasses();
+	[[nodiscard]] bool DefersRenderPasses() const;
 
 	RenderContext&      m_context;
 	GraphicContext&     m_graphics;
@@ -179,6 +177,8 @@ private:
 	mutable uint64_t    m_pass_shader  = 0;
 	mutable uint32_t    m_pass_draws   = 0;
 	mutable uint64_t    m_pass_indices = 0;
+	mutable uint64_t    m_pass_serial  = 0;
+	bool                m_hoist_barriers = false;
 	GpuTimer&           m_timer;
 	HW::Context*        m_registers   = nullptr;
 	HW::UserConfig*     m_user_config = nullptr;
@@ -266,6 +266,17 @@ private:
 	                                              uint32_t render_target_slice_offset);
 	[[nodiscard]] bool        ConsumeMetadataColorOperation(CommandBuffer& buffer,
 	                                                       uint32_t render_target_slice_offset);
+	// Attachments of the open render pass (set by MarkPassImages) and --perf-stats accounting of
+	// attachment transitions that ended a pass with the same attachments (layout changes).
+	std::array<ImageId, RENDER_COLOR_ATTACHMENTS_MAX + 1> m_pass_images {};
+	uint32_t                                              m_pass_image_count = 0;
+	void NoteAttachmentPassEnd(std::span<const RenderColorInfo> colors, const RenderDepthInfo& depth,
+	                           std::span<const VulkanImageState> old_states);
+	// Records the pass the images of a draw landed in (see CommandBuffer::HoistsBarriers).
+	void                      MarkPassImages(const CommandBuffer&              buffer,
+	                                         std::span<PreparedBindings* const> stages,
+	                                         std::span<const RenderColorInfo> colors,
+	                                         const RenderDepthInfo&           depth);
 	void                      BindImage(ImageId id, bool storage);
 	void                      BindRenderTarget(ImageId id);
 	void                      ResetBindings();

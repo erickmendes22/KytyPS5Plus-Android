@@ -168,6 +168,11 @@ void CommandScheduler::EndRendering(PassEnd reason) {
 	}
 }
 
+bool CommandScheduler::CanHoistBarrier(uint64_t image_pass_serial) const noexcept {
+	return Active() && !m_command.IsInvalid() && m_command.IsRendering() &&
+	       m_command.HoistsBarriers() && m_command.PassSerial() != image_pass_serial;
+}
+
 void CommandScheduler::Flush() {
 	SubmitInfo submit;
 	Flush(submit);

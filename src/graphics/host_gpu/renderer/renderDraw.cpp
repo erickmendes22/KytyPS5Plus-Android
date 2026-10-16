@@ -33,9 +33,11 @@
 #include "libs/errno.h"
 
 #include <algorithm>
+#include <fmt/format.h>
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -473,6 +475,89 @@ static vk::Extent2D AttachmentViewExtent(const Image& image, const ImageViewInfo
 	        std::max(image.backing.extent.height >> view.base_level, 1u)};
 }
 
+void RenderExecutor::NoteAttachmentPassEnd(std::span<const RenderColorInfo>   colors,
+                                           const RenderDepthInfo&             depth,
+                                           std::span<const VulkanImageState> old_states) {
+	std::array<ImageId, RENDER_COLOR_ATTACHMENTS_MAX + 1> images {};
+	uint32_t                                              count = 0;
+	for (const auto& color: colors) {
+		images[count++] = color.image_id;
+	}
+	if (depth.image_id) {
+		images[count++] = depth.image_id;
+	}
+	const bool same = count == m_pass_image_count &&
+	                  std::equal(images.begin(), images.begin() + count, m_pass_images.begin());
+	if (same) {
+		Common::PerfStats::Count(Common::PerfStats::Counter::PassEndAttachSame);
+	}
+	// Log a sample from the steady state (the first events are the title/loading screens).
+	static const auto           started = std::chrono::steady_clock::now();
+	static std::atomic_uint32_t logged  = 0;
+	if (std::chrono::steady_clock::now() - started < std::chrono::seconds(95) ||
+	    logged.fetch_add(1, std::memory_order_relaxed) >= 64) {
+		return;
+	}
+	auto&       cache = m_context.GetTextureCache();
+	std::string line  = same ? "[attach-end] same images:" : "[attach-end] old=[";
+	if (!same) {
+		for (uint32_t i = 0; i < m_pass_image_count; i++) {
+			line += fmt::format(" {}", m_pass_images[i].index);
+		}
+		line += " ] new:";
+	}
+	for (uint32_t i = 0; i < count; i++) {
+		const auto* image = cache.m_slot_images.try_get(images[i]);
+		const auto& old_state = old_states[i];
+		line += fmt::format(" {}({}x{} {}/{:x} -> {}/{:x})", images[i].index,
+		                    image != nullptr ? image->info.extent.width : 0,
+		                    image != nullptr ? image->info.extent.height : 0,
+		                    vk::to_string(old_state.layout),
+		                    static_cast<uint64_t>(old_state.access_mask),
+		                    image != nullptr ? vk::to_string(image->backing.state.layout) : "?",
+		                    image != nullptr
+		                        ? static_cast<uint64_t>(image->backing.state.access_mask)
+		                        : 0);
+	}
+	LOGF("%s\n", line.c_str());
+}
+
+void RenderExecutor::MarkPassImages(const CommandBuffer&               buffer,
+                                    std::span<PreparedBindings* const> stages,
+                                    std::span<const RenderColorInfo>   colors,
+                                    const RenderDepthInfo&             depth) {
+	m_pass_image_count = 0;
+	for (const auto& color: colors) {
+		m_pass_images[m_pass_image_count++] = color.image_id;
+	}
+	if (depth.image_id) {
+		m_pass_images[m_pass_image_count++] = depth.image_id;
+	}
+	if (!buffer.HoistsBarriers()) {
+		return;
+	}
+	auto&      cache  = m_context.GetTextureCache();
+	const auto serial = buffer.PassSerial();
+	const auto mark   = [&](ImageId id) {
+		if (auto* image = cache.m_slot_images.try_get(id); image != nullptr) {
+			image->pass_serial = serial;
+		}
+	};
+	for (const auto* stage: stages) {
+		for (const auto& binding: stage->images) {
+			if (binding.image_id) {
+				mark(binding.image_id);
+			}
+		}
+	}
+	for (const auto& color: colors) {
+		mark(color.image_id);
+	}
+	if (depth.image_id) {
+		mark(depth.image_id);
+	}
+}
+
 RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderColorInfo* colors,
                                                  uint32_t color_count, RenderDepthInfo& depth,
                                                  vk::ImageAspectFlags& feedback_aspects,
@@ -485,6 +570,10 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	state.height                = std::numeric_limits<uint32_t>::max();
 	state.num_layers            = std::numeric_limits<uint32_t>::max();
 	state.num_color_attachments = 0;
+	// --perf-stats: attachment transitions below may end a pass with draws; note why.
+	const bool pass_open = Common::PerfStats::Enabled() && buffer.IsRendering() &&
+	                       buffer.PassDraws() != 0;
+	std::array<VulkanImageState, RENDER_COLOR_ATTACHMENTS_MAX + 1> old_states {};
 	for (uint32_t i = 0; i < color_count; i++) {
 		auto& target = colors[i];
 		EXIT_IF(!target.image_id);
@@ -499,13 +588,14 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		const auto& view   = target.desc.view_info;
 		const auto  layout = image.binding.is_bound ? vk::ImageLayout::eGeneral
 		                                            : vk::ImageLayout::eColorAttachmentOptimal;
+		old_states[i]     = image.backing.state;
 		image.binding.attachment_layout = layout;
 		image.binding.attachment_access =
 		    vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite;
 		image.Transit(layout, image.binding.attachment_access,
 		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
 		                                     view.layer_count},
-		              buffer.Handle());
+		              buffer.Handle(), PassEnd::Attach);
 		const auto extent       = target.Extent();
 		const auto view_extent  = AttachmentViewExtent(image, view);
 		state.width             = std::min({state.width, extent.width, view_extent.width});
@@ -561,22 +651,35 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 				std::printf("depth attachment feedback loop is not supported by the host\n");
 			}
 		}
-		auto layout = depth_attachment_layout(depth);
+		// A depth image the draw does not sample stays in a writable layout, so draws that only
+		// toggle depth/stencil writes share one render pass (legacy: --layout-mode 0).
+		auto layout = !sampled_aspects && Config::GetLayoutMode() >= 1
+		                  ? depth_writable_attachment_layout(depth)
+		                  : depth_attachment_layout(depth);
+		old_states[color_count] = image.backing.state;
 		if (sampled_aspects & ~DepthReadableAspects(layout)) {
 			layout = m_context.GetGraphics().attachment_feedback_loop_enabled
 			             ? vk::ImageLayout::eAttachmentFeedbackLoopOptimalEXT
 			             : vk::ImageLayout::eGeneral;
 		}
 		// The attachment store writes even when guest depth/stencil tests do not.
-		const auto access = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
-		                    vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+		auto access = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+		              vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+		// A draw that samples aspects it does not write (depth test on, depth write off) needs
+		// no barrier against the previous draw: request the sampled access here as well, so the
+		// descriptor transition (PrepareBindingWrites, is_target) finds the state it asks for and
+		// consecutive such draws share one render pass. Real feedback (sampled aspects written)
+		// keeps the legacy per-draw barrier.
+		if (sampled_aspects && !feedback_aspects && Config::GetLayoutMode() >= 1) {
+			access |= vk::AccessFlagBits2::eShaderRead;
+		}
 		image.binding.attachment_layout = layout;
 		image.binding.attachment_access = access;
 		const auto& view                = depth.desc.view_info;
 		image.Transit(layout, access,
 		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
 		                                     view.layer_count},
-		              buffer.Handle());
+		              buffer.Handle(), PassEnd::Attach);
 		const auto view_extent    = AttachmentViewExtent(image, view);
 		state.width = std::min({state.width, depth.desc.info.extent.width, view_extent.width});
 		state.height = std::min({state.height, depth.desc.info.extent.height, view_extent.height});
@@ -595,6 +698,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		state.depth_format        = attachment.has_depth ? view.format : vk::Format::eUndefined;
 		state.stencil_format      = attachment.has_stencil ? view.format : vk::Format::eUndefined;
 		state.samples             = depth.desc.info.samples;
+	}
+	if (pass_open && !buffer.IsRendering()) {
+		NoteAttachmentPassEnd(std::span {colors, color_count}, depth, old_states);
 	}
 	if (color_count == 0 && !depth.image_id) {
 		const auto& limits = buffer.GetGraphics().GetPhysicalDeviceProperties().limits;
@@ -1249,6 +1355,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
 	}
 	m_context.GetCommandScheduler().BeginRendering(rendering);
+	// The emulated mesh stage ran ahead of the pass; only the remaining stages read in it.
+	MarkPassImages(buffer, mesh_emulated ? stages.subspan(1) : stages,
+	               std::span {state.color_info, state.color_count}, state.depth_info);
 	const auto vk_buffer = buffer.PassHandle();
 	if (!mesh_active) {
 		CommitVertexBuffers(vk_buffer, vertex_bindings);

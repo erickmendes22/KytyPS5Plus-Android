@@ -503,6 +503,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid render pass mode: %s\n", value.c_str());
 				return false;
 			}
+		} else if (arg == "--layout-mode") {
+			if (!ParseUint32(value, options.config.layout_mode)) {
+				::printf("invalid layout mode: %s\n", value.c_str());
+				return false;
+			}
 		} else if (arg == "--video-decoder-threads") {
 			if (!ParseUint32(value, options.config.video_decoder_threads)) {
 				::printf("invalid video decoder thread count: %s\n", value.c_str());

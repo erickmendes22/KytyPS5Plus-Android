@@ -41,6 +41,8 @@ constexpr bool IsConfiguredUserIdValid(int32_t user_id) {
 	return user_id >= 0 && user_id != USER_ID_EVERYONE && user_id != USER_ID_SYSTEM;
 }
 
+constexpr uint32_t RENDER_PASS_MODE_AUTO = UINT32_MAX;
+
 struct ConfigOptions {
 	uint32_t               screen_width                = 1280;
 	uint32_t               screen_height               = 720;
@@ -66,7 +68,16 @@ struct ConfigOptions {
 	uint32_t               video_decoder_threads       = 0;
 	// 0: record render passes immediately (one pass per emulated mesh draw); 1: defer passes to
 	// secondary command buffers; 2: 1 + run mesh-emulation dispatches ahead of the open pass.
-	uint32_t               render_pass_mode            = 0;
+	// RENDER_PASS_MODE_AUTO: currently 0 (deferred passes measured slower on Turnip).
+	uint32_t               render_pass_mode            = RENDER_PASS_MODE_AUTO;
+	// Image layout policy. 0: legacy (depth attachment layout follows the depth-write state,
+	// every image barrier ends the open render pass); 1: a depth attachment the draw does not
+	// sample stays in a writable layout, and a depth attachment the draw samples read-only is
+	// acquired with the sampled access (no per-draw barrier); 2: 1 + with deferred render
+	// passes, barriers for images the open pass does not use are recorded ahead of it.
+	// Default 0: on Turnip v32 the merged passes ran slower (Astro Bot intro 5.9 -> 5.5 fps,
+	// the hot volumetric draw 3.3 -> 6.5 ms each) although passes fell from 133 to 96 per frame.
+	uint32_t               layout_mode                 = 0;
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;
@@ -121,6 +132,7 @@ uint32_t GetVblankFrequency();
 uint32_t GetVideoRetireDepth();
 uint32_t GetVideoDecoderThreads();
 uint32_t GetRenderPassMode();
+uint32_t GetLayoutMode();
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();
 

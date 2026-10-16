@@ -6,6 +6,7 @@
 #include "common/slotVector.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
+#include "graphics/host_gpu/renderer/passEnd.h"
 
 #include <compare>
 #include <limits>
@@ -56,8 +57,12 @@ public:
 	                                   vk::AccessFlags2                     destination_access,
 	                                   vk::PipelineStageFlags2              destination_stage,
 	                                   std::optional<ImageSubresourceRange> range);
+	// Records the barrier to the new state on `command_buffer` (always the primary buffer).
+	// Ends the open render pass unless the barrier can run ahead of it
+	// (CommandScheduler::CanHoistBarrier); `reason` is what --perf-stats counts the end as.
 	void Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destination_access,
-	             std::optional<ImageSubresourceRange> range, vk::CommandBuffer command_buffer);
+	             std::optional<ImageSubresourceRange> range, vk::CommandBuffer command_buffer,
+	             PassEnd reason = PassEnd::Transit);
 	void Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer, uint64_t offset,
 	            uint64_t size);
 	void Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer, uint64_t offset,
@@ -138,6 +143,8 @@ public:
 	ImageSubresourceRange stencil_subresources;
 	uint64_t         tick_accessed_last = 0;
 	size_t           lru_id             = 0;
+	// CommandBuffer::PassSerial() of the last render pass a draw used this image in.
+	uint64_t         pass_serial        = 0;
 
 private:
 	friend struct ImageTestAccess;

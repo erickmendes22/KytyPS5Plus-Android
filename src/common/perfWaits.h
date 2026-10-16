@@ -76,12 +76,15 @@ enum class Counter : uint8_t {
 	// Why render passes with draws ended (CommandBuffer::EndRendering reasons).
 	PassEndState,       // next draw targets different attachments
 	PassEndTransit,     // image layout transition (barrier) for a sampled/stored image
+	PassEndAttach,      // layout transition of a color/depth attachment being acquired
 	PassEndImageCopy,   // image upload/download/copy/blit/resolve
 	PassEndBuffer,      // buffer cache / stream buffer upload or download
 	PassEndCompute,     // compute dispatch (incl. mesh ring reuse)
 	PassEndShaderWrite, // shader buffer writes or GDS barriers
 	PassEndSubmit,      // command buffer submitted
 	PassEndOther,
+	HoistedBarriers,    // image barriers recorded ahead of the open render pass instead of ending it
+	PassEndAttachSame,  // ...of PassEndAttach: same attachment images, only their layout changed
 	Count
 };
 

@@ -25,6 +25,10 @@ public:
 	void           Begin(HW::Context& registers, HW::UserConfig& user_config, HW::Shader& shaders);
 	void           BeginRendering(const RenderState& state);
 	void           EndRendering(PassEnd reason = PassEnd::Other);
+	// Whether an image barrier may be recorded ahead of the open render pass instead of ending
+	// it: the pass is deferred and the image (last used in pass `image_pass_serial`) is not used
+	// by the open pass.
+	[[nodiscard]] bool CanHoistBarrier(uint64_t image_pass_serial) const noexcept;
 	void           Flush();
 	void           Flush(SubmitInfo& submit);
 	void           FlushAndWait();

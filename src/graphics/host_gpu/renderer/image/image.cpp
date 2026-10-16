@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/image/image.h"
 
 #include "common/assert.h"
+#include "common/perfWaits.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
@@ -215,7 +216,8 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
 }
 
 void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destination_access,
-                    std::optional<ImageSubresourceRange> range, vk::CommandBuffer command_buffer) {
+                    std::optional<ImageSubresourceRange> range, vk::CommandBuffer command_buffer,
+                    PassEnd reason) {
 	const auto transfer_access =
 	    vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite;
 	vk::PipelineStageFlags2 destination_stage {};
@@ -232,7 +234,13 @@ void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destina
 	if (barriers.empty()) {
 		return;
 	}
-	m_scheduler.EndRendering(PassEnd::Transit);
+	// With deferred render passes the primary buffer's commands run before the open pass, so a
+	// barrier for an image no draw of that pass uses need not split it.
+	if (m_scheduler.CanHoistBarrier(pass_serial)) {
+		Common::PerfStats::Count(Common::PerfStats::Counter::HoistedBarriers);
+	} else {
+		m_scheduler.EndRendering(reason);
+	}
 	vk::DependencyInfo dependency {};
 	dependency.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
 	dependency.pImageMemoryBarriers    = barriers.data();
