@@ -43212,6 +43212,30 @@ void CheckPs5GameExampleImageClearRuntimeShape() {
           !ResolveComputeBufferFill(compute, 2, 1, 1, 0x41u, descriptor,
                                     packed_clear, size),
           "excess invocation coverage was accepted as a fill");
+  runtime_resources.uniform_fill.bounded_elements = 65;
+  runtime_resources.buffers[0].dwords[2] = 65;
+  for (u32 oob = 0; oob < 4; ++oob) {
+    runtime_resources.buffers[0].dwords[3] = 0x14204u | (oob << 28u);
+    Require("Ps5GameExampleImageClear", "bounded final workgroup and RDNA2 OOB mode",
+            ResolveComputeBufferFill(compute, 2, 1, 1, 0x41u, descriptor,
+                                     packed_clear, size) == (oob != 3),
+            "explicit coverage did not respect RDNA2 element bounds");
+  }
+  runtime_resources.buffers[0].dwords[3] = 0x14204u;
+  Require("Ps5GameExampleImageClear", "bounded insufficient dispatch",
+          !ResolveComputeBufferFill(compute, 1, 1, 1, 0x41u, descriptor,
+                                    packed_clear, size),
+          "a bound was mistaken for actual invocation coverage");
+  Require("Ps5GameExampleImageClear", "bounded index wrap",
+          !ResolveComputeBufferFill(compute, 0x04000001u, 1, 1, 0x41u, descriptor,
+                                    packed_clear, size),
+          "a wrapped invocation index was accepted as complete coverage");
+  runtime_resources.uniform_fill.bounded_elements = 64;
+  Require("Ps5GameExampleImageClear", "bounded incomplete destination",
+          !ResolveComputeBufferFill(compute, 2, 1, 1, 0x41u, descriptor,
+                                    packed_clear, size),
+          "a shader bound smaller than the destination was accepted as a fill");
+  runtime_resources = scalar;
   auto alias = scalar.buffers.front();
   runtime_resources.buffers.push_back(alias);
   Require("Ps5GameExampleImageClear", "aliased scalar input",
@@ -49380,6 +49404,7 @@ int main(int argc, char **argv) {
   }
   if (argc == 2 && std::strcmp(argv[1], "--compute-meta-clear-only") == 0) {
     CheckDynamicRenderingState();
+    CheckPs5GameExampleImageClearRuntimeShape();
     VulkanHarness vulkan;
     vulkan.CheckComputeMetaClearClassification();
     vulkan.CheckNativeIndirectDispatch();
