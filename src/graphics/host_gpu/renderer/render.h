@@ -25,6 +25,7 @@ class Shader;
 struct GraphicContext;
 struct ShaderBufferResource;
 struct ShaderComputeInputInfo;
+struct ShaderVertexInputInfo;
 struct RenderDepthInfo;
 struct RenderColorInfo;
 struct DrawCallInfo;
@@ -190,6 +191,20 @@ private:
 	                         DrawRenderState& state, vk::PrimitiveTopology topology,
 	                         const DrawEmitInfo& emit, const DrawIndexBufferSource& index_source,
 	                         bool primitive_restart_enable);
+	// Mesh emulation result: the vertex records' address for the generated vertex stage and the
+	// index count of the triangle-list draw that reads them.
+	struct EmulatedMeshDraw {
+		uint64_t vertex_address = 0;
+		uint32_t index_count    = 0;
+	};
+	// Records the compute pass of an emulated mesh draw (outside rendering) and binds its triangle
+	// indices as the index buffer. draw_data is the native mesh draw prefix.
+	[[nodiscard]] EmulatedMeshDraw DispatchEmulatedMesh(CommandBuffer&               buffer,
+	                                                    const ShaderVertexInputInfo& mesh_input,
+	                                                    const ShaderProgram&         mesh_program,
+	                                                    PreparedBindings&            mesh_bindings,
+	                                                    std::span<const uint32_t>    draw_data,
+	                                                    uint32_t groups, uint32_t instances);
 	[[nodiscard]] RenderState AcquireRenderTargets(CommandBuffer& buffer, RenderColorInfo* colors,
 	                                               uint32_t color_count, RenderDepthInfo& depth,
 	                                               vk::ImageAspectFlags& feedback_aspects,

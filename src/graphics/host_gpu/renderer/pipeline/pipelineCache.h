@@ -114,6 +114,7 @@ public:
 		vk::Pipeline            pipeline              = nullptr;
 		vk::DescriptorSetLayout descriptor_set_layout = nullptr;
 		bool                    uses_push_descriptors = false;
+		vk::ShaderStageFlags    push_constant_stages  = {};
 	};
 
 	struct GraphicsPrograms {
@@ -142,6 +143,9 @@ public:
 	                              const GraphicsPrograms& programs);
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	                             const ShaderProgram&          compute_program);
+	// Mesh emulation (no VK_EXT_mesh_shader): the compute pipeline that runs a mesh program.
+	Pipeline& GetMeshEmulationPipeline(const ShaderVertexInputInfo& mesh_input,
+	                                   const ShaderProgram&         mesh_program);
 
 private:
 	struct ProgramCache;
@@ -199,7 +203,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             const PipelineStaticParameters&        static_params,
                             vk::PipelineCache                      driver_cache);
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
-                            const ShaderComputeInputInfo& input_info,
+                            const ShaderRecompiler::IR::CompiledShaderInfo& program,
                             vk::ShaderModule compute_module, vk::PipelineCache driver_cache);
 
 } // namespace Libs::Graphics

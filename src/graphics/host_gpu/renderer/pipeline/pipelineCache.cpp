@@ -402,6 +402,7 @@ struct PipelineCache::ProgramCache {
 		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationControl) &&
 		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationEvaluation),
 		         .subgroup_fragment = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eFragment),
+		         .mesh_shader       = graphics.mesh_shader_enabled,
 		};
 		options.shader_hash = params.hash;
 		options.user_data   = user_data;
@@ -707,6 +708,27 @@ void PipelineCache::MaybeFlushDriverCache() {
 #endif
 }
 
+// Mesh emulation runs the mesh workgroup as a compute workgroup, so it is bound by the compute
+// limits instead of the mesh ones. The host subgroup size follows the compute stage.
+static void CheckMeshEmulationLimits(const GraphicContext& graphics, ShaderMeshInputInfo& mesh) {
+	mesh.host_subgroup_size = graphics.SupportsComputeWave64() ? 64u : 32u;
+	const auto& limits = graphics.GetPhysicalDeviceProperties().limits;
+	const auto logical_threads = mesh.threads_num[0] * mesh.threads_num[1] * mesh.threads_num[2];
+	const auto host_threads    = ((logical_threads + mesh.wave_size - 1u) / mesh.wave_size) *
+	                          std::min(mesh.host_subgroup_size, mesh.wave_size);
+	// Guest LDS, the allocation pair and the shared per-vertex Layer staging.
+	const auto shared_bytes = (static_cast<uint64_t>(mesh.lds_size_dwords) + 2u +
+	                           mesh.max_vertices) * sizeof(uint32_t);
+	if (host_threads > limits.maxComputeWorkGroupInvocations ||
+	    host_threads > limits.maxComputeWorkGroupSize[0] ||
+	    shared_bytes > limits.maxComputeSharedMemorySize) {
+		EXIT("mesh emulation: mesh stage exceeds host compute limits: threads=%u (max %u) "
+		     "shared=%" PRIu64 " bytes (max %u) vertices=%u primitives=%u\n",
+		     host_threads, limits.maxComputeWorkGroupInvocations, shared_bytes,
+		     limits.maxComputeSharedMemorySize, mesh.max_vertices, mesh.max_primitives);
+	}
+}
+
 PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
     const HW::VertexShaderInfo& vertex_regs, const HW::PixelShaderInfo& pixel_regs,
     const HW::ShaderRegisters& sh, const HW::Context& context, const HW::UserConfig& user_config,
@@ -720,8 +742,10 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		vertex_params[0] = PrepareProgram(vertex_regs, context, user_config, vertex_info[0]);
 	}
 	const bool mesh_active = vertex_info[0].logical_stage == ShaderType::Mesh;
-	if (mesh_active) {
-		EXIT_NOT_IMPLEMENTED(!m_graphics.mesh_shader_enabled);
+	const bool mesh_emulated = mesh_active && !m_graphics.mesh_shader_enabled;
+	if (mesh_emulated) {
+		CheckMeshEmulationLimits(m_graphics, vertex_info[0].mesh);
+	} else if (mesh_active) {
 		auto& mesh              = vertex_info[0].mesh;
 		mesh.host_subgroup_size = m_graphics.subgroup_size;
 		const auto& limits      = m_graphics.mesh_shader_properties;
@@ -798,7 +822,9 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		clip.enabled = true;
 	}
 	uint32_t          push_data_cursor =
-	    mesh_active ? ShaderRecompiler::IR::PushData::MeshDrawDwordCount : 0;
+	    mesh_emulated ? ShaderRecompiler::IR::PushData::MeshEmulationDrawDwordCount
+	    : mesh_active ? ShaderRecompiler::IR::PushData::MeshDrawDwordCount
+	                  : 0;
 	GraphicsPrograms  result;
 	if (pixel_active) {
 		result.pixel = m_program_cache->Get(pixel_params, pixel_info, push_data_cursor);
@@ -1042,7 +1068,9 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	}
 
 	auto cached = std::make_unique<Pipeline>();
-	CreatePipelineInternal(m_graphics, *cached, input_info, compute_program.module, m_driver_cache);
+	EXIT_IF(!input_info.stage);
+	CreatePipelineInternal(m_graphics, *cached, *input_info.stage.program, compute_program.module,
+	                       m_driver_cache);
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
@@ -1053,4 +1081,30 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 
 	return *iter->second;
 }
+PipelineCache::Pipeline&
+PipelineCache::GetMeshEmulationPipeline(const ShaderVertexInputInfo& mesh_input,
+                                        const ShaderProgram&         mesh_program) {
+	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(MeshEmulation)", profiler::colors::RedA100);
+	MaybeFlushDriverCache();
+	EXIT_IF(!mesh_program || !mesh_input.stage ||
+	        !mesh_input.stage.program->info.mesh_emulation);
+	// Program ids are unique across stages, so emulated mesh programs share the compute map.
+	if (auto iter = m_compute_pipelines.find(mesh_program.id); iter != m_compute_pipelines.end()) {
+		return *iter->second;
+	}
+	auto cached = std::make_unique<Pipeline>();
+	CreatePipelineInternal(m_graphics, *cached, *mesh_input.stage.program, mesh_program.module,
+	                       m_driver_cache);
+	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
+	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
+	auto [iter, inserted] = m_compute_pipelines.emplace(mesh_program.id, std::move(cached));
+	EXIT_IF(!inserted);
+	OnPipelineCreated();
+	LOGF("Mesh emulation: compute pipeline MS=0x%016" PRIx64 " threads=%u vertices=%u "
+	     "primitives=%u\n",
+	     mesh_input.stage.program->shader_hash, mesh_input.mesh.threads_num[0],
+	     mesh_input.mesh.max_vertices, mesh_input.mesh.max_primitives);
+	return *iter->second;
+}
+
 } // namespace Libs::Graphics
