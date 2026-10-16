@@ -38,8 +38,8 @@ object OverlayGeometry {
 
     private fun shapeOf(control: OverlayControl, size: Float): Pair<Float, Float> = when (control.kind) {
         ControlKind.BUTTON, ControlKind.DPAD, ControlKind.STICK -> size to size
-        ControlKind.SHOULDER, ControlKind.TRIGGER -> size * 1.6f to size * 0.85f
-        ControlKind.PILL -> if (control == OverlayControl.TOUCHPAD) size * 3.5f to size * 0.8f else size * 1.8f to size * 0.75f
+        ControlKind.SHOULDER, ControlKind.TRIGGER -> size * 1.3f to size * 0.7f
+        ControlKind.PILL -> if (control == OverlayControl.TOUCHPAD) size * 3.0f to size * 0.8f else size * 1.8f to size * 0.75f
     }
 
     /**

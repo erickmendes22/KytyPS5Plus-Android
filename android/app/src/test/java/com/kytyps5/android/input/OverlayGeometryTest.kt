@@ -29,14 +29,31 @@ class OverlayGeometryTest {
         assertTrue(OverlayControl.L3 in OverlayGeometry.boxes(layout, width, height, includeHidden = true))
     }
 
+    /** Phones (2.2:1), 16:9 and 16:10 screens, and tablets such as the OnePlus Pad 3 (3392x2400, 1.41:1) and 4:3. */
     @Test
-    fun defaultControlsDoNotOverlap() {
+    fun defaultControlsDoNotOverlapOnCommonAspectRatios() {
+        listOf(2.2f, 2f, 16f / 9f, 1.6f, 3392f / 2400f, 4f / 3f).forEach { aspect ->
+            assertNoOverlap(OverlayGeometry.boxes(OverlayLayout.DEFAULT, 1000f * aspect, 1000f), aspect)
+        }
+    }
+
+    @Test
+    fun defaultControlsStayOnScreen() {
+        listOf(2.2f, 4f / 3f).forEach { aspect ->
+            val w = 1000f * aspect
+            OverlayGeometry.boxes(OverlayLayout.DEFAULT, w, 1000f).forEach { (c, b) ->
+                assertTrue("$c off screen at $aspect", b.left >= 0f && b.top >= 0f && b.right <= w && b.bottom <= 1000f)
+            }
+        }
+    }
+
+    private fun assertNoOverlap(boxes: Map<OverlayControl, ControlBox>, aspect: Float) {
         val list = boxes.entries.toList()
         for (i in list.indices) for (j in i + 1 until list.size) {
             val a = list[i].value
             val b = list[j].value
             val overlap = a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
-            assertFalse("${list[i].key} overlaps ${list[j].key}", overlap)
+            assertFalse("${list[i].key} overlaps ${list[j].key} at $aspect:1", overlap)
         }
     }
 

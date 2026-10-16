@@ -53,8 +53,10 @@ class GameOverlays(
 
     val root: View = FrameLayout(activity).apply {
         addView(controller, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        addView(performanceHud.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
-            setMargins(12.dp, 12.dp, 0, 0)
+        // Top centre, just below the touch-pad button, clear of the shoulder buttons in the corners.
+        addView(performanceHud.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            val metrics = activity.resources.displayMetrics
+            topMargin = (minOf(metrics.widthPixels, metrics.heightPixels) * HUD_TOP_FRACTION).toInt()
         })
         addView(editor.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
             topMargin = 8.dp
@@ -126,5 +128,6 @@ class GameOverlays(
         const val MENU_CONTROLS = 1
         const val MENU_EDIT = 2
         const val MENU_HUD = 3
+        const val HUD_TOP_FRACTION = 0.13f
     }
 }

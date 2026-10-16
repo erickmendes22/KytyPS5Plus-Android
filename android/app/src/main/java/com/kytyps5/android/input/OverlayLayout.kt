@@ -21,21 +21,21 @@ enum class OverlayControl(
     val defaultY: Float,
     val defaultSize: Float,
 ) {
-    DPAD(ControlKind.DPAD, "D-pad", 0.11f, 0.47f, 0.30f),
-    LEFT_STICK(ControlKind.STICK, "Left stick", 0.27f, 0.76f, 0.30f),
-    RIGHT_STICK(ControlKind.STICK, "Right stick", 0.73f, 0.76f, 0.30f),
-    TRIANGLE(ControlKind.BUTTON, "Triangle", 0.89f, 0.33f, 0.12f),
-    CROSS(ControlKind.BUTTON, "Cross", 0.89f, 0.61f, 0.12f),
-    SQUARE(ControlKind.BUTTON, "Square", 0.83f, 0.47f, 0.12f),
-    CIRCLE(ControlKind.BUTTON, "Circle", 0.95f, 0.47f, 0.12f),
-    L1(ControlKind.SHOULDER, "L1", 0.16f, 0.09f, 0.10f),
-    L2(ControlKind.TRIGGER, "L2", 0.06f, 0.09f, 0.10f),
-    R1(ControlKind.SHOULDER, "R1", 0.84f, 0.09f, 0.10f),
-    R2(ControlKind.TRIGGER, "R2", 0.94f, 0.09f, 0.10f),
-    L3(ControlKind.BUTTON, "L3", 0.40f, 0.92f, 0.08f),
-    R3(ControlKind.BUTTON, "R3", 0.60f, 0.92f, 0.08f),
-    OPTIONS(ControlKind.PILL, "OPTIONS", 0.64f, 0.07f, 0.08f),
-    TOUCHPAD(ControlKind.PILL, "TOUCH PAD", 0.50f, 0.07f, 0.09f),
+    DPAD(ControlKind.DPAD, "D-pad", 0.12f, 0.45f, 0.28f),
+    LEFT_STICK(ControlKind.STICK, "Left stick", 0.28f, 0.78f, 0.28f),
+    RIGHT_STICK(ControlKind.STICK, "Right stick", 0.71f, 0.78f, 0.28f),
+    TRIANGLE(ControlKind.BUTTON, "Triangle", 0.89f, 0.31f, 0.115f),
+    CROSS(ControlKind.BUTTON, "Cross", 0.89f, 0.59f, 0.115f),
+    SQUARE(ControlKind.BUTTON, "Square", 0.83f, 0.45f, 0.115f),
+    CIRCLE(ControlKind.BUTTON, "Circle", 0.95f, 0.45f, 0.115f),
+    L1(ControlKind.SHOULDER, "L1", 0.17f, 0.08f, 0.10f),
+    L2(ControlKind.TRIGGER, "L2", 0.06f, 0.08f, 0.10f),
+    R1(ControlKind.SHOULDER, "R1", 0.83f, 0.08f, 0.10f),
+    R2(ControlKind.TRIGGER, "R2", 0.94f, 0.08f, 0.10f),
+    L3(ControlKind.BUTTON, "L3", 0.43f, 0.93f, 0.08f),
+    R3(ControlKind.BUTTON, "R3", 0.57f, 0.93f, 0.08f),
+    OPTIONS(ControlKind.PILL, "OPTIONS", 0.66f, 0.07f, 0.08f),
+    TOUCHPAD(ControlKind.PILL, "TOUCH PAD", 0.50f, 0.07f, 0.08f),
     ;
 
     /** The pad button this control presses (sticks/D-pad report through axes and directions). */
@@ -102,7 +102,7 @@ data class OverlayLayout(
 
     companion object {
         const val VERSION = 1
-        const val DEFAULT_OPACITY = 0.6f
+        const val DEFAULT_OPACITY = 0.5f
         const val MIN_OPACITY = 0.1f
         val DEFAULT = OverlayLayout()
 
