@@ -11,6 +11,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.kytyps5.android.drivers.DriverBrowserDialog
 import java.io.IOException
 import java.util.concurrent.ExecutorService
 
@@ -39,7 +40,8 @@ class GpuDriverPanel(
             gravity = Gravity.CENTER_VERTICAL
             addView(current, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(button("Change…") { chooseGlobal() })
-            addView(button("Import driver…") { openPicker() })
+            addView(button("Download…") { openBrowser() })
+            addView(button("Import zip…") { openPicker() })
             addView(button("Remove…") { chooseToRemove() })
         }
     }
@@ -97,6 +99,28 @@ class GpuDriverPanel(
                 onDriversChanged()
             })
         }
+    }
+
+    /** GPU model for driver recommendations, detected once via EGL (call off the main thread). */
+    @Volatile
+    private var adrenoModel: Int? = null
+    private var adrenoProbed = false
+
+    private fun detectAdreno(): Int? {
+        if (!adrenoProbed) {
+            adrenoModel = AdrenoGpu.detectModel()
+            adrenoProbed = true
+        }
+        return adrenoModel
+    }
+
+    private fun openBrowser() {
+        DriverBrowserDialog(activity, store, worker, ::detectAdreno) { driver, useNow ->
+            if (useNow) settings.gpuDriverId = driver.id
+            showMessage(if (useNow) "Installed ${driver.label}; it is now the global GPU driver." else "Installed ${driver.label}.")
+            refresh()
+            onDriversChanged()
+        }.show()
     }
 
     private fun chooseGlobal() {
