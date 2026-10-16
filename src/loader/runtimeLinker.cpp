@@ -735,10 +735,29 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		std::printf("thread: %s\n", thread_name);
 #if KYTY_HOST_ARM64 && !defined(_WIN32)
 		// Guest code never faults here (the translator handles it); the faulting PC is host code.
-		if (Dl_info dl {}; dladdr(reinterpret_cast<void*>(info->exception_address), &dl) != 0) {
-			std::printf("host pc: %s+0x%" PRIx64 " (%s)\n", dl.dli_fname != nullptr ? dl.dli_fname : "?",
-			            info->exception_address - reinterpret_cast<uint64_t>(dl.dli_fbase),
-			            dl.dli_sname != nullptr ? dl.dli_sname : "?");
+		const auto print_host_address = [](const char* label, uint64_t address) {
+			if (Dl_info dl {}; dladdr(reinterpret_cast<void*>(address), &dl) != 0) {
+				std::printf("%s: %s+0x%" PRIx64 " (%s)\n", label,
+				            dl.dli_fname != nullptr ? dl.dli_fname : "?",
+				            address - reinterpret_cast<uint64_t>(dl.dli_fbase),
+				            dl.dli_sname != nullptr ? dl.dli_sname : "?");
+			} else {
+				std::printf("%s: 0x%016" PRIx64 "\n", label, address);
+			}
+		};
+		print_host_address("host pc", info->exception_address);
+		if (const auto* uc = static_cast<const ucontext_t*>(info->native_context); uc != nullptr) {
+			// Host frames are built with frame pointers: walk the x29 chain from the faulting frame.
+			print_host_address("host lr", uc->uc_mcontext.regs[30]);
+			auto fp = uc->uc_mcontext.regs[29];
+			for (int depth = 0; depth < 24 && fp != 0 && (fp & 0xf) == 0; depth++) {
+				const auto* record = reinterpret_cast<const uint64_t*>(fp);
+				print_host_address("host frame", record[1]);
+				if (record[0] <= fp) {
+					break;
+				}
+				fp = record[0];
+			}
 		}
 #endif
 		std::printf("rax=%016" PRIx64 " rbx=%016" PRIx64 " rcx=%016" PRIx64 " rdx=%016" PRIx64 "\n"
