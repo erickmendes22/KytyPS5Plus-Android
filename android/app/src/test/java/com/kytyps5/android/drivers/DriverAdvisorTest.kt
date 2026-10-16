@@ -30,6 +30,12 @@ class DriverAdvisorTest {
     }
 
     @Test
+    fun adreno840MayUseItsOwnQualcommDriverAndHostileTagsDoNotCrash() {
+        assertEquals(Verdict.UNKNOWN, verdict(840, "v840", "Qualcomm_840_adpkg.zip"))
+        assertEquals(Verdict.AVOID, verdict(830, "v99999999999", "Turnip_Gen8_V99999999999.zip"))
+    }
+
+    @Test
     fun adreno8xxTreatsOtherPackagesAsUntested() {
         assertEquals(Verdict.UNKNOWN, verdict(830, "vturnip_mrpurple_T30", "turnip_mrpurple_T30-toasted.adpkg.zip"))
         assertEquals(Verdict.UNKNOWN, verdict(830, "gamesir", "Turnip-Rutabaga-v3.zip"))

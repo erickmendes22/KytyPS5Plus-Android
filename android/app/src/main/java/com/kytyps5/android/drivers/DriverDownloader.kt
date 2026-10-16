@@ -39,6 +39,11 @@ class DriverDownloader(
             open(asset.downloadUrl).use { input ->
                 partial.outputStream().use { output -> copy(input, output::write, digest, asset.size, onProgress, isCancelled) }
             }
+            val received = partial.length()
+            if (asset.size > 0 && received != asset.size) {
+                partial.delete()
+                return DownloadResult.Failure("incomplete download: got $received of ${asset.size} bytes")
+            }
             val sha = digest.digest().joinToString("") { "%02x".format(it) }
             val verified = asset.sha256?.let { it == sha }
             if (verified == false) {
@@ -84,6 +89,10 @@ class DriverDownloader(
         private const val MAX_BYTES = 256L shl 20
         private const val TIMEOUT_MS = 30_000
 
+        /** GitHub serves release assets from github.com, redirecting to its *.githubusercontent.com CDN. */
+        fun isTrustedFinalUrl(url: URL): Boolean =
+            url.protocol == "https" && (url.host == "github.com" || url.host.endsWith(".githubusercontent.com"))
+
         /** HTTPS GET following GitHub's redirect to its asset CDN (https to https only). */
         fun openHttps(url: String): InputStream {
             val connection = URL(url).openConnection() as HttpURLConnection
@@ -96,9 +105,9 @@ class DriverDownloader(
                 connection.disconnect()
                 throw IOException("HTTP $code")
             }
-            if (connection.url.protocol != "https") {
+            if (!isTrustedFinalUrl(connection.url)) {
                 connection.disconnect()
-                throw IOException("redirected to a non-HTTPS URL")
+                throw IOException("redirected to an untrusted location: ${connection.url.host}")
             }
             return connection.inputStream
         }

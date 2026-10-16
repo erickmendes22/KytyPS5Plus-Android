@@ -32,6 +32,7 @@ object GameLibrary {
     const val PARAM_SFO = "sce_sys/param.sfo"
     const val ICON = "sce_sys/icon0.png"
     private const val MAX_SFO_BYTES = 64 * 1024
+    private const val MAX_PARAM_JSON_BYTES = 1024 * 1024
     const val ZARCHIVE_EXTENSION = "zar"
 
     /** How deep below the chosen folder to look; dumps are often nested one or two levels. */
@@ -72,13 +73,15 @@ object GameLibrary {
         val title = json?.let { titleFromParamJson(it, "") }?.ifEmpty { null }
             ?: (sfo?.get("TITLE") as? String)?.trim()?.ifEmpty { null }
             ?: folder.name
-        val titleId = json?.optString("titleId", "")?.trim()?.ifEmpty { null }
+        val titleId = json?.stringOr("titleId")?.trim()?.ifEmpty { null }
             ?: (sfo?.get("TITLE_ID") as? String)?.trim()?.ifEmpty { null }
         return GameEntry(folder, title, titleId, File(folder, ICON).takeIf { it.isFile })
     }
 
     private fun readParamJson(folder: File): JSONObject? = try {
-        JSONObject(File(folder, PARAM_JSON).readText())
+        val file = File(folder, PARAM_JSON)
+        if (file.length() > MAX_PARAM_JSON_BYTES) throw IOException("${file.path} is too large")
+        JSONObject(file.readText())
     } catch (e: JSONException) {
         Log.w(TAG, "Malformed $PARAM_JSON in ${folder.path}", e)
         null
@@ -103,7 +106,7 @@ object GameLibrary {
     fun titleFromParamJson(json: JSONObject, fallback: String): String {
         val candidates = mutableListOf<JSONObject>()
         json.optJSONObject("localizedParameters")?.let { localized ->
-            val defaultLanguage = localized.optString("defaultLanguage", "en")
+            val defaultLanguage = localized.stringOr("defaultLanguage", "en")
             localized.optJSONObject(defaultLanguage)?.let(candidates::add)
             localized.optJSONObject("en")?.let(candidates::add)
             localized.keys().forEach { key ->
@@ -115,7 +118,7 @@ object GameLibrary {
         candidates.add(json)
         return candidates
             .asSequence()
-            .map { it.optString("titleName").trim() }
+            .map { it.stringOr("titleName").trim() }
             .firstOrNull { it.isNotEmpty() }
             ?: fallback
     }

@@ -31,15 +31,15 @@ object DriverAdvisor {
         val text = "$tag $assetName".lowercase()
         return when (adrenoModel) {
             null -> Advice(Verdict.UNKNOWN, "GPU not detected.")
-            in 800..899 -> adviseGen8(text)
+            in 800..899 -> adviseGen8(text, adrenoModel)
             in 700..799 -> adviseGen7(text)
             else -> Advice(Verdict.UNKNOWN, "No recommendations for Adreno $adrenoModel.")
         }
     }
 
-    private fun adviseGen8(text: String): Advice {
+    private fun adviseGen8(text: String, model: Int): Advice {
         GEN8.find(text)?.let { match ->
-            val version = match.groupValues[1].toInt()
+            val version = match.groupValues[1].toIntOrNull() ?: 0
             return if (version >= MIN_GEN8_VERSION) {
                 Advice(Verdict.RECOMMENDED, "Turnip Gen8 V$version supports Adreno 8xx.")
             } else {
@@ -47,7 +47,7 @@ object DriverAdvisor {
             }
         }
         MAINLINE.find(text)?.let { match ->
-            val version = match.groupValues[1].toInt()
+            val version = match.groupValues[1].toIntOrNull() ?: 0
             return if (version >= MIN_MAINLINE_VERSION) {
                 Advice(Verdict.RECOMMENDED, "Mainline Turnip v$version (gen8 branch) supports Adreno 8xx.")
             } else {
@@ -56,11 +56,12 @@ object DriverAdvisor {
         }
         return when {
             A7XX.containsMatchIn(text) -> Advice(Verdict.AVOID, "Built for Adreno 7xx.")
-            QUALCOMM_A840.containsMatchIn(text) -> Advice(Verdict.AVOID, "Qualcomm driver for Adreno 840, not 830.")
+            model !in 840..849 && QUALCOMM_A840.containsMatchIn(text) ->
+                Advice(Verdict.AVOID, "Qualcomm driver for Adreno 840, not $model.")
             LEGACY_V25.containsMatchIn(text) ->
                 Advice(Verdict.AVOID, "Legacy v25 builds black-screen on Adreno 8xx (\"Unsupported GPU Architecture\").")
             A8XX.containsMatchIn(text) -> Advice(Verdict.RECOMMENDED, "Built for Adreno 8xx.")
-            (TURNIP_V26_MINOR.find(text)?.groupValues?.get(1)?.toInt() ?: -1) >= 2 ->
+            (TURNIP_V26_MINOR.find(text)?.groupValues?.get(1)?.toIntOrNull() ?: -1) >= 2 ->
                 Advice(Verdict.RECOMMENDED, "Turnip v26.2+ supports Adreno 8xx.")
             else -> Advice(Verdict.UNKNOWN, "Untested on Adreno 8xx.")
         }

@@ -97,6 +97,8 @@ class TouchControllerView(
         val all = currentBoxes()
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                // A fresh gesture: drop fingers whose UP was never delivered.
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) touches.clear()
                 val i = event.actionIndex
                 val control = OverlayGeometry.hit(all, event.getX(i), event.getY(i))
                 if (control != null) {
@@ -140,7 +142,7 @@ class TouchControllerView(
                 val p = layout.placement(control)
                 layout = layout.with(control, p.copy(x = (event.x - dragDx) / width, y = (event.y - dragDy) / height))
             }
-            MotionEvent.ACTION_UP -> if (selected != null) onLayoutEdited(layout)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (selected != null) onLayoutEdited(layout)
         }
     }
 

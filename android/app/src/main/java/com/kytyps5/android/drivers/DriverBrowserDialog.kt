@@ -19,6 +19,8 @@ import java.io.File
 import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -29,7 +31,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 class DriverBrowserDialog(
     private val activity: Activity,
     private val store: GpuDriverStore,
-    private val worker: ExecutorService,
     private val adrenoModel: () -> Int?,
     private val onInstalled: (GpuDriver, useNow: Boolean) -> Unit,
 ) {
@@ -42,8 +43,13 @@ class DriverBrowserDialog(
     private lateinit var list: LinearLayout
     private var repo: DriverRepo = DriverRepo.CURATED.first()
     private var request = 0
+    @Volatile
     private var model: Int? = null
     private val cancelled = AtomicBoolean(false)
+    private var busy = false
+
+    /** Network and install work of this dialog only, so a long download never blocks library scans. */
+    private val worker: ExecutorService = Executors.newSingleThreadExecutor()
 
     fun show() {
         val spinner = Spinner(activity).apply {
@@ -78,7 +84,10 @@ class DriverBrowserDialog(
             .setTitle("Download GPU drivers")
             .setView(content)
             .setNegativeButton("Close", null)
-            .setOnDismissListener { cancelled.set(true) }
+            .setOnDismissListener {
+                cancelled.set(true)
+                worker.shutdown()
+            }
             .show()
     }
 
@@ -87,10 +96,10 @@ class DriverBrowserDialog(
         val target = repo
         status.text = "Loading ${target.slug}…"
         list.removeAllViews()
-        worker.execute {
+        background {
             if (model == null) model = adrenoModel()
             val result = catalog.releases(target, forceRefresh)
-            activity.runOnUiThread { if (current == request) render(result) }
+            onUi { if (current == request) render(result) }
         }
     }
 
@@ -132,24 +141,32 @@ class DriverBrowserDialog(
     }
 
     private fun download(asset: DriverAsset) {
-        cancelled.set(false)
+        if (busy) {
+            status.text = "Wait for the current download or install to finish."
+            return
+        }
+        busy = true
         status.text = "Downloading ${asset.name}…"
-        worker.execute {
+        background {
             var lastPercent = -1
             val result = downloader.download(
                 asset,
                 onProgress = { done, total ->
-                    val percent = if (total > 0) (done * 100 / total).toInt() else -1
+                    val percent = if (total > 0) (done * 100 / total).toInt() else (done shr 20).toInt()
                     if (percent != lastPercent) {
                         lastPercent = percent
-                        activity.runOnUiThread { status.text = "Downloading ${asset.name}… $percent%" }
+                        val progress = if (total > 0) "$percent%" else "$percent MB"
+                        onUi { status.text = "Downloading ${asset.name}… $progress" }
                     }
                 },
                 isCancelled = cancelled::get,
             )
-            activity.runOnUiThread {
+            onUi(orElse = { (result as? DownloadResult.Done)?.file?.delete() }) {
                 when (result) {
-                    is DownloadResult.Failure -> status.text = result.message
+                    is DownloadResult.Failure -> {
+                        busy = false
+                        status.text = result.message
+                    }
                     is DownloadResult.Done -> confirmInstall(asset, result)
                 }
             }
@@ -168,13 +185,20 @@ class DriverBrowserDialog(
             .setMessage("sha256: ${done.sha256}\n$check")
             .setPositiveButton("Install and use") { _, _ -> install(done.file, useNow = true) }
             .setNeutralButton("Install only") { _, _ -> install(done.file, useNow = false) }
-            .setNegativeButton("Cancel") { _, _ -> done.file.delete() }
+            .setNegativeButton("Cancel") { _, _ ->
+                done.file.delete()
+                busy = false
+            }
+            .setOnCancelListener {
+                done.file.delete()
+                busy = false
+            }
             .show()
     }
 
     private fun install(file: File, useNow: Boolean) {
         status.text = "Installing…"
-        worker.execute {
+        background {
             val result = try {
                 file.inputStream().use(store::import)
             } catch (e: IOException) {
@@ -182,7 +206,10 @@ class DriverBrowserDialog(
             } finally {
                 file.delete()
             }
+            // The install outcome must reach the launcher even if this dialog was closed meanwhile.
             activity.runOnUiThread {
+                busy = false
+                if (activity.isDestroyed) return@runOnUiThread
                 when (result) {
                     is DriverImportResult.Imported -> {
                         status.text = "Installed ${result.driver.label}."
@@ -191,6 +218,22 @@ class DriverBrowserDialog(
                     is DriverImportResult.Failure -> status.text = result.message
                 }
             }
+        }
+    }
+
+    /** Runs [task] off the UI thread; after the dialog closed (executor shut down) it is skipped. */
+    private fun background(task: () -> Unit) {
+        try {
+            worker.execute(task)
+        } catch (e: RejectedExecutionException) {
+            busy = false
+        }
+    }
+
+    /** Runs [block] on the UI thread unless the dialog or activity has gone away meanwhile. */
+    private fun onUi(orElse: () -> Unit = {}, block: () -> Unit) {
+        activity.runOnUiThread {
+            if (cancelled.get() || activity.isFinishing || activity.isDestroyed) orElse() else block()
         }
     }
 

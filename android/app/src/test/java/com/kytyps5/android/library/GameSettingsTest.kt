@@ -29,9 +29,9 @@ class GameSettingsTest {
 
     @Test
     fun reportsBadLinesAndBlocksLinkerVariables() {
-        val parsed = EnvVars.parse("JUSTAKEY\n1BAD=x\nLD_PRELOAD=/sdcard/x.so\nOK=1")
+        val parsed = EnvVars.parse("JUSTAKEY\n1BAD=x\nLD_PRELOAD=/sdcard/x.so\nOK=1\nLD_AUDIT=x\nVK_ICD_FILENAMES=/x.json")
         assertEquals(listOf(EnvVar("OK", "1")), parsed.vars)
-        assertEquals(3, parsed.errors.size)
+        assertEquals(5, parsed.errors.size)
         assertTrue(parsed.errors[2].contains("LD_PRELOAD"))
     }
 

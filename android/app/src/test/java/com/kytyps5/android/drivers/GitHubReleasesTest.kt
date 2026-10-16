@@ -34,7 +34,10 @@ class GitHubReleasesTest {
                "browser_download_url": "https://github.com/o/r/releases/download/x/pkg.adpkg.zip"}
             ]
           },
-          {"tag_name": "empty", "assets": []}
+          {"tag_name": "empty", "assets": []},
+          {"tag_name": "nulls", "name": null, "published_at": null,
+           "assets": [{"name": "n.zip", "size": 1, "digest": null,
+                       "browser_download_url": "https://github.com/o/r/releases/download/nulls/n.zip"}]}
         ]
     """.trimIndent()
 
@@ -42,7 +45,7 @@ class GitHubReleasesTest {
     fun parsesReleasesAndKeepsOnlyZipAssetsFromGitHub() {
         val releases = GitHubReleases.parse(sample)
 
-        assertEquals(2, releases.size)
+        assertEquals(3, releases.size)
         val first = releases[0]
         assertEquals("v37", first.tag)
         assertEquals("Turnip Gen8 V37 / Turnip v26.3.0-R6", first.title)
@@ -65,6 +68,20 @@ class GitHubReleasesTest {
     }
 
     @Test
+    fun jsonNullsFallBackInsteadOfBecomingTheTextNull() {
+        val nulls = GitHubReleases.parse(sample)[2]
+        assertEquals("nulls", nulls.title)
+        assertEquals("", nulls.publishedDate)
+        assertNull(nulls.assets.single().sha256)
+    }
+
+    @Test
+    fun releaseListDetection() {
+        assertTrue(GitHubReleases.isReleaseList("[]"))
+        assertTrue(!GitHubReleases.isReleaseList("<html>portal</html>"))
+    }
+
+    @Test
     fun malformedJsonYieldsEmptyList() {
         assertTrue(GitHubReleases.parse("{not json").isEmpty())
         assertTrue(GitHubReleases.parse("{\"message\":\"API rate limit exceeded\"}").isEmpty())
@@ -76,6 +93,8 @@ class GitHubReleasesTest {
         assertTrue(!GitHubReleases.isTrustedDownloadUrl("http://github.com/o/r/releases/download/t/a.zip"))
         assertTrue(!GitHubReleases.isTrustedDownloadUrl("https://github.com.evil.io/a.zip"))
         assertTrue(!GitHubReleases.isTrustedDownloadUrl("https://example.com/a.zip"))
+        assertTrue(!GitHubReleases.isTrustedDownloadUrl("https://github.com/o/r/archive/a.zip"))
+        assertTrue(!GitHubReleases.isTrustedDownloadUrl("https://github.com/login?next=/o/r/releases/download/t/a.zip"))
     }
 
     @Test

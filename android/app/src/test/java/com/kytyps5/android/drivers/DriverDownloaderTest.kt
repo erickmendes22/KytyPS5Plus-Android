@@ -92,6 +92,20 @@ class DriverDownloaderTest {
     }
 
     @Test
+    fun truncatedDownloadIsRejected() {
+        val result = downloader().download(asset(null).copy(size = payload.size + 10L))
+        assertTrue((result as DownloadResult.Failure).message.contains("incomplete"))
+    }
+
+    @Test
+    fun finalUrlMustStayOnGitHub() {
+        assertTrue(DriverDownloader.isTrustedFinalUrl(java.net.URL("https://objects.githubusercontent.com/x")))
+        assertTrue(DriverDownloader.isTrustedFinalUrl(java.net.URL("https://github.com/o/r/releases/download/t/a.zip")))
+        assertFalse(DriverDownloader.isTrustedFinalUrl(java.net.URL("https://evil.com/githubusercontent.com")))
+        assertFalse(DriverDownloader.isTrustedFinalUrl(java.net.URL("http://objects.githubusercontent.com/x")))
+    }
+
+    @Test
     fun oversizedDownloadIsRejected() {
         val result = DriverDownloader(dir, maxBytes = 4) { ByteArrayInputStream(payload) }.download(asset(null))
         assertTrue((result as DownloadResult.Failure).message.contains("larger"))

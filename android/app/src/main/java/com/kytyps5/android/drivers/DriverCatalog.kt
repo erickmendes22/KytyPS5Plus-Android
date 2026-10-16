@@ -1,5 +1,6 @@
 package com.kytyps5.android.drivers
 
+import com.kytyps5.android.stringOr
 import java.io.File
 import java.io.IOException
 import org.json.JSONException
@@ -40,7 +41,7 @@ class ReleaseCache(private val dir: File) {
         val obj = JSONObject(File(dir, fileNameFor(repo)).readText())
         CachedReleases(
             fetchedAtMs = obj.getLong(KEY_FETCHED_AT),
-            etag = if (obj.isNull(KEY_ETAG)) null else obj.optString(KEY_ETAG).ifEmpty { null },
+            etag = obj.stringOr(KEY_ETAG).ifEmpty { null },
             body = obj.getString(KEY_BODY),
         )
     } catch (e: IOException) {
@@ -105,6 +106,9 @@ class DriverCatalog(
         }
         return when (val fetched = source.fetch(repo, cached?.etag)) {
             is FetchResult.Ok -> {
+                if (!GitHubReleases.isReleaseList(fetched.body)) {
+                    return fallback(cached, now, "GitHub returned an unexpected response (captive portal?).")
+                }
                 cache.write(repo, CachedReleases(now, fetched.etag, fetched.body))
                 CatalogResult.Releases(GitHubReleases.parse(fetched.body), fromCache = false, note = null)
             }
@@ -113,17 +117,20 @@ class DriverCatalog(
                 cache.write(repo, CachedReleases(now, cached.etag, body))
                 CatalogResult.Releases(GitHubReleases.parse(body), fromCache = true, note = null)
             }
-            is FetchResult.Failed -> if (cached != null) {
-                CatalogResult.Releases(
-                    GitHubReleases.parse(cached.body),
-                    fromCache = true,
-                    note = "${fetched.message} Showing the list cached ${ageText(now - cached.fetchedAtMs)} ago.",
-                )
-            } else {
-                CatalogResult.Failure(fetched.message)
-            }
+            is FetchResult.Failed -> fallback(cached, now, fetched.message)
         }
     }
+
+    private fun fallback(cached: CachedReleases?, now: Long, message: String): CatalogResult =
+        if (cached != null) {
+            CatalogResult.Releases(
+                GitHubReleases.parse(cached.body),
+                fromCache = true,
+                note = "$message Showing the list cached ${ageText(now - cached.fetchedAtMs)} ago.",
+            )
+        } else {
+            CatalogResult.Failure(message)
+        }
 
     private fun ageText(ms: Long): String {
         val minutes = (ms / 60_000L).coerceAtLeast(0)

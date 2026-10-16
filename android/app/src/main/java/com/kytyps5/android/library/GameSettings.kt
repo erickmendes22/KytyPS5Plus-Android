@@ -1,6 +1,8 @@
 package com.kytyps5.android.library
 
 import com.kytyps5.android.Resolution
+import com.kytyps5.android.stringAt
+import com.kytyps5.android.stringOr
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -36,8 +38,8 @@ data class GameSettings(
                 val obj = JSONObject(json)
                 val env = obj.optJSONArray("env") ?: JSONArray()
                 GameSettings(
-                    resolution = if (obj.isNull("resolution")) null else Resolution.entries.firstOrNull { it.storageValue == obj.optString("resolution") },
-                    envVars = EnvVars.parse((0 until env.length()).joinToString("\n") { env.optString(it) }).vars,
+                    resolution = Resolution.entries.firstOrNull { it.storageValue == obj.stringOr("resolution") },
+                    envVars = EnvVars.parse((0 until env.length()).joinToString("\n") { env.stringAt(it) }).vars,
                     hud = if (obj.isNull("hud") || !obj.has("hud")) null else obj.optBoolean("hud"),
                     touchControls = if (obj.isNull("touchControls") || !obj.has("touchControls")) null else obj.optBoolean("touchControls"),
                 )
@@ -52,7 +54,11 @@ object EnvVars {
     private val KEY = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
 
     /** Variables that would let a typo hijack the dynamic linker or the shell environment. */
-    private val BLOCKED = setOf("LD_PRELOAD", "LD_LIBRARY_PATH", "LD_DEBUG", "PATH", "HOME", "ANDROID_ROOT", "ANDROID_DATA", "CLASSPATH")
+    private val BLOCKED = setOf(
+        "PATH", "HOME", "TMPDIR", "ANDROID_ROOT", "ANDROID_DATA", "CLASSPATH",
+        "VK_ICD_FILENAMES", "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES", "VK_LAYER_PATH", "VK_ADD_LAYER_PATH",
+    )
+    private const val BLOCKED_PREFIX = "LD_"
 
     data class Parsed(val vars: List<EnvVar>, val errors: List<String>)
 
@@ -69,7 +75,7 @@ object EnvVars {
             when {
                 eq <= 0 -> errors += "Line ${index + 1}: expected KEY=VALUE"
                 !KEY.matches(key) -> errors += "Line ${index + 1}: invalid name \"$key\""
-                key.uppercase() in BLOCKED -> errors += "Line ${index + 1}: $key cannot be changed"
+                key.uppercase() in BLOCKED || key.uppercase().startsWith(BLOCKED_PREFIX) -> errors += "Line ${index + 1}: $key cannot be changed"
                 else -> {
                     vars.remove(key)
                     vars[key] = EnvVar(key, value)

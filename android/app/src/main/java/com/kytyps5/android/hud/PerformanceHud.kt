@@ -11,6 +11,7 @@ import android.os.BatteryManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.widget.TextView
 import java.io.File
@@ -30,6 +31,9 @@ class PerformanceHud(context: Context) {
     @Volatile
     private var frames: FrameStats? = null
 
+    @Volatile
+    private var framesAtMs = 0L
+
     val view: TextView = TextView(context).apply {
         typeface = Typeface.MONOSPACE
         textSize = 12f
@@ -47,7 +51,10 @@ class PerformanceHud(context: Context) {
     val isRunning: Boolean get() = thread != null
 
     fun onTitle(title: CharSequence?) {
-        FrameStats.fromTitle(title)?.let { frames = it }
+        FrameStats.fromTitle(title)?.let {
+            frames = it
+            framesAtMs = SystemClock.elapsedRealtime()
+        }
     }
 
     fun start() {
@@ -82,7 +89,8 @@ class PerformanceHud(context: Context) {
         val temp = battery?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         val status = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
         return HudSample(
-            frames = frames,
+            // The title stops updating while the emulator is paused or stalled: show "FPS --" then.
+            frames = frames.takeIf { SystemClock.elapsedRealtime() - framesAtMs < STALE_FPS_MS },
             cpuTempC = sensors.cpuTempC(),
             gpuTempC = sensors.gpuTempC(),
             gpuLoadPercent = sensors.gpuLoadPercent(),
@@ -98,6 +106,7 @@ class PerformanceHud(context: Context) {
     private companion object {
         const val TAG = "KytyHud"
         const val INTERVAL_MS = 1000L
+        const val STALE_FPS_MS = 3000L
         val PROC_STATUS = File("/proc/self/status").path
     }
 }

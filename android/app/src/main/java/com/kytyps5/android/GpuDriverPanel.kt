@@ -104,6 +104,7 @@ class GpuDriverPanel(
     /** GPU model for driver recommendations, detected once via EGL (call off the main thread). */
     @Volatile
     private var adrenoModel: Int? = null
+    @Volatile
     private var adrenoProbed = false
 
     private fun detectAdreno(): Int? {
@@ -115,7 +116,7 @@ class GpuDriverPanel(
     }
 
     private fun openBrowser() {
-        DriverBrowserDialog(activity, store, worker, ::detectAdreno) { driver, useNow ->
+        DriverBrowserDialog(activity, store, ::detectAdreno) { driver, useNow ->
             if (useNow) settings.gpuDriverId = driver.id
             showMessage(if (useNow) "Installed ${driver.label}; it is now the global GPU driver." else "Installed ${driver.label}.")
             refresh()

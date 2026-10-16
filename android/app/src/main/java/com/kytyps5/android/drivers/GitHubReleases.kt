@@ -1,5 +1,6 @@
 package com.kytyps5.android.drivers
 
+import com.kytyps5.android.stringOr
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -28,8 +29,17 @@ data class DriverRelease(
  * release (logs, screenshots) cannot be installed. Releases without such assets are dropped.
  */
 object GitHubReleases {
-    private const val TRUSTED_PREFIX = "https://github.com/"
+    /** Release assets of some repository on github.com; redirects are checked by [DriverDownloader]. */
+    private val TRUSTED_URL = Regex("""^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/download/[^?#]+$""")
     private val SHA256_HEX = Regex("^[0-9a-f]{64}$")
+
+    /** True when [json] is a JSON array, i.e. a release list and not an error page or portal HTML. */
+    fun isReleaseList(json: String): Boolean = try {
+        JSONArray(json)
+        true
+    } catch (e: JSONException) {
+        false
+    }
 
     fun parse(json: String): List<DriverRelease> {
         val array = try {
@@ -43,16 +53,16 @@ object GitHubReleases {
     }
 
     private fun parseRelease(obj: JSONObject): DriverRelease? {
-        val tag = obj.optString("tag_name", "")
+        val tag = obj.stringOr("tag_name")
         val assetsJson = obj.optJSONArray("assets") ?: return null
         val assets = (0 until assetsJson.length())
             .mapNotNull { assetsJson.optJSONObject(it) }
             .mapNotNull(::parseAsset)
         if (tag.isEmpty() || assets.isEmpty()) return null
-        val published = if (obj.isNull("published_at")) "" else obj.optString("published_at", "")
+        val published = obj.stringOr("published_at")
         return DriverRelease(
             tag = tag,
-            title = obj.optString("name", "").trim().ifEmpty { tag },
+            title = obj.stringOr("name").trim().ifEmpty { tag },
             publishedDate = published.take(DATE_LENGTH),
             prerelease = obj.optBoolean("prerelease", false),
             assets = assets,
@@ -60,18 +70,18 @@ object GitHubReleases {
     }
 
     private fun parseAsset(obj: JSONObject): DriverAsset? {
-        val name = obj.optString("name", "")
-        val url = obj.optString("browser_download_url", "")
+        val name = obj.stringOr("name")
+        val url = obj.stringOr("browser_download_url")
         if (!name.endsWith(".zip", ignoreCase = true) || !isTrustedDownloadUrl(url)) return null
         return DriverAsset(
             name = name,
             size = obj.optLong("size", 0L),
             downloadUrl = url,
-            sha256 = sha256FromDigest(if (obj.isNull("digest")) null else obj.optString("digest")),
+            sha256 = sha256FromDigest(obj.stringOr("digest").ifEmpty { null }),
         )
     }
 
-    fun isTrustedDownloadUrl(url: String): Boolean = url.startsWith(TRUSTED_PREFIX)
+    fun isTrustedDownloadUrl(url: String): Boolean = TRUSTED_URL.matches(url)
 
     /** "sha256:ABC…" -> "abc…"; null for other algorithms or malformed values. */
     fun sha256FromDigest(digest: String?): String? {

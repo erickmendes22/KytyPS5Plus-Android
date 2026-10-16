@@ -23,6 +23,11 @@ public final class KytyVirtualPad {
 
     private static volatile boolean sWanted;
     private static volatile boolean sAdded;
+    /**
+     * Set one poll (about 3 s) after the add. Until the emulator has opened the gamepad SDL turns pad
+     * keys into keyboard events and drops axis motion, so input is held back until then.
+     */
+    private static volatile boolean sReady;
 
     private KytyVirtualPad() {
     }
@@ -30,6 +35,7 @@ public final class KytyVirtualPad {
     /** Hooks SDL's device poll. Call after SDLActivity.onCreate, once per game session. */
     public static void install() {
         sAdded = false;
+        sReady = false;
         if (!(SDLControllerManager.mJoystickHandler instanceof PollHook)) {
             SDLControllerManager.mJoystickHandler = new PollHook();
         }
@@ -41,11 +47,11 @@ public final class KytyVirtualPad {
     }
 
     public static boolean isConnected() {
-        return sAdded;
+        return sReady;
     }
 
     public static void button(int keyCode, boolean down) {
-        if (!sAdded) {
+        if (!sReady) {
             return;
         }
         if (down) {
@@ -56,17 +62,20 @@ public final class KytyVirtualPad {
     }
 
     public static void axis(int index, float value) {
-        if (sAdded) {
+        if (sReady) {
             SDLControllerManager.onNativeJoy(DEVICE_ID, index, value);
         }
     }
 
     private static void sync() {
-        if (sWanted && !sAdded) {
+        if (sWanted && sAdded && !sReady) {
+            sReady = true;
+        } else if (sWanted && !sAdded) {
             SDLControllerManager.nativeAddJoystick(DEVICE_ID, NAME, DESCRIPTOR, 0, 0, BUTTON_MASK,
                     AXIS_COUNT, AXIS_MASK, 0, false, false, false, false);
             sAdded = true;
         } else if (!sWanted && sAdded) {
+            sReady = false;
             SDLControllerManager.nativeRemoveJoystick(DEVICE_ID);
             sAdded = false;
         }

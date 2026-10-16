@@ -108,6 +108,18 @@ class DriverCatalogTest {
     }
 
     @Test
+    fun nonJsonResponseIsNotCachedAndFallsBack() {
+        val source = FakeSource(FetchResult.Ok(body, etag = null))
+        catalog(source).releases(repo)
+        now += DriverCatalog.DEFAULT_TTL_MS + 1
+        source.next = FetchResult.Ok("<html>captive portal</html>", etag = null)
+        val result = catalog(source).releases(repo) as CatalogResult.Releases
+        assertTrue(result.fromCache)
+        assertEquals("tu_v32", result.releases.single().tag)
+        assertTrue(ReleaseCache(dir).read(repo)!!.body.startsWith("["))
+    }
+
+    @Test
     fun corruptCacheFileIsIgnored() {
         File(dir, ReleaseCache.fileNameFor(repo)).writeText("garbage")
         assertNull(ReleaseCache(dir).read(repo))

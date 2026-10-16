@@ -7,8 +7,9 @@ import com.kytyps5.android.library.EnvVars
 
 /**
  * Applies a game's environment variables to this process before SDL loads the emulator, so Mesa
- * Turnip and the emulator read them at startup (e.g. TU_DEBUG when the Vulkan driver loads). The
- * process may host several games in a row, so variables set for a previous game are unset first.
+ * Turnip and the emulator read them at startup (e.g. TU_DEBUG when the Vulkan driver loads).
+ * SDLActivity normally restarts the process between games; if the process is reused anyway,
+ * variables set for a previous game are unset first.
  */
 object GameEnvironment {
     private const val TAG = "KytyEnv"
