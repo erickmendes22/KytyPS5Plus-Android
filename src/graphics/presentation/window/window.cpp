@@ -284,6 +284,9 @@ static void GameEventFinger([[maybe_unused]] const EventFinger& f) {
 		     (f.up ? "up" : ""), f.x, f.y, f.dx, f.dy, f.pressure);
 	}
 #endif
+	if (f.down || f.up) {
+		HostInputFinger(f.down);
+	}
 }
 
 static void GameEventController([[maybe_unused]] const EventController& f) {

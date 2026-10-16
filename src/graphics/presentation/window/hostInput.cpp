@@ -438,6 +438,20 @@ void HostInputMouseButton(uint8_t mouse_button, bool down) {
 	}
 }
 
+void HostInputFinger([[maybe_unused]] bool down) {
+#if defined(__ANDROID__)
+	static int fingers = 0;
+	if (GetInputMap().Custom()) {
+		return;
+	}
+	const int previous = fingers;
+	fingers            = std::max(0, fingers + (down ? 1 : -1));
+	if ((previous == 0) != (fingers == 0)) {
+		SetButton(Controller::PAD_BUTTON_CROSS, fingers != 0);
+	}
+#endif
+}
+
 void HostInputToggleMouseToJoystick() {
 	if (g_mouse.enabled) {
 		SetRelativeMouseMode(false);

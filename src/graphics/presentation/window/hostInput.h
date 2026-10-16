@@ -12,6 +12,9 @@ void               HostInputInit(SDL_Window* window);
 void               HostInputShutdown();
 void               HostInputKey(int key_code, bool down);
 void               HostInputMouseButton(uint8_t mouse_button, bool down);
+// A finger touching the screen. On touch-only hosts (Android) with no custom key map, any held
+// finger presses Cross so a game can be started without a controller.
+void               HostInputFinger(bool down);
 void               HostInputToggleMouseToJoystick();
 [[nodiscard]] bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms);
 
