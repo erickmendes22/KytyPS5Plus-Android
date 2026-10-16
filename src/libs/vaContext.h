@@ -4,6 +4,7 @@
 #include "common/hostArch.h"
 
 #include <cstddef>
+#include <cstdint>
 
 #if KYTY_HOST_X86
 #include <xmmintrin.h>

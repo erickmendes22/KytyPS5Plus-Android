@@ -35,6 +35,10 @@ struct OptionalDeviceFeatures {
 	// With geometry_shader: vec4 varying locations a geometry stage can pass from the last
 	// pre-rasterization stage to the fragment stage (see ShaderDeviceFeatures).
 	uint32_t geometry_varying_locations = 0;
+	// VK_EXT_robustness2 nullDescriptor. Without it, unbound textures bind a 1x1 placeholder image.
+	bool null_descriptor = false;
+	// Vulkan 1.2 shaderStorageImageArrayNonUniformIndexing (see ShaderDeviceFeatures).
+	bool storage_image_array_non_uniform_indexing = false;
 };
 
 struct GraphicContext {
@@ -112,6 +116,10 @@ struct GraphicContext {
 
 	// Whether invocations of the stage may use the subgroup ballot and shuffle operations the
 	// shader recompiler emits for wave-level GCN semantics.
+	[[nodiscard]] bool SubgroupOperationSupported(vk::SubgroupFeatureFlagBits operation) const noexcept {
+		return static_cast<bool>(subgroup_supported_operations & operation);
+	}
+
 	[[nodiscard]] bool SubgroupOpsSupported(vk::ShaderStageFlagBits stage) const noexcept {
 		constexpr auto required =
 		    vk::SubgroupFeatureFlagBits::eBasic | vk::SubgroupFeatureFlagBits::eBallot |

@@ -26,10 +26,12 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <vulkan/vk_platform.h>
 
@@ -64,6 +66,7 @@ vk::PhysicalDeviceVulkan12Features WindowContext::RequiredVulkan12Features() noe
 	features.shaderBufferInt64Atomics  = VK_TRUE;
 	features.storageBuffer8BitAccess   = VK_TRUE;
 	features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+	features.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
 	features.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
 	return features;
 }
@@ -83,6 +86,27 @@ static bool HasExtension(const std::vector<vk::ExtensionProperties>& extensions,
 static bool HasExtension(const std::vector<const char*>& extensions, const char* name) {
 	return std::any_of(extensions.begin(), extensions.end(),
 	                   [name](const char* ext) { return strcmp(ext, name) == 0; });
+}
+
+// KYTY_VK_DISABLE=name[+name...] forces the fallback of an optional Vulkan capability, so the
+// paths other drivers take can be tested on hardware that has it. Names: nullDescriptor,
+// storageImageArrayNonUniformIndexing, subgroupVote, subgroupArithmetic.
+static bool VulkanFeatureDisabled(std::string_view name) {
+	const char* spec = std::getenv("KYTY_VK_DISABLE");
+	if (spec == nullptr) {
+		return false;
+	}
+	for (std::string_view rest(spec); !rest.empty();) {
+		const auto end = rest.find_first_of(",+ ");
+		if (rest.substr(0, end) == name) {
+			return true;
+		}
+		if (end == std::string_view::npos) {
+			break;
+		}
+		rest.remove_prefix(end + 1);
+	}
+	return false;
 }
 
 static bool HasLayer(const std::vector<vk::LayerProperties>& layers, const char* name) {
@@ -257,6 +281,7 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		check_feature(features12.shaderSampledImageArrayNonUniformIndexing,
 		              "shaderSampledImageArrayNonUniformIndexing",
 		              required_features12.shaderSampledImageArrayNonUniformIndexing);
+		// shaderStorageImageArrayNonUniformIndexing is optional (see VulkanCreateDevice).
 		check_feature(features12.shaderStorageBufferArrayNonUniformIndexing,
 		              "shaderStorageBufferArrayNonUniformIndexing",
 		              required_features12.shaderStorageBufferArrayNonUniformIndexing);
@@ -490,6 +515,13 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 
 	auto features12 = WindowContext::RequiredVulkan12Features();
 	features12.shaderSharedInt64Atomics = supported_features12.shaderSharedInt64Atomics;
+	// GPU-selected storage images fall back to plain dynamic indexing without it.
+	features12.shaderStorageImageArrayNonUniformIndexing =
+	    VulkanFeatureDisabled("storageImageArrayNonUniformIndexing")
+	        ? VK_FALSE
+	        : supported_features12.shaderStorageImageArrayNonUniformIndexing;
+	optional.storage_image_array_non_uniform_indexing =
+	    features12.shaderStorageImageArrayNonUniformIndexing == VK_TRUE;
 	vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR workgroup_layout {};
 	workgroup_layout.workgroupMemoryExplicitLayout =
 	    supported_workgroup_layout.workgroupMemoryExplicitLayout;
@@ -531,6 +563,14 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.required_subgroup_size_stages = subgroup_size_control.requiredSubgroupSizeStages;
 	graphics.subgroup_supported_stages     = properties11.subgroupSupportedStages;
 	graphics.subgroup_supported_operations = properties11.subgroupSupportedOperations;
+	// Vote and arithmetic are optional: the shader backend falls back to ballots / DPP lowering.
+	if (VulkanFeatureDisabled("subgroupVote")) {
+		graphics.subgroup_supported_operations &= ~vk::SubgroupFeatureFlags(vk::SubgroupFeatureFlagBits::eVote);
+	}
+	if (VulkanFeatureDisabled("subgroupArithmetic")) {
+		graphics.subgroup_supported_operations &=
+		    ~vk::SubgroupFeatureFlags(vk::SubgroupFeatureFlagBits::eArithmetic);
+	}
 	graphics.compute_subgroup_size_control_enabled =
 	    supported_features13.subgroupSizeControl == VK_TRUE &&
 	    (graphics.required_subgroup_size_stages & vk::ShaderStageFlagBits::eCompute) &&
@@ -577,6 +617,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	device_features.depthClamp = VK_TRUE;
 #endif
 	device_features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+	device_features.shaderStorageImageArrayDynamicIndexing =
+	    supported_features2.features.shaderStorageImageArrayDynamicIndexing;
 	device_features.shaderImageGatherExtended            = VK_TRUE;
 	device_features.independentBlend                     = VK_TRUE;
 	device_features.dualSrcBlend                         = VK_TRUE;
@@ -640,6 +682,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		robustness2.robustImageAccess2  = supported_robustness2.robustImageAccess2;
 		robustness2.nullDescriptor      = supported_robustness2.nullDescriptor;
 	}
+	optional.null_descriptor = robustness2_ext_enabled && robustness2.nullDescriptor == VK_TRUE &&
+	                           !VulkanFeatureDisabled("nullDescriptor");
 
 	auto features13 = WindowContext::RequiredVulkan13Features();
 	features13.pNext = robustness2_ext_enabled ? static_cast<void*>(&robustness2)
@@ -656,10 +700,14 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		const auto& opt = graphics.optional_features;
 		LOGF("Vulkan optional features: depthClipEnable=%d colorWriteEnable=%d "
 		     "fragmentShaderBarycentric=%d depthBounds=%d imageViewMinLod=%d shaderFloat64=%d "
-		     "sharedInt64Atomics=%d signedZeroInfNanPreserveF32=%d\n",
+		     "sharedInt64Atomics=%d signedZeroInfNanPreserveF32=%d nullDescriptor=%d "
+		     "storageImageArrayNonUniformIndexing=%d subgroupVote=%d subgroupArithmetic=%d\n",
 		     opt.depth_clip_enable, opt.color_write_enable, opt.fragment_shader_barycentric,
 		     opt.depth_bounds, opt.image_view_min_lod, opt.shader_float64,
-		     opt.shader_shared_int64_atomics, opt.shader_signed_zero_inf_nan_preserve_f32);
+		     opt.shader_shared_int64_atomics, opt.shader_signed_zero_inf_nan_preserve_f32,
+		     opt.null_descriptor, opt.storage_image_array_non_uniform_indexing,
+		     graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eVote),
+		     graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eArithmetic));
 	}
 	// Enable only the optional extension features that were probed as supported. They chain
 	// behind depthClipControl, which is always enabled.

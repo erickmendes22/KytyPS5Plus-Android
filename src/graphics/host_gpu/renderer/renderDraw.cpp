@@ -543,7 +543,10 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			}
 		}
 		if (feedback_aspects && !m_context.GetGraphics().attachment_feedback_loop_enabled) {
-			EXIT("depth attachment feedback loop is not supported by the host\n");
+			static std::atomic_bool logged = false;
+			if (!logged.exchange(true, std::memory_order_relaxed)) {
+				std::printf("depth attachment feedback loop is not supported by the host\n");
+			}
 		}
 		auto layout = depth_attachment_layout(depth);
 		if (sampled_aspects & ~DepthReadableAspects(layout)) {
@@ -592,7 +595,7 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
 	const auto& sh_regs     = ctx.GetShaderRegisters();
 	const auto  write_mask  = ctx.GetRenderTargetMask() & sh_regs.m_cbShaderMask;
-	uint32_t    output_mask = 0;
+	uint32_t    output_mask = ctx.HasObjectPrimitiveIdOutput() ? 1u << 7u : 0;
 	for (uint32_t index = 0; index < RENDER_COLOR_ATTACHMENTS_MAX; index++) {
 		const auto slot = ShaderPixelExportTarget(sh_regs.m_cbShaderMask, index);
 		if (slot >= RENDER_COLOR_ATTACHMENTS_MAX) {
@@ -912,7 +915,8 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 	uint32_t mrt_mask = 0;
 	if (state.ps_active) {
 		for (const auto& output: state.ps_input_info.stage.program->info.outputs) {
-			if (output.kind == ShaderRecompiler::IR::StageOutputKind::Mrt) {
+			if (output.kind == ShaderRecompiler::IR::StageOutputKind::Mrt ||
+			    output.kind == ShaderRecompiler::IR::StageOutputKind::ObjectPrimitiveId) {
 				mrt_mask |= 1u << output.location;
 			}
 		}
@@ -1200,13 +1204,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (state.ps_active && !draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x300u);
 	}
-	const uint32_t mesh_draw_data[] {
+	const std::array<uint32_t, ShaderRecompiler::IR::PushData::MeshDrawDwordCount> mesh_draw_data {
 	    draw.index_count,
 	    draw.IsIndexed() ? static_cast<uint32_t>(emit.vertex_offset) : emit.first_vertex,
 	    emit.first_instance, index_source.guest_element_size,
 	    static_cast<uint32_t>(index_source.address),
 	    static_cast<uint32_t>(index_source.address >> 32u)};
-	static_assert(std::size(mesh_draw_data) == ShaderRecompiler::IR::PushData::MeshDrawDwordCount);
 	EmulatedMeshDraw emulated_mesh;
 	if (mesh_emulated) {
 		emulated_mesh = DispatchEmulatedMesh(buffer, state.vertex_info[0], state.programs.vertex[0],
@@ -1220,13 +1223,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		                        sizeof(vertex_data), vertex_data);
 	} else {
 		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
-		if (mesh_active) {
-			vk_buffer.pushConstants(pipeline.pipeline_layout,
-			                        vk::ShaderStageFlagBits::eMeshEXT |
-			                            vk::ShaderStageFlagBits::eFragment,
-			                        0, sizeof(mesh_draw_data), mesh_draw_data);
-		} else {
+		if (!mesh_active) {
 			CommitIndexBuffer(vk_buffer, index_binding);
+		}
+		const auto draw_dwords = ShaderRecompiler::IR::PushData::GraphicsDrawDwords(
+		    mesh_active, state.ps_input_info.object_primitive_id);
+		if (draw_dwords != 0) {
+			auto draw_data = mesh_draw_data;
+			if (!mesh_active) {
+				draw_data    = {};
+				draw_data[0] = buffer.GetUserConfig().GetObjectId();
+			}
+			vk_buffer.pushConstants(pipeline.pipeline_layout, pipeline.push_constant_stages, 0,
+			                        draw_dwords * sizeof(uint32_t), draw_data.data());
 		}
 	}
 

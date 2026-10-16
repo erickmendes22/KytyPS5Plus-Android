@@ -1055,6 +1055,84 @@ void TestMixedSamplerVariantsShareRuntimeDescriptor() {
         "sampler variants retained stale or duplicated descriptors after refresh");
 }
 
+void TestSignedStorageSpecialization() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  using F = Libs::Graphics::Prospero::BufferFormat;
+  using N = Libs::Graphics::Prospero::TextureNumericClass;
+  Program program;
+  program.stage = Libs::Graphics::ShaderType::Compute;
+  program.srt_plan_complete = program.resource_tracking_complete = true;
+  program.user_data_count = 1u;
+  auto &block = AddValueBlock(program);
+  DescriptorSource source;
+  source.dword_count = 8u;
+  source.dwords.fill(Value(0u));
+  source.dwords[0] = Value(0x100u);
+  source.dwords[1] = Value(&block.AppendNewInst(ValueOpcode::GetUserData, {Value(ScalarReg(0))}));
+  constexpr auto swizzle = Libs::Graphics::DstSel(5, 4, 1, 0);
+  source.dwords[3] = Value(swizzle |
+      (uint32_t(Libs::Graphics::Prospero::ImageType::kColor2D) << 28u));
+  program.descriptor_sources.push_back(source);
+  program.info.images.push_back({.source = 0u, .resource_class = ImageResourceClass::Storage,
+      .dimension = Libs::Graphics::ShaderRecompiler::Decoder::ImageDimension::Dim2D, .written = true});
+  auto plan = ExtractResourcePlan(program);
+  std::array<uint32_t, 1> data{};
+  const SrtRuntime runtime{.user_data = data};
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization, signed16;
+  for (const auto format : {F::k16SInt, F::k32SInt, F::k16SInt}) {
+    data[0] = uint32_t(format) << 20u;
+    Check(MaterializeResources(plan, runtime, snapshot, specialization),
+          "write-only signed storage image failed materialization");
+    const auto conversion = format == F::k16SInt ? format : F::kInvalid;
+    const auto view = format == F::k16SInt ? F::k16UInt : F::k32UInt;
+    Check(specialization.images[0].numeric_class == N::Uint &&
+              specialization.images[0].conversion_format == conversion &&
+              specialization.images[0].shader_swizzle == swizzle &&
+              snapshot.images[0].dwords[1] == data[0] &&
+              RawSignedStorageFormat(plan.info.images[0], format) == view,
+          "signed storage specialization lost guest format, conversion, swizzle or raw view width");
+    if (format == F::k16SInt) {
+      if (signed16.images.empty()) signed16 = specialization;
+      else Check(specialization == signed16, "signed storage format refresh retained a stale specialization");
+    } else {
+      Check(specialization != signed16, "signed 16/32-bit stores shared incompatible conversion state");
+    }
+    ApplyResourceSpecialization(program, specialization);
+    const auto binding = DescriptorBindingForImage(program.info.images[0]);
+    Check(binding && ImageBindingResourceClass(*binding) == ImageResourceClass::Storage,
+          "signed storage conversion did not reuse the unsigned storage binding");
+  }
+  for (const auto format : {F::k8SInt, F::k16SInt, F::k32SInt}) {
+    data[0] = uint32_t(format) << 20u;
+    auto &image = plan.info.images[0];
+    image.read = true;
+    Check(RawSignedStorageFormat(image, format) == F::kInvalid &&
+              !MaterializeResources(plan, runtime, snapshot, specialization),
+          "signed raw storage view accepted a non-atomic read/write image");
+    image.atomic = true;
+    Check((RawSignedStorageFormat(image, format) != F::kInvalid) == (format == F::k32SInt) &&
+              MaterializeResources(plan, runtime, snapshot, specialization) == (format == F::k32SInt),
+          "signed storage conversion changed atomic format eligibility");
+    image.atomic64 = true;
+    Check(RawSignedStorageFormat(image, format) == F::kInvalid &&
+              !MaterializeResources(plan, runtime, snapshot, specialization),
+          "signed 16/32-bit image acquired a 64-bit atomic raw view");
+    image.resource_class = ImageResourceClass::Sampled;
+    image.written = image.atomic = image.atomic64 = false;
+    Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
+              specialization.images[0].numeric_class == N::Sint &&
+              specialization.images[0].conversion_format == F::kInvalid &&
+              Libs::Graphics::Prospero::NumBytesPerElement(format) ==
+                  (format == F::k8SInt ? 1u : format == F::k16SInt ? 2u : 4u) &&
+              RawSignedStorageFormat(image, format) == F::kInvalid,
+          "storage conversion changed ordinary signed image reads");
+    image.resource_class = ImageResourceClass::Storage;
+    image.written = true;
+    image.read = false;
+  }
+}
+
 void TestIndirectImageSamplerClasses(bool mixed) {
   using namespace Libs::Graphics::ShaderRecompiler::IR;
   using Libs::Graphics::Prospero::BufferFormat;
@@ -1146,6 +1224,7 @@ int main() {
     TestEmptyTraversalSkipsUnmappedDescriptor(independent_mask);
   TestCyclicControlPredicatesRemainUnknown();
   TestMixedSamplerVariantsShareRuntimeDescriptor();
+  TestSignedStorageSpecialization();
   for (const bool mixed : {false, true}) TestIndirectImageSamplerClasses(mixed);
   std::puts("ResourceMaterializationTests: all cases passed");
   return 0;

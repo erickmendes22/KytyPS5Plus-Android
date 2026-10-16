@@ -67,6 +67,18 @@ inline uint8_t GetDstSel(uint32_t swizzle, uint32_t channel) {
 	return (swizzle >> (channel * 3u)) & 0x7u;
 }
 
+[[nodiscard]] inline bool IsValidImageSwizzle(uint32_t swizzle,
+                                             uint32_t component_count = 4) noexcept {
+	if ((swizzle & ~0xfffu) != 0) {
+		return false;
+	}
+	for (uint32_t channel = 0; channel < 4; channel++) {
+		const auto selector = GetDstSel(swizzle, channel);
+		if (selector > 1 && (selector < 4 || selector >= 4 + component_count)) return false;
+	}
+	return true;
+}
+
 struct ShaderClipSpaceTransform {
 	float scale[2]       = {};
 	float offset[2]      = {};
@@ -151,6 +163,7 @@ struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
 	uint8_t            float_mode                 = 0xc0;
 	uint32_t           dispatch_threads_num[3]    = {0, 0, 0};
 	uint32_t           workgroup_counts[3]        = {0, 0, 0};
+	uint64_t           indirect_args_address       = 0;
 	bool               group_id[3]                = {false, false, false};
 	bool               dispatch_thread_dimensions = false;
 	bool               lds_storage                = false;
@@ -175,12 +188,16 @@ struct ShaderPixelInputInfo {
 	uint8_t                                        target_output_mode[8]        = {};
 	uint32_t                                       target_shader_mask           = UINT32_MAX;
 	std::array<Prospero::ColorComponentMapping, 8> target_export_mapping        = {};
+	uint8_t                                        target_packed_unorm_mask      = 0;
+	// CB round mode per converted export: zero adds half an LSB, one truncates.
+	uint8_t                                        target_round_mode            = 0;
 	uint32_t                                       scratch_size_dwords          = 0;
 	bool                                           ps_pos_x                     = false;
 	bool                                           ps_pos_y                     = false;
 	bool                                           ps_pos_z                     = false;
 	bool                                           ps_pos_w                     = false;
 	bool                                           ps_front_face                = false;
+	bool                                           ps_front_face_all_bits       = false;
 	bool                                           ps_ancillary                 = false;
 	bool                                           ps_no_perspective            = false;
 	ShaderPixelParameterMode                       parameter_mode = ShaderPixelParameterMode::FirstVertex;
@@ -189,6 +206,7 @@ struct ShaderPixelInputInfo {
 	bool                                           ps_sample_mask_export_enable = false;
 	bool                                           ps_sample_shading            = false;
 	bool                                           dual_source_blending         = false;
+	bool                                           object_primitive_id          = false;
 	// Export logical alpha or per-channel source factors through MRT1 after channel swizzling.
 	ShaderAlphaBlendSource                         alpha_blend_source = ShaderAlphaBlendSource::None;
 	bool                                           ps_early_z                   = false;
@@ -226,6 +244,14 @@ struct ShaderDeviceFeatures {
 	bool subgroup_vertex         = true; // Vertex, Local
 	bool subgroup_tessellation   = true; // TessellationControl, TessellationEvaluation
 	bool subgroup_fragment       = true; // Pixel
+	// Subgroup operation classes beyond ballot/shuffle (subgroupSupportedOperations). Without
+	// vote, uniform-branch votes are computed from ballots; without arithmetic, wave reductions
+	// keep their DPP lowering instead of becoming OpGroupNonUniform*Min.
+	bool subgroup_vote           = true;
+	bool subgroup_arithmetic     = true;
+	// shaderStorageImageArrayNonUniformIndexing. Without it, GPU-selected storage images are
+	// indexed dynamically without the NonUniform decoration (shaderStorageImageArrayDynamicIndexing).
+	bool storage_image_array_non_uniform_indexing = true;
 	// VK_EXT_mesh_shader. Without it a Mesh stage is emitted as a compute shader that writes its
 	// vertices and triangles to buffers a generated vertex shader reads back (mesh emulation).
 	bool mesh_shader = true;

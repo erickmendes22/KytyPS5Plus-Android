@@ -179,9 +179,9 @@ private:
 	std::unique_ptr<ProgramCache> m_program_cache;
 	vk::PipelineCache             m_driver_cache = nullptr;
 	std::filesystem::path         m_driver_cache_path;
-	// Periodic saves for hosts that kill the process without running destructors (Android).
-	uint32_t                              m_unsaved_pipelines = 0;
-	std::chrono::steady_clock::time_point m_last_flush {};
+	std::chrono::steady_clock::time_point m_next_driver_cache_save;
+	bool                                  m_driver_cache_dirty = false;
+	// Android writes checkpoints on a worker thread (see CheckpointDriverCache).
 	std::thread                           m_flush_thread;
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<Pipeline>, GraphicsPipelineKeyHash>
 	                                                        m_graphics_pipelines;
@@ -189,8 +189,7 @@ private:
 
 	void InitializeDriverCache();
 	[[nodiscard]] bool WriteDriverCacheFile() const;
-	void OnPipelineCreated();
-	void MaybeFlushDriverCache();
+	void CheckpointDriverCache();
 };
 
 void LogPipelineTrace(const char* phase, uint64_t vertex_program_id, uint64_t pixel_program_id);
