@@ -132,6 +132,10 @@ bool GraphicsDebugDumpEnabled() {
 	return g_config->graphics_debug_dump_enabled;
 }
 
+const std::filesystem::path& GetShaderDumpFolder() {
+	return g_config->shader_dump_folder;
+}
+
 LogDirection GetPrintfDirection() {
 	return g_config->printf_direction;
 }
