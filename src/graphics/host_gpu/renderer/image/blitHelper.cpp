@@ -132,7 +132,7 @@ void BlitHelper::ReinterpretColorAsMsDepth(Image& source, Image& destination) {
 	        source_info.extent.height != destination_info.extent.height ||
 	        source_info.extent.depth != 1 || destination_info.extent.depth != 1 ||
 	        source.backing.image == nullptr || destination.backing.image == nullptr);
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 
 	ImageViewInfo source_view_info {};
 	source_view_info.format = source_info.pixel_format;

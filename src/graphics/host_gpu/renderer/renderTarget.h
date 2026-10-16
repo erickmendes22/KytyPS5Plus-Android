@@ -13,6 +13,7 @@ static constexpr uint32_t RENDER_COLOR_ATTACHMENTS_MAX = 8;
 struct RenderAttachment {
 	vk::ImageView           image_view    = nullptr;
 	vk::ImageLayout         image_layout  = vk::ImageLayout::eUndefined;
+	vk::Format              format        = vk::Format::eUndefined;
 	std::array<uint32_t, 4> clear_value   = {};
 	bool                    is_clear      = false;
 	bool                    has_depth     = false;
@@ -30,6 +31,10 @@ struct RenderState {
 	uint32_t                                                   height                = 0;
 	uint32_t                                                   num_layers            = 1;
 	uint32_t                                                   num_color_attachments = 0;
+	// Secondary command buffers recording the pass inherit these (see CommandBuffer).
+	vk::Format                                                 depth_format   = vk::Format::eUndefined;
+	vk::Format                                                 stencil_format = vk::Format::eUndefined;
+	uint32_t                                                   samples        = 1;
 
 	bool operator==(const RenderState&) const = default;
 };

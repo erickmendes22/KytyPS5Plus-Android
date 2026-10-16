@@ -24,7 +24,7 @@ public:
 
 	void           Begin(HW::Context& registers, HW::UserConfig& user_config, HW::Shader& shaders);
 	void           BeginRendering(const RenderState& state);
-	void           EndRendering();
+	void           EndRendering(PassEnd reason = PassEnd::Other);
 	void           Flush();
 	void           Flush(SubmitInfo& submit);
 	void           FlushAndWait();
@@ -51,6 +51,8 @@ public:
 	[[nodiscard]] bool             IsFree(uint64_t tick);
 	[[nodiscard]] MasterSemaphore& GetMasterSemaphore() noexcept { return m_master; }
 	[[nodiscard]] DynamicState&    GetDynamicState() noexcept { return m_dynamic_state; }
+	// A free secondary command buffer for one deferred render pass (CommandBuffer owns it).
+	[[nodiscard]] vk::CommandBuffer CommitPassBuffer() { return m_pass_pool.Commit(); }
 	[[nodiscard]] GpuTimer&        Timer() noexcept { return m_gpu_timer; }
 	[[nodiscard]] RenderContext&   Context() const noexcept { return m_context; }
 	[[nodiscard]] GraphicContext&  Graphics() const noexcept { return m_graphics; }
@@ -58,19 +60,21 @@ public:
 private:
 	class CommandPool {
 	public:
-		CommandPool(GraphicContext& graphics, MasterSemaphore& master);
+		CommandPool(GraphicContext& graphics, MasterSemaphore& master,
+		            vk::CommandBufferLevel level = vk::CommandBufferLevel::ePrimary,
+		            size_t grow_step = 4);
 		~CommandPool();
 		KYTY_CLASS_NO_COPY(CommandPool);
 
 		vk::CommandBuffer Commit();
 
 	private:
-		static constexpr size_t GrowStep = 4;
-
 		size_t Grow();
 
 		GraphicContext&                m_graphics;
 		MasterSemaphore&               m_master;
+		vk::CommandBufferLevel         m_level;
+		size_t                         m_grow_step;
 		vk::CommandPool                m_pool = nullptr;
 		std::vector<vk::CommandBuffer> m_buffers;
 		std::vector<uint64_t>          m_ticks;
@@ -94,6 +98,7 @@ private:
 	GraphicContext&              m_graphics;
 	GpuTimer                     m_gpu_timer;
 	CommandPool                  m_command_pool;
+	CommandPool                  m_pass_pool;
 	CommandBuffer                m_command;
 	DynamicState                 m_dynamic_state;
 	std::queue<PendingOperation> m_pending_operations;

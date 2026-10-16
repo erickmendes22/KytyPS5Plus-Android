@@ -59,7 +59,7 @@ void BufferCache::WriteDataBuffer(Buffer& buffer, uint64_t address, const void* 
 		const auto offset = m_staging_buffer.Copy(bytes, chunk, 4);
 		const auto destination_offset = buffer.Offset(address);
 		EXIT_IF(destination_offset > buffer.Size() || chunk > buffer.Size() - destination_offset);
-		m_scheduler.EndRendering();
+		m_scheduler.EndRendering(PassEnd::Buffer);
 		const auto command = m_scheduler.Current().Handle();
 		vk::BufferMemoryBarrier2 before {};
 		before.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
@@ -195,7 +195,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	}
 
 	auto& command = m_scheduler.Current();
-	command.EndRendering();
+	command.EndRendering(PassEnd::Buffer);
 	const auto              native = command.Handle();
 	vk::BufferMemoryBarrier before {};
 	before.srcAccessMask       = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
@@ -460,7 +460,7 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 	    [&]() noexcept { source = UploadCopies(buffer, copies, total_size); });
 	if (source) {
 		auto& command = m_scheduler.Current();
-		command.EndRendering();
+		command.EndRendering(PassEnd::Buffer);
 		const auto native = command.Handle();
 		vk::BufferMemoryBarrier before {};
 		before.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite |

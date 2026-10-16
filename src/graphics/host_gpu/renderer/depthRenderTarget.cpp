@@ -389,7 +389,7 @@ bool RenderExecutor::DepthStencilCopy(CommandBuffer& buffer) {
 	EXIT_IF(read_id == write_id || source.backing.format != destination.backing.format);
 
 	auto& scheduler = m_context.GetCommandScheduler();
-	scheduler.EndRendering();
+	scheduler.EndRendering(PassEnd::ImageCopy);
 	const auto command = scheduler.Current().Handle();
 	const ImageSubresourceRange range {read_desc.view_info.base_level, 1,
 	                                  read_desc.view_info.base_layer,

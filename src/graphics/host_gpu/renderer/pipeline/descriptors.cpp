@@ -937,12 +937,21 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
                                     vk::PipelineBindPoint              pipeline_bind_point,
                                     const PipelineCache::Pipeline&     pipeline,
                                     std::span<PreparedBindings* const> prepared_bindings) {
+	PrepareBindingWrites(buffer, pipeline_bind_point, pipeline, prepared_bindings);
+	RecordBindings(buffer.Handle(), pipeline_bind_point, pipeline);
+}
+
+void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buffer,
+                                          vk::PipelineBindPoint              pipeline_bind_point,
+                                          const PipelineCache::Pipeline&     pipeline,
+                                          std::span<PreparedBindings* const> prepared_bindings) {
 	KYTY_PROFILER_FUNCTION();
+	// Transitions below may end the open render pass; they always target the primary buffer.
 	auto   vk_buffer        = buffer.Handle();
 	size_t image_descriptor_count = 0;
 	size_t write_count      = 0;
-	ShaderRecompiler::IR::PushData push_data;
-	bool                           has_push_data = false;
+	auto&  push_data        = m_pending_push_data;
+	bool   has_push_data    = false;
 	constexpr auto                 GraphicsStages =
 	    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eMeshEXT |
 	    vk::ShaderStageFlagBits::eTessellationControl |
@@ -1005,7 +1014,8 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 	m_descriptor_writes.clear();
 	m_descriptor_writes.reserve(write_count);
 	size_t image_cursor = 0;
-	std::array<vk::DescriptorBufferInfo, 2> address_buffers;
+	// Referenced by m_descriptor_writes until RecordBindings, so it must outlive this call.
+	auto& address_buffers = m_address_buffers;
 
 	for (auto* prepared: prepared_bindings) {
 		const auto& program       = *prepared->runtime->program;
@@ -1013,7 +1023,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 		const auto  shader_stage  = NativeShaderStage(program);
 		const auto  shader_stages = ShaderPipelineStages(shader_stage);
 		if (descriptors.gds.buffer != nullptr) {
-			buffer.EndRendering();
+			buffer.EndRendering(PassEnd::ShaderWrite);
 			const auto barrier = MakeGdsDependency(descriptors.gds.buffer);
 			vk_buffer.pipelineBarrier(
 			    vk::PipelineStageFlagBits::eHost | vk::PipelineStageFlagBits::eTransfer |
@@ -1156,17 +1166,25 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 		}
 	}
 
-	if (has_push_data) {
-		vk_buffer.pushConstants(pipeline.pipeline_layout, push_stages, 0, sizeof(push_data),
-		                        push_data.dwords.data());
+	m_pending_push        = has_push_data;
+	m_pending_push_stages = push_stages;
+}
+
+void RenderExecutor::RecordBindings(vk::CommandBuffer              target,
+                                    vk::PipelineBindPoint          pipeline_bind_point,
+                                    const PipelineCache::Pipeline& pipeline) {
+	if (m_pending_push) {
+		target.pushConstants(pipeline.pipeline_layout, m_pending_push_stages, 0,
+		                     sizeof(m_pending_push_data), m_pending_push_data.dwords.data());
+		m_pending_push = false;
 	}
 
 	if (!m_descriptor_writes.empty()) {
 		EXIT_IF(pipeline.descriptor_set_layout == nullptr);
 		if (pipeline.uses_push_descriptors) {
-			vk_buffer.pushDescriptorSetKHR(pipeline_bind_point, pipeline.pipeline_layout, 0,
-			                               static_cast<uint32_t>(m_descriptor_writes.size()),
-			                               m_descriptor_writes.data());
+			target.pushDescriptorSetKHR(pipeline_bind_point, pipeline.pipeline_layout, 0,
+			                            static_cast<uint32_t>(m_descriptor_writes.size()),
+			                            m_descriptor_writes.data());
 		} else {
 			const auto set = m_context.GetDescriptorHeap().Commit(pipeline.descriptor_set_layout);
 			for (auto& write: m_descriptor_writes) {
@@ -1175,8 +1193,8 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 			m_context.GetGraphics().device.updateDescriptorSets(
 			    static_cast<uint32_t>(m_descriptor_writes.size()), m_descriptor_writes.data(), 0,
 			    nullptr);
-			vk_buffer.bindDescriptorSets(pipeline_bind_point, pipeline.pipeline_layout, 0, 1, &set,
-			                             0, nullptr);
+			target.bindDescriptorSets(pipeline_bind_point, pipeline.pipeline_layout, 0, 1, &set, 0,
+			                          nullptr);
 		}
 	}
 }

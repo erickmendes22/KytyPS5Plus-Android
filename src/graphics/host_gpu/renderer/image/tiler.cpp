@@ -274,7 +274,7 @@ void TileManager::Record(vk::Buffer source, uint64_t source_offset, uint64_t sou
 	                     target_range > limits.maxStorageBufferRange || target_offset % 4 != 0 ||
 	                     target_capacity % 4 != 0);
 
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	auto                    command = m_scheduler.Current().Handle();
 	vk::BufferMemoryBarrier barriers[3] {};
 	barriers[0].srcAccessMask = vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eHostWrite;
@@ -494,7 +494,7 @@ void TileManager::ConvertD16(Result source, Result target, D16Direction directio
 	const auto target_barrier_size = Common::AlignUp(target_required, 4);
 	EXIT_IF(source.size < source_barrier_size || target.size < target_barrier_size);
 
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	auto                    command = m_scheduler.Current().Handle();
 	vk::BufferMemoryBarrier barriers[2] {};
 	barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -639,7 +639,7 @@ void TileManager::TransformColor(Result input, Result output, ColorTransform tra
 	barriers[0].dstAccessMask = vk::AccessFlagBits::eShaderRead;
 	barriers[1].srcAccessMask = vk::AccessFlagBits::eMemoryRead;
 	barriers[1].dstAccessMask = vk::AccessFlagBits::eShaderWrite;
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	auto command = m_scheduler.Current().Handle();
 	command.pipelineBarrier(
 	    vk::PipelineStageFlagBits::eAllCommands | vk::PipelineStageFlagBits::eHost,

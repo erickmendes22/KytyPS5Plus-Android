@@ -232,7 +232,7 @@ void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destina
 	if (barriers.empty()) {
 		return;
 	}
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::Transit);
 	vk::DependencyInfo dependency {};
 	dependency.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
 	dependency.pImageMemoryBarriers    = barriers.data();
@@ -242,7 +242,7 @@ void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destina
 void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer, uint64_t offset,
                    uint64_t size) {
 	EXIT_IF(copies.empty() || buffer == nullptr || size == 0);
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	vk::BufferMemoryBarrier2 buffer_barrier {};
 	buffer_barrier.srcStageMask        = vk::PipelineStageFlagBits2::eAllCommands;
 	buffer_barrier.srcAccessMask       = vk::AccessFlagBits2::eMemoryWrite;
@@ -281,7 +281,7 @@ void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffe
 void Image::Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
                      uint64_t offset, uint64_t size) {
 	EXIT_IF(copies.empty() || buffer == nullptr || size == 0);
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	vk::BufferMemoryBarrier2 buffer_barrier {};
 	buffer_barrier.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
 	buffer_barrier.srcAccessMask =
@@ -340,7 +340,7 @@ std::pair<uint32_t, uint32_t> Image::SanitizeCopyLayers(const Image& source,
 
 void Image::CopyImage(Image& source) {
 	EXIT_IF(source.backing.samples != backing.samples);
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	const uint32_t levels     = std::min(source.backing.mip_levels, backing.mip_levels);
 	const uint32_t base_depth = source.backing.image_type == backing.image_type
 	                                ? std::min(source.backing.extent.depth, backing.extent.depth)
@@ -439,7 +439,7 @@ void Image::Resolve(Image& source, const ImageSubresourceRange& source_range,
 	resolved_destination_range.layer_count = layers;
 	const vk::Extent3D resolve_extent {info.extent.width, info.extent.height, 1};
 
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	auto command = m_scheduler.Current().Handle();
 	source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
 	               resolved_source_range, command);
@@ -503,7 +503,7 @@ uint32_t Image::CopyRows(uint64_t row_size, uint32_t rows, uint64_t capacity) no
 
 void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tiler) {
 	EXIT_IF(buffer.Handle() == nullptr || source.backing.samples != 1 || backing.samples != 1);
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	const uint32_t levels = std::min(source.backing.mip_levels, backing.mip_levels);
 	const auto     source_aspect =
 	    FullAspectMask(source.backing.format) & ~vk::ImageAspectFlagBits::eStencil;
@@ -614,7 +614,7 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 void Image::CopyMip(Image& source, uint32_t mip, uint32_t layer) {
 	EXIT_IF(source.backing.samples != backing.samples || mip >= backing.mip_levels ||
 	        layer >= backing.layers);
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	const auto width  = std::max(backing.extent.width >> mip, 1u);
 	const auto height = std::max(backing.extent.height >> mip, 1u);
 	const auto depth  = std::max(backing.extent.depth >> mip, 1u);

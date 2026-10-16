@@ -1661,7 +1661,7 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 			CommitGpuWrite(m_slot_images[stencil_id]);
 		}
 	}
-	command.EndRendering();
+	command.EndRendering(PassEnd::ImageCopy);
 	// Transfer clears use the backing format; aliased clears must encode through their view.
 	if (format != image.backing.format || (image.info.IsVolume() && !full_image)) {
 		EXIT_NOT_IMPLEMENTED(range.aspectMask != vk::ImageAspectFlagBits::eColor ||
@@ -1880,7 +1880,7 @@ bool TextureCache::DownloadImageMemory(ImageId id) {
 	barrier.buffer              = download.Handle();
 	barrier.offset              = offset;
 	barrier.size                = range.size;
-	m_scheduler.EndRendering();
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	m_scheduler.Current().Handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                                               vk::PipelineStageFlagBits::eHost, {}, 0, nullptr,
 	                                               1, &barrier, 0, nullptr);

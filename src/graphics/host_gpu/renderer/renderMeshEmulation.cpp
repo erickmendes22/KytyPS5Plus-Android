@@ -1,6 +1,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/emulatorConfig.h"
 #include "common/perfWaits.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
@@ -62,10 +63,15 @@ RenderExecutor::EmulatedMeshDraw RenderExecutor::DispatchEmulatedMesh(
 	auto&      ring = m_context.GetBufferCache().GetMeshEmulationRing();
 	const auto output = ring.Reserve(index_offset + sizes.index_bytes);
 
-	m_context.GetCommandScheduler().EndRendering();
+	// The dispatch is recorded on the primary buffer, ahead of the deferred render pass, so
+	// consecutive emulated mesh draws keep sharing one pass (see CommandBuffer::BeginRendering).
+	if (output.reuses_current || Config::GetRenderPassMode() < 2) {
+		// Earlier draws of this command buffer still read the range being rewritten; draws of
+		// the open pass would otherwise execute after this dispatch.
+		m_context.GetCommandScheduler().EndRendering(PassEnd::Compute);
+	}
 	const auto vk_buffer = buffer.Handle();
 	if (output.reuses_current) {
-		// Earlier draws of this command buffer still read the range being rewritten.
 		vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eVertexInput |
 		                              vk::PipelineStageFlagBits::eVertexShader,
 		                          vk::PipelineStageFlagBits::eComputeShader, {}, 0, nullptr, 0,
@@ -106,9 +112,6 @@ RenderExecutor::EmulatedMeshDraw RenderExecutor::DispatchEmulatedMesh(
 	                          vk::PipelineStageFlagBits::eVertexInput |
 	                              vk::PipelineStageFlagBits::eVertexShader,
 	                          {}, 0, nullptr, 1, &written, 0, nullptr);
-	vk_buffer.bindIndexBuffer(output.buffer, output.offset + index_offset,
-	                          vk::IndexType::eUint32);
-
 	static std::atomic_uint32_t s_logged = 0;
 	if (s_logged.fetch_add(1, std::memory_order_relaxed) < 16) {
 		LOGF("Mesh emulation: MS=0x%016" PRIx64 " groups=%ux%u vertices=%" PRIu64
@@ -116,7 +119,10 @@ RenderExecutor::EmulatedMeshDraw RenderExecutor::DispatchEmulatedMesh(
 		     mesh_input.stage.program->shader_hash, groups, instances, sizes.vertex_bytes,
 		     sizes.index_count);
 	}
-	return {.vertex_address = vertex_address, .index_count = sizes.index_count};
+	return {.vertex_address = vertex_address,
+	        .index_buffer   = output.buffer,
+	        .index_offset   = output.offset + index_offset,
+	        .index_count    = sizes.index_count};
 }
 
 } // namespace Libs::Graphics

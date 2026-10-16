@@ -515,6 +515,8 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		auto& attachment            = state.color_attachments[target.target_slot];
 		attachment.image_view   = image_view;
 		attachment.image_layout = layout;
+		attachment.format       = view.format;
+		state.samples           = target.desc.info.samples;
 	}
 	if (depth.image_id) {
 		const auto owner = cache.m_slot_images.try_get(depth.image_id);
@@ -589,11 +591,21 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		attachment.depth_clear    = depth.depth_load_clear_enable;
 		attachment.has_stencil    = static_cast<bool>(aspects & vk::ImageAspectFlagBits::eStencil);
 		attachment.stencil_clear  = depth.stencil_clear_enable;
+		attachment.format         = view.format;
+		state.depth_format        = attachment.has_depth ? view.format : vk::Format::eUndefined;
+		state.stencil_format      = attachment.has_stencil ? view.format : vk::Format::eUndefined;
+		state.samples             = depth.desc.info.samples;
 	}
 	if (color_count == 0 && !depth.image_id) {
 		const auto& limits = buffer.GetGraphics().GetPhysicalDeviceProperties().limits;
 		state.width        = limits.maxFramebufferWidth;
 		state.height       = limits.maxFramebufferHeight;
+		// Matches the pipeline's rasterization sample count for attachment-less draws.
+		state.samples =
+		    render_sample_count(buffer.GetRegisters().GetAaConfig().msaa_num_samples);
+	}
+	if (state.samples == 0) {
+		state.samples = 1;
 	}
 	if (state.num_layers == std::numeric_limits<uint32_t>::max()) {
 		state.num_layers = 1;
@@ -1098,7 +1110,7 @@ bool RenderExecutor::CopyDepthToColor(CommandBuffer& buffer, const DrawCallInfo&
 		     color.desc.view_info.base_layer, 1}, {rect.left, rect.top, 0},
 		    {static_cast<uint32_t>(rect.right - rect.left),
 		     static_cast<uint32_t>(rect.bottom - rect.top), 1}};
-		m_context.GetCommandScheduler().EndRendering();
+		m_context.GetCommandScheduler().EndRendering(PassEnd::ImageCopy);
 		const auto command = buffer.Handle();
 		source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
 		               {}, command);
@@ -1208,11 +1220,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// Resource preparation above may synchronously finish and restart the scheduler. From this
 	// point onward, every operation targets the current command buffer and cannot touch guest
 	// memory.
-	auto vk_buffer = buffer.Handle();
 	SetDrawDebugPhase(buffer, submit_id, draw, draw.IsIndexed() ? 0x100u : 0x200u);
-	if (!mesh_active) {
-		CommitVertexBuffers(vk_buffer, vertex_bindings);
-	}
 	if (state.ps_active && !draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x300u);
 	}
@@ -1222,19 +1230,39 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    emit.first_instance, index_source.guest_element_size,
 	    static_cast<uint32_t>(index_source.address),
 	    static_cast<uint32_t>(index_source.address >> 32u)};
+	// Everything that may still end the open render pass (compute dispatch, image layout
+	// transitions, barriers) is recorded on the primary buffer first; the pass commands then go
+	// to the pass's secondary buffer and nothing in between may end the pass.
 	EmulatedMeshDraw emulated_mesh;
 	if (mesh_emulated) {
 		emulated_mesh = DispatchEmulatedMesh(buffer, state.vertex_info[0], state.programs.vertex[0],
 		                                     bindings.vertex[0], mesh_draw_data, mesh_groups,
 		                                     draw.instance_count);
 		// Only the pixel stage binds resources in the graphics pipeline.
-		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages.subspan(1));
+		PrepareBindingWrites(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages.subspan(1));
+	} else {
+		PrepareBindingWrites(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
+	}
+
+	LogDrawPhase(draw.Name(), "BeginRendering");
+	if (!draw.IsIndexed()) {
+		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
+	}
+	m_context.GetCommandScheduler().BeginRendering(rendering);
+	const auto vk_buffer = buffer.PassHandle();
+	if (!mesh_active) {
+		CommitVertexBuffers(vk_buffer, vertex_bindings);
+	}
+	if (mesh_emulated) {
+		RecordBindings(vk_buffer, vk::PipelineBindPoint::eGraphics, pipeline);
+		vk_buffer.bindIndexBuffer(emulated_mesh.index_buffer, emulated_mesh.index_offset,
+		                          vk::IndexType::eUint32);
 		const uint32_t vertex_data[] {static_cast<uint32_t>(emulated_mesh.vertex_address),
 		                              static_cast<uint32_t>(emulated_mesh.vertex_address >> 32u)};
 		vk_buffer.pushConstants(pipeline.pipeline_layout, pipeline.push_constant_stages, 0,
 		                        sizeof(vertex_data), vertex_data);
 	} else {
-		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
+		RecordBindings(vk_buffer, vk::PipelineBindPoint::eGraphics, pipeline);
 		if (!mesh_active) {
 			CommitIndexBuffer(vk_buffer, index_binding);
 		}
@@ -1257,11 +1285,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	dynamic_state.SetAttachmentFeedbackLoopAspects(feedback_aspects);
 	dynamic_state.Commit(m_context.GetGraphics(), vk_buffer);
 
-	LogDrawPhase(draw.Name(), "BeginRendering");
-	if (!draw.IsIndexed()) {
-		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
-	}
-	m_context.GetCommandScheduler().BeginRendering(rendering);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
@@ -1294,8 +1317,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		shader_write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
 	}
 	if (shader_write_stages) {
-		m_context.GetCommandScheduler().EndRendering();
-		ShaderWriteBarrier(vk_buffer, shader_write_stages);
+		m_context.GetCommandScheduler().EndRendering(PassEnd::ShaderWrite);
+		ShaderWriteBarrier(buffer.Handle(), shader_write_stages);
 	}
 	LogDrawPhase(draw.Name(), "DrawComplete");
 	if (!draw.IsIndexed()) {

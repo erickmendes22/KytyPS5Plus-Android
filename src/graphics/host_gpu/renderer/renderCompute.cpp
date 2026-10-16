@@ -343,7 +343,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		}
 	}
 
-	buffer.EndRendering();
+	buffer.EndRendering(PassEnd::Compute);
 	auto& pipeline =
 	    m_context.GetPipelineCache().GetComputePipeline(input_info, compute_program);
 	auto& bindings = m_compute_bindings;
@@ -475,7 +475,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	input_info.indirect_args_address = args_addr;
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);
-	buffer.EndRendering();
+	buffer.EndRendering(PassEnd::Compute);
 	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(input_info, compute_program);
 	auto& bindings = m_compute_bindings;
 	PrepareBindings(input_info.stage, bindings);

@@ -31,8 +31,9 @@ void ReportVulkanFatal(const char* what, vk::Result result, uint64_t tick, uint3
 
 } // namespace
 
-CommandScheduler::CommandPool::CommandPool(GraphicContext& graphics, MasterSemaphore& master)
-    : m_graphics(graphics), m_master(master) {
+CommandScheduler::CommandPool::CommandPool(GraphicContext& graphics, MasterSemaphore& master,
+                                           vk::CommandBufferLevel level, size_t grow_step)
+    : m_graphics(graphics), m_master(master), m_level(level), m_grow_step(grow_step) {
 	EXIT_IF(graphics.queue_family == static_cast<uint32_t>(-1));
 	vk::CommandPoolCreateInfo create {};
 	create.queueFamilyIndex = graphics.queue_family;
@@ -48,13 +49,13 @@ CommandScheduler::CommandPool::~CommandPool() {
 
 size_t CommandScheduler::CommandPool::Grow() {
 	const auto first = m_ticks.size();
-	m_ticks.resize(first + GrowStep);
-	m_buffers.resize(first + GrowStep);
+	m_ticks.resize(first + m_grow_step);
+	m_buffers.resize(first + m_grow_step);
 
 	vk::CommandBufferAllocateInfo allocate {};
 	allocate.commandPool        = m_pool;
-	allocate.level              = vk::CommandBufferLevel::ePrimary;
-	allocate.commandBufferCount = static_cast<uint32_t>(GrowStep);
+	allocate.level              = m_level;
+	allocate.commandBufferCount = static_cast<uint32_t>(m_grow_step);
 	EXIT_IF(m_graphics.device.allocateCommandBuffers(&allocate, m_buffers.data() + first) !=
 	        vk::Result::eSuccess);
 	return first;
@@ -96,7 +97,8 @@ bool CommandScheduler::InDeferredOperation() noexcept {
 
 CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graphics)
     : m_master(graphics), m_context(context), m_graphics(graphics), m_gpu_timer(graphics, m_master),
-      m_command_pool(graphics, m_master), m_command(*this),
+      m_command_pool(graphics, m_master),
+      m_pass_pool(graphics, m_master, vk::CommandBufferLevel::eSecondary, 64), m_command(*this),
       m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }) {}
 
 CommandScheduler::~CommandScheduler() {
@@ -160,9 +162,9 @@ void CommandScheduler::BeginRendering(const RenderState& state) {
 	Current().BeginRendering(state);
 }
 
-void CommandScheduler::EndRendering() {
+void CommandScheduler::EndRendering(PassEnd reason) {
 	if (Active() && !m_command.IsInvalid()) {
-		Current().EndRendering();
+		Current().EndRendering(reason);
 	}
 }
 
@@ -370,7 +372,7 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	EXIT_IF(submit.num_wait_semaphores > SubmitInfo::MaxSemaphores ||
 	        submit.num_signal_semaphores >= SubmitInfo::MaxSemaphores);
 
-	m_command.EndRendering();
+	m_command.EndRendering(PassEnd::Submit);
 	m_gpu_timer.End(m_command.m_buffer);
 	m_command.End();
 	const auto buffer   = m_command.m_buffer;

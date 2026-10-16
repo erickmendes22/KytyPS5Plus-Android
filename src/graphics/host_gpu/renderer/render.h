@@ -96,6 +96,18 @@ struct SubmitInfo {
 	}
 };
 
+// Why a render pass is being ended; --perf-stats counts passes per reason.
+enum class PassEnd : uint8_t {
+	State,
+	Transit,
+	ImageCopy,
+	Buffer,
+	Compute,
+	ShaderWrite,
+	Submit,
+	Other,
+};
+
 class CommandBuffer {
 public:
 	~CommandBuffer() = default;
@@ -106,8 +118,14 @@ public:
 
 	void SetDebugInfo(uint32_t op, uint64_t submit_id, uint32_t arg0 = 0, uint32_t arg1 = 0,
 	                  uint32_t arg2 = 0, uint32_t arg3 = 0, uint64_t arg4 = 0);
+	// Render passes are deferred: BeginRendering opens a secondary command buffer that collects
+	// the pass's draws, and EndRendering records begin/execute/end into the primary. Commands
+	// recorded through Handle() while a pass is open therefore execute BEFORE the pass; only
+	// PassHandle() records inside it. This lets mesh-emulation compute dispatches run ahead of
+	// the pass instead of splitting it per draw (a full tile load/store on tilers).
 	void BeginRendering(const RenderState& state) const;
-	void EndRendering() const;
+	void EndRendering(PassEnd reason = PassEnd::Other) const;
+	[[nodiscard]] bool IsRendering() const noexcept { return m_rendering; }
 	// --perf-stats GPU timestamps: closes a timed region (see GpuTimer::Mark).
 	void MarkGpu(const char* kind, uint64_t hash = 0) const;
 	// Names the render pass in GPU timings after the first draw's shader; counts its draws.
@@ -120,6 +138,9 @@ public:
 	}
 
 	[[nodiscard]] vk::CommandBuffer Handle() const;
+	// The secondary command buffer of the open render pass; valid only between BeginRendering
+	// and the next EndRendering.
+	[[nodiscard]] vk::CommandBuffer PassHandle() const;
 	[[nodiscard]] GraphicContext&   GetGraphics() const noexcept { return m_graphics; }
 	[[nodiscard]] RenderContext&    GetContext() const noexcept { return m_context; }
 	[[nodiscard]] HW::Context&      GetRegisters() const noexcept { return *m_registers; }
@@ -137,9 +158,15 @@ private:
 	void Begin();
 	void End() const;
 
+	void BeginPassBuffer(const RenderState& state) const;
+	void RecordBeginRendering(const RenderState& state, bool secondary) const;
+	[[nodiscard]] static bool DefersRenderPasses();
+
 	RenderContext&      m_context;
 	GraphicContext&     m_graphics;
+	CommandScheduler&   m_scheduler;
 	vk::CommandBuffer   m_buffer          = nullptr;
+	mutable vk::CommandBuffer m_pass_buffer = nullptr;
 	uint32_t            m_debug_op        = 0;
 	uint64_t            m_debug_submit_id = 0;
 	uint32_t            m_debug_arg0      = 0;
@@ -174,6 +201,14 @@ public:
 	void                           FindBuffers(std::span<PreparedBindings* const> stages);
 	void                           RebindBuffers(PreparedBindings& bindings);
 	void                           RebindImages(PreparedBindings& bindings);
+	// Image layout transitions and descriptor writes (may end the open render pass), then the
+	// bind/push commands on `target`. CommitBindings does both on the primary command buffer;
+	// graphics draws split them around BeginRendering so the binds land in the pass.
+	void PrepareBindingWrites(CommandBuffer& buffer, vk::PipelineBindPoint pipeline_bind_point,
+	                          const PipelineCache::Pipeline&     pipeline,
+	                          std::span<PreparedBindings* const> bindings);
+	void RecordBindings(vk::CommandBuffer target, vk::PipelineBindPoint pipeline_bind_point,
+	                    const PipelineCache::Pipeline& pipeline);
 	void CommitBindings(CommandBuffer& buffer, vk::PipelineBindPoint pipeline_bind_point,
 	                    const PipelineCache::Pipeline&     pipeline,
 	                    std::span<PreparedBindings* const> bindings);
@@ -209,11 +244,14 @@ private:
 	// Mesh emulation result: the vertex records' address for the generated vertex stage and the
 	// index count of the triangle-list draw that reads them.
 	struct EmulatedMeshDraw {
-		uint64_t vertex_address = 0;
-		uint32_t index_count    = 0;
+		uint64_t   vertex_address = 0;
+		vk::Buffer index_buffer   = nullptr;
+		uint64_t   index_offset   = 0;
+		uint32_t   index_count    = 0;
 	};
-	// Records the compute pass of an emulated mesh draw (outside rendering) and binds its triangle
-	// indices as the index buffer. draw_data is the native mesh draw prefix.
+	// Records the compute pass of an emulated mesh draw on the primary command buffer, ahead of
+	// the deferred render pass, and returns its triangle indices to bind as the index buffer.
+	// draw_data is the native mesh draw prefix.
 	[[nodiscard]] EmulatedMeshDraw DispatchEmulatedMesh(CommandBuffer&               buffer,
 	                                                    const ShaderVertexInputInfo& mesh_input,
 	                                                    const ShaderProgram&         mesh_program,
@@ -243,6 +281,10 @@ private:
 	std::vector<ImageId>                  m_bound_images;
 	std::vector<vk::DescriptorImageInfo>  m_descriptor_images;
 	std::vector<vk::WriteDescriptorSet>   m_descriptor_writes;
+	std::array<vk::DescriptorBufferInfo, 2> m_address_buffers {};
+	ShaderRecompiler::IR::PushData        m_pending_push_data {};
+	vk::ShaderStageFlags                  m_pending_push_stages {};
+	bool                                  m_pending_push = false;
 
 	friend class CommandProcessor;
 	friend struct RenderExecutorTestAccess;
