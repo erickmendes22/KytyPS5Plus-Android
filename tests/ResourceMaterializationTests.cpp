@@ -1,3 +1,4 @@
+#include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
@@ -149,6 +150,37 @@ Libs::Graphics::ShaderRecompiler::IR::Program MixedSamplerProgram() {
   return program;
 }
 
+// A sampled image whose 8-dword descriptor carries `format` in the T# format field. Every other
+// dword is a plausible 2D color texture so only the format decides the outcome.
+Libs::Graphics::ShaderRecompiler::IR::Program
+UndefinedFormatImageProgram(uint32_t format) {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  Program program;
+  program.stage = Libs::Graphics::ShaderType::Compute;
+  program.srt_plan_complete = true;
+  program.resource_tracking_complete = true;
+  AddValueBlock(program);
+
+  DescriptorSource source;
+  source.dword_count = 8;
+  for (uint32_t i = 0; i < source.dword_count; ++i) {
+    source.dwords[i] = Value(0u);
+  }
+  source.dwords[0] = Value(0x1234000u);
+  source.dwords[1] = Value(format << 20u);
+  source.dwords[3] = Value(static_cast<uint32_t>(
+                            Libs::Graphics::Prospero::ImageType::kColor2D)
+                        << 28u);
+  program.descriptor_sources.push_back(source);
+  program.info.images.push_back(
+      {.source = 0,
+       .resource_class = ImageResourceClass::Sampled,
+       .numeric_class = Libs::Graphics::Prospero::TextureNumericClass::Float,
+       .dimension =
+           Libs::Graphics::ShaderRecompiler::Decoder::ImageDimension::Dim2D});
+  return program;
+}
+
 void TestMappedSrtUsesDirectReaderByDefault() {
   using namespace Libs::Graphics::ShaderRecompiler::IR;
   const uint32_t dword = 0x12345678;
@@ -166,6 +198,26 @@ void TestMappedSrtUsesDirectReaderByDefault() {
   Check(snapshot.flattened_srt.size() == 1 &&
             snapshot.flattened_srt[0] == dword,
         "cache rematerialization did not use the direct reader by default");
+}
+
+void TestNullPageSrtReadsZero() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  auto plan = ExtractResourcePlan(SrtProgram(0x18u));
+  uint32_t specialization_reads = 0;
+  const SrtRuntime runtime{.userdata = &specialization_reads,
+                           .read_specialization_memory =
+                               RejectSpecializationRead};
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization;
+  Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
+            snapshot.flattened_srt == std::vector<uint32_t>{0u},
+        "direct SRT read from a null table pointer did not read zero");
+  // Captured reads go through the ordinary reader instead of the direct one.
+  plan.source_reads = {{0x1000u, 4u}};
+  Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
+            snapshot.flattened_srt == std::vector<uint32_t>{0u} &&
+            snapshot.specialization_reads == plan.source_reads,
+        "captured SRT read from a null table pointer did not read zero untracked");
 }
 
 void TestNativeNestedSrtRefresh() {
@@ -227,6 +279,10 @@ void TestNativeNestedSrtRefresh() {
                   std::vector<uint32_t>{(*data)[1], table[0], table[1], (*data)[2]},
           "native SRT refresh lost pointer masking, alignment, or current values");
   }
+  table = pointer_words(nullptr);
+  Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
+            snapshot.flattened_srt == std::vector<uint32_t>{0u, table[0], table[1], 0u},
+        "native SRT did not read zero through a null nested table");
   Check(!MaterializeResources(plan, {.user_data = std::span(user_data).first(1)},
                               snapshot, specialization),
         "native SRT walk accepted truncated user data");
@@ -265,6 +321,12 @@ void TestNativeNestedSrtRefresh() {
                       : std::array<uint32_t, 2>{0xfffffffcu, 0xffffu};
     Check(!MaterializeResources(bounded, {.user_data = base}, snapshot, specialization),
           "native SRT accepted address underflow or 48-bit overflow");
+    if (offset > 0) {
+      Check(MaterializeResources(bounded, {.user_data = std::array<uint32_t, 2>{0u, 0u}},
+                                 snapshot, specialization) &&
+                snapshot.flattened_srt[0] == 0u,
+            "native SRT did not read zero through a null table pointer");
+    }
   }
   high.Instruction()->SetArg(0, Value(ScalarReg(6)));
   Check(ExtractResourcePlan(program).srt_code == nullptr,
@@ -1024,6 +1086,115 @@ void TestCyclicControlPredicatesRemainUnknown() {
         "cyclic control lost a possible branch during reachability");
 }
 
+void TestEmptyScalarBufferSpecialization() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  struct Fixture {
+    Program program;
+    std::vector<std::pair<Inst *, Type>> uses;
+    Inst *nonnull = nullptr;
+  };
+  const auto make_fixture = [] {
+    Fixture fixture;
+    auto &program = fixture.program;
+    program.stage = Libs::Graphics::ShaderType::Compute;
+    program.srt_plan_complete = program.resource_tracking_complete = true;
+    program.user_data_count = 4u;
+    auto &block = AddValueBlock(program);
+    DescriptorSource source;
+    source.dword_count = 4u;
+    for (uint32_t word = 0; word < 4u; ++word)
+      source.dwords[word] = Value(&block.AppendNewInst(ValueOpcode::GetUserData,
+          {Value(static_cast<ScalarReg>(word))}));
+    program.descriptor_sources.push_back(source);
+    program.info.buffers.push_back({.source = 0u, .read = true, .scalar = true});
+    const auto table = Value(&block.AppendNewInst(ValueOpcode::GetBufferResource,
+        {source.dwords[0], source.dwords[1], source.dwords[2], source.dwords[3]}));
+    std::array<Value, 4> words;
+    for (uint32_t word = 0; word < 4u; ++word) {
+      program.memory_info.push_back({.kind = ResourceKind::ScalarBuffer, .resource = 0u,
+                                     .offset = word * 4u});
+      auto &read = block.AppendNewInst(ValueOpcode::ReadConstBuffer, {table, Value(0u)});
+      read.SetFlags(MemoryFlags{.index = word});
+      words[word] = Value(&read);
+    }
+    const auto handle = Value(&block.AppendNewInst(ValueOpcode::GetBufferResource,
+        {words[0], words[1], words[2], words[3]}));
+    for (const auto opcode : {ValueOpcode::ReadConstBuffer, ValueOpcode::LoadBufferU8,
+                              ValueOpcode::LoadBufferU16, ValueOpcode::LoadBufferU32,
+                              ValueOpcode::LoadBufferU32x2, ValueOpcode::LoadBufferU32x3,
+                              ValueOpcode::LoadBufferU32x4}) {
+      const auto index = static_cast<uint32_t>(program.memory_info.size());
+      program.memory_info.push_back({.kind = ResourceKind::IndirectBuffer, .resource = UINT32_MAX,
+          .data_dwords = BufferComponentCount(opcode),
+          .data_bits = opcode == ValueOpcode::LoadBufferU8 ? 8u : opcode == ValueOpcode::LoadBufferU16 ? 16u : 32u,
+          .formatted = opcode == ValueOpcode::LoadBufferU32});
+      auto &read = opcode == ValueOpcode::ReadConstBuffer
+          ? block.AppendNewInst(opcode, {handle, Value(0u)})
+          : block.AppendNewInst(opcode, {handle, Value(0u), Value(0u), Value(0u), Value(true)});
+      read.SetFlags(MemoryFlags{.index = index});
+      fixture.uses.emplace_back(&block.AppendNewInst(ValueOpcode::Identity, {Value(&read)}), read.GetType());
+    }
+    const auto nonnull = Value(&block.AppendNewInst(ValueOpcode::GetBufferResource,
+        {words[0], words[1], words[2], Value(1u)}));
+    auto &read = block.AppendNewInst(ValueOpcode::ReadConstBuffer, {nonnull, Value(0u)});
+    read.SetFlags(MemoryFlags{.index = 4u});
+    fixture.nonnull = &block.AppendNewInst(ValueOpcode::Identity, {Value(&read)});
+    return fixture;
+  };
+  auto fixture = make_fixture();
+  auto plan = ExtractResourcePlan(fixture.program);
+  std::array<uint32_t, 4> descriptor{0x1000u, 8u << 16u, 0u, 3u << 28u};
+  uint32_t reads = 0u;
+  const SrtRuntime runtime{.user_data = descriptor, .read_memory = RejectSpecializationRead,
+                           .userdata = &reads, .read_specialization_memory = RejectSpecializationRead};
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization, empty, populated;
+  for (const uint32_t records : {0u, 1u, 0x20000000u, 0u}) {
+    descriptor[2] = records;
+    Check(MaterializeResources(plan, runtime, snapshot, specialization) && reads == 0u &&
+              specialization.buffers[0].scalar_empty == (records == 0u),
+          "scalar emptiness read table contents or truncated its 64-bit byte size");
+    if (records == 0u) {
+      if (empty.buffers.empty()) empty = specialization;
+      else Check(specialization == empty, "returning to an empty scalar table changed its specialization");
+    }
+    else if (records == 1u) populated = specialization;
+    else Check(specialization == populated, "nonempty scalar size created a shader permutation");
+    auto current = make_fixture();
+    ApplyResourceSpecialization(current.program, specialization);
+    for (const auto &[use, type] : current.uses) {
+      const auto value = use->Arg(0).Resolve();
+      Check(value.GetType() == type, "empty scalar-table folding changed the load result type");
+      if (records != 0u) {
+        Check(value.TryInstruction() != nullptr && BufferAccessOf(value.Instruction()->GetOpcode()) == BufferAccess::Read,
+              "nonempty scalar table lost a runtime buffer load");
+      } else if (value.IsImmediate()) {
+        Check(value == Value(uint8_t{0}) || value == Value(uint16_t{0}) || value == Value(0u),
+              "empty scalar table did not produce a typed zero");
+      } else {
+        for (size_t component = 0; component < value.Instruction()->NumArgs(); ++component)
+          Check(value.Instruction()->Arg(component) == Value(0u),
+                "empty scalar table retained a nonzero vector component");
+      }
+    }
+    Check(current.nonnull->Arg(0).Resolve().TryInstruction() != nullptr,
+          "a partly nonzero indirect descriptor was treated as unbound");
+  }
+  Check(empty != populated, "empty-to-populated scalar transition reused the folded specialization");
+  plan.info.buffers[0].scalar = false;
+  Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
+            !specialization.buffers[0].scalar_empty,
+        "vector-only resource acquired scalar-empty specialization");
+  empty.buffers[0].indirect_root = 0u;
+  empty.buffers.push_back(empty.buffers[0]);
+  empty.buffers[1].scalar_empty = false;
+  ApplyResourceSpecialization(fixture.program, empty);
+  for (const auto &[use, type] : fixture.uses)
+    Check(use->Arg(0).GetType() == type && use->Arg(0).Resolve().TryInstruction() != nullptr &&
+              BufferAccessOf(use->Arg(0).ResolveInstruction()->GetOpcode()) == BufferAccess::Read,
+          "empty root folded a scalar read with nonempty candidates");
+}
+
 void TestMixedSamplerVariantsShareRuntimeDescriptor() {
   using namespace Libs::Graphics::ShaderRecompiler::IR;
   auto program = MixedSamplerProgram();
@@ -1190,6 +1361,49 @@ void TestIndirectImageSamplerClasses(bool mixed) {
   }
 }
 
+// A descriptor whose format value falls in a gap of the encoding (139 sits between
+// k4_4_4_4UNorm = 136 and the FMASK range = 156) names no format at all: the guest left
+// garbage in a texture-table slot it never samples. It must bind a null image and keep
+// materializing instead of failing specialization (KytyPS5 #1019, Demon's Souls).
+void TestUndefinedImageFormatBindsNullImage() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  Check(!Libs::Graphics::Prospero::IsDefinedBufferFormat(
+            static_cast<Libs::Graphics::Prospero::BufferFormat>(139)),
+        "format 139 is in the encoding's gap and must not be defined");
+  Check(Libs::Graphics::Prospero::IsDefinedBufferFormat(
+            Libs::Graphics::Prospero::BufferFormat::k4_4_4_4UNorm),
+        "k4_4_4_4UNorm is a real format and must stay defined");
+  Check(Libs::Graphics::Prospero::IsDefinedBufferFormat(
+            Libs::Graphics::Prospero::BufferFormat::kBc7Srgb),
+        "kBc7Srgb is a real format and must stay defined");
+  for (const uint32_t format : {137u, 139u, 155u}) {
+    auto program = UndefinedFormatImageProgram(format);
+    auto plan = ExtractResourcePlan(program);
+    ResourceSnapshot snapshot;
+    ResourceSpecialization specialization;
+    Check(MaterializeResources(plan, {}, snapshot, specialization),
+          "an undefined image format aborted materialization instead of binding null");
+    Check(snapshot.images.size() == 1 &&
+              std::all_of(snapshot.images[0].dwords.begin(),
+                          snapshot.images[0].dwords.end(),
+                          [](uint32_t dword) { return dword == 0u; }),
+          "an undefined image format did not bind a null image");
+    Check(specialization.images.size() == 1 &&
+              specialization.images[0].numeric_class ==
+                  Libs::Graphics::Prospero::TextureNumericClass::Float,
+          "a null-bound image lost its default float class");
+  }
+  // A defined format still binds its descriptor untouched.
+  auto program = UndefinedFormatImageProgram(static_cast<uint32_t>(
+      Libs::Graphics::Prospero::BufferFormat::k32Float));
+  auto plan = ExtractResourcePlan(program);
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization;
+  Check(MaterializeResources(plan, {}, snapshot, specialization) &&
+            snapshot.images.size() == 1 && snapshot.images[0].dwords[0] == 0x1234000u,
+        "a defined sampled format was rejected or altered");
+}
+
 } // namespace
 
 namespace Common {
@@ -1208,6 +1422,7 @@ void DbgExit(int) { std::abort(); }
 
 int main() {
   TestMappedSrtUsesDirectReaderByDefault();
+  TestNullPageSrtReadsZero();
   TestNativeNestedSrtRefresh();
   TestIntegerRuntimeValueFollowsSrtReads();
   TestSrtAliasesRetainReadPolicy();
@@ -1223,9 +1438,11 @@ int main() {
   for (const bool independent_mask : {false, true})
     TestEmptyTraversalSkipsUnmappedDescriptor(independent_mask);
   TestCyclicControlPredicatesRemainUnknown();
+  TestEmptyScalarBufferSpecialization();
   TestMixedSamplerVariantsShareRuntimeDescriptor();
   TestSignedStorageSpecialization();
   for (const bool mixed : {false, true}) TestIndirectImageSamplerClasses(mixed);
+  TestUndefinedImageFormatBindsNullImage();
   std::puts("ResourceMaterializationTests: all cases passed");
   return 0;
 }

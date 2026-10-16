@@ -901,7 +901,7 @@ void StoreFormattedPrepared(ValueEmitContext& ctx, const IR::Inst& inst,
 	});
 }
 
-uint32_t LoadScalarBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
+uint32_t LoadIndirectScalarBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&       state  = ctx.state;
 	const auto& handle = *inst.Arg(0).ResolveInstruction();
 	const auto  word1  = ctx.Arg(handle, 1);
@@ -1576,8 +1576,29 @@ uint32_t EmitReadConst(ValueEmitContext& ctx, const IR::Inst& inst) {
 }
 
 void EmitReadConstBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
-	if (ctx.Memory(inst).planning_only) return;
-	ctx.Define(inst, LoadScalarBuffer(ctx, inst));
+	auto mem = ctx.Memory(inst);
+	if (mem.planning_only) return;
+	if (mem.kind == IR::ResourceKind::IndirectBuffer) {
+		ctx.Define(inst, LoadIndirectScalarBuffer(ctx, inst));
+		return;
+	}
+	auto& state        = ctx.state;
+	mem.kind           = IR::ResourceKind::ScalarBuffer;
+	auto index = Binary(state, spv::OpShiftRightLogical, TypeU32(state), ctx.Arg(inst, 1),
+	                    ConstantU32(state, 2));
+	if (mem.offset >= 4u) {
+		index = Binary(state, spv::OpIAdd, TypeU32(state), index, ConstantU32(state, mem.offset >> 2u));
+	}
+	const auto access    = PrepareMemoryResourceAccess(state, mem);
+	// Scalar buffer addressing aligns the base and each offset independently.
+	const auto element = Binary(
+	    state, spv::OpIAdd, TypeU32(state), index,
+	    Binary(state, spv::OpShiftRightLogical, TypeU32(state), access.byte_offset, ConstantU32(state, 2)));
+	const auto condition = EmitMemoryElementInBounds(state, access, element);
+	ctx.Define(inst, EmitValueOrZeroIfCondition(state, condition, [&]() {
+		           return EmitNative<spv::OpLoad, IR::Type::U32>(
+		               state, EmitMemoryElementPointer(state, access, element));
+	           }));
 }
 
 uint32_t EmitGetBufferResourceIndex(ValueEmitContext& ctx, const IR::Inst& inst) {

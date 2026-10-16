@@ -269,8 +269,10 @@ MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::
 		case IR::ResourceKind::Flat:
 		case IR::ResourceKind::Global:
 			EXIT("physical address memory must use the BDA emitter\n");
+		case IR::ResourceKind::ScalarBuffer:
 		case IR::ResourceKind::Buffer: {
-			const auto bits = IR::StorageBufferElementBits(state.program, mem);
+			const auto bits = mem.kind == IR::ResourceKind::Buffer
+			                      ? IR::StorageBufferElementBits(state.program, mem) : 32u;
 			auto* buffer = &state.storage_buffers[2];
 			if (bits == 8u) {
 				buffer = &state.storage_buffers[0];

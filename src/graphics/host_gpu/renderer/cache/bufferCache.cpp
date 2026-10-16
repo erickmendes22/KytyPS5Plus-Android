@@ -324,10 +324,21 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
 
 		if (DownloadBufferMemory<false>(buffer, vaddr, size)) {
-			m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
+			// A write releases the same range below, in the same critical section as its CPU
+			// claim: releasing it here as well would be a second lock acquisition on it, which is
+			// the window this change closes.
+			if (!is_write) {
+				m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
+			}
 		}
 		if (is_write) {
-			m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
+			// The guest writes these bytes, so whatever the GPU wrote is superseded -- and the
+			// GPU's release and the CPU's claim have to happen under one lock. As two calls, an
+			// upload on the renderer thread can re-mark a page GPU-dirty in between and
+			// RegionManager then exits on "CPU dirty state conflicts with GPU dirty state". This
+			// is also the path a write takes when there is nothing to download: the old code
+			// marked the page CPU-dirty over the GPU's untouched claim.
+			m_memory_tracker.TakeGpuPagesForCpu(vaddr, size);
 		}
 	});
 }
@@ -579,6 +590,11 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 		// Access the guest mapping so write faults invalidate cached buffers and images.
 		auto* destination = reinterpret_cast<uint32_t*>(vaddr);
 		std::fill(destination, destination + size / sizeof(uint32_t), value);
+		// Raw guest writes bypass page-fault tracking when the pages are already
+		// CPU-owned, so mark the range explicitly. Otherwise a later ObtainBuffer
+		// can miss IsRegionCpuModified and serve a stale slot-buffer copy (e.g. a
+		// 0xFFFFFFFF slot-queue reset never reaching its consumer, #1072).
+		m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
 		return;
 	}
 
@@ -604,6 +620,7 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	    !IsRegionGpuModified(src_vaddr, size) && !m_texture_cache.FindImageFromRange(src_vaddr, size)) {
 		std::memcpy(reinterpret_cast<void*>(dst_vaddr), reinterpret_cast<const void*>(src_vaddr),
 		            size);
+		m_memory_tracker.MarkRegionAsCpuModified(dst_vaddr, size);
 		return;
 	}
 
@@ -648,14 +665,15 @@ bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
 
 void BufferCache::RunGarbageCollector() {
 	const auto tick = m_gc_tick++;
-	if (m_graphics.CanReportMemoryUsage()) {
-		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
-	}
-	if (m_total_used_memory < m_trigger_gc_memory) {
+	// Driver usage includes other caches and allocator reservations. Keep it
+	// separate from the owned-byte counter decremented during unregistration.
+	const auto used_memory = m_graphics.CanReportMemoryUsage()
+	    ? m_graphics.GetDeviceMemoryUsage() : m_total_used_memory;
+	if (used_memory < m_trigger_gc_memory) {
 		return;
 	}
 
-	const bool     aggressive = m_total_used_memory >= m_critical_gc_memory;
+	const bool     aggressive = used_memory >= m_critical_gc_memory;
 	const uint64_t age        = std::min<uint64_t>(aggressive ? 80 : 160, tick);
 	const size_t   limit      = aggressive ? 64 : 32;
 

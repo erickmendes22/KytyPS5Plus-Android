@@ -279,10 +279,13 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	    z.stencil_info.texture_compatibility == Prospero::TextureCompatibleStencil::kDisable &&
 	    !z.stencil_info.expclear_enabled && !z.stencil_info.partially_resident &&
 	    z.depth_view.slice_start == 0 && z.depth_view.slice_max == 0 &&
-	    z.depth_view.current_mip_level == 0 && !z.depth_view.depth_write_disable &&
-	    !z.depth_view.stencil_write_disable && z.z_read_base_addr == 0 && z.z_write_base_addr == 0 &&
-	    z.stencil_read_base_addr == 0 && z.stencil_write_base_addr == 0 &&
-	    z.htile_data_base_addr == 0 &&
+	    z.depth_view.current_mip_level == 0 &&
+	    // DB_DEPTH_VIEW's write-disable bits describe how an attachment is used, not whether one
+	    // is bound, and they survive an unbind like the rest of the register. Requiring them to be
+	    // clear here turns leftover state into a fatal "unsupported depth register state" on the
+	    // first draw that has no depth attachment at all.
+	    z.z_read_base_addr == 0 && z.z_write_base_addr == 0 && z.stencil_read_base_addr == 0 &&
+	    z.stencil_write_base_addr == 0 && z.htile_data_base_addr == 0 &&
 	    // DB_DEPTH_SIZE_XY is independent state and may remain programmed after the attachment
 	    // formats and addresses are unbound. A zero encoding is the valid 1x1 value, so its
 	    // presence alone must not manufacture a depth attachment.
@@ -414,7 +417,7 @@ bool RenderExecutor::DepthStencilCopy(CommandBuffer& buffer) {
 	return true;
 }
 
-vk::ImageAspectFlags RenderDepthInfo::AttachmentWriteAspects() const {
+vk::ImageAspectFlags RenderDepthInfo::AttachmentWriteAspects(bool include_clears) const {
 	const auto format = desc.view_info.format;
 	if (format == vk::Format::eUndefined) {
 		return {};
@@ -423,7 +426,7 @@ vk::ImageAspectFlags RenderDepthInfo::AttachmentWriteAspects() const {
 	const auto           available = ImageViewOps::DepthAspectMask(format);
 	vk::ImageAspectFlags writes {};
 	if ((available & vk::ImageAspectFlagBits::eDepth) &&
-	    (depth_load_clear_enable || depth_write_enable)) {
+	    ((include_clears && depth_load_clear_enable) || depth_write_enable)) {
 		writes |= vk::ImageAspectFlagBits::eDepth;
 	}
 	if (!(available & vk::ImageAspectFlagBits::eStencil)) {
@@ -461,7 +464,7 @@ vk::ImageAspectFlags RenderDepthInfo::AttachmentWriteAspects() const {
 		       (can_pass && depth_pass && state.passOp != vk::StencilOp::eKeep) ||
 		       (can_pass && depth_fail && state.depthFailOp != vk::StencilOp::eKeep);
 	};
-	if (stencil_clear_enable ||
+	if ((include_clears && stencil_clear_enable) ||
 	    (stencil_test_enable && (face_writes(stencil_front) || face_writes(stencil_back)))) {
 		writes |= vk::ImageAspectFlagBits::eStencil;
 	}

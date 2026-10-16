@@ -186,8 +186,21 @@ public:
 			return false;
 		}
 		std::lock_guard lock(m_mutex);
-		std::memset(m_backing_base + backing_offset, 0, size);
+		// Dropping the pages zeroes the range without making the host commit memory the guest
+		// may never touch; fall back to clearing it in place.
+		if (!PunchHole(backing_offset, size)) {
+			std::memset(m_backing_base + backing_offset, 0, size);
+		}
 		return true;
+	}
+
+	// Returns the pages of a range the guest no longer owns to the host. It reads back as zeros.
+	bool DiscardRange(uint64_t backing_offset, uint64_t size) {
+		if (!IsAvailable() || !RangeOk(backing_offset, size)) {
+			return false;
+		}
+		std::lock_guard lock(m_mutex);
+		return PunchHole(backing_offset, size);
 	}
 
 	bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
@@ -571,6 +584,17 @@ private:
 		return false;
 	}
 
+	bool PunchHole(uint64_t backing_offset, uint64_t size) {
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
+		return fallocate(m_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+		                 static_cast<off_t>(backing_offset), static_cast<off_t>(size)) == 0;
+#else
+		(void)backing_offset;
+		(void)size;
+		return false;
+#endif
+	}
+
 	[[nodiscard]] bool RangeOk(uint64_t backing_offset, uint64_t size) const {
 		return size != 0 && backing_offset < m_size && size <= m_size - backing_offset;
 	}
@@ -750,6 +774,10 @@ public:
 		return m_backing->ZeroRange(backing_offset, size);
 	}
 
+	bool DiscardBacking(uint64_t backing_offset, uint64_t size) {
+		return m_backing->DiscardRange(backing_offset, size);
+	}
+
 	[[nodiscard]] bool Owns(uint64_t vaddr, uint64_t size) {
 		if (size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
@@ -764,7 +792,7 @@ public:
 		if (size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
 		}
-		std::lock_guard lock(m_mutex);
+		std::shared_lock lock(m_mutex);
 		return std::any_of(m_owned.begin(), m_owned.end(), [vaddr, size](const auto& range) {
 			return VirtualRangesOverlap(vaddr, size, range.first, range.second);
 		});
@@ -825,12 +853,14 @@ public:
 		return ProtectMappedUnlocked(vaddr, size, mode);
 	}
 
+	// Called for GPU memory tracking from guest write faults on any thread. Callers own the
+	// pages they change, so concurrent calls only need the mapping list to stay unchanged.
 	bool ProtectTransient(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
 		if (size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
 		}
 
-		std::lock_guard lock(m_mutex);
+		std::shared_lock lock(m_mutex);
 		return ProtectMappedUnlocked(vaddr, size, mode);
 	}
 
@@ -1435,6 +1465,7 @@ private:
 #endif
 	}
 
+	// Shared only by queries and transient protection changes, which do not modify the maps.
 	std::shared_mutex                          m_mutex;
 	std::map<uint64_t, uint64_t>               m_free;
 	std::map<uint64_t, MappedRegion>            m_mapped;

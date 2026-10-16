@@ -466,6 +466,13 @@ struct DrawCallInfo {
 	[[nodiscard]] const char* Name() const { return IsIndexed() ? "DrawIndex" : "DrawIndexAuto"; }
 };
 
+// The render area must fit the attachment view: a mip view or a one-texel alias can be smaller
+// than the guest target's extent.
+static vk::Extent2D AttachmentViewExtent(const Image& image, const ImageViewInfo& view) {
+	return {std::max(image.backing.extent.width >> view.base_level, 1u),
+	        std::max(image.backing.extent.height >> view.base_level, 1u)};
+}
+
 RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderColorInfo* colors,
                                                  uint32_t color_count, RenderDepthInfo& depth,
                                                  vk::ImageAspectFlags& feedback_aspects,
@@ -500,8 +507,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		                                     view.layer_count},
 		              buffer.Handle());
 		const auto extent       = target.Extent();
-		state.width             = std::min(state.width, extent.width);
-		state.height            = std::min(state.height, extent.height);
+		const auto view_extent  = AttachmentViewExtent(image, view);
+		state.width             = std::min({state.width, extent.width, view_extent.width});
+		state.height            = std::min({state.height, extent.height, view_extent.height});
 		state.num_layers        = std::min(state.num_layers, view.layer_count);
 		state.num_color_attachments = std::max(state.num_color_attachments, target.target_slot + 1);
 		auto& attachment            = state.color_attachments[target.target_slot];
@@ -543,7 +551,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 				                                         native->info);
 			}
 		}
-		if (feedback_aspects && !m_context.GetGraphics().attachment_feedback_loop_enabled) {
+		const auto per_fragment_writes = depth.AttachmentWriteAspects(false);
+		if ((feedback_aspects & per_fragment_writes) &&
+		    !m_context.GetGraphics().attachment_feedback_loop_enabled) {
 			static std::atomic_bool logged = false;
 			if (!logged.exchange(true, std::memory_order_relaxed)) {
 				std::printf("depth attachment feedback loop is not supported by the host\n");
@@ -565,8 +575,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
 		                                     view.layer_count},
 		              buffer.Handle());
-		state.width               = std::min(state.width, depth.desc.info.extent.width);
-		state.height              = std::min(state.height, depth.desc.info.extent.height);
+		const auto view_extent    = AttachmentViewExtent(image, view);
+		state.width = std::min({state.width, depth.desc.info.extent.width, view_extent.width});
+		state.height = std::min({state.height, depth.desc.info.extent.height, view_extent.height});
 		state.num_layers          = std::min(state.num_layers, view.layer_count);
 		const auto aspects        = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
 		auto&      attachment     = state.depth_stencil_attachment;
@@ -1527,8 +1538,12 @@ bool RenderExecutor::ResolveColorTargets(CommandBuffer& buffer, uint32_t render_
 	cache.MarkGpuWritten(dst.image_id);
 	auto& source      = cache.GetImage(src.image_id);
 	auto& destination = cache.GetImage(dst.image_id);
-	destination.Resolve(source, {src.guest_mip_level, 1, src.guest_array_layer, 1},
-	                    {dst.guest_mip_level, 1, dst.guest_array_layer, 1});
+	// A target can live inside a larger image: GTA V resolves each face of its reflection cube by
+	// pointing CB_COLOR1 at that face's slice. FindImage() then moved the view to the matching
+	// level and layer of that image, which is where the resolve has to read and write.
+	destination.Resolve(source,
+	                    {src.desc.view_info.base_level, 1, src.desc.view_info.base_layer, 1},
+	                    {dst.desc.view_info.base_level, 1, dst.desc.view_info.base_layer, 1});
 	return true;
 }
 

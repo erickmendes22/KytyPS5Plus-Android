@@ -82,8 +82,12 @@ public:
 	void UnmapMemory(uint64_t address, uint64_t size);
 	void ProcessDownloadImages();
 	void RunGarbageCollector();
+	// Logs device memory by category (render targets, depth, storage, sampled, other) at most
+	// every 10 s. Caller holds m_lock.
+	void LogMemoryBreakdown(uint64_t used_memory);
 
 private:
+	bool EvictForAllocation(ImageId keep);
 	struct MetaDataInfo {
 		enum class Type : uint8_t { CMask, FMask, HTile };
 
@@ -118,7 +122,8 @@ private:
 		}
 	}
 
-	[[nodiscard]] ImageId     InsertImage(const ImageInfo& info);
+	// keep: an image the caller still uses after the insert; eviction leaves it alone.
+	[[nodiscard]] ImageId            InsertImage(const ImageInfo& info, ImageId keep = {});
 	[[nodiscard]] ImageId     GetNullImage(const ImageDesc& desc);
 	void                      RegisterImage(ImageId id);
 	void                      UnregisterImage(ImageId id);
@@ -184,6 +189,7 @@ private:
 	std::map<uint64_t, MetaDataInfo>                  m_surface_metas;
 	std::map<uint64_t, uint64_t>                      m_color_metadata_ranges; // address -> size
 	uint64_t                                          m_total_used_memory  = 0;
+	int64_t                                           m_last_memory_log_ns = 0;
 	uint64_t                                          m_trigger_gc_memory  = 0;
 	uint64_t                                          m_pressure_gc_memory = 1536ull * 1024 * 1024;
 	uint64_t         m_critical_gc_memory     = 3ull * 1024 * 1024 * 1024;

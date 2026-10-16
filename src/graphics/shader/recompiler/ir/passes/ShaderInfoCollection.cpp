@@ -359,7 +359,7 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 			if (shared_access != SharedAccess::None) {
 				info.uses_lds |= kind == ResourceKind::Lds;
 				info.uses_gds |= kind == ResourceKind::Gds;
-			} else if (kind == ResourceKind::Buffer) {
+			} else if (kind == ResourceKind::Buffer || kind == ResourceKind::ScalarBuffer) {
 				if (memory.resource >= info.buffers.size()) {
 					return Fail("buffer operation has invalid resource metadata");
 				}

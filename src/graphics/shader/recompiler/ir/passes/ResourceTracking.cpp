@@ -1082,22 +1082,36 @@ private:
 		           : nullptr;
 	}
 
-	bool MemoryIndexBelongsTo(uint32_t index, const Inst& owner) const {
+	static bool IsMemoryInstruction(const Inst& inst) {
+		const auto op = inst.GetOpcode();
+		return BufferAccessOf(op) != BufferAccess::None ||
+		       AddressOpcodeInfoOf(op).access != AddressAccess::None ||
+		       ImageOpcodeInfoOf(op).access != ImageAccess::None;
+	}
+
+	// Descriptor planning neither adds nor removes memory instructions, so the users counted
+	// when it starts stay exact while it runs.
+	void CountMemoryIndexUsers() {
+		m_memory_index_users.assign(m_program.memory_info.size(), {});
 		for (const auto* block: m_program.blocks) {
 			for (const auto& inst: *block) {
-				const auto op = inst.GetOpcode();
-				if ((BufferAccessOf(op) == BufferAccess::None &&
-				     AddressOpcodeInfoOf(op).access == AddressAccess::None &&
-				     ImageOpcodeInfoOf(op).access == ImageAccess::None) ||
-				    &inst == &owner) {
+				if (!IsMemoryInstruction(inst)) {
 					continue;
 				}
-				if (inst.Flags<MemoryFlags>().index == index) {
-					return false;
+				const auto index = inst.Flags<MemoryFlags>().index;
+				if (index < m_memory_index_users.size() &&
+				    m_memory_index_users[index].count++ == 0u) {
+					m_memory_index_users[index].first = &inst;
 				}
 			}
 		}
-		return true;
+	}
+
+	// No memory instruction of the blocks other than `owner` uses `index`.
+	bool MemoryIndexBelongsTo(uint32_t index, const Inst& owner) const {
+		EXIT_IF(index >= m_memory_index_users.size());
+		const auto& users = m_memory_index_users[index];
+		return users.count == 0u || (users.count == 1u && users.first == &owner);
 	}
 
 	bool MakeRuntimeTableSource(const Inst& read, DescriptorSource& descriptor) {
@@ -1679,20 +1693,24 @@ private:
 		return {};
 	}
 
-	uint32_t PostTestLoopMaximum(Value key) const {
-		const auto induction = MatchInduction(key,
-		    [](uint32_t initial, uint32_t step) { return initial == 0u && step == 1u; });
-		if (!induction) return UINT32_MAX;
+	// key = Phi [start, entry], [key + 1, latch] whose only way back to the header is the
+	// uniform true edge of (key + 1 < limit), with immediate start < limit. The test runs
+	// after the body, so every value of key, inside or after the loop, is in [start, limit).
+	bool PostTestLoopRange(Value key, uint32_t& first, uint32_t& limit) const {
+		const auto induction =
+		    MatchInduction(key, [](uint32_t, uint32_t step) { return step == 1u; });
+		if (!induction) return false;
 		const auto [phi, step, initial_arm] = *induction;
+		const auto start = phi->Arg(initial_arm).Resolve().U32();
 		const auto* incoming = phi->PhiBlock(initial_arm ^ 1u);
-		if (incoming == nullptr) return UINT32_MAX;
+		if (incoming == nullptr) return false;
 		for (const auto& use: step->Uses()) {
 			const auto* compare = use.user;
 			uint32_t bound = 0;
 			if (use.operand != 0u ||
 			    (compare->GetOpcode() != ValueOpcode::SLessThan32 &&
 			     compare->GetOpcode() != ValueOpcode::ULessThan32) ||
-			    !ImmediateU32(compare->Arg(1), bound) || bound == 0u ||
+			    !ImmediateU32(compare->Arg(1), bound) || start >= bound ||
 			    (compare->GetOpcode() == ValueOpcode::SLessThan32 && bound > INT32_MAX) ||
 			    !AvailableBefore(*step, *compare)) continue;
 			const auto accepts = [&](const EdgePredicate& edge) {
@@ -1704,12 +1722,20 @@ private:
 				// A guard before the increment may belong to the previous iteration.
 				return block == phi->Parent() || block == step->Parent();
 			}, accepts)) {
-				// Starting at zero, next < bound keeps the carried value in range;
+				// Starting below bound, next < bound keeps the carried value in range;
 				// incrementing bound - 1 cannot overflow either accepted comparison domain.
-				return bound - 1u;
+				first = start;
+				limit = bound;
+				return true;
 			}
 		}
-		return UINT32_MAX;
+		return false;
+	}
+
+	uint32_t PostTestLoopMaximum(Value key) const {
+		uint32_t first = 0, limit = 0;
+		if (!PostTestLoopRange(key, first, limit) || first != 0u) return UINT32_MAX;
+		return limit - 1u;
 	}
 
 	const Inst* BoundedLoop(Value key, const Block* use, const auto& accepts_bound,
@@ -3015,6 +3041,11 @@ private:
 						indirect.selector_first = Value(first);
 						indirect.signed_count = false;
 					}
+				} else if (uint32_t limit = 0; PostTestLoopRange(key, first, limit) && first != 0u) {
+					// Enumerate the post-tested keys from their start value, so the record
+					// before it is not read.
+					indirect.selector_first = Value(first);
+					indirect.key_count = Value(limit - first);
 				}
 			}
 			if (indirect.key_count.IsEmpty() &&
@@ -3621,6 +3652,7 @@ private:
 	}
 
 	void PlanIndirectDescriptors() {
+		CountMemoryIndexUsers();
 		for (auto* block: m_program.blocks) {
 			for (auto& inst: *block) {
 				if ((ImageOpcodeInfoOf(inst.GetOpcode()).access == ImageAccess::None &&
@@ -3673,6 +3705,30 @@ private:
 		}
 	}
 
+	// The runtime-valid operand of an OR whose other operand is not, recursively; zero if none.
+	Value RuntimeOrOperand(Value value) const {
+		value = value.Resolve();
+		if (ValidateRuntimeValue(m_program, value)) {
+			return value;
+		}
+		const auto* inst = value.TryInstruction();
+		if (inst == nullptr || inst->GetOpcode() != ValueOpcode::BitwiseOr32) {
+			return Value(0u);
+		}
+		const auto a      = RuntimeOrOperand(inst->Arg(0));
+		const auto b      = RuntimeOrOperand(inst->Arg(1));
+		const bool a_zero = a.IsImmediate() && a.U32() == 0u;
+		const bool b_zero = b.IsImmediate() && b.U32() == 0u;
+		if (a_zero) {
+			return b;
+		}
+		if (b_zero) {
+			return a;
+		}
+		// Both sides keep runtime bits but the OR itself is not trackable: keep neither.
+		return Value(0u);
+	}
+
 	bool GetHandle(Value value, ValueOpcode expected, uint32_t width, uint32_t pc,
 	               uint32_t base_reg, Inst*& handle, uint32_t& source, bool sampler = false,
 	               bool sample_adjust = false) {
@@ -3683,6 +3739,16 @@ private:
 		DescriptorSource descriptor;
 		MakeSource(*handle, width, sampler, sample_adjust, base_reg, descriptor, pc);
 		uint32_t bad_dword = 0;
+		if (expected == ValueOpcode::GetSamplerResource && !ValidateSource(descriptor, bad_dword) &&
+		    bad_dword == 3u) {
+			// S# word 3 only holds the border color pointer and type. A shader that ORs lane data
+			// into it (reserved or border bits) still samples correctly inside the texture: keep
+			// the runtime part of the OR, or use a transparent black border.
+			descriptor.dwords[3] = RuntimeOrOperand(descriptor.dwords[3]);
+			std::printf("Warning: shader 0x%016" PRIx64 " pc=0x%08x: sampler border color word is "
+			            "not a runtime value; dropping its lane-dependent bits\n",
+			            m_program.shader_hash, pc);
+		}
 		if (!ValidateSource(descriptor, bad_dword)) {
 			if (expected == ValueOpcode::GetBufferResource &&
 			    std::all_of(descriptor.dwords.begin(), descriptor.dwords.begin() + width,
@@ -3735,6 +3801,8 @@ private:
 		resource.written         = resource.written || write;
 		resource.atomic          = resource.atomic || atomic;
 		resource.formatted       = resource.formatted || memory.formatted;
+		resource.scalar          = resource.scalar || op == ValueOpcode::ReadConstBuffer ||
+		                           memory.kind == ResourceKind::ScalarBuffer;
 	}
 
 	uint32_t AddImage(uint32_t source, const MemoryInfo& memory, ValueOpcode op, uint32_t pc) {
@@ -3881,24 +3949,6 @@ private:
 		if (memory.planning_only || IsIndirectPlanningMemory(flags.index)) {
 			return;
 		}
-		if (op == ValueOpcode::ReadConstBuffer) {
-			const auto* handle = inst.Arg(0).Resolve().TryInstruction();
-			if (memory.kind != ResourceKind::ScalarBuffer || handle == nullptr ||
-			    handle->GetOpcode() != ValueOpcode::GetBufferResource || handle->NumArgs() != 4u) {
-				Fail(flags.pc, "scalar buffer read requires a four-DWORD buffer descriptor");
-			}
-			// Scalar descriptors can span disjoint guest mappings. Keep their raw GPU operands
-			// separate from handles that vector-resource planning may rewrite.
-			auto* block = inst.Parent();
-			const auto where = std::ranges::find_if(block->Instructions(),
-			    [&](const Inst& candidate) { return &candidate == &inst; });
-			auto& scalar = *block->PrependNewInst(where, ValueOpcode::GetBufferResource,
-			    {handle->Arg(0), handle->Arg(1), handle->Arg(2), handle->Arg(3)});
-			inst.SetArg(0, Value(&scalar));
-			m_program.memory_info[flags.index].kind = ResourceKind::IndirectBuffer;
-			m_info.uses_dma = true;
-			return;
-		}
 		Inst*    handle   = nullptr;
 		uint32_t source   = 0;
 		uint32_t resource = 0;
@@ -3910,11 +3960,12 @@ private:
 				source = indirect->source;
 			} else if (!GetHandle(inst.Arg(0), ValueOpcode::GetBufferResource, 4, flags.pc,
 			               memory.resource * 4u, handle, source)) {
-				if (memory.kind != ResourceKind::Buffer ||
+				if (memory.kind != (op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
+				                                                        : ResourceKind::Buffer) ||
 				    !memory.SupportsIndirectBufferLoad(op)) {
 					Fail(flags.pc,
 					     "buffer descriptor is not a valid runtime value; GPU-selected access "
-					     "requires a raw 8/16-bit, raw DWORD x1/x2/x3/x4, or formatted X load");
+					     "requires a scalar, raw 8/16-bit, raw DWORD x1/x2/x3/x4, or formatted X load");
 				}
 				m_program.memory_info[flags.index].kind = ResourceKind::IndirectBuffer;
 				m_info.uses_dma                         = true;
@@ -4053,6 +4104,11 @@ private:
 	std::vector<IndirectDescriptorPlan>             m_indirect_descriptors;
 	std::map<const Inst*, Value>              m_descriptor_values;
 	bool                                       m_shader_writes = false;
+	struct MemoryIndexUsers {
+		uint32_t    count = 0;
+		const Inst* first = nullptr;
+	};
+	std::vector<MemoryIndexUsers> m_memory_index_users;
 };
 
 } // namespace

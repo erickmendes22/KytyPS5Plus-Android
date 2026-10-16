@@ -235,6 +235,9 @@ void TestSysmoduleReferences() {
   const auto unload = resolve("eR2bZFAAU0Q");
   const auto is_loaded = resolve("fMP5NHUOaMk");
   constexpr int unloaded = static_cast<int>(0x805a1001u);
+  Check(load(0x115) == Libs::LibKernel::KERNEL_ERROR_ENOENT && is_loaded(0x115) == unloaded &&
+            unload(0x115) == unloaded,
+        "missing packaged NpCppWebApi fails without recording a loaded module");
   Check(load(0x113) == OK && is_loaded(0xb4) == unloaded,
         "loading entitlement access does not mark AppContent loaded");
   Check(unload(0x113) == OK, "release independent module reference");
@@ -255,6 +258,9 @@ void TestSysmoduleReferences() {
       reinterpret_cast<int (KYTY_SYSV_ABI *)(uint16_t, int, int, int, int*)>(
           internal_symbol->vaddr);
   int result = -1;
+  Check(internal_load(0x115, 0, 0, 0, &result) == Libs::LibKernel::KERNEL_ERROR_ENOENT &&
+            result == Libs::LibKernel::KERNEL_ERROR_ENOENT && is_loaded(0x115) == unloaded,
+        "internal module loading propagates missing native module failure");
   Check(internal_load(0xb4, 0, 0, 0, &result) == OK && result == OK &&
             is_loaded(0xb4) == OK && unload(0xb4) == OK && is_loaded(0xb4) == unloaded,
         "internal and public module operations share load state");
@@ -602,6 +608,38 @@ void TestSaveWritev() {
         "append writes retain the original contents and ordered segments");
   Check(FileSystem::KernelClose(append) == OK && FileSystem::KernelClose(fd) == OK,
         "close vectored write fixtures");
+void TestFsyncVisibility() {
+  constexpr char Path[] = "/savedata0/fsync-save.dat";
+  constexpr char Payload[] = "synced progress";
+  constexpr auto PayloadSize = sizeof(Payload) - 1;
+
+  Loader::SymbolDatabase symbols;
+  Libs::InitLibKernel_1(&symbols);
+  const auto* symbol = symbols.Find(
+      {"juWbTNM+8hw", "Posix", 1, "libkernel", 1, 1, Loader::SymbolType::Func});
+  Check(symbol != nullptr, "POSIX fsync export resolves");
+  const auto fsync = reinterpret_cast<int (KYTY_SYSV_ABI *)(int)>(symbol->vaddr);
+
+  const int fd = FileSystem::KernelOpen(Path, 0x602, 0777);
+  Check(fd >= 3 && FileSystem::KernelWrite(fd, Payload, PayloadSize) == PayloadSize,
+        "write save file before fsync");
+  Check(FileSystem::KernelFsync(fd) == OK, "fsync a written save file");
+  FileSystem::FileStat stat {};
+  Check(FileSystem::KernelStat(Path, &stat) == OK && stat.st_size == PayloadSize,
+        "fsynced size is visible through the path before close");
+  const int reader = FileSystem::KernelOpen(Path, 0, 0);
+  std::array<char, sizeof(Payload)> bytes {};
+  Check(reader >= 3 && FileSystem::KernelRead(reader, bytes.data(), bytes.size()) == PayloadSize &&
+            std::memcmp(bytes.data(), Payload, PayloadSize) == 0,
+        "fsynced data is readable through another descriptor before close");
+  Check(FileSystem::KernelFsync(reader) == OK, "fsync a read-only descriptor");
+  Check(fsync(fd) == 0 && fsync(reader) == 0, "POSIX fsync of open descriptors");
+  Check(FileSystem::KernelClose(reader) == OK && FileSystem::KernelClose(fd) == OK,
+        "close fsync descriptors");
+  Check(FileSystem::KernelFsync(fd) == Libs::LibKernel::KERNEL_ERROR_EBADF,
+        "fsync rejects a closed descriptor");
+  Check(fsync(fd) == -1 && *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EBADF,
+        "POSIX fsync of a closed descriptor reports EBADF");
 }
 
 void TestAioBatches() {
@@ -1935,6 +1973,20 @@ void CheckSocketWakeup() {
   const int enabled = 1;
   Check(Net::Setsockopt(writer, 6, 1, &enabled, sizeof(enabled)) == 0,
         "enable TCP_NODELAY");
+  int reuse_address = 0;
+  uint32_t reuse_address_size = sizeof(reuse_address);
+  Check(Net::Setsockopt(writer, 0xffff, 0x0004, &enabled, sizeof(enabled)) == 0 &&
+            Net::Getsockopt(writer, 0xffff, 0x0004, &reuse_address, &reuse_address_size) == 0 &&
+            reuse_address != 0,
+        "Net SO_REUSEADDR reaches the host socket");
+#if !defined(_WIN32)
+  int reuse_port = 0;
+  uint32_t reuse_port_size = sizeof(reuse_port);
+  Check(Net::Setsockopt(writer, 0xffff, 0x0200, &enabled, sizeof(enabled)) == 0 &&
+            Net::Getsockopt(writer, 0xffff, 0x0200, &reuse_port, &reuse_port_size) == 0 &&
+            reuse_port != 0,
+        "Net SO_REUSEPORT reaches the host socket");
+#endif
   int socket_error = -1;
   uint32_t error_size = sizeof(socket_error);
   *Libs::Posix::GetErrorAddr() = Libs::Posix::POSIX_EINVAL;
@@ -2189,6 +2241,7 @@ int main(int, char**) {
   TestSaveOpenVisibility();
   TestSaveTruncate();
   TestSaveWritev();
+  TestFsyncVisibility();
   TestAioBatches();
   CheckSaveRename(temporary.Path(), "first-save");
   CheckSaveRename(temporary.Path(), "replacement-save");

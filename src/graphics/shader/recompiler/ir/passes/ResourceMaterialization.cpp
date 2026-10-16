@@ -8,12 +8,17 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
+#include <cinttypes>
 #include <cstdio>
 #include <fmt/format.h>
 #include <functional>
+#include <mutex>
 #include <numeric>
+#include <set>
 #include <unordered_set>
+#include <utility>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 namespace {
@@ -69,6 +74,9 @@ bool NullBufferDescriptor(Value value) {
 	return true;
 }
 
+/// Whether the eight dwords are an image descriptor the emulator can bind: reserved bits clear, a
+/// known type, a format the encoding defines, and for an r128 load a 1D or 2D type. Rejected values
+/// are bound as a null image instead of aborting.
 bool ValidImageDescriptor(const DescriptorValue& descriptor, bool r128 = false) {
 	const auto& words = descriptor.dwords;
 	// Reject texture descriptors with nonzero reserved bits.
@@ -81,6 +89,13 @@ bool ValidImageDescriptor(const DescriptorValue& descriptor, bool r128 = false) 
 	const auto format = static_cast<Prospero::BufferFormat>((descriptor.dwords[1] >> 20u) & 0x1ffu);
 	if (type < Prospero::ImageType::kColor1D || format == Prospero::BufferFormat::kInvalid ||
 	    format > Prospero::BufferFormat::kBc7Srgb) {
+		return false;
+	}
+	// The range check above leaves the encoding's gaps open. A value such as 139, which lies
+	// between k4_4_4_4UNorm (136) and the FMASK range (156) and names nothing, used to pass here
+	// and abort the emulator further down instead of being treated as what it is: eight dwords
+	// that are not a descriptor, typically a texture-table slot the guest never filled.
+	if (!Prospero::IsDefinedBufferFormat(format)) {
 		return false;
 	}
 	if (r128 && type != Prospero::ImageType::kColor1D && type != Prospero::ImageType::kColor2D &&
@@ -104,6 +119,30 @@ bool ValidImageDescriptor(const DescriptorValue& descriptor, bool r128 = false) 
 		       (r128 || max_mip == last_level);
 	}
 	return base_level <= last_level;
+}
+
+/// Reports an image descriptor that was rejected and bound as a null image. The same slot is
+/// reported once per shader so a hot draw call does not flood the log, and the cap keeps a
+/// corrupt table from growing the set without limit.
+void ReportRejectedImageDescriptor(const ResourcePlan& program, uint32_t index,
+                                   const DescriptorValue& descriptor) {
+	if (std::all_of(descriptor.dwords.begin(), descriptor.dwords.end(),
+	                [](uint32_t w) { return w == 0u; })) {
+		return;
+	}
+	static std::mutex reported_mutex;
+	static std::set<std::pair<uint64_t, uint32_t>> reported;
+	const std::lock_guard lock(reported_mutex);
+	if (reported.size() >= 64u || !reported.emplace(program.shader_hash, index).second) {
+		return;
+	}
+	const auto& words = descriptor.dwords;
+	std::fprintf(stderr,
+	             "image descriptor %u of shader 0x%016" PRIx64
+	             " is not a descriptor, binding null: "
+	             "%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+	             index, program.shader_hash, words[0], words[1], words[2], words[3], words[4],
+	             words[5], words[6], words[7]);
 }
 
 uint32_t DescriptorImageSwizzle(const DescriptorValue& descriptor) {
@@ -1178,7 +1217,7 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 	}
 	if (store == nullptr || visited.size() != program.blocks.size()) return {};
 	for (const auto& buffer: program.info.buffers) {
-		if (buffer.read) return {};
+		if (buffer.read && (!buffer.scalar || buffer.written)) return {};
 	}
 	const auto& memory = program.memory_info.at(store->Flags<MemoryFlags>().index);
 	UniformFillPlan result;
@@ -1589,6 +1628,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		    base.formatted ? descriptor.Format() : Prospero::BufferFormat::kInvalid;
 		buffer.descriptor_swizzle = base.formatted ? descriptor.DstSelXYZW() : DstSel(4, 5, 6, 7);
 		buffer.zero_stride_oob    = descriptor.OutOfBounds() == 0u && stride == 0u;
+		buffer.scalar_empty       = base.scalar && descriptor.GetSize() == 0u;
 	}
 	snapshot.images.resize(program.info.images.size());
 	specialization.images.resize(program.info.images.size());
@@ -1632,6 +1672,10 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 				return false;
 			}
 			if (!ValidImageDescriptor(snapshot.images[i], image.r128)) {
+				// A null image keeps the draw alive, but the walk read something that is not a
+				// descriptor, so say so once per slot instead of hiding it. All-zero dwords are
+				// an unbound slot rather than a wrong read and stay quiet.
+				ReportRejectedImageDescriptor(program, i, snapshot.images[i]);
 				snapshot.images[i].dwords.fill(0);
 			}
 		}
@@ -1786,6 +1830,17 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 	}
 
 	auto& memory_info = program.memory_info;
+	// Resolve empty scalar-table words before folding the indirect descriptors that use them.
+	for (auto* block: program.blocks) {
+		for (auto& inst: *block) {
+			if (inst.GetOpcode() != ValueOpcode::ReadConstBuffer) continue;
+			const auto& memory = memory_info[inst.Flags<MemoryFlags>().index];
+			if (memory.kind == ResourceKind::ScalarBuffer &&
+			    specialization.buffers[memory.resource].scalar_empty &&
+			    buffers[memory.resource].indirect_root == BufferResource::NoIndirectBuffer)
+				inst.ReplaceUsesWith(Value(0u));
+		}
+	}
 	const ImageRemap image_remap(specialization);
 	for (auto* block: program.blocks) {
 		for (auto it = block->begin(); it != block->end(); ++it) {
@@ -1882,11 +1937,28 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 				memory.sampler = sampler_plan.mapping[memory.sampler][type];
 				EXIT_IF(memory.sampler == UINT32_MAX);
 			}
-			EXIT_IF(image.indirect_root == memory.resource &&
-			        inst.GetOpcode() != ValueOpcode::ImageSampleRaw &&
-			        inst.GetOpcode() != ValueOpcode::ImageGatherRaw &&
-			        inst.GetOpcode() != ValueOpcode::ImageRead &&
-			        inst.GetOpcode() != ValueOpcode::ImageWrite);
+			// An enumerated root image reached by an opcode that is not a plain sample. Which
+			// opcode that will be is not knowable ahead of the draw, and ending the process here
+			// loses a run that has already drawn its frames. Report it and clear the marker
+			// instead.
+			if (image.indirect_root == memory.resource &&
+			    inst.GetOpcode() != ValueOpcode::ImageSampleRaw &&
+			    inst.GetOpcode() != ValueOpcode::ImageGatherRaw &&
+			    inst.GetOpcode() != ValueOpcode::ImageRead &&
+			    inst.GetOpcode() != ValueOpcode::ImageWrite) {
+				static std::atomic<uint32_t> reported {0};
+				if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+					std::printf("ResourceMaterialization: root image %u used by opcode %u\n",
+					            memory.resource, static_cast<uint32_t>(inst.GetOpcode()));
+				}
+				// The marker is cleared rather than merely tolerated. The emitter picks the
+				// table-root path from this field alone (spirvEmitterImage.cpp), so leaving it set
+				// while the check above says this use is not a sample is what would leave the two
+				// halves disagreeing about the same descriptor -- a shader reading a table header
+				// as if it were the image. Cleared, every consumer takes the direct-image path,
+				// which is what it would get if the marker had never been set.
+				images[memory.resource].indirect_root = ImageResource::NoIndirectImage;
+			}
 		}
 	}
 	for (auto& memory: memory_info) {

@@ -41,7 +41,9 @@ void DynamicState::Commit(const GraphicContext& graphics, vk::CommandBuffer cmdb
 		dirty_state.depth_bias_enabled = false;
 		cmdbuf.setDepthBiasEnable(depth_bias_enabled);
 	}
-	if (depth_bias_enabled && dirty_state.depth_bias) {
+	// Every dynamic state of the pipeline must be set in the command buffer before a draw, even
+	// while its test is disabled (VUID-vkCmdDraw-None-07848 and its siblings).
+	if (dirty_state.depth_bias) {
 		dirty_state.depth_bias = false;
 		cmdbuf.setDepthBias(depth_bias_constant, depth_bias_clamp, depth_bias_slope);
 	}
@@ -49,7 +51,7 @@ void DynamicState::Commit(const GraphicContext& graphics, vk::CommandBuffer cmdb
 		dirty_state.stencil_test_enabled = false;
 		cmdbuf.setStencilTestEnable(stencil_test_enabled);
 	}
-	if (stencil_test_enabled) {
+	{
 		if (dirty_state.stencil_front_ops && dirty_state.stencil_back_ops &&
 		    stencil_front_ops == stencil_back_ops) {
 			dirty_state.stencil_front_ops = false;
