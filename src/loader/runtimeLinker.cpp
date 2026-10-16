@@ -39,6 +39,10 @@
 #include <memory>
 #include <vector>
 
+#if KYTY_HOST_ARM64 && !defined(_WIN32)
+#include <dlfcn.h>
+#endif
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -721,6 +725,14 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		}
 		std::printf("--- Guest fault context ---\n");
 		std::printf("thread: %s\n", thread_name);
+#if KYTY_HOST_ARM64 && !defined(_WIN32)
+		// Guest code never faults here (the translator handles it); the faulting PC is host code.
+		if (Dl_info dl {}; dladdr(reinterpret_cast<void*>(info->exception_address), &dl) != 0) {
+			std::printf("host pc: %s+0x%" PRIx64 " (%s)\n", dl.dli_fname != nullptr ? dl.dli_fname : "?",
+			            info->exception_address - reinterpret_cast<uint64_t>(dl.dli_fbase),
+			            dl.dli_sname != nullptr ? dl.dli_sname : "?");
+		}
+#endif
 		std::printf("rax=%016" PRIx64 " rbx=%016" PRIx64 " rcx=%016" PRIx64 " rdx=%016" PRIx64 "\n"
 		            "rsi=%016" PRIx64 " rdi=%016" PRIx64 " rbp=%016" PRIx64 " rsp=%016" PRIx64 "\n"
 		            "r8 =%016" PRIx64 " r9 =%016" PRIx64 " r10=%016" PRIx64 " r11=%016" PRIx64 "\n"
