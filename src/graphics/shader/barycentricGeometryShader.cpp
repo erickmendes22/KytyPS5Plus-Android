@@ -6,6 +6,8 @@
 #include <array>
 #include <bit>
 #include <map>
+#include <span>
+#include <utility>
 
 namespace Libs::Graphics {
 
@@ -44,11 +46,6 @@ public:
 		uvec4_type = builder.Type(spv::OpTypeVector, uint_type, 4u);
 		vertices_type =
 		    builder.Type(spv::OpTypeArray, uvec4_type, Uint(MaxVertices)); // PerVertex payload
-		per_vertex_type = builder.DecoratedType(
-		    spv::OpTypeStruct,
-		    {{spv::OpMemberDecorate, {0u, spv::DecorationBuiltIn, spv::BuiltInPosition}},
-		     {spv::OpDecorate, {spv::DecorationBlock}}},
-		    vec4_type);
 	}
 
 	std::vector<uint32_t> Emit() {
@@ -107,29 +104,46 @@ private:
 		return location < 32u && (stage.previous_locations & (1u << location)) != 0;
 	}
 
-	void DefineInputs() {
-		gl_in = Interface(spv::StorageClassInput, Array(per_vertex_type, vertex_count), "gl_in");
+	// gl_PerVertex with Position and the forwarded point size and clip/cull distances. Geometry
+	// inputs keep these built-ins inside the block: Adreno fails to link a geometry stage that
+	// reads gl_ClipDistance as a separate input array, though the vertex stage may write it so.
+	uint32_t DefinePerVertexBlock() {
+		std::vector<uint32_t>                         members {vec4_type};
+		std::vector<std::pair<uint32_t, spv::BuiltIn>> builtins {{0u, spv::BuiltInPosition}};
+		const auto add = [&](uint32_t type, spv::BuiltIn builtin) {
+			const auto member = static_cast<uint32_t>(members.size());
+			members.push_back(type);
+			builtins.emplace_back(member, builtin);
+			return member;
+		};
 		const auto& previous = stage.previous;
+		if (ForwardsPointSize()) {
+			builder.RequireCapability(spv::CapabilityGeometryPointSize);
+			point_size_member = add(float_type, spv::BuiltInPointSize);
+		}
 		if (previous.clip_distance_count != 0) {
 			builder.RequireCapability(spv::CapabilityClipDistance);
-			clip_in = Interface(spv::StorageClassInput,
-			                    Array(ClipArray(previous.clip_distance_count), vertex_count),
-			                    "gl_in_ClipDistance");
-			BuiltIn(clip_in, spv::BuiltInClipDistance);
+			clip_member = add(ClipArray(previous.clip_distance_count), spv::BuiltInClipDistance);
 		}
 		if (previous.cull_distance_count != 0) {
 			builder.RequireCapability(spv::CapabilityCullDistance);
-			cull_in = Interface(spv::StorageClassInput,
-			                    Array(ClipArray(previous.cull_distance_count), vertex_count),
-			                    "gl_in_CullDistance");
-			BuiltIn(cull_in, spv::BuiltInCullDistance);
+			cull_member = add(ClipArray(previous.cull_distance_count), spv::BuiltInCullDistance);
 		}
-		if (ForwardsPointSize()) {
-			builder.RequireCapability(spv::CapabilityGeometryPointSize);
-			point_size_in = Interface(spv::StorageClassInput, Array(float_type, vertex_count),
-			                          "gl_in_PointSize");
-			BuiltIn(point_size_in, spv::BuiltInPointSize);
+		const auto type = builder.Type(spv::OpTypeStruct, std::span<const uint32_t>(members));
+		for (const auto& [member, builtin]: builtins) {
+			builder.AddAnnotation(spv::OpMemberDecorate, type, member, spv::DecorationBuiltIn,
+			                      builtin);
 		}
+		builder.AddAnnotation(spv::OpDecorate, type, spv::DecorationBlock);
+		builder.AddName(type, "gl_PerVertex");
+		return type;
+	}
+
+	void DefineInputs() {
+		per_vertex_type      = DefinePerVertexBlock();
+		gl_in                = Interface(spv::StorageClassInput, Array(per_vertex_type, vertex_count),
+		                                 "gl_in");
+		const auto& previous = stage.previous;
 		if (previous.layer_viewport_location != UINT32_MAX) {
 			mirror_in = Interface(spv::StorageClassInput, Array(uvec2_type, vertex_count),
 			                      "in_layer_viewport");
@@ -154,21 +168,8 @@ private:
 	void DefineOutputs() {
 		gl_out               = Interface(spv::StorageClassOutput, per_vertex_type, "gl_out");
 		const auto& previous = stage.previous;
-		if (clip_in != 0) {
-			clip_out = Interface(spv::StorageClassOutput, ClipArray(previous.clip_distance_count),
-			                     "gl_ClipDistance");
-			BuiltIn(clip_out, spv::BuiltInClipDistance);
-		}
-		if (cull_in != 0) {
-			cull_out = Interface(spv::StorageClassOutput, ClipArray(previous.cull_distance_count),
-			                     "gl_CullDistance");
-			BuiltIn(cull_out, spv::BuiltInCullDistance);
-		}
-		if (point_size_in != 0) {
-			point_size_out = Interface(spv::StorageClassOutput, float_type, "gl_PointSize");
-			BuiltIn(point_size_out, spv::BuiltInPointSize);
-		}
-		if (mirror_in != 0 && previous.layer) {
+		// A pixel shader that reads gl_Layer gets layer 0 when the previous stage writes none.
+		if ((mirror_in != 0 && previous.layer) || stage.fragment->layer) {
 			layer_out = Interface(spv::StorageClassOutput, uint_type, "gl_Layer");
 			BuiltIn(layer_out, spv::BuiltInLayer);
 		}
@@ -217,7 +218,7 @@ private:
 
 	std::array<uint32_t, MaxVertices> LoadLayerViewportMirrors() {
 		std::array<uint32_t, MaxVertices> mirrors {};
-		if (layer_out == 0 && viewport_out == 0) {
+		if (mirror_in == 0 || (layer_out == 0 && viewport_out == 0)) {
 			return mirrors;
 		}
 		for (uint32_t vertex = 0; vertex < vertex_count; vertex++) {
@@ -230,18 +231,20 @@ private:
 
 	void EmitVertex(uint32_t vertex, const std::map<uint32_t, uint32_t>& payloads,
 	                const std::array<uint32_t, MaxVertices>& mirrors) {
-		const auto position = Load(
-		    vec4_type, Access(Pointer(spv::StorageClassInput, vec4_type), gl_in, Int(vertex), Int(0)));
-		Store(Access(Pointer(spv::StorageClassOutput, vec4_type), gl_out, Int(0)), position);
-		CopyDistances(clip_in, clip_out, stage.previous.clip_distance_count, vertex);
-		CopyDistances(cull_in, cull_out, stage.previous.cull_distance_count, vertex);
-		if (point_size_out != 0) {
-			Store(point_size_out,
-			      Load(float_type, Access(Pointer(spv::StorageClassInput, float_type),
-			                              point_size_in, Int(vertex))));
+		CopyMember(vec4_type, 0u, vertex);
+		if (point_size_member != UINT32_MAX) {
+			CopyMember(float_type, point_size_member, vertex);
+		}
+		if (clip_member != UINT32_MAX) {
+			CopyMember(ClipArray(stage.previous.clip_distance_count), clip_member, vertex);
+		}
+		if (cull_member != UINT32_MAX) {
+			CopyMember(ClipArray(stage.previous.cull_distance_count), cull_member, vertex);
 		}
 		if (layer_out != 0) {
-			Store(layer_out, Result(spv::OpCompositeExtract, uint_type, mirrors[vertex], 0u));
+			Store(layer_out, mirror_in != 0 && stage.previous.layer
+			                     ? Result(spv::OpCompositeExtract, uint_type, mirrors[vertex], 0u)
+			                     : Uint(0));
 		}
 		if (viewport_out != 0) {
 			Store(viewport_out, Result(spv::OpCompositeExtract, uint_type, mirrors[vertex], 1u));
@@ -273,12 +276,10 @@ private:
 		builder.AddFunction(spv::OpEmitVertex);
 	}
 
-	void CopyDistances(uint32_t input, uint32_t output, uint32_t count, uint32_t vertex) {
-		if (input == 0) {
-			return;
-		}
-		const auto type = ClipArray(count);
-		Store(output, Load(type, Access(Pointer(spv::StorageClassInput, type), input, Int(vertex))));
+	void CopyMember(uint32_t type, uint32_t member, uint32_t vertex) {
+		const auto value =
+		    Load(type, Access(Pointer(spv::StorageClassInput, type), gl_in, Int(vertex), Int(member)));
+		Store(Access(Pointer(spv::StorageClassOutput, type), gl_out, Int(member)), value);
 	}
 
 	uint32_t LoadSource(uint32_t location, uint32_t vertex) {
@@ -364,12 +365,9 @@ private:
 	uint32_t                        per_vertex_type  = 0;
 	uint32_t                        gl_in            = 0;
 	uint32_t                        gl_out           = 0;
-	uint32_t                        clip_in          = 0;
-	uint32_t                        clip_out         = 0;
-	uint32_t                        cull_in          = 0;
-	uint32_t                        cull_out         = 0;
-	uint32_t                        point_size_in    = 0;
-	uint32_t                        point_size_out   = 0;
+	uint32_t                        point_size_member = UINT32_MAX;
+	uint32_t                        clip_member       = UINT32_MAX;
+	uint32_t                        cull_member       = UINT32_MAX;
 	uint32_t                        mirror_in        = 0;
 	uint32_t                        layer_out        = 0;
 	uint32_t                        viewport_out     = 0;

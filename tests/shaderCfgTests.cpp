@@ -7255,15 +7255,26 @@ void TestEmulatedBarycentricGeometryStage() {
                                    "geometry stage reads a location the vertex stage lacks");
         CheckStageInterfaceMatches(geometry, pixel.spirv, false,
                                    "geometry stage does not feed the pixel shader");
+        // Adreno links only gl_PerVertex members, not separate geometry input arrays.
         Check(SpirvHasDecorationValue(geometry, kBuiltIn, 9u /* Layer */) &&
-                  SpirvHasDecorationValue(geometry, kBuiltIn, 3u /* ClipDistance */) &&
-                  SpirvHasDecorationValue(geometry, kBuiltIn, 4u /* CullDistance */) &&
+                  SpirvHasMemberDecorationValue(geometry, kBuiltIn, 3u /* ClipDistance */) &&
+                  SpirvHasMemberDecorationValue(geometry, kBuiltIn, 4u /* CullDistance */) &&
+                  !SpirvHasDecorationValue(geometry, kBuiltIn, 3u) &&
+                  !SpirvHasDecorationValue(geometry, kBuiltIn, 4u) &&
                   SpirvHasDecorationValue(geometry, kBuiltIn, 7u /* PrimitiveId */) &&
-                  SpirvHasDecorationValue(geometry, kBuiltIn, 1u /* PointSize */) ==
+                  SpirvHasMemberDecorationValue(geometry, kBuiltIn, 1u /* PointSize */) ==
                       (primitive == BarycentricPrimitive::Points),
               "geometry stage dropped a pre-rasterization built-in");
       }
     }
+    // A pixel shader reading gl_Layer still gets one when the vertex stage writes none.
+    emulation.layer = true;
+    const BarycentricGeometryStage bare{.fragment = &emulation, .previous_locations = 1u};
+    const auto geometry = BuildBarycentricGeometryShader(bare);
+    CheckSpirvBinaryValidates(geometry);
+    Check(SpirvHasDecorationValue(geometry, kBuiltIn, 9u /* Layer */) &&
+              !SpirvHasMemberDecorationValue(geometry, kBuiltIn, 3u),
+          "geometry stage did not supply gl_Layer to the pixel shader");
   }
 }
 

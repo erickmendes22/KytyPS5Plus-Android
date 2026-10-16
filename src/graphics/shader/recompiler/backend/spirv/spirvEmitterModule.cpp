@@ -495,9 +495,12 @@ bool PixelParameterUsesSampling(const EmitterState& state, const InputBinding& i
 void PlanBarycentricEmulation(EmitterState& state) {
 	auto& emulation = state.program.info.barycentric_emulation;
 	emulation.varyings.clear();
-	emulation.primitive_id = std::ranges::any_of(state.inputs, [](const InputBinding& input) {
-		return input.kind == IR::StageInputKind::PrimitiveId;
-	});
+	const auto reads = [&state](IR::StageInputKind kind) {
+		return std::ranges::any_of(state.inputs,
+		                           [kind](const InputBinding& input) { return input.kind == kind; });
+	};
+	emulation.primitive_id = reads(IR::StageInputKind::PrimitiveId);
+	emulation.layer        = reads(IR::StageInputKind::Layer);
 	const auto        limit = state.device_features.geometry_varying_locations;
 	std::vector<bool> used(limit, false);
 	for (auto& input: state.inputs) {

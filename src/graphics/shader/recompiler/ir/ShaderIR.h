@@ -347,6 +347,7 @@ struct EmulatedVarying {
 struct BarycentricEmulation {
 	bool                         enabled      = false;
 	bool                         primitive_id = false; // The pixel shader reads gl_PrimitiveID.
+	bool                         layer        = false; // The pixel shader reads gl_Layer.
 	std::vector<EmulatedVarying> varyings;              // The pixel shader's whole varying input.
 
 	bool operator==(const BarycentricEmulation& other) const = default;
