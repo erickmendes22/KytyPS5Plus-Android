@@ -1,4 +1,5 @@
 #include "kernel/pthread.h"
+#include "kernel/syncOnAddress.h"
 
 #include "common/assert.h"
 #include "common/atomicRef.h"
@@ -483,6 +484,7 @@ struct PthreadPrivate {
 	uint64_t              cond_sequence = 0;
 	std::condition_variable cond_cv;
 	std::atomic<uint64_t> pending_signal_mask {0};
+	SyncOnAddress::WaitSlot sync_wait_slot;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	uintptr_t guest_host_gs8;
 	uintptr_t guest_host_gs10;
@@ -578,6 +580,7 @@ static void CondWakeWaiter(PthreadCondPrivate* cond, Pthread thread) {
 void PthreadWakeForSignal(Pthread thread) {
 	if (thread != nullptr) {
 		thread->cond_cv.notify_one();
+		SyncOnAddress::WakeWaitSlot(&thread->sync_wait_slot);
 	}
 }
 
@@ -1095,6 +1098,7 @@ void PthreadInitSelfForMainThread() {
 #endif
 
 	g_pthread_self = new PthreadPrivate {};
+	SyncOnAddress::SetCurrentThreadWaitSlot(&g_pthread_self->sync_wait_slot);
 	PthreadAttrInit(&g_pthread_self->attr);
 	UpdateCurrentThreadStackAttr(&g_pthread_self->attr);
 	g_pthread_self->p               = pthread_self();
@@ -3287,6 +3291,7 @@ static void* RunThread(void* arg) {
 	thread->unique_id = Common::Thread::GetThreadIdUnique();
 
 	g_pthread_self = thread;
+	SyncOnAddress::SetCurrentThreadWaitSlot(&thread->sync_wait_slot);
 
 	uint64_t os_thread_id = 0;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS

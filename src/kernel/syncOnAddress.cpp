@@ -23,7 +23,35 @@ namespace Libs::LibKernel::SyncOnAddress {
 
 namespace {
 
-constexpr uint32_t SIGNAL_POLL_MICROS = 10000;
+// Longest a wait sleeps before polling for guest signals. Signals sent to a published wait slot end
+// the wait at once, so this only bounds the rare race where the signal lands just before the
+// thread starts sleeping. At 10 ms, idle guest threads woke ~5800 times per second in Vampire
+// Survivors only to find nothing to do.
+constexpr uint32_t SIGNAL_POLL_MICROS = 100000;
+
+thread_local WaitSlot* t_wait_slot = nullptr;
+
+// Publishes `address` in the calling thread's wait slot for the scope's lifetime.
+class PublishedWait {
+public:
+	explicit PublishedWait(volatile void* address): slot_(t_wait_slot) {
+		if (slot_ != nullptr) {
+			slot_->address.store(address, std::memory_order_seq_cst);
+			// Orders the store before the pending-signal check (pairs with WakeWaitSlot).
+			std::atomic_thread_fence(std::memory_order_seq_cst);
+		}
+	}
+	~PublishedWait() {
+		if (slot_ != nullptr) {
+			slot_->address.store(nullptr, std::memory_order_release);
+		}
+	}
+	PublishedWait(const PublishedWait&)            = delete;
+	PublishedWait& operator=(const PublishedWait&) = delete;
+
+private:
+	WaitSlot* slot_;
+};
 
 using Clock = std::chrono::steady_clock;
 
@@ -87,6 +115,10 @@ template <typename T>
 int WaitLinux(volatile T* address, T expected, const WaitDeadline& deadline,
               signal_poll_func_t signal_poll) {
 	bool       first_wait = true;
+	// Publish before the signal check: a sender queues its signal, then wakes the published
+	// address, so a signal is either seen here or ends the futex wait below.
+	const PublishedWait published(address);
+	PollSignals(signal_poll);
 
 	for (;;) {
 		if (ReadWord(address) != expected) {
@@ -285,6 +317,25 @@ int Wait64(volatile uint64_t* address, uint64_t expected, const uint32_t* timeou
 int Wait64(volatile uint64_t* address, uint64_t expected, std::chrono::nanoseconds timeout,
            signal_poll_func_t signal_poll) {
 	return WaitImpl(address, expected, MakeDeadline(timeout), signal_poll);
+}
+
+void SetCurrentThreadWaitSlot(WaitSlot* slot) {
+	t_wait_slot = slot;
+}
+
+void WakeWaitSlot(WaitSlot* slot) {
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
+	if (slot == nullptr) {
+		return;
+	}
+	// Orders the caller's pending-signal store before reading the slot (pairs with PublishedWait).
+	std::atomic_thread_fence(std::memory_order_seq_cst);
+	if (auto* address = slot->address.load(std::memory_order_seq_cst); address != nullptr) {
+		(void)WakeLinux(address, INT_MAX);
+	}
+#else
+	(void)slot;
+#endif
 }
 
 int Wake(volatile void* address, int32_t count) {

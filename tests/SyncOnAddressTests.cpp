@@ -26,7 +26,7 @@ void Check(bool value, const char *text) {
 }
 
 template <typename T> void Store(T *address, T value) {
-  std::atomic_ref<T>(*address).store(value, std::memory_order_release);
+  __atomic_store_n(address, value, __ATOMIC_RELEASE); // std::atomic_ref is missing from NDK libc++
 }
 
 void CountSignalPoll() {
@@ -287,6 +287,39 @@ void TestWakeZeroIsNoOp() {
 
 } // namespace
 
+// A guest signal sent to a thread blocked in a wait must end the wait promptly, not after the
+// signal-poll slice: the sender wakes the address published in the waiter's slot.
+void TestWaitSlotWakeEndsWaitPromptly() {
+  using Libs::LibKernel::SyncOnAddress::SetCurrentThreadWaitSlot;
+  using Libs::LibKernel::SyncOnAddress::WaitSlot;
+  using Libs::LibKernel::SyncOnAddress::WakeWaitSlot;
+
+  uint32_t word = 0;
+  WaitSlot slot;
+  std::atomic<bool> published{false};
+  std::chrono::steady_clock::duration waited{};
+  std::thread waiter([&] {
+    SetCurrentThreadWaitSlot(&slot);
+    published.store(true, std::memory_order_release);
+    const auto start = std::chrono::steady_clock::now();
+    (void)Wait32(&word, 0, nullptr);
+    waited = std::chrono::steady_clock::now() - start;
+    SetCurrentThreadWaitSlot(nullptr);
+  });
+  while (!published.load(std::memory_order_acquire) ||
+         slot.address.load(std::memory_order_acquire) == nullptr) {
+    std::this_thread::yield();
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  WakeWaitSlot(&slot);
+  waiter.join();
+  Check(waited < std::chrono::milliseconds(50),
+        "a wait-slot wake ends an untimed wait before the poll slice");
+  Check(slot.address.load(std::memory_order_acquire) == nullptr,
+        "the wait slot is cleared when the wait ends");
+  WakeWaitSlot(&slot); // no published wait: a no-op
+}
+
 int main() {
   TestInvalidAddress();
   TestMismatchReturnsImmediately();
@@ -297,6 +330,7 @@ int main() {
   TestAddressesAreIsolated();
   TestCompareRegisterWakeRace();
   TestWakeZeroIsNoOp();
+  TestWaitSlotWakeEndsWaitPromptly();
   std::printf("SyncOnAddressTests: all passed\n");
   return 0;
 }
