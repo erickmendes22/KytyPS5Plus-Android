@@ -1,6 +1,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
+#include "common/file.h"
 #include "common/perfStats.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -14,9 +15,9 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/barycentricGeometryShader.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
-#include "graphics/shader/barycentricGeometryShader.h"
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 
@@ -26,6 +27,7 @@
 #include <limits>
 #include <span>
 #include <vector>
+#include <fmt/format.h>
 
 namespace Libs::Graphics {
 
@@ -276,6 +278,17 @@ static vk::ShaderModule CreateBarycentricGeometryModule(
 		     limits.maxGeometryTotalOutputComponents);
 	}
 	const auto code   = BuildBarycentricGeometryShader(stage);
+	if (graphics_debug_dump_enabled()) {
+		static std::atomic_uint32_t s_dumps = 0;
+		const auto path = Config::GetShaderLogFolder() /
+		                  fmt::format("{:04d}_barycentric_gs_{:016x}.spv", s_dumps++,
+		                              pixel_program.shader_hash);
+		Common::File::CreateDirectories(path.parent_path());
+		Common::File file(path);
+		if (!file.IsInvalid()) {
+			file.Write(code.data(), code.size() * sizeof(uint32_t));
+		}
+	}
 	const auto module = CompileSPV(code, graphics.device);
 	static std::atomic_uint32_t s_pipelines = 0;
 	LOGF("Barycentric GS: pipeline #%u PS=0x%016" PRIx64 " primitive=%u varyings=%zu "
@@ -644,6 +657,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	if (graphics_debug_dump_enabled()) {
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
 		     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
+	}
+	if (result != vk::Result::eSuccess && geometry_shader_module != nullptr) {
+		EXIT("vkCreateGraphicsPipelines failed: %s for VS=%" PRIu64 " PS=%" PRIu64
+		     " with an emulated-barycentric geometry stage\n",
+		     vk::to_string(result).c_str(), vertex_program.id, pixel_program.id);
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
