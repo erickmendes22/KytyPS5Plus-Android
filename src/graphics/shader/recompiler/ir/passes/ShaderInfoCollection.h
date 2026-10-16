@@ -18,6 +18,13 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info,
 // Any other read of a raw I/J VGPR is left for CollectShaderInfo to reject.
 uint32_t DropCarriedBarycentrics(Program& program);
 
+// True when a pixel shader cannot run on native interpolated inputs alone: it reads raw I/J
+// values (other than ones DropCarriedBarycentrics would drop), reads P0/P10/P20 of a non-flat
+// parameter, or uses flat and smooth aliases of one parameter slot. These are exactly the uses
+// CollectShaderInfo rejects without barycentrics, so a shader for which this is false compiles
+// on the native path.
+bool PixelShaderNeedsBarycentrics(const Program& program, const ShaderPixelInputInfo& pixel);
+
 } // namespace Libs::Graphics::ShaderRecompiler::IR
 
 #endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_RECOMPILER_SHADERINFOCOLLECTION_H_ */

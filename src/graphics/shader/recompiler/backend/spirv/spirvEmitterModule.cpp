@@ -1,5 +1,7 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 
+#include "common/logging/log.h"
+
 #include <algorithm>
 #include <bit>
 
@@ -479,6 +481,96 @@ bool PixelParameterUsesSampling(const EmitterState& state, const InputBinding& i
 	       input.pixel_sampling != IR::PixelInterpolationSampling::Center;
 }
 
+[[noreturn]] void FailBarycentricEmulation(const EmitterState& state, const char* reason) {
+	EXIT("native shader rejected: hash=0x%016" PRIx64 " stage=%u: barycentric emulation through a "
+	     "geometry stage failed: %s\n",
+	     state.program.shader_hash, static_cast<unsigned>(state.program.stage), reason);
+	std::abort();
+}
+
+// Lays out the varyings a generated geometry stage writes for a pixel shader with emulated
+// barycentrics. Interpolated parameters keep their native location so the geometry stage can
+// forward them unchanged. Each per-vertex parameter slot then takes three consecutive free
+// locations (a flat uvec4[3]), and each barycentric vector one more.
+void PlanBarycentricEmulation(EmitterState& state) {
+	auto& emulation = state.program.info.barycentric_emulation;
+	emulation.varyings.clear();
+	emulation.primitive_id = std::ranges::any_of(state.inputs, [](const InputBinding& input) {
+		return input.kind == IR::StageInputKind::PrimitiveId;
+	});
+	const auto        limit = state.device_features.geometry_varying_locations;
+	std::vector<bool> used(limit, false);
+	for (auto& input: state.inputs) {
+		if (input.kind != IR::StageInputKind::Parameter || input.per_vertex) {
+			continue;
+		}
+		const auto location = PixelParameterLocation(state, input.location);
+		if (location >= limit) {
+			FailBarycentricEmulation(state, "a pixel parameter location exceeds the device's "
+			                                "geometry varying limit");
+		}
+		input.emulated_location = location;
+		if (used[location]) {
+			continue;
+		}
+		used[location]  = true;
+		const bool flat = PixelParameterIsFlat(state, input.location);
+		emulation.varyings.push_back({
+		    .kind            = IR::EmulatedVaryingKind::Interpolated,
+		    .source_location = location,
+		    .location        = location,
+		    .flat            = flat,
+		    .no_perspective  = state.input_info.pixel->ps_no_perspective && !flat,
+		    .sampling        = PixelParameterUsesSampling(state, input)
+		                           ? input.pixel_sampling
+		                           : IR::PixelInterpolationSampling::Center,
+		});
+	}
+	const auto allocate = [&](uint32_t count) {
+		for (uint32_t first = 0; first + count <= limit; first++) {
+			if (std::none_of(used.begin() + first, used.begin() + first + count,
+			                 [](bool taken) { return taken; })) {
+				std::fill(used.begin() + first, used.begin() + first + count, true);
+				return first;
+			}
+		}
+		FailBarycentricEmulation(state, "the pixel shader's per-vertex parameters and barycentric "
+		                                "vectors need more varying locations than the device "
+		                                "allows between geometry and fragment stages");
+	};
+	for (auto& input: state.inputs) {
+		if (input.kind != IR::StageInputKind::Parameter || !input.per_vertex) {
+			continue;
+		}
+		const auto source   = PixelParameterLocation(state, input.location);
+		const auto existing = std::ranges::find_if(emulation.varyings, [&](const auto& varying) {
+			return varying.kind == IR::EmulatedVaryingKind::PerVertex &&
+			       varying.source_location == source;
+		});
+		if (existing != emulation.varyings.end()) {
+			input.emulated_location = existing->location;
+			continue;
+		}
+		input.emulated_location = allocate(3);
+		emulation.varyings.push_back({.kind            = IR::EmulatedVaryingKind::PerVertex,
+		                              .source_location = source,
+		                              .location        = input.emulated_location,
+		                              .flat            = true});
+	}
+	for (auto& input: state.inputs) {
+		const bool linear = input.kind == IR::StageInputKind::BaryCoordNoPerspective;
+		if (input.kind != IR::StageInputKind::BaryCoordSmooth && !linear) {
+			continue;
+		}
+		input.emulated_location = allocate(1);
+		emulation.varyings.push_back(
+		    {.kind           = linear ? IR::EmulatedVaryingKind::BaryCoordNoPerspective
+		                              : IR::EmulatedVaryingKind::BaryCoord,
+		     .location       = input.emulated_location,
+		     .no_perspective = linear});
+	}
+}
+
 void DefineInputs(EmitterState& state) {
 	state.inputs.reserve(state.program.info.inputs.size());
 	for (const auto& input: state.program.info.inputs) {
@@ -503,6 +595,10 @@ void DefineInputs(EmitterState& state) {
 		    })) {
 			add_builtin(IR::StageInputKind::WorkgroupId, 3, "gl_WorkGroupID");
 		}
+	}
+	const bool emulated = BarycentricsEmulated(state);
+	if (emulated) {
+		PlanBarycentricEmulation(state);
 	}
 	for (auto& input: state.inputs) {
 		if (state.program.stage == ShaderType::Pixel &&
@@ -545,8 +641,11 @@ void DefineInputs(EmitterState& state) {
 						type = state.builder.Type(spv::OpTypeVector, type, components);
 					}
 				} else if (input.per_vertex) {
-					type = state.builder.Type(spv::OpTypeArray, TypeF32Vector(state, 4),
-					                          ConstantU32(state, 3));
+					// Emulated vertices travel as uint so their exact bits survive the copy.
+					type = state.builder.Type(
+					    spv::OpTypeArray,
+					    emulated ? TypeU32Vector(state, 4) : TypeF32Vector(state, 4),
+					    ConstantU32(state, 3));
 				} else {
 					type = TypeF32Vector(state, 4);
 				}
@@ -561,8 +660,9 @@ void DefineInputs(EmitterState& state) {
 		if (input.kind == IR::StageInputKind::Parameter) {
 			const auto flat = PixelParameterIsFlat(state, input.location);
 			if (input.per_vertex) {
-				state.builder.AddAnnotation(spv::OpDecorate, input.variable_id,
-				                            spv::DecorationPerVertexKHR);
+				state.builder.AddAnnotation(
+				    spv::OpDecorate, input.variable_id,
+				    emulated ? spv::DecorationFlat : spv::DecorationPerVertexKHR);
 			} else if (flat) {
 				state.builder.AddAnnotation(spv::OpDecorate, input.variable_id,
 				                            spv::DecorationFlat);
@@ -582,7 +682,17 @@ void DefineInputs(EmitterState& state) {
 				        : spv::DecorationCentroid);
 			}
 			state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationLocation,
-			                            PixelParameterLocation(state, input.location));
+			                            emulated ? input.emulated_location
+			                                     : PixelParameterLocation(state, input.location));
+		} else if (emulated && (input.kind == IR::StageInputKind::BaryCoordSmooth ||
+		                        input.kind == IR::StageInputKind::BaryCoordNoPerspective)) {
+			// The geometry stage's barycentric vector stands in for the BaryCoord built-in.
+			if (input.kind == IR::StageInputKind::BaryCoordNoPerspective) {
+				state.builder.AddAnnotation(spv::OpDecorate, input.variable_id,
+				                            spv::DecorationNoPerspective);
+			}
+			state.builder.AddAnnotation(spv::OpDecorate, input.variable_id,
+			                            spv::DecorationLocation, input.emulated_location);
 		} else if (const auto builtin = BuiltInForInput(input.kind); builtin != UINT32_MAX) {
 			state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationBuiltIn,
 			                            builtin);
@@ -598,6 +708,42 @@ void DefineInputs(EmitterState& state) {
 			state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationFlat);
 		}
 	}
+}
+
+// Records the built-ins a generated geometry stage must forward. On a device that may emulate
+// barycentrics, a vertex or tessellation evaluation stage that writes gl_Layer or
+// gl_ViewportIndex also writes them to a flat uvec2 at the last geometry varying location:
+// a geometry stage has no gl_Layer/gl_ViewportIndex input to read them from.
+void DefineRasterOutputs(EmitterState& state, uint32_t clip_distance_count,
+                         uint32_t cull_distance_count) {
+	auto& raster = state.program.info.raster_outputs;
+	raster.clip_distance_count = clip_distance_count;
+	raster.cull_distance_count = cull_distance_count;
+	raster.point_size          = state.point_size_variable != 0;
+	raster.layer               = state.layer_variable != 0;
+	raster.viewport_index      = state.viewport_index_variable != 0;
+	raster.layer_viewport_location = UINT32_MAX;
+	const bool pre_raster_stage = state.program.stage == ShaderType::Vertex ||
+	                              state.program.stage == ShaderType::TessellationEvaluation;
+	const auto locations        = state.device_features.geometry_varying_locations;
+	if (!pre_raster_stage || state.device_features.fragment_shader_barycentric || locations == 0 ||
+	    (!raster.layer && !raster.viewport_index)) {
+		return;
+	}
+	const auto location = locations - 1u;
+	if (std::ranges::any_of(state.outputs, [location](const OutputBinding& output) {
+		    return output.kind == IR::StageOutputKind::Parameter && output.location == location;
+	    })) {
+		LOGF("WARNING: shader hash=0x%016" PRIx64 " exports parameter %u, so its layer/viewport "
+		     "index cannot reach an emulated-barycentric geometry stage\n",
+		     state.program.shader_hash, location);
+		return;
+	}
+	state.layer_viewport_mirror_variable = DefineInterfaceVariable(
+	    state, TypeU32Vector(state, 2), spv::StorageClassOutput, "out_layer_viewport");
+	state.builder.AddAnnotation(spv::OpDecorate, state.layer_viewport_mirror_variable,
+	                            spv::DecorationLocation, location);
+	raster.layer_viewport_location = location;
 }
 
 void DefineOutputs(EmitterState& state) {
@@ -700,6 +846,7 @@ void DefineOutputs(EmitterState& state) {
 			}
 		}
 	}
+	DefineRasterOutputs(state, clip_distance_count, cull_distance_count);
 }
 
 } // namespace
@@ -807,10 +954,11 @@ void DefineModule(EmitterState& state) {
 		    return input.per_vertex || input.kind == IR::StageInputKind::BaryCoordSmooth ||
 		           input.kind == IR::StageInputKind::BaryCoordNoPerspective;
 	    });
-	if (fragment_barycentric) {
+	if (fragment_barycentric && !BarycentricsEmulated(state)) {
 		if (!state.device_features.fragment_shader_barycentric) {
 			EXIT("native shader rejected: hash=0x%016" PRIx64 " stage=%u needs barycentric inputs "
-			     "(VK_KHR_fragment_shader_barycentric), which this Vulkan device does not support\n",
+			     "(VK_KHR_fragment_shader_barycentric), which this Vulkan device does not support, "
+			     "and no geometry stage can emulate them\n",
 			     state.program.shader_hash, static_cast<unsigned>(state.program.stage));
 			std::abort();
 		}
