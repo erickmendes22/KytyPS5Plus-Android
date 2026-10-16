@@ -3,6 +3,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/perfWaits.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 
@@ -79,6 +80,7 @@ MeshEmulationRing::Reservation MeshEmulationRing::Reserve(uint64_t size) {
 		if (range.tick == current) {
 			result.reuses_current = true;
 		} else if (!m_scheduler.IsFree(range.tick)) {
+			const Common::PerfStats::ScopedWaitSite wait_site(Common::PerfStats::Wait::SemMeshRing);
 			m_scheduler.Wait(range.tick);
 		}
 		return true;

@@ -85,6 +85,10 @@ private:
 void MarkInput(uint64_t queue_delay_ns);
 void ObserveInput();
 
+// Also samples the calling thread on wall-clock time, sleeping included, into the profile's
+// "wall" sections: where the thread blocks. Meant for the GPU (command processor) thread.
+void SampleThisThreadWallClock();
+
 // Starts the reporter thread and the sampler. Call once, early on the main thread, before the
 // threads to be profiled are created (they inherit the unblocked profiling signal).
 void Start();

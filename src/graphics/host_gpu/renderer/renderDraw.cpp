@@ -5,6 +5,7 @@
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
+#include "common/perfWaits.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -1253,6 +1254,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
+	}
+	Common::PerfStats::Count(Common::PerfStats::Counter::Draws);
+	if (Common::PerfStats::Enabled()) {
+		const auto& named = state.ps_active ? state.ps_input_info.stage : state.vertex_info[0].stage;
+		const uint64_t indices = mesh_emulated ? uint64_t {emulated_mesh.index_count}
+		                                       : uint64_t {draw.index_count} * draw.instance_count;
+		buffer.NotePassDraw(named.program != nullptr ? named.program->shader_hash : 0, indices);
 	}
 	if (mesh_emulated) {
 		vk_buffer.drawIndexed(emulated_mesh.index_count, 1, 0, 0, 0);

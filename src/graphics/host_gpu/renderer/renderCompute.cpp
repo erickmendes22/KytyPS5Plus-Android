@@ -3,6 +3,7 @@
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
+#include "common/perfWaits.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -181,7 +182,16 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 		return false;
 	}
 	if (!cache.ClearImageFromBuffer(command, descriptor.Base48(), size, packed_clear)) {
-		return false;
+		// A uniform fill of color metadata (a guest fast clear writing DCC/CMask keys). Running
+		// it on the GPU marks the keys GPU-written, and binding the surface then reads them back
+		// on the CPU (MaterializeColorClear), which drains the whole GPU queue every time.
+		// Fill them the way a DMA fill does: on the CPU when the range is not GPU-written.
+		if ((size & 3u) != 0 || !cache.IsColorMetadataRange(descriptor.Base48(), size)) {
+			return false;
+		}
+		command.GetContext().GetBufferCache().FillBuffer(descriptor.Base48(), size, packed_clear,
+		                                                 false);
+		return true;
 	}
 	static std::atomic<uint32_t> logged_clears {0};
 	if (logged_clears.fetch_add(1, std::memory_order_relaxed) < 32) {
@@ -200,6 +210,7 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 	}
 	auto& cache = context.GetBufferCache();
 	if (indirect_args != 0) {
+		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemIndirectArgs);
 		cache.ReadMemory(indirect_args, sizeof(vk::DispatchIndirectCommand));
 		std::memcpy(input.workgroup_counts, reinterpret_cast<const void*>(indirect_args),
 		            sizeof(input.workgroup_counts));
@@ -430,7 +441,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	buffer.MarkGpu("misc");
 	vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
+	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
+	buffer.MarkGpu("cs", program.shader_hash);
 
 	// The removed host fence also ordered read-only dispatches before later writers.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
@@ -499,7 +513,10 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	                          vk::PipelineStageFlagBits::eDrawIndirect, {},
 	                          1, &barrier, 0, nullptr, 0, nullptr);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	buffer.MarkGpu("misc");
 	vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
+	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
+	buffer.MarkGpu("cs-indirect", program.shader_hash);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ResetBindings();
 }

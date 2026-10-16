@@ -1,6 +1,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/perfWaits.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cache/meshEmulationRing.h"
@@ -87,7 +88,11 @@ RenderExecutor::EmulatedMeshDraw RenderExecutor::DispatchEmulatedMesh(
 	vk_buffer.pushConstants(pipeline.pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
 	                        sizeof(push), push.data());
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	buffer.MarkGpu("misc");
 	vk_buffer.dispatch(groups, instances, 1);
+	buffer.MarkGpu("mesh-cs", mesh_input.stage.program->shader_hash);
+	Common::PerfStats::Count(Common::PerfStats::Counter::MeshDispatches);
+	Common::PerfStats::Count(Common::PerfStats::Counter::MeshIndices, sizes.index_count);
 
 	vk::BufferMemoryBarrier written {};
 	written.srcAccessMask       = vk::AccessFlagBits::eShaderWrite;

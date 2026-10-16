@@ -1,5 +1,7 @@
 #include "common/perfStats.h"
 
+#include "common/perfWaits.h"
+
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -15,8 +17,11 @@ std::atomic<uint32_t> g_hle_by_id[kMaxHleIds] {};
 
 } // namespace Common::PerfStats::Detail
 
+#include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace Common::PerfStats {
 namespace {
@@ -32,6 +37,22 @@ std::atomic<uint64_t> g_present_sum_us {0};
 std::atomic<uint64_t> g_present_max_us {0};
 std::atomic<int64_t>  g_last_flip_ns {0};
 std::atomic<uint64_t> g_flip_gap_max_us {0};
+constexpr uint64_t    kLongEventUs = 5000; // stalls logged individually with a timestamp
+std::mutex            g_frame_mutex;
+std::vector<uint32_t> g_frame_times_us; // flip intervals of the current period
+
+// Every flip interval also goes to _perf_frames.txt ("monotonic_ms interval_ms") for
+// whole-run percentiles and hitch timelines (long waits and stalls are logged on the same clock).
+void RecordFrameTime(int64_t now_ns, uint64_t gap_us) {
+	static FILE*    file = std::fopen("_perf_frames.txt", "w");
+	std::lock_guard      lock(g_frame_mutex);
+	g_frame_times_us.push_back(static_cast<uint32_t>(std::min<uint64_t>(gap_us, UINT32_MAX)));
+	if (file != nullptr) {
+		std::fprintf(file, "%.1f %.2f\n", static_cast<double>(now_ns) / 1e6,
+		             static_cast<double>(gap_us) / 1000.0);
+		std::fflush(file);
+	}
+}
 
 void StoreMax(std::atomic<uint64_t>& target, uint64_t value) {
 	uint64_t current = target.load(std::memory_order_relaxed);
@@ -60,11 +81,32 @@ void CountFlip(uint64_t submit_to_present_us, uint64_t present_call_us) {
 	const int64_t now  = NowNs();
 	const int64_t last = g_last_flip_ns.exchange(now, std::memory_order_relaxed);
 	if (last != 0) {
-		StoreMax(g_flip_gap_max_us, static_cast<uint64_t>(now - last) / 1000);
+		const auto gap_us = static_cast<uint64_t>(now - last) / 1000;
+		StoreMax(g_flip_gap_max_us, gap_us);
+		RecordFrameTime(now, gap_us);
 	}
 }
 
 // Frame pacing over the last period, as text for the report line; resets the period.
+std::string TakeFramePercentiles() {
+	std::vector<uint32_t> times;
+	{
+		std::lock_guard lock(g_frame_mutex);
+		times.swap(g_frame_times_us);
+	}
+	if (times.empty()) {
+		return "frame_ms p50=- p95=- max=-";
+	}
+	std::sort(times.begin(), times.end());
+	const auto at = [&times](double q) {
+		return static_cast<double>(times[static_cast<size_t>(q * static_cast<double>(times.size() - 1))]) / 1000.0;
+	};
+	char buf[96];
+	std::snprintf(buf, sizeof(buf), "frame_ms p50=%.1f p95=%.1f max=%.1f", at(0.5), at(0.95),
+	              static_cast<double>(times.back()) / 1000.0);
+	return buf;
+}
+
 std::string TakeFrameSummary(uint64_t flips) {
 	const uint64_t latency_sum = g_flip_latency_sum_us.exchange(0, std::memory_order_relaxed);
 	const uint64_t latency_max = g_flip_latency_max_us.exchange(0, std::memory_order_relaxed);
@@ -92,6 +134,14 @@ std::string TakeFrameSummary(uint64_t flips) {
 
 void CountStall(StallKind kind, uint64_t micros) {
 	if (Enabled() && kind < StallKind::Count) {
+		if (micros >= kLongEventUs) {
+			char line[96];
+			std::snprintf(line, sizeof(line), "[perf-event] t=%.1f %s %.1fms",
+			              static_cast<double>(NowNs()) / 1e6,
+			              kind == StallKind::PipelineCompile ? "pipeline_compile" : "shader_translate",
+			              static_cast<double>(micros) / 1000.0);
+			EmitLine(line);
+		}
 		g_stall_count[static_cast<size_t>(kind)].fetch_add(1, std::memory_order_relaxed);
 		g_stall_us[static_cast<size_t>(kind)].fetch_add(micros, std::memory_order_relaxed);
 	}
@@ -173,12 +223,15 @@ constexpr size_t   kRingSize           = size_t {1} << 16;
 constexpr uint64_t kMaxFrameSpan       = 1u << 20; // a caller frame lies within 1 MiB above the callee's
 constexpr int      kProfileDumpSeconds = 5;
 constexpr size_t   kTopEntries         = 80;
+constexpr int      kWallTag            = 0x57a11;
+constexpr size_t   kWallStackFrames    = 4;
 
 struct Sample {
 	std::atomic<uint64_t> seq {0};
 	int32_t               tid = 0;
 	uint32_t              depth = 0;
 	uint32_t              weight = 1; // expirations covered: CPU-time timers only fire on scheduler ticks
+	bool                  wall   = false; // from a wall-clock timer (SampleThisThreadWallClock)
 	uint64_t              frames[kMaxFrames] {};
 };
 
@@ -214,6 +267,7 @@ void OnSample(int /*sig*/, siginfo_t* info, void* context) {
 	Sample&        s     = g_ring[index & (kRingSize - 1)];
 	s.tid                = static_cast<int32_t>(syscall(SYS_gettid));
 	s.weight             = 1 + static_cast<uint32_t>(info->si_overrun > 0 ? info->si_overrun : 0);
+	s.wall               = info->si_code == SI_TIMER && info->si_value.sival_int == kWallTag;
 	s.frames[0]          = pc;
 	s.frames[1]          = lr;
 	uint32_t depth       = 2;
@@ -385,11 +439,7 @@ private:
 };
 
 void Emit(const std::string& line) {
-#if defined(__ANDROID__)
-	__android_log_write(ANDROID_LOG_INFO, "KytyPerf", line.c_str());
-#else
-	std::fprintf(stderr, "%s\n", line.c_str());
-#endif
+	EmitLine(line);
 }
 
 const char* Category(const std::string& module) {
@@ -436,6 +486,8 @@ struct Profile {
 	std::unordered_map<uint64_t, uint64_t> kyty;      // innermost libmain frame -> samples
 	std::unordered_map<int, uint64_t>      threads;   // tid -> samples
 	std::unordered_map<uint32_t, uint64_t> hle;       // HLE id -> calls
+	std::map<std::string, uint64_t>        wall;      // wall-clock samples: leaf + kyty frames
+	uint64_t                               wall_total = 0;
 	uint64_t                               total = 0;
 };
 
@@ -473,6 +525,11 @@ void DumpProfile(const Profile& profile, Symbolizer& symbolizer, int seconds) {
 		dump("hle-calls", by_thunk);
 	}
 	dump("innermost-kyty-frame", profile.kyty);
+	std::fprintf(out, "## wall-stacks (%llu wall-clock samples of 1 ms: leaf <- kyty callers)\n",
+	             static_cast<unsigned long long>(profile.wall_total));
+	for (const auto& [stack, n]: Top(profile.wall, kTopEntries)) {
+		std::fprintf(out, "%llu %s\n", static_cast<unsigned long long>(n), stack.c_str());
+	}
 	std::fclose(out);
 }
 
@@ -508,6 +565,19 @@ void Reporter() {
 			}
 			const uint64_t pc = s.frames[0];
 			const uint64_t w  = s.weight;
+			if (s.wall) {
+				std::string stack = symbolizer.Locate(pc);
+				size_t      kyty  = 0;
+				for (uint32_t i = 1; i < s.depth && kyty < kWallStackFrames; i++) {
+					if (std::strcmp(Category(symbolizer.Module(s.frames[i])), "kyty") == 0) {
+						stack += " <- " + symbolizer.Locate(s.frames[i]);
+						kyty++;
+					}
+				}
+				profile.wall[stack] += w;
+				profile.wall_total += w;
+				continue;
+			}
 			window.per_thread[s.tid] += w;
 			window.per_category[Category(symbolizer.Module(pc))] += w;
 			window.total += w;
@@ -546,7 +616,7 @@ void Reporter() {
 			              static_cast<double>(n) / (dt * 10.0));
 			line += part;
 		}
-		line += " | " + TakeFrameSummary(flips - last_flips) + " | busiest:";
+		line += " | " + TakeFramePercentiles() + " " + TakeFrameSummary(flips - last_flips) + " | busiest:";
 		std::unordered_map<std::string, uint64_t> threads;
 		for (const auto& [tid, n]: window.per_thread) {
 			threads[std::to_string(tid) + "/" + ThreadName(tid)] = n;
@@ -557,6 +627,7 @@ void Reporter() {
 			line += part;
 		}
 		Emit(line);
+		Emit(TakeWaitSummary(dt, flips - last_flips));
 
 		last_hle    = hle;
 		last_faults = faults;
@@ -570,6 +641,25 @@ void Reporter() {
 }
 
 } // namespace
+
+void SampleThisThreadWallClock() {
+	if (!Enabled()) {
+		return;
+	}
+	sigevent sev {};
+	sev.sigev_notify          = SIGEV_THREAD_ID;
+	sev.sigev_signo           = kSampleSignal;
+	sev.sigev_value.sival_int = kWallTag;
+	sev._sigev_un._tid        = static_cast<pid_t>(syscall(SYS_gettid));
+	int timer                 = -1;
+	if (syscall(SYS_timer_create, CLOCK_MONOTONIC, &sev, &timer) != 0) {
+		return;
+	}
+	itimerspec spec {};
+	spec.it_interval.tv_nsec = kSampleIntervalNs;
+	spec.it_value.tv_nsec    = kSampleIntervalNs;
+	syscall(SYS_timer_settime, timer, 0, &spec, nullptr);
+}
 
 void Start() {
 	if (g_enabled.exchange(true)) {
@@ -592,6 +682,8 @@ void Start() {
 #else
 
 namespace Common::PerfStats {
+
+void SampleThisThreadWallClock() {}
 
 void Start() {
 	Detail::g_enabled.store(true, std::memory_order_relaxed);

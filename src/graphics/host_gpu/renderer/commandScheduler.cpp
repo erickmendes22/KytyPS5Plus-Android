@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/perfWaits.h"
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <algorithm>
@@ -94,7 +95,7 @@ bool CommandScheduler::InDeferredOperation() noexcept {
 }
 
 CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graphics)
-    : m_master(graphics), m_context(context), m_graphics(graphics),
+    : m_master(graphics), m_context(context), m_graphics(graphics), m_gpu_timer(graphics, m_master),
       m_command_pool(graphics, m_master), m_command(*this),
       m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }) {}
 
@@ -176,12 +177,14 @@ void CommandScheduler::Flush(SubmitInfo& submit) {
 }
 
 void CommandScheduler::FlushAndWait() {
+	const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemFlush);
 	const auto tick = Submit();
 	m_master.Wait(tick);
 	BeginNext();
 }
 
 void CommandScheduler::Finish() {
+	const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemFinish);
 	CheckActive();
 	if (!m_command.IsInvalid()) {
 		Submit();
@@ -200,6 +203,10 @@ void CommandScheduler::Wait(uint64_t tick) {
 		// resources are released only at the next GPU operation boundary.
 		const auto submitted_tick = Submit();
 		EXIT_IF(submitted_tick != tick);
+		const Common::PerfStats::ScopedWaitSite site(
+		    Common::PerfStats::CurrentWaitSite() == Common::PerfStats::Wait::SemOther
+		        ? Common::PerfStats::Wait::SemFlush
+		        : Common::PerfStats::CurrentWaitSite());
 		m_master.Wait(tick);
 		BeginNext();
 	} else {
@@ -208,7 +215,22 @@ void CommandScheduler::Wait(uint64_t tick) {
 }
 
 void CommandScheduler::PopPendingOperations() {
-	m_master.Refresh();
+	// Runs per draw and dispatch: query the timeline only when the oldest operation belongs to a
+	// submitted command buffer not yet known to be complete. The query is a kernel call on some
+	// drivers (Turnip on KGSL walks its emulated timeline).
+	{
+		std::lock_guard lock(m_operation_mutex);
+		if (m_pending_operations.empty()) {
+			return;
+		}
+		const auto tick = m_pending_operations.front().tick;
+		if (tick >= CurrentTick()) {
+			return;
+		}
+		if (!m_master.IsFree(tick)) {
+			m_master.Refresh();
+		}
+	}
 	for (;;) {
 		PendingOperation operation;
 		{
@@ -275,7 +297,10 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 			m_priority_active      = true;
 			m_priority_active_tick = operation.tick;
 		}
-		m_master.Wait(operation.tick);
+		{
+			const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemPriority);
+			m_master.Wait(operation.tick);
+		}
 		if (!stop.stop_requested()) {
 			RunOperation(std::move(operation.callback));
 		}
@@ -297,6 +322,7 @@ void CommandScheduler::DrainPriorityOperations() {
 
 void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
 	EXIT_IF(g_deferred_callback_scheduler == this);
+	const Common::PerfStats::ScopedWait timing(Common::PerfStats::Wait::GpuPriority);
 	std::unique_lock lock(m_operation_mutex);
 	m_operation_available.wait(lock, [this, tick] {
 		const bool active_before_or_at = m_priority_active && m_priority_active_tick <= tick;
@@ -334,6 +360,7 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 	EXIT_IF(!m_command.IsInvalid());
 	m_command.m_buffer = m_command_pool.Commit();
 	m_command.Begin();
+	m_gpu_timer.Begin(m_command.m_buffer);
 	m_dynamic_state.Invalidate();
 	return m_command;
 }
@@ -343,6 +370,8 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	EXIT_IF(submit.num_wait_semaphores > SubmitInfo::MaxSemaphores ||
 	        submit.num_signal_semaphores >= SubmitInfo::MaxSemaphores);
 
+	m_command.EndRendering();
+	m_gpu_timer.End(m_command.m_buffer);
 	m_command.End();
 	const auto buffer   = m_command.m_buffer;
 	auto&      graphics = m_graphics;
@@ -371,7 +400,9 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 		submit_info.signalSemaphoreCount = submit.num_signal_semaphores;
 		submit_info.pSignalSemaphores    = submit.signal_semaphores.data();
 
+		const Common::PerfStats::ScopedWait timing(Common::PerfStats::Wait::QueueSubmit);
 		result = graphics.queue.submit(1, &submit_info, nullptr);
+		Common::PerfStats::Count(Common::PerfStats::Counter::Submits);
 	}
 
 	if (result != vk::Result::eSuccess) {
@@ -381,6 +412,7 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 		                  m_command.m_debug_arg4);
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	m_gpu_timer.Submitted(tick);
 
 	m_command.m_buffer = nullptr;
 	return tick;

@@ -141,6 +141,15 @@ void SetPrintCaps(bool enabled) {
 	State().print_caps = enabled;
 }
 
+void EnableGpuTurbo() {
+#if defined(KYTY_ANDROID)
+	adrenotools_set_turbo(true);
+	Report("GPU driver: requested maximum Adreno GPU clocks (--gpu-turbo)");
+#else
+	Report("GPU driver: --gpu-turbo is only supported on Android");
+#endif
+}
+
 bool PrintCapsEnabled() {
 	return State().print_caps;
 }

@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
+#include "common/perfWaits.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/tile.h"
@@ -961,6 +962,7 @@ bool TextureCache::CanDownload(const Image& image) const {
 }
 
 void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_offset) {
+	Common::PerfStats::Count(Common::PerfStats::Counter::ImageUploadBytes, image.info.data.size);
 	auto& destination = image.depth_id ? m_slot_images[image.depth_id] : image;
 	const auto& info        = image.info;
 	const auto  binding     = image.depth_id ? BindingType::DepthTarget : UploadBinding(image);
@@ -1067,6 +1069,10 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 		image.info.metadata = desc.info.metadata;
 		// Native color metadata must not retain a reused HTile/CMask/FMask clear flag.
 		m_surface_metas.erase(range.address);
+		if (range.size != 0) {
+			auto& known = m_color_metadata_ranges[range.address];
+			known       = std::max(known, range.size);
+		}
 		if (range.size == 0 || desc.info.resources.levels != 1) {
 			return;
 		}
@@ -1089,6 +1095,7 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 	// Finish native metadata writes before reading backing bytes. This can submit the scheduler,
 	// so discovery runs before final draw uploads and never holds the texture lock across it.
 	if (m_buffer_cache.IsRegionGpuModified(range.address, range.size)) {
+		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemMetadata);
 		m_buffer_cache.ReadMemory(range.address, range.size, false);
 	}
 	const auto slice_size = range.size / layers;
@@ -1717,6 +1724,7 @@ void TextureCache::DownloadImage(Image& image, Buffer& destination, uint64_t des
 	if (!CanDownload(image)) {
 		EXIT("TextureCache: invalid image download\n");
 	}
+	Common::PerfStats::Count(Common::PerfStats::Counter::ImageDownloadBytes, destination_size);
 	if (UploadBinding(image) == BindingType::DepthTarget) {
 		EXIT_IF(destination_size != image.info.data.size || levels != image.info.resources.levels);
 		DownloadDepth(image, destination, destination_offset);
@@ -1869,6 +1877,16 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
 			MarkAsMaybeDirty(id, *owner);
 		}
 	}
+}
+
+bool TextureCache::IsColorMetadataRange(uint64_t address, uint64_t size) {
+	std::scoped_lock lock {m_lock};
+	auto             next = m_color_metadata_ranges.upper_bound(address);
+	if (next == m_color_metadata_ranges.begin()) {
+		return false;
+	}
+	const auto& [start, length] = *std::prev(next);
+	return address - start <= length && size <= length - (address - start);
 }
 
 bool TextureCache::IsMeta(uint64_t address) {

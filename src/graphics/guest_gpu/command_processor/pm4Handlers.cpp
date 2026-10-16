@@ -2257,7 +2257,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 			case 0x02:
 			case 0x04:
 				cp.TriggerEopEventAtEndOfPipe(interrupt_context_id);
-				cp.BufferFlush();
+				cp.FlushForInterrupt();
 				break;
 			default: EXIT("unknown release_mem interrupt selector\n");
 		}
@@ -2299,7 +2299,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 		                      event_index, event_source, dst_gpu_addr, static_cast<uint32_t>(value),
 		                      interrupt_selector, interrupt_context_id);
 		if (interrupt_selector == 0x01 || interrupt_selector == 0x02) {
-			cp.BufferFlush();
+			cp.FlushForInterrupt();
 		}
 
 		return 7;
@@ -2318,7 +2318,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 		                      event_index, event_source, dst_gpu_addr, static_cast<uint32_t>(value),
 		                      interrupt_selector, interrupt_context_id);
 		if (interrupt_selector == 0x01) {
-			cp.BufferFlush();
+			cp.FlushForInterrupt();
 		}
 
 		return 7;

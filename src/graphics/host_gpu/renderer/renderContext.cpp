@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/perfWaits.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/presentation/videoOut.h"
 #include "libs/errno.h"
@@ -62,9 +63,11 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 		return false;
 	}
 	if (access == PageFaultAccess::Write) {
+		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemWriteFault);
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
 		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
 	} else {
+		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemReadFault);
 		m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
 	}
 	return true;
