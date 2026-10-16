@@ -733,6 +733,10 @@ void TestCompleteUMinReduction() {
       fixture.BlockAt().terminator.true_block = &fixture.BlockAt(1);
     }
     ValidateProgram(fixture.program, true);
+    Check(EliminateReadLane(fixture.program, test == Case::Wave32 ? 32u : 64u, false)
+                  .rewritten_reductions == 0 &&
+              use.Instruction()->Arg(0).Resolve() == result,
+          "UMin reduction formed without native subgroup arithmetic");
     const auto stats = EliminateReadLane(fixture.program, test == Case::Wave32 ? 32u : 64u);
     const bool matches = test == Case::Masked || test == Case::Subset ||
         test == Case::Literal || test == Case::LiteralMasked || test == Case::LiteralMove;

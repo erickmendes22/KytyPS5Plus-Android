@@ -781,11 +781,24 @@ uint32_t EmitConditionRef(ValueEmitContext& ctx, const IR::Inst& inst) {
 	if (kind == CFG::BranchCondition::ScalarInstruction) return ctx.Arg(inst, 0);
 	const bool zero = kind == CFG::BranchCondition::ExecZero ||
 	                  kind == CFG::BranchCondition::VccZero || kind == CFG::BranchCondition::SccZero;
+	if (!ctx.state.subgroup_isolated && !ctx.state.device_features.subgroup_vote) {
+		// No GroupNonUniformVote: compare the predicate's ballot with the active lanes'.
+		const auto ballot    = ctx.Ballot(inst.Arg(0));
+		const auto reference = zero ? ctx.Ballot(IR::Value(true))
+		                            : ConstantU32CompositeZero(ctx.state, 4);
+		const auto compare   = Binary(ctx.state, zero ? spv::OpIEqual : spv::OpINotEqual,
+		                              TypeBoolVector(ctx.state, 4), ballot, reference);
+		return Unary(ctx.state, zero ? spv::OpAll : spv::OpAny, TypeBool(ctx.state), compare);
+	}
 	// Zero-kind predicates are already inverted by translation.
 	auto predicate = ctx.Arg(inst, 0);
 	if (ctx.other_half != nullptr) {
 		predicate = Binary(ctx.state, zero ? spv::OpLogicalAnd : spv::OpLogicalOr,
 		                   TypeBool(ctx.state), predicate, ctx.HalfArg(inst, 0, 1));
+	}
+	if (ctx.state.subgroup_isolated) {
+		// A one-lane wave votes with its own predicate.
+		return predicate;
 	}
 	const auto result = ctx.state.builder.AllocateId();
 	ctx.state.builder.AddFunction(zero ? spv::OpGroupNonUniformAll : spv::OpGroupNonUniformAny,
@@ -813,6 +826,13 @@ uint32_t EmitSubgroupUMinU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto value = ctx.Arg(inst, 0);
 	if (ctx.other_half != nullptr) {
 		value = EmitUMin32(state, ctx.HalfArg(inst, 0, 0), ctx.HalfArg(inst, 0, 1));
+	}
+	if (state.subgroup_isolated) {
+		// A one-lane wave reduces to its own value.
+		return value;
+	}
+	if (!state.device_features.subgroup_arithmetic) {
+		ctx.Fail(inst, "wave reduction needs GroupNonUniformArithmetic");
 	}
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpGroupNonUniformUMin, TypeU32(state), result,

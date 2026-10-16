@@ -16800,6 +16800,18 @@ void TestSpirvConditionVotes() {
                 }) && scalar.TryInstruction()->Definition(0) == scalar.TryInstruction()->Definition(1),
             "condition votes did not combine and reuse both virtual halves");
     }
+    // Without GroupNonUniformVote the same votes are ballot comparisons.
+    auto no_vote = options.device_features;
+    no_vote.subgroup_vote = false;
+    const auto ballots =
+        Spirv::EmitProgram(compiled.program, options.input_info, 0, false, no_vote);
+    CheckSpirvBinaryValidates(ballots);
+    Check(!SpirvContainsCapability(ballots, spv::CapabilityGroupNonUniformVote) &&
+              SpirvContainsCapability(ballots, spv::CapabilityGroupNonUniformBallot) &&
+              SpirvInstructionOpcodeCount(ballots, spv::OpGroupNonUniformAll) == 0 &&
+              SpirvInstructionOpcodeCount(ballots, spv::OpGroupNonUniformAny) == 0 &&
+              SpirvInstructionOpcodeCount(ballots, spv::OpGroupNonUniformBallot) != 0,
+          "condition votes without GroupNonUniformVote did not fall back to ballots");
     for (auto *reference : references) reference->Invalidate();
     IR::EliminateDeadCode(compiled.program.blocks);
     compiled.program.shader_info_complete = false;

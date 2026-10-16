@@ -209,7 +209,7 @@ private:
 
 } // namespace
 
-ReadLaneStats EliminateReadLane(Program& program, uint32_t wave_size) {
+ReadLaneStats EliminateReadLane(Program& program, uint32_t wave_size, bool reductions) {
 	ReadLaneStats stats;
 	if (wave_size != 32u && wave_size != 64u) {
 		return stats;
@@ -217,7 +217,7 @@ ReadLaneStats EliminateReadLane(Program& program, uint32_t wave_size) {
 
 	for (auto* block: program.blocks) {
 		for (auto& inst: *block) {
-			if (wave_size == 64u && inst.GetOpcode() == ValueOpcode::UMin32) {
+			if (reductions && wave_size == 64u && inst.GetOpcode() == ValueOpcode::UMin32) {
 				const auto seed = UMinReductionMatcher(block).Match(inst);
 				if (!seed.IsEmpty()) {
 					const auto position = std::find_if(block->begin(), block->end(),

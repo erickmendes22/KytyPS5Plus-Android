@@ -244,6 +244,14 @@ struct ShaderDeviceFeatures {
 	bool subgroup_vertex         = true; // Vertex, Local
 	bool subgroup_tessellation   = true; // TessellationControl, TessellationEvaluation
 	bool subgroup_fragment       = true; // Pixel
+	// Subgroup operation classes beyond ballot/shuffle (subgroupSupportedOperations). Without
+	// vote, uniform-branch votes are computed from ballots; without arithmetic, wave reductions
+	// keep their DPP lowering instead of becoming OpGroupNonUniform*Min.
+	bool subgroup_vote           = true;
+	bool subgroup_arithmetic     = true;
+	// shaderStorageImageArrayNonUniformIndexing. Without it, GPU-selected storage images are
+	// indexed dynamically without the NonUniform decoration (shaderStorageImageArrayDynamicIndexing).
+	bool storage_image_array_non_uniform_indexing = true;
 	// VK_EXT_mesh_shader. Without it a Mesh stage is emitted as a compute shader that writes its
 	// vertices and triangles to buffers a generated vertex shader reads back (mesh emulation).
 	bool mesh_shader = true;

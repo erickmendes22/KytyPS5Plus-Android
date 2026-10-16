@@ -415,6 +415,12 @@ struct PipelineCache::ProgramCache {
 		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationControl) &&
 		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationEvaluation),
 		         .subgroup_fragment = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eFragment),
+		         .subgroup_vote =
+		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eVote),
+		         .subgroup_arithmetic =
+		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eArithmetic),
+		         .storage_image_array_non_uniform_indexing =
+		             graphics.optional_features.storage_image_array_non_uniform_indexing,
 		         .mesh_shader       = graphics.mesh_shader_enabled,
 		};
 		options.device_quirks = device_quirks;

@@ -154,10 +154,15 @@ uint32_t LoadImageDescriptor(EmitterState& state, uint32_t resource, uint32_t mi
 	state.builder.AddFunction(spv::OpLoad, state.images[IR::ImageBindingIndex(kind)].type,
 	                          image, pointer);
 	if (array_index != 0u) {
-		DecorateNonUniformDescriptor(state, image,
-		    IR::ImageBindingResourceClass(kind) == IR::ImageResourceClass::Storage
-		        ? spv::CapabilityStorageImageArrayNonUniformIndexing
-		        : spv::CapabilitySampledImageArrayNonUniformIndexing);
+		const bool storage = IR::ImageBindingResourceClass(kind) == IR::ImageResourceClass::Storage;
+		if (storage && !state.device_features.storage_image_array_non_uniform_indexing) {
+			// Fallback: plain dynamic indexing (core shaderStorageImageArrayDynamicIndexing).
+			state.builder.RequireCapability(spv::CapabilityStorageImageArrayDynamicIndexing);
+		} else {
+			DecorateNonUniformDescriptor(state, image,
+			                             storage ? spv::CapabilityStorageImageArrayNonUniformIndexing
+			                                     : spv::CapabilitySampledImageArrayNonUniformIndexing);
+		}
 	}
 	return image;
 }

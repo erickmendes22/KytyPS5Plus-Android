@@ -959,16 +959,20 @@ void DefineModule(EmitterState& state) {
 		state.builder.RequireCapability(spv::CapabilityImageGatherExtended);
 	}
 	if (!state.subgroup_isolated) {
+		// Without GroupNonUniformVote, votes are emitted as ballot comparisons (EmitConditionRef).
+		const bool native_vote = state.program.info.subgroup_vote &&
+		                         state.device_features.subgroup_vote;
+		const bool ballot_vote = state.program.info.subgroup_vote && !native_vote;
 		if (state.lane_count == 2 || state.program.info.subgroup_barrier ||
 		    state.program.info.subgroup_ballot || state.program.info.subgroup_vote ||
 		    state.program.info.subgroup_shuffle || state.program.info.subgroup_arithmetic ||
 		    state.program.info.subgroup_local_invocation_id) {
 			state.builder.RequireCapability(spv::CapabilityGroupNonUniform);
 		}
-		if (state.lane_count == 2 || state.program.info.subgroup_ballot) {
+		if (state.lane_count == 2 || state.program.info.subgroup_ballot || ballot_vote) {
 			state.builder.RequireCapability(spv::CapabilityGroupNonUniformBallot);
 		}
-		if (state.program.info.subgroup_vote) {
+		if (native_vote) {
 			state.builder.RequireCapability(spv::CapabilityGroupNonUniformVote);
 		}
 		if (state.program.info.subgroup_shuffle) {
