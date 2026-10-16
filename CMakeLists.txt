@@ -812,6 +812,18 @@ if(KYTY_GUEST_CPU_FEX)
 	endif()
 endif()
 
+# Offline driver check of --dump-shaders output (scripts/android/check-shaders.sh).
+if(UNIX)
+	add_executable(shader_checker EXCLUDE_FROM_ALL
+		"${KYTY_SOURCE_DIR}/tools/shader_checker/main.cpp"
+		"${KYTY_SOURCE_DIR}/tools/shader_checker/checkerDevice.cpp"
+		"${KYTY_SOURCE_DIR}/tools/shader_checker/checkerPipeline.cpp"
+		"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineRecord.cpp")
+	target_include_directories(shader_checker PRIVATE ${inc_headers})
+	target_link_libraries(shader_checker Vulkan::Headers spirv-tools fmt::fmt
+		nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+endif()
+
 if(KYTY_ANDROID)
 	# SDLActivity dlopen()s libmain.so and calls its exported SDL_main().
 	add_library(kyty_emulator SHARED "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
