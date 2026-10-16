@@ -790,6 +790,13 @@ static void WindowCreate(WindowContext& context) {
 		SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "x11,wayland");
 	}
 #endif
+#if defined(__ANDROID__)
+	// SDL's Android wait loop pumps with a poll sentinel on every iteration. Re-queueing the sentinel
+	// posts a lifecycle wake, which ends the next wait at once, so SDL_WaitEventTimeout never sleeps
+	// and the event thread spins a whole core. Kyty only waits for events and never needs the
+	// sentinel's end-of-poll marker.
+	SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
+#endif
 	if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
 		EXIT("%s\n", SDL_GetError());
 	}
