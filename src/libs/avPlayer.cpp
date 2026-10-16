@@ -575,9 +575,13 @@ struct ReadyFrame {
 	uint64_t                    timestamp_offset = 0;
 };
 
+// Guest file callbacks receive AvPlayer-owned guest memory, as on PS5: the guest may validate
+// the addresses (APR reads reject host heap pointers, e.g. Android's tagged ones).
 class FileStreamer {
 public:
-	explicit FileStreamer(AvPlayerFileReplacement f): file(f) {}
+	static constexpr uint32_t kIoBufferSize = 64 * 1024;
+
+	FileStreamer(AvPlayerFileReplacement f, AvPlayerMemAllocator m): file(f), mem(m) {}
 	~FileStreamer() {
 		if (ctx != nullptr) {
 			av_freep(&ctx->buffer);
@@ -589,8 +593,17 @@ public:
 	}
 	bool Init(const std::string& path) {
 		if (file.open != nullptr) {
-			if (file.close == nullptr || file.read_offset == nullptr || file.size == nullptr ||
-			    Loader::GuestHost::CallGuestFunction(file.open, file.object_pointer, path.c_str()) < 0) {
+			if (file.close == nullptr || file.read_offset == nullptr || file.size == nullptr) {
+				return false;
+			}
+			guest_path = GuestBuffer(mem, 16, static_cast<uint32_t>(path.size() + 1), false);
+			guest_io   = GuestBuffer(mem, 64, kIoBufferSize, false);
+			if (!guest_path.Valid() || !guest_io.Valid()) {
+				return false;
+			}
+			std::memcpy(guest_path.Get(), path.c_str(), path.size() + 1);
+			if (Loader::GuestHost::CallGuestFunction(file.open, file.object_pointer,
+			                                         reinterpret_cast<const char*>(guest_path.Get())) < 0) {
 				return false;
 			}
 			opened = true;
@@ -605,7 +618,7 @@ public:
 		if (size == 0 || size > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
 			return false;
 		}
-		constexpr int buffer_size = 64 * 1024;
+		constexpr int buffer_size = kIoBufferSize;
 		auto*         buf         = static_cast<uint8_t*>(av_malloc(buffer_size));
 		if (buf == nullptr) {
 			return false;
@@ -627,8 +640,13 @@ private:
 		len      = static_cast<int>(std::min<uint64_t>(len, s->size - s->pos));
 		int read = 0;
 		if (s->opened) {
-			read = Loader::GuestHost::CallGuestFunction(s->file.read_offset, s->file.object_pointer, buf,
-			                                            s->pos, static_cast<uint32_t>(len));
+			len  = static_cast<int>(std::min<uint64_t>(len, s->guest_io.Size()));
+			read = Loader::GuestHost::CallGuestFunction(s->file.read_offset, s->file.object_pointer,
+			                                            s->guest_io.Get(), s->pos,
+			                                            static_cast<uint32_t>(len));
+			if (read > 0 && read <= len) {
+				std::memcpy(buf, s->guest_io.Get(), static_cast<size_t>(read));
+			}
 		} else {
 			uint32_t bytes = 0;
 			s->local_file.Read(buf, static_cast<uint32_t>(len), &bytes);
@@ -667,6 +685,9 @@ private:
 		return static_cast<int64_t>(position);
 	}
 	AvPlayerFileReplacement file;
+	AvPlayerMemAllocator    mem;
+	GuestBuffer             guest_path;
+	GuestBuffer             guest_io;
 	Common::File            local_file;
 	bool                    opened = false;
 	uint64_t                pos    = 0;
@@ -705,7 +726,7 @@ public:
 			return static_cast<Source*>(opaque)->interrupt_io.load() ? 1 : 0;
 		};
 		raw->interrupt_callback.opaque = this;
-		streamer                       = std::make_unique<FileStreamer>(file);
+		streamer                       = std::make_unique<FileStreamer>(file, mem);
 		if (!streamer->Init(path)) {
 			avformat_free_context(raw);
 			return AVPLAYER_ERROR_OPERATION_FAILED;

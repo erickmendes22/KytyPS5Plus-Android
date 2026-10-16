@@ -75,9 +75,39 @@ struct Callbacks {
 	unsigned opens = 0;
 	unsigned closes = 0;
 	bool premature_eof = false;
+	struct IoBlock {
+		const uint8_t* data;
+		uint32_t       size;
+		uint32_t       alignment;
+	};
+	std::vector<IoBlock> io_allocations;
+	bool host_buffer_seen = false;
+	bool Owns(const void* pointer, uint64_t size) const {
+		const auto* bytes = static_cast<const uint8_t*>(pointer);
+		return std::any_of(io_allocations.begin(), io_allocations.end(), [&](const auto& block) {
+			return bytes >= block.data && bytes + size <= block.data + block.size;
+		});
+	}
 };
-int KYTY_SYSV_ABI Open(void* object, const char*) {
-	++static_cast<Callbacks*>(object)->opens;
+void* KYTY_SYSV_ABI IoAllocate(void* object, uint32_t alignment, uint32_t size) {
+	auto* data = ::operator new(size, std::align_val_t(alignment), std::nothrow);
+	static_cast<Callbacks*>(object)->io_allocations.push_back(
+	    {static_cast<const uint8_t*>(data), size, alignment});
+	return data;
+}
+void KYTY_SYSV_ABI IoDeallocate(void* object, void* data) {
+	auto& blocks = static_cast<Callbacks*>(object)->io_allocations;
+	const auto block = std::find_if(blocks.begin(), blocks.end(),
+	                                [&](const auto& entry) { return entry.data == data; });
+	Check(block != blocks.end(), "free an AvPlayer-owned buffer");
+	const auto alignment = block->alignment;
+	blocks.erase(block);
+	::operator delete(data, std::align_val_t(alignment));
+}
+int KYTY_SYSV_ABI Open(void* object, const char* path) {
+	auto& state = *static_cast<Callbacks*>(object);
+	++state.opens;
+	state.host_buffer_seen |= !state.Owns(path, std::strlen(path) + 1);
 	return 0;
 }
 int KYTY_SYSV_ABI Close(void* object) {
@@ -89,6 +119,7 @@ int KYTY_SYSV_ABI Read(void* object, uint8_t* buffer, uint64_t offset, uint32_t 
 	if (state.premature_eof) {
 		return 0;
 	}
+	state.host_buffer_seen |= !state.Owns(buffer, size);
 	const auto bytes = std::min<uint64_t>(size, state.data.size() - offset);
 	std::memcpy(buffer, state.data.data() + offset, bytes);
 	return static_cast<int>(bytes);
@@ -186,13 +217,13 @@ int main() {
 	Check(ArchiveTests::CreateArchive(root / "game.zar", payload), "create archive fixture");
 	content_root = root;
 	{
-		FileStreamer native({});
+		FileStreamer native({}, {});
 		Check(native.Init("/app0/movie.bin"), "open native stream");
 		CheckStream(native, payload);
 	}
 	content_root = Common::MakeArchivePath(root / "game.zar");
 	{
-		FileStreamer archive({});
+		FileStreamer archive({}, {});
 		Check(archive.Init("/app0/assets/subdir/data.bin"), "open archived stream");
 		CheckStream(archive, payload);
 	}
@@ -202,8 +233,13 @@ int main() {
 	                                          GuestFunctionPointer<Close>("avplayer_test.Close"),
 	                                          GuestFunctionPointer<Read>("avplayer_test.Read"),
 	                                          GuestFunctionPointer<Size>("avplayer_test.Size")};
+	const AvPlayerMemAllocator io_memory {&callbacks,
+	                                      GuestFunctionPointer<IoAllocate>("avplayer_test.IoAllocate"),
+	                                      GuestFunctionPointer<IoDeallocate>("avplayer_test.IoDeallocate"),
+	                                      GuestFunctionPointer<IoAllocate>("avplayer_test.IoAllocate"),
+	                                      GuestFunctionPointer<IoDeallocate>("avplayer_test.IoDeallocate")};
 	{
-		FileStreamer callback(replacement);
+		FileStreamer callback(replacement, io_memory);
 		Check(callback.Init("callback"), "open guest callback stream");
 		CheckStream(callback, payload);
 		callbacks.premature_eof = true;
@@ -213,8 +249,10 @@ int main() {
 		Check(io->read_packet(io->opaque, &byte, 1) == AVERROR(EIO), "reject premature EOF");
 	}
 	Check(callbacks.opens == 1 && callbacks.closes == 1, "close callback exactly once");
+	Check(!callbacks.host_buffer_seen && callbacks.io_allocations.empty(),
+	      "guest callbacks only see AvPlayer-owned guest buffers, released after close");
 	{
-		FileStreamer missing({});
+		FileStreamer missing({}, {});
 		Check(!missing.Init("/unmounted/movie.bin"), "reject unmapped media");
 	}
 	content_root = root;
