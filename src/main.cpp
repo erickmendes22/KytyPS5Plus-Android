@@ -136,6 +136,7 @@ static void PrintUsage() {
 	         "                                       (meta.json + .so, e.g. Mesa Turnip) via\n"
 	         "                                       libadrenotools. Default: system driver.\n");
 	::printf("  --print-vulkan-caps                  Log the device's extensions and key features.\n");
+	::printf("  --gpu-turbo                          Android: keep Adreno GPU clocks at maximum.\n");
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
 	::printf("  --hdr                                Enable HDR10 output when supported.\n");
 	::printf(
@@ -343,6 +344,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 
 		if (arg == "--print-vulkan-caps") {
 			Libs::Graphics::VulkanDriver::SetPrintCaps(true);
+			continue;
+		}
+
+		if (arg == "--gpu-turbo") {
+			Libs::Graphics::VulkanDriver::EnableGpuTurbo();
 			continue;
 		}
 

@@ -16,6 +16,10 @@ void SetCustomDriverDirectory(std::string directory);
 // --print-vulkan-caps: dump the selected device's driver, extensions and key features.
 void SetPrintCaps(bool enabled);
 
+// --gpu-turbo: ask KGSL to keep the Adreno GPU at its maximum clock (thermal limits still apply),
+// as Dolphin does through libadrenotools. Android/Adreno only; elsewhere it logs and does nothing.
+void EnableGpuTurbo();
+
 } // namespace Libs::Graphics::VulkanDriver
 
 #endif // EMULATOR_SRC_GRAPHICS_PRESENTATION_WINDOW_VULKANDRIVER_H_
