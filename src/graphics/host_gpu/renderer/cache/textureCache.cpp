@@ -1069,6 +1069,10 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 		image.info.metadata = desc.info.metadata;
 		// Native color metadata must not retain a reused HTile/CMask/FMask clear flag.
 		m_surface_metas.erase(range.address);
+		if (range.size != 0) {
+			auto& known = m_color_metadata_ranges[range.address];
+			known       = std::max(known, range.size);
+		}
 		if (range.size == 0 || desc.info.resources.levels != 1) {
 			return;
 		}
@@ -1869,6 +1873,16 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
 			MarkAsMaybeDirty(id, *owner);
 		}
 	}
+}
+
+bool TextureCache::IsColorMetadataRange(uint64_t address, uint64_t size) {
+	std::scoped_lock lock {m_lock};
+	auto             next = m_color_metadata_ranges.upper_bound(address);
+	if (next == m_color_metadata_ranges.begin()) {
+		return false;
+	}
+	const auto& [start, length] = *std::prev(next);
+	return address - start <= length && size <= length - (address - start);
 }
 
 bool TextureCache::IsMeta(uint64_t address) {

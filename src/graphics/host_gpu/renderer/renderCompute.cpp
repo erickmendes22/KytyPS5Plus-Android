@@ -181,7 +181,16 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 		return false;
 	}
 	if (!cache.ClearImageFromBuffer(command, descriptor.Base48(), size, packed_clear)) {
-		return false;
+		// A uniform fill of color metadata (a guest fast clear writing DCC/CMask keys). Running
+		// it on the GPU marks the keys GPU-written, and binding the surface then reads them back
+		// on the CPU (MaterializeColorClear), which drains the whole GPU queue every time.
+		// Fill them the way a DMA fill does: on the CPU when the range is not GPU-written.
+		if ((size & 3u) != 0 || !cache.IsColorMetadataRange(descriptor.Base48(), size)) {
+			return false;
+		}
+		command.GetContext().GetBufferCache().FillBuffer(descriptor.Base48(), size, packed_clear,
+		                                                 false);
+		return true;
 	}
 	static std::atomic<uint32_t> logged_clears {0};
 	if (logged_clears.fetch_add(1, std::memory_order_relaxed) < 32) {
