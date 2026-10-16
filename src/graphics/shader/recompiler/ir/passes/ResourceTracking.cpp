@@ -3735,6 +3735,8 @@ private:
 		resource.written         = resource.written || write;
 		resource.atomic          = resource.atomic || atomic;
 		resource.formatted       = resource.formatted || memory.formatted;
+		resource.scalar          = resource.scalar || op == ValueOpcode::ReadConstBuffer ||
+		                           memory.kind == ResourceKind::ScalarBuffer;
 	}
 
 	uint32_t AddImage(uint32_t source, const MemoryInfo& memory, ValueOpcode op, uint32_t pc) {
@@ -3881,24 +3883,6 @@ private:
 		if (memory.planning_only || IsIndirectPlanningMemory(flags.index)) {
 			return;
 		}
-		if (op == ValueOpcode::ReadConstBuffer) {
-			const auto* handle = inst.Arg(0).Resolve().TryInstruction();
-			if (memory.kind != ResourceKind::ScalarBuffer || handle == nullptr ||
-			    handle->GetOpcode() != ValueOpcode::GetBufferResource || handle->NumArgs() != 4u) {
-				Fail(flags.pc, "scalar buffer read requires a four-DWORD buffer descriptor");
-			}
-			// Scalar descriptors can span disjoint guest mappings. Keep their raw GPU operands
-			// separate from handles that vector-resource planning may rewrite.
-			auto* block = inst.Parent();
-			const auto where = std::ranges::find_if(block->Instructions(),
-			    [&](const Inst& candidate) { return &candidate == &inst; });
-			auto& scalar = *block->PrependNewInst(where, ValueOpcode::GetBufferResource,
-			    {handle->Arg(0), handle->Arg(1), handle->Arg(2), handle->Arg(3)});
-			inst.SetArg(0, Value(&scalar));
-			m_program.memory_info[flags.index].kind = ResourceKind::IndirectBuffer;
-			m_info.uses_dma = true;
-			return;
-		}
 		Inst*    handle   = nullptr;
 		uint32_t source   = 0;
 		uint32_t resource = 0;
@@ -3910,11 +3894,12 @@ private:
 				source = indirect->source;
 			} else if (!GetHandle(inst.Arg(0), ValueOpcode::GetBufferResource, 4, flags.pc,
 			               memory.resource * 4u, handle, source)) {
-				if (memory.kind != ResourceKind::Buffer ||
+				if (memory.kind != (op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
+				                                                        : ResourceKind::Buffer) ||
 				    !memory.SupportsIndirectBufferLoad(op)) {
 					Fail(flags.pc,
 					     "buffer descriptor is not a valid runtime value; GPU-selected access "
-					     "requires a raw 8/16-bit, raw DWORD x1/x2/x3/x4, or formatted X load");
+					     "requires a scalar, raw 8/16-bit, raw DWORD x1/x2/x3/x4, or formatted X load");
 				}
 				m_program.memory_info[flags.index].kind = ResourceKind::IndirectBuffer;
 				m_info.uses_dma                         = true;

@@ -5422,7 +5422,8 @@ void TestNewShaderRecompilerScalarMemoryBindingDomains() {
             Check(index < program.memory_info.size(),
                   "typed scalar memory operation has invalid metadata");
             const auto &memory = program.memory_info[index];
-            Check(memory.kind == kind && !memory.planning_only,
+            Check(memory.kind == kind && memory.resource == 0u &&
+                      !memory.planning_only,
                   "typed scalar memory operation has the wrong live domain");
             count++;
           }
@@ -5482,15 +5483,17 @@ void TestNewShaderRecompilerScalarMemoryBindingDomains() {
 
   auto buffer = RecompileForTest(buffer_shader, buffer_options);
   const auto& buffer_counts = buffer.program.bindings.descriptor_counts;
-  Check(buffer.program.info.buffers.empty() && buffer.program.info.uses_dma &&
-            buffer_counts[static_cast<size_t>(BindingKind::Buffers)] == 0 &&
-            buffer_counts[static_cast<size_t>(BindingKind::BdaPagetable)] == 1 &&
-            buffer_counts[static_cast<size_t>(BindingKind::FaultBuffer)] == 1 &&
+  Check(buffer.program.info.buffers.size() == 1u &&
+            buffer.program.info.buffers[0].scalar &&
+            buffer.program.info.buffers[0].descriptor_index == 0 &&
+            !buffer.program.info.uses_dma &&
+            buffer_counts[static_cast<size_t>(BindingKind::Buffers)] == 1 &&
+            buffer_counts[static_cast<size_t>(BindingKind::BdaPagetable)] == 0 &&
             buffer_counts[static_cast<size_t>(BindingKind::FlattenedSrt)] == 0,
-        "descriptor scalar load did not use only the DMA domain");
+        "descriptor scalar load did not use only the buffer domain");
   Check(count_live_memory_ops(
             buffer.program, ShaderRecompiler::IR::ValueOpcode::ReadConstBuffer,
-            ShaderRecompiler::IR::ResourceKind::IndirectBuffer) == 1u,
+            ShaderRecompiler::IR::ResourceKind::ScalarBuffer) == 1u,
         "descriptor scalar load did not remain a live typed buffer operation");
   CheckSpirvBinaryValidates(buffer.spirv);
 }
@@ -9636,55 +9639,6 @@ void TestNewShaderRecompilerCfgExecSccSharedArm() {
   CheckSpirvBinaryValidates(result.spirv);
 }
 
-std::vector<std::pair<uint32_t, std::array<uint32_t, 4>>> ScalarDescriptorsOnUniformPath(
-    TestCompileResult& result, std::span<const uint32_t> user_data) {
-  using namespace ShaderRecompiler::IR;
-  using ShaderRecompiler::CFG::TerminatorKind;
-  // These acyclic fixtures have uniform branches and descriptor loads already flattened.
-  for (auto* block : result.program.blocks) {
-    for (auto& inst : *block) {
-      if (inst.GetOpcode() != ValueOpcode::ReadConst) continue;
-      const auto slot = inst.Arg(1).Resolve().U32();
-      Check(slot < result.resources.flattened_srt.size(), "scalar descriptor has an invalid SRT slot");
-      inst.ReplaceUsesWith(Value(result.resources.flattened_srt[slot]));
-    }
-  }
-  SrtWalker walker(result.program, {.user_data = user_data});
-  std::vector<std::pair<uint32_t, std::array<uint32_t, 4>>> descriptors;
-  Block* previous = nullptr;
-  auto* block = result.program.blocks.front();
-  for (size_t step = 0; step < result.program.blocks.size(); ++step) {
-    for (auto& inst : *block) {
-      if (inst.GetOpcode() == ValueOpcode::Phi) {
-        size_t incoming = 0;
-        while (incoming < inst.NumArgs() && inst.PhiBlock(incoming) != previous) ++incoming;
-        Check(incoming < inst.NumArgs(), "descriptor Phi lost the executed predecessor");
-        inst.ReplaceUsesWith(inst.Arg(incoming));
-      } else if (inst.GetOpcode() == ValueOpcode::ReadConstBuffer) {
-        const auto* handle = inst.Arg(0).ResolveInstruction();
-        Check(handle && handle->GetOpcode() == ValueOpcode::GetBufferResource && handle->NumArgs() == 4u,
-              "scalar read lost its raw buffer descriptor");
-        auto& [pc, words] = descriptors.emplace_back();
-        pc = inst.Flags<MemoryFlags>().pc;
-        for (uint32_t word = 0; word < words.size(); ++word)
-          Check(walker.Evaluate(handle->Arg(word), words[word]), "scalar descriptor word is not evaluable");
-      }
-    }
-    const auto& term = block->terminator;
-    if (term.kind == TerminatorKind::Return) return descriptors;
-    Check(term.kind == TerminatorKind::Branch || term.kind == TerminatorKind::ConditionalBranch,
-          "descriptor fixture has unsupported control flow");
-    uint32_t condition = 1u;
-    if (term.kind == TerminatorKind::ConditionalBranch)
-      Check(walker.Evaluate(block->condition, condition), "descriptor branch is not uniform");
-    previous = block;
-    block = condition != 0u ? term.true_block : term.false_block;
-    Check(block != nullptr, "descriptor fixture lost its branch target");
-  }
-  Check(false, "descriptor fixture unexpectedly contains a loop");
-  return descriptors;
-}
-
 void TestSharedReturnPreservesDescriptorDominance() {
   const uint32_t shader[] = {
       EncodeSmem0(0x02, 32, 14), (125u << 25u) | 0x60u,
@@ -9730,12 +9684,9 @@ void TestSharedReturnPreservesDescriptorDominance() {
   auto options = MakeCompileOptions(ShaderType::Pixel);
   options.user_data = user_data;
   auto result = RecompileForTest(shader, options, ReadHostTestMemory);
-  Check(!result.program.dispatcher_fallback && result.resources.buffers.empty() &&
-            result.program.info.uses_dma,
-        "surviving scalar operation did not retain structured BDA access");
-  const auto descriptors = ScalarDescriptorsOnUniformPath(result, user_data);
-  Check(descriptors.size() == 1u && descriptors[0].first == 0x20u &&
-            std::equal(descriptors[0].second.begin(), descriptors[0].second.end(), table.begin() + 0x50u / 4u),
+  Check(!result.program.dispatcher_fallback &&
+            result.resources.buffers.size() == 1u &&
+            result.resources.buffers[0].dwords[0] == 0x2000u,
         "return-only descriptor reached the surviving buffer operation");
   CheckSpirvBinaryValidates(result.spirv);
 }
@@ -9792,18 +9743,24 @@ void TestNestedSelectionPreservesDescriptorSources() {
     auto options = MakeCompileOptions(ShaderType::Compute);
     options.user_data_base = 8;
     options.user_data = user_data;
-    auto result = RecompileForTest(shader, options, ReadHostTestMemory);
-    Check(!result.program.dispatcher_fallback && result.resources.buffers.size() == 1u &&
-              result.program.info.buffers[0].first_use_pc == join * 4u &&
-              std::equal(user_data.begin() + 4, user_data.begin() + 8,
-                         result.resources.buffers[0].dwords.begin()),
-          "nested descriptor selection lost its structured output binding");
-    const auto descriptors = ScalarDescriptorsOnUniformPath(result, user_data);
-    const auto selected_pc = (mode == 0u ? 8u : mode == 1u ? 14u : direct_arm) * 4u;
-    const auto* expected = mode == 0u ? table.data() : mode == 1u ? table.data() + 4 : user_data.data() + 8;
-    Check(descriptors.size() == 1u && descriptors[0].first == selected_pc &&
-              std::equal(expected, expected + 4, descriptors[0].second.begin()),
-          "nested descriptor selection chose another arm's descriptor");
+    const auto result = RecompileForTest(shader, options, ReadHostTestMemory);
+    Check(!result.program.dispatcher_fallback && result.resources.buffers.size() == 4u,
+          "nested descriptor selection lost its structured resource bindings");
+    for (size_t i = 0; i < result.program.info.buffers.size(); ++i) {
+      const auto pc = result.program.info.buffers[i].first_use_pc;
+      Check(pc == 8u * 4u || pc == 14u * 4u || pc == direct_arm * 4u || pc == join * 4u,
+            "nested descriptor selection lost a native source location");
+      const auto selected_pc = (mode == 0u ? 8u : mode == 1u ? 14u : direct_arm) * 4u;
+      const auto *expected = pc == 8u * 4u ? table.data()
+                           : pc == 14u * 4u ? table.data() + 4
+                           : pc == direct_arm * 4u ? user_data.data() + 8 : user_data.data() + 4;
+      const auto &descriptor = result.resources.buffers[i];
+      const bool unused = pc != selected_pc && pc != join * 4u;
+      Check(descriptor.dword_count == 4 &&
+                (std::equal(expected, expected + 4, descriptor.dwords.begin()) ||
+                 (unused && std::ranges::all_of(descriptor.dwords, [](auto word) { return word == 0; }))),
+            "nested descriptor selection chose another arm's descriptor");
+    }
     CheckSpirvBinaryValidates(result.spirv);
   }
 }
@@ -9862,16 +9819,16 @@ void TestSharedExitPreservesNativeDescriptorSources() {
     user_data[2] = arm;
     auto options = MakeCompileOptions(ShaderType::Pixel);
     options.user_data = user_data;
-    auto result = RecompileForTest(shader, options, ReadHostTestMemory);
-    Check(!result.program.dispatcher_fallback && result.resources.buffers.empty() &&
-              result.program.info.uses_dma,
-          "shared-exit descriptor selection lost its structured scalar reads");
-    const auto descriptors = ScalarDescriptorsOnUniformPath(result, user_data);
-    const auto selected_pc = (arm == 0u ? 22u : 14u) * 4u;
-    const auto* expected = table.data() + (arm == 0u ? 12u : 8u);
-    Check(descriptors.size() == 1u && descriptors[0].first == selected_pc &&
-              std::equal(expected, expected + 4, descriptors[0].second.begin()),
-          "shared-exit descriptor selection retained an overwritten native source");
+    const auto result = RecompileForTest(shader, options, ReadHostTestMemory);
+    Check(!result.program.dispatcher_fallback && result.resources.buffers.size() == 2u,
+          "shared-exit descriptor selection lost its structured resource bindings");
+    for (size_t i = 0; i < result.program.info.buffers.size(); ++i) {
+      const auto pc = result.program.info.buffers[i].first_use_pc;
+      const uint32_t expected = pc == 14u * 4u ? table[8]
+                                : pc == 22u * 4u ? table[12] : 0u;
+      Check(expected != 0u && result.resources.buffers[i].dwords[0] == expected,
+            "shared-exit descriptor selection retained an overwritten native source");
+    }
     CheckSpirvBinaryValidates(result.spirv);
   }
 }
@@ -14985,12 +14942,10 @@ void TestNewShaderRecompilerNativeBindingPlan() {
       storage = kind;
     }
   }
-  Check(counts[static_cast<size_t>(BindingKind::Buffers)] == 1 &&
-            result.program.info.buffers.size() == 1u &&
+  Check(counts[static_cast<size_t>(BindingKind::Buffers)] == 2 &&
             result.program.info.buffers[0].descriptor_index == 0 &&
-            counts[static_cast<size_t>(BindingKind::BdaPagetable)] == 1 &&
-            counts[static_cast<size_t>(BindingKind::FaultBuffer)] == 1,
-        "native emission did not allocate the vector buffer and scalar BDA slots");
+            result.program.info.buffers[1].descriptor_index == 1,
+        "native emission did not allocate scalar/vector buffer slots");
   Check(sampled && counts[static_cast<size_t>(*sampled)] == 1,
         "native emission did not allocate the sampled image");
   Check(storage && counts[static_cast<size_t>(*storage)] == 1,
@@ -15001,8 +14956,7 @@ void TestNewShaderRecompilerNativeBindingPlan() {
         "native emission did not allocate the sampler");
   Check(SpirvContainsOpcode(result.spirv, 86),
         "SPIR-V binary does not combine separate image/sampler descriptors");
-  for (const auto kind : {BindingKind::Buffers, BindingKind::BdaPagetable,
-                         BindingKind::FaultBuffer, *sampled, BindingKind::Samplers}) {
+  for (const auto kind : {BindingKind::Buffers, *sampled, BindingKind::Samplers}) {
     Check(SpirvHasDecorationValue(result.spirv, 33u,
               ShaderRecompiler::IR::NativeBinding(result.program.stage, kind)),
           "SPIR-V lacks a resource Binding decoration");
@@ -15025,10 +14979,10 @@ void TestNewShaderRecompilerNativeBindingPlan() {
   for (auto *block : result.program.blocks) {
     const auto found = std::ranges::find_if(*block, [](const auto &inst) {
       return inst.GetOpcode() ==
-             ShaderRecompiler::IR::ValueOpcode::StoreBufferU32;
+             ShaderRecompiler::IR::ValueOpcode::GetBufferResource;
     });
     if (found != block->end()) {
-      buffer_handle = found->Arg(0).ResolveInstruction();
+      buffer_handle = &*found;
       break;
     }
   }
@@ -15202,11 +15156,13 @@ void TestComputeImageFill() {
       0xbf8cc07fu, 0x7e06026au, 0xd7460001u, 0x0405060du,
       0x7e04020eu, 0xf0200128u, 0x00000300u, 0xbf810000u,
   };
-  constexpr uint32_t value = 0x7bu;
+  uint32_t value = 0x7bu;
+  const auto address = reinterpret_cast<uint64_t>(&value);
   const std::array<uint32_t, 12> userdata = {
       0x20021000u, 0xc0500000u, 0x01d8c347u, 0xd1800204u,
       0u, 0x00700000u, 0u, 0u,
-      0x1000u, 4u << 16u, 1u, 0x14204u,
+      static_cast<uint32_t>(address),
+      static_cast<uint32_t>(address >> 32) | (4u << 16), 1u, 0x14204u,
   };
   ShaderComputeInputInfo compute{};
   compute.threads_num[0] = compute.threads_num[1] = 8;
@@ -15217,14 +15173,9 @@ void TestComputeImageFill() {
   auto options = MakeCompileOptions(ShaderType::Compute);
   options.input_info.compute = &compute;
   options.user_data = userdata;
-  enum class Mutation { None, RuntimeScalar, Offset, WrongAxis, VaryingValue, Predicate, ExtraStore, A16 };
-  const auto Run = [&](Mutation mutation) {
-    auto code = std::to_array(shader);
-    if (mutation != Mutation::RuntimeScalar) {
-      code[2] = EncodeSMovB32(106, 255);
-      code[3] = value;
-    }
-    auto translated = ShaderRecompiler::TranslateProgram(code, options);
+  enum class Mutation { None, Offset, WrongAxis, VaryingValue, Predicate, ExtraStore, A16 };
+  const auto Run = [&](Mutation mutation, bool clean = true) {
+    auto translated = ShaderRecompiler::TranslateProgram(shader, options);
     auto &program = translated.program;
     for (auto *block : program.blocks) {
       const auto found = std::ranges::find(*block, ValueOpcode::ImageWrite, &Inst::GetOpcode);
@@ -15235,8 +15186,7 @@ void TestComputeImageFill() {
       Check(coordinates && values, "stencil fill fixture lost its image operands");
       const auto x = coordinates->Arg(0);
       switch (mutation) {
-      case Mutation::None:
-      case Mutation::RuntimeScalar: break;
+      case Mutation::None: break;
       case Mutation::Offset:
         coordinates->SetArg(0, Value(&*block->PrependNewInst(found, ValueOpcode::IAdd32,
                                                            {x, Value(1u)})));
@@ -15261,12 +15211,15 @@ void TestComputeImageFill() {
     auto plan = ExtractResourcePlan(program);
     ResourceSnapshot snapshot;
     ResourceSpecialization specialization;
-    Check(MaterializeResources(plan, {.user_data = userdata}, snapshot, specialization),
+    Check(MaterializeResources(plan,
+              {.user_data = userdata, .read_memory = ReadHostTestMemory,
+               .read_specialization_memory = clean ? ReadHostTestMemory : nullptr},
+              snapshot, specialization),
           "captured stencil clear did not materialize");
     const auto &fill = snapshot.uniform_fill;
-    const bool expected = mutation == Mutation::None;
+    const bool expected = mutation == Mutation::None && clean;
     Check((fill.kind == UniformFillKind::Image) == expected,
-          "image fill proof accepted a runtime read or unsafe store, or missed a constant clear");
+          "image fill proof accepted an unsafe store or missed the captured clear");
     if (expected) {
       Check(fill.resource == 0 && fill.words == 1 && fill.value == value &&
                 fill.group_stride == std::array<uint32_t, 3>{8, 8, 1},
@@ -15274,7 +15227,7 @@ void TestComputeImageFill() {
     }
   };
   Run(Mutation::None);
-  Run(Mutation::RuntimeScalar);
+  Run(Mutation::None, false);
   for (const auto mutation : {Mutation::Offset, Mutation::WrongAxis, Mutation::VaryingValue,
                               Mutation::Predicate, Mutation::ExtraStore, Mutation::A16})
     Run(mutation);

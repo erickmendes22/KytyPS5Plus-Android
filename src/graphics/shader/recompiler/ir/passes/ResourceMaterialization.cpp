@@ -1178,7 +1178,7 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 	}
 	if (store == nullptr || visited.size() != program.blocks.size()) return {};
 	for (const auto& buffer: program.info.buffers) {
-		if (buffer.read) return {};
+		if (buffer.read && (!buffer.scalar || buffer.written)) return {};
 	}
 	const auto& memory = program.memory_info.at(store->Flags<MemoryFlags>().index);
 	UniformFillPlan result;
@@ -1589,6 +1589,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		    base.formatted ? descriptor.Format() : Prospero::BufferFormat::kInvalid;
 		buffer.descriptor_swizzle = base.formatted ? descriptor.DstSelXYZW() : DstSel(4, 5, 6, 7);
 		buffer.zero_stride_oob    = descriptor.OutOfBounds() == 0u && stride == 0u;
+		buffer.scalar_empty       = base.scalar && descriptor.GetSize() == 0u;
 	}
 	snapshot.images.resize(program.info.images.size());
 	specialization.images.resize(program.info.images.size());
@@ -1786,6 +1787,17 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 	}
 
 	auto& memory_info = program.memory_info;
+	// Resolve empty scalar-table words before folding the indirect descriptors that use them.
+	for (auto* block: program.blocks) {
+		for (auto& inst: *block) {
+			if (inst.GetOpcode() != ValueOpcode::ReadConstBuffer) continue;
+			const auto& memory = memory_info[inst.Flags<MemoryFlags>().index];
+			if (memory.kind == ResourceKind::ScalarBuffer &&
+			    specialization.buffers[memory.resource].scalar_empty &&
+			    buffers[memory.resource].indirect_root == BufferResource::NoIndirectBuffer)
+				inst.ReplaceUsesWith(Value(0u));
+		}
+	}
 	const ImageRemap image_remap(specialization);
 	for (auto* block: program.blocks) {
 		for (auto it = block->begin(); it != block->end(); ++it) {

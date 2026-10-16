@@ -92,8 +92,7 @@ bool IsRawRead(const ResourcePlan& values, const Inst& inst) {
 	const auto& memory = values.memory_info[index];
 	if (op != ValueOpcode::LoadBufferU32) {
 		return (op == ValueOpcode::LoadAddressU32 && memory.kind == ResourceKind::ScalarAddress) ||
-		       (op == ValueOpcode::ReadConstBuffer &&
-		        (memory.kind == ResourceKind::ScalarBuffer || memory.kind == ResourceKind::IndirectBuffer));
+		       (op == ValueOpcode::ReadConstBuffer && memory.kind == ResourceKind::ScalarBuffer);
 	}
 	if (inst.NumArgs() != 5u || memory.kind != ResourceKind::Buffer || memory.typed ||
 	    memory.formatted || memory.coherent || memory.data_bits != 32u ||

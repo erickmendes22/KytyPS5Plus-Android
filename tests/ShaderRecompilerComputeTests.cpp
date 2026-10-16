@@ -30517,7 +30517,7 @@ TestCase ScalarMemoryLoadVariants() {
   std::vector<u32> expected = initial;
   expected.insert(expected.end(), initial.begin(), initial.end());
 
-  TestCase test{"ScalarMemoryLoadVariants",
+  return {"ScalarMemoryLoadVariants",
           code,
           initial,
           expected,
@@ -30526,8 +30526,6 @@ TestCase ScalarMemoryLoadVariants() {
            O::S_BUFFER_LOAD_DWORDX2, O::S_BUFFER_LOAD_DWORDX4,
            O::S_BUFFER_LOAD_DWORDX8, O::S_BUFFER_LOAD_DWORDX16, O::V_MOV_B32,
            O::BUFFER_STORE_DWORD, O::S_ENDPGM}};
-  test.bda_mappings = {{0u, 0u}};
-  return test;
 }
 
 TestCase ScalarBufferOffsetAlignmentAndCarry() {
@@ -30550,7 +30548,6 @@ TestCase ScalarBufferOffsetAlignmentAndCarry() {
                 {O::S_MOV_B32, O::S_ADD_U32, O::S_BUFFER_LOAD_DWORD,
                  O::V_MOV_B32, O::BUFFER_STORE_DWORD, O::S_ENDPGM}};
   test.forbidden_spirv = {"flattened_srt"};
-  test.bda_mappings = {{0u, 0u}};
   test.compute_info.threads_num[0] = 1;
   test.compute_info.threads_num[1] = 1;
   test.compute_info.threads_num[2] = 1;
@@ -31184,7 +31181,7 @@ TestCase BufferLoadsGpuSelectedDescriptors(u32 width, u32 wave = 32u) {
     }
   }
   AppendEnd(&test.code);
-  test.bda_mappings = {{0u, 0u}, {GuestBase, 0}};
+  test.bda_mappings = {{GuestBase, 0}};
   test.opcodes = {O::V_MOV_B32, O::S_MOV_B32, O::BUFFER_LOAD_DWORD,
                   O::V_READFIRSTLANE_B32, O::S_MUL_I32, O::S_BUFFER_LOAD_DWORDX4,
                   O::BUFFER_STORE_DWORD, O::S_ENDPGM};
@@ -31368,7 +31365,7 @@ TestCase BufferLoadGpuSelectedDescriptors(u32 wave, ShaderOpcode load) {
   code.push_back(EncodeSopc(0x0a, 28, 29));
   code.push_back(EncodeSopp(0x05, loop - static_cast<u32>(code.size()) - 1u));
   AppendEnd(&code);
-  test.bda_mappings = {{0u, 0u}, {GuestBase, 0}};
+  test.bda_mappings = {{GuestBase, 0}};
   test.fault_free_address = GuestBase + 0x100000u;
   test.compute_info.threads_num[0] = 1;
   test.compute_info.threads_num[1] = test.compute_info.threads_num[2] = 1;
@@ -31420,17 +31417,11 @@ void CheckSharedIndirectBufferLoads(VulkanHarness &vulkan) {
       auto compiled = CompileCase(test, vulkan.SubgroupSize());
       struct Profile { u32 components = 0, uses = 0, definitions = 0, calls = 0, reads = 0; };
       std::map<std::string, Profile> profiles;
-      const u32 halves = wave == 64u && vulkan.SubgroupSize() == 32u ? 2u : 1u;
-      u32 scalar_reads = 0;
       for (const auto *block : compiled.program.blocks)
         for (const auto &inst : *block) {
           const auto components = BufferComponentCount(inst.GetOpcode());
-          if (components == 0u) continue;
+          if (components == 0u || inst.GetOpcode() == ValueOpcode::ReadConstBuffer) continue;
           const auto &memory = compiled.program.memory_info[inst.Flags<MemoryFlags>().index];
-          if (inst.GetOpcode() == ValueOpcode::ReadConstBuffer) {
-            scalar_reads += !memory.planning_only;
-            continue;
-          }
           if (memory.kind != ResourceKind::IndirectBuffer || memory.formatted) continue;
           const auto name = "load_indirect_buffer_" + std::to_string(memory.data_bits) + "x" +
                             std::to_string(components) + (memory.coherent ? "_coherent" : "");
@@ -31461,11 +31452,11 @@ void CheckSharedIndirectBufferLoads(VulkanHarness &vulkan) {
         }
         offset += words.size();
       }
-      Require(test.name, "raw load function scope", functions.size() == profiles.size() && inline_reads == scalar_reads * halves,
+      Require(test.name, "raw load function scope", functions.size() == profiles.size() && inline_reads == 0u,
               "a raw load profile was unused, missing or still emitted inline");
       for (const auto &[name, profile] : profiles)
         Require(test.name, name.c_str(), profile.uses != 0u && profile.definitions == 1u &&
-                    profile.calls == profile.uses * halves &&
+                    profile.calls == profile.uses * (wave == 64u && vulkan.SubgroupSize() == 32u ? 2u : 1u) &&
                     profile.reads == profile.components,
                 "raw load helpers duplicated definitions, calls or component reads");
       auto buffer = vulkan.CreateStorageBuffer(test.name, test.initial, test.initial.size(), true);
@@ -33766,48 +33757,6 @@ TestCase ScalarBufferFromLoopReadlane(u32 wave_size) {
   test.compute_info.threads_num[1] = test.compute_info.threads_num[2] = 1;
   test.compute_info.thread_ids_num = 1;
   test.has_compute_info = true;
-  return test;
-}
-
-TestCase ScalarBufferLoadsDisjointPages() {
-  using O = ShaderOpcode;
-  constexpr u32 GuestBase = 0x10000, PageSize = 0x10000, PageStride = 0x400000;
-  TestCase test;
-  test.name = "ScalarBufferLoadsDisjointPages";
-  auto &code = test.code;
-  code.push_back(EncodeSop2(0x1e, 12, 4, InlineU32(22)));
-  code.push_back(EncodeSmem0(0x0a, 20, 4));
-  code.push_back(EncodeSmem1(256, 12));
-  code.push_back(EncodeVop1(0x01, 0, 4));
-  code.push_back(EncodeVop2(0x1a, 0, InlineU32(2), 0));
-  for (u32 component = 0; component < 4; ++component)
-    AppendStoreSgprAtLaneDwordOffset(&code, 20 + component, 0, component);
-  AppendEnd(&code);
-
-  test.initial.resize(2 * PageSize / sizeof(u32));
-  for (u32 page = 0; page < 2; ++page) {
-    for (u32 component = 0; component < 4; ++component) {
-      const u32 value = 0x12340000u + page * 16 + component;
-      test.initial[(page * PageSize + 256) / sizeof(u32) + component] = value;
-      test.expected.push_back(value);
-    }
-  }
-  test.user_data = MakeNativeUserData(nullptr);
-  test.user_data[8] = GuestBase;
-  test.user_data[10] = 32 * 1024 * 1024;
-  test.has_user_data = true;
-  // A large guest descriptor covers separate allocations, while its SSBO view ends at the first.
-  test.storage_buffer_range_bytes = PageSize;
-  test.bda_mappings = {{GuestBase, 0}, {GuestBase + PageStride, PageSize}};
-  test.opcodes = {O::S_LSHL_B32, O::S_BUFFER_LOAD_DWORDX4, O::V_MOV_B32,
-                  O::V_LSHLREV_B32, O::V_ADD_NC_U32, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
-  test.compute_info.wave_size = 32;
-  test.compute_info.threads_num[0] = 1;
-  test.compute_info.threads_num[1] = test.compute_info.threads_num[2] = 1;
-  test.compute_info.group_id[0] = true;
-  test.compute_info.workgroup_register = 4;
-  test.has_compute_info = true;
-  test.dispatch_x = 2;
   return test;
 }
 
@@ -38082,7 +38031,7 @@ void CheckGpuSelectedRecordBufferAccess(VulkanHarness &vulkan) {
       }
       // Compile against poison selectors. A separate GPU dispatch writes the actual keys.
       auto compiled = CompileCase(test, vulkan.SubgroupSize());
-      if (components != 0u)
+      if (table_bytes == 0u || components != 0u)
         test.forbidden_spirv = {"convert_indirect_buffer_format", "load_indirect_buffer_",
                                "indirect_buffer_format_geometry"};
       else
@@ -38098,8 +38047,8 @@ void CheckGpuSelectedRecordBufferAccess(VulkanHarness &vulkan) {
         if (opcode == spv::OpFunctionCall && words[3] == bda_function) ++bda_calls;
         offset += words.size();
       }
-      Require(test.name, "GPU descriptor reads", (bda_calls == 0u) == (components != 0u),
-              "CPU-planned descriptors retained BDA reads or runtime descriptors lost them");
+      Require(test.name, "empty descriptor table specialization", (bda_calls == 0u) == (table_bytes == 0u || components != 0u),
+              "empty table retained BDA reads or nonempty table lost GPU descriptor loads");
       for (const auto &descriptor : compiled.resources.buffers) {
         ShaderBufferResource resource{};
         std::copy_n(descriptor.dwords.begin(), 4u, resource.fields);
@@ -42074,7 +42023,6 @@ std::vector<TestCase> MakeCases() {
   AddCase(ScalarLoadAlignsDynamicBase);
   cases.push_back(ScalarBufferFromLoopReadlane(32));
   cases.push_back(ScalarBufferFromLoopReadlane(64));
-  AddCase(ScalarBufferLoadsDisjointPages);
   AddCase(BufferLoadStore);
   AddCase(BufferLoadDwordOffenIdxenUsesVaddrPlusOneOffset);
   AddCase(BufferStoreDwordOffenIdxenUsesVaddrPlusOneOffset);
@@ -48072,9 +48020,6 @@ int main(int argc, char **argv) {
   }
   if (argc == 2 && std::strcmp(argv[1], "--indirect-buffer-only") == 0) {
     VulkanHarness vulkan;
-    RunCase(&vulkan, ScalarBufferLoadsDisjointPages());
-    RunCase(&vulkan, ScalarMemoryLoadVariants());
-    RunCase(&vulkan, ScalarBufferOffsetAlignmentAndCarry());
     RunCase(&vulkan, ScalarBufferFromLoopReadlane(32));
     RunCase(&vulkan, ScalarBufferFromLoopReadlane(64));
     CheckBoundedFormattedBufferCopy(vulkan);

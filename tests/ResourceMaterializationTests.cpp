@@ -1024,6 +1024,115 @@ void TestCyclicControlPredicatesRemainUnknown() {
         "cyclic control lost a possible branch during reachability");
 }
 
+void TestEmptyScalarBufferSpecialization() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  struct Fixture {
+    Program program;
+    std::vector<std::pair<Inst *, Type>> uses;
+    Inst *nonnull = nullptr;
+  };
+  const auto make_fixture = [] {
+    Fixture fixture;
+    auto &program = fixture.program;
+    program.stage = Libs::Graphics::ShaderType::Compute;
+    program.srt_plan_complete = program.resource_tracking_complete = true;
+    program.user_data_count = 4u;
+    auto &block = AddValueBlock(program);
+    DescriptorSource source;
+    source.dword_count = 4u;
+    for (uint32_t word = 0; word < 4u; ++word)
+      source.dwords[word] = Value(&block.AppendNewInst(ValueOpcode::GetUserData,
+          {Value(static_cast<ScalarReg>(word))}));
+    program.descriptor_sources.push_back(source);
+    program.info.buffers.push_back({.source = 0u, .read = true, .scalar = true});
+    const auto table = Value(&block.AppendNewInst(ValueOpcode::GetBufferResource,
+        {source.dwords[0], source.dwords[1], source.dwords[2], source.dwords[3]}));
+    std::array<Value, 4> words;
+    for (uint32_t word = 0; word < 4u; ++word) {
+      program.memory_info.push_back({.kind = ResourceKind::ScalarBuffer, .resource = 0u,
+                                     .offset = word * 4u});
+      auto &read = block.AppendNewInst(ValueOpcode::ReadConstBuffer, {table, Value(0u)});
+      read.SetFlags(MemoryFlags{.index = word});
+      words[word] = Value(&read);
+    }
+    const auto handle = Value(&block.AppendNewInst(ValueOpcode::GetBufferResource,
+        {words[0], words[1], words[2], words[3]}));
+    for (const auto opcode : {ValueOpcode::ReadConstBuffer, ValueOpcode::LoadBufferU8,
+                              ValueOpcode::LoadBufferU16, ValueOpcode::LoadBufferU32,
+                              ValueOpcode::LoadBufferU32x2, ValueOpcode::LoadBufferU32x3,
+                              ValueOpcode::LoadBufferU32x4}) {
+      const auto index = static_cast<uint32_t>(program.memory_info.size());
+      program.memory_info.push_back({.kind = ResourceKind::IndirectBuffer, .resource = UINT32_MAX,
+          .data_dwords = BufferComponentCount(opcode),
+          .data_bits = opcode == ValueOpcode::LoadBufferU8 ? 8u : opcode == ValueOpcode::LoadBufferU16 ? 16u : 32u,
+          .formatted = opcode == ValueOpcode::LoadBufferU32});
+      auto &read = opcode == ValueOpcode::ReadConstBuffer
+          ? block.AppendNewInst(opcode, {handle, Value(0u)})
+          : block.AppendNewInst(opcode, {handle, Value(0u), Value(0u), Value(0u), Value(true)});
+      read.SetFlags(MemoryFlags{.index = index});
+      fixture.uses.emplace_back(&block.AppendNewInst(ValueOpcode::Identity, {Value(&read)}), read.GetType());
+    }
+    const auto nonnull = Value(&block.AppendNewInst(ValueOpcode::GetBufferResource,
+        {words[0], words[1], words[2], Value(1u)}));
+    auto &read = block.AppendNewInst(ValueOpcode::ReadConstBuffer, {nonnull, Value(0u)});
+    read.SetFlags(MemoryFlags{.index = 4u});
+    fixture.nonnull = &block.AppendNewInst(ValueOpcode::Identity, {Value(&read)});
+    return fixture;
+  };
+  auto fixture = make_fixture();
+  auto plan = ExtractResourcePlan(fixture.program);
+  std::array<uint32_t, 4> descriptor{0x1000u, 8u << 16u, 0u, 3u << 28u};
+  uint32_t reads = 0u;
+  const SrtRuntime runtime{.user_data = descriptor, .read_memory = RejectSpecializationRead,
+                           .userdata = &reads, .read_specialization_memory = RejectSpecializationRead};
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization, empty, populated;
+  for (const uint32_t records : {0u, 1u, 0x20000000u, 0u}) {
+    descriptor[2] = records;
+    Check(MaterializeResources(plan, runtime, snapshot, specialization) && reads == 0u &&
+              specialization.buffers[0].scalar_empty == (records == 0u),
+          "scalar emptiness read table contents or truncated its 64-bit byte size");
+    if (records == 0u) {
+      if (empty.buffers.empty()) empty = specialization;
+      else Check(specialization == empty, "returning to an empty scalar table changed its specialization");
+    }
+    else if (records == 1u) populated = specialization;
+    else Check(specialization == populated, "nonempty scalar size created a shader permutation");
+    auto current = make_fixture();
+    ApplyResourceSpecialization(current.program, specialization);
+    for (const auto &[use, type] : current.uses) {
+      const auto value = use->Arg(0).Resolve();
+      Check(value.GetType() == type, "empty scalar-table folding changed the load result type");
+      if (records != 0u) {
+        Check(value.TryInstruction() != nullptr && BufferAccessOf(value.Instruction()->GetOpcode()) == BufferAccess::Read,
+              "nonempty scalar table lost a runtime buffer load");
+      } else if (value.IsImmediate()) {
+        Check(value == Value(uint8_t{0}) || value == Value(uint16_t{0}) || value == Value(0u),
+              "empty scalar table did not produce a typed zero");
+      } else {
+        for (size_t component = 0; component < value.Instruction()->NumArgs(); ++component)
+          Check(value.Instruction()->Arg(component) == Value(0u),
+                "empty scalar table retained a nonzero vector component");
+      }
+    }
+    Check(current.nonnull->Arg(0).Resolve().TryInstruction() != nullptr,
+          "a partly nonzero indirect descriptor was treated as unbound");
+  }
+  Check(empty != populated, "empty-to-populated scalar transition reused the folded specialization");
+  plan.info.buffers[0].scalar = false;
+  Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
+            !specialization.buffers[0].scalar_empty,
+        "vector-only resource acquired scalar-empty specialization");
+  empty.buffers[0].indirect_root = 0u;
+  empty.buffers.push_back(empty.buffers[0]);
+  empty.buffers[1].scalar_empty = false;
+  ApplyResourceSpecialization(fixture.program, empty);
+  for (const auto &[use, type] : fixture.uses)
+    Check(use->Arg(0).GetType() == type && use->Arg(0).Resolve().TryInstruction() != nullptr &&
+              BufferAccessOf(use->Arg(0).ResolveInstruction()->GetOpcode()) == BufferAccess::Read,
+          "empty root folded a scalar read with nonempty candidates");
+}
+
 void TestMixedSamplerVariantsShareRuntimeDescriptor() {
   using namespace Libs::Graphics::ShaderRecompiler::IR;
   auto program = MixedSamplerProgram();
@@ -1223,6 +1332,7 @@ int main() {
   for (const bool independent_mask : {false, true})
     TestEmptyTraversalSkipsUnmappedDescriptor(independent_mask);
   TestCyclicControlPredicatesRemainUnknown();
+  TestEmptyScalarBufferSpecialization();
   TestMixedSamplerVariantsShareRuntimeDescriptor();
   TestSignedStorageSpecialization();
   for (const bool mixed : {false, true}) TestIndirectImageSamplerClasses(mixed);

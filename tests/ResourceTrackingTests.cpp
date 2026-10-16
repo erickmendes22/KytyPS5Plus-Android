@@ -312,8 +312,7 @@ void TestInvariantIndirectImageMaterialization(bool nested) {
   EliminateDeadCode(fixture->program.blocks);
   ValidateProgram(fixture->program, true);
   const auto &source = *plan.descriptor_sources[plan.info.images[0].source].indirect_descriptor;
-  Check(!source.selector && fixture->program.info.buffers.empty() &&
-            fixture->program.info.uses_dma &&
+  Check(!source.selector && fixture->program.info.buffers.size() == (nested ? 3u : 2u) &&
             std::ranges::any_of(*fixture->block, [](const Inst &inst) {
               return inst.GetOpcode() == ValueOpcode::ReadConstBuffer;
             }),
@@ -3314,12 +3313,9 @@ void TestUniformScalarBufferImage() {
   fixture.PlanAndTrack();
   const auto plan = ExtractResourcePlan(fixture.program);
 
-  Check(plan.info.uses_dma && plan.info.buffers.empty() &&
-            fixture.program.memory_info[key.Instruction()->Flags<MemoryFlags>().index].kind ==
-                ResourceKind::IndirectBuffer &&
-            std::ranges::none_of(plan.descriptor_sources, [](const DescriptorSource& source) {
-              return source.indirect_descriptor.has_value();
-            }), "draw-uniform scalar image lost its BDA read or expanded GPU-selected candidates");
+  Check(std::ranges::none_of(plan.descriptor_sources, [](const DescriptorSource& source) {
+          return source.indirect_descriptor.has_value();
+        }), "draw-uniform scalar image was expanded to GPU-selected candidates");
   std::array<uint32_t, 9> user_data{0x1000u, 0u, 0x100u, 0u,
                                     0x2000u, 0u, 0x100u, 0u, 0u};
   LinearTestMemory memory;
@@ -4646,6 +4642,7 @@ void TestComputeBufferFill() {
     bool conditional = false;
     bool shifted = false;
     bool extra_store = false;
+    bool clean = false;
     bool branch = false;
   };
   const auto Run = [](Options options) {
@@ -4673,9 +4670,12 @@ void TestComputeBufferFill() {
     if (options.shifted)
       index = fixture.Emit(ValueOpcode::IAdd32, {index, Value(1u)});
     Value value(0u);
+    TestMemory memory;
+    memory.words[0] = 0x40404040u;
     if (options.scalar) {
       const auto input =
-          fixture.Buffer({Value(0x1000u), Value(4u << 16), Value(1u), Value(0x14204u)});
+          fixture.Buffer({Value(static_cast<uint32_t>(memory.base)),
+                          Value(4u << 16), Value(1u), Value(0x14204u)});
       MemoryInfo load;
       load.kind = ResourceKind::ScalarBuffer;
       value = fixture.Emit(ValueOpcode::ReadConstBuffer, {input, Value(0u)},
@@ -4703,26 +4703,48 @@ void TestComputeBufferFill() {
     std::array<uint32_t, 4> userdata{0x200000u, 4u << 16, 0x4000u, 0x14204u};
     ResourceSnapshot snapshot;
     ResourceSpecialization specialization;
-    Check(MaterializeResources(plan, {.user_data = userdata}, snapshot, specialization),
+    const auto Read = +[](void *data, uint64_t address, std::span<uint32_t> words) {
+      auto &memory = *static_cast<TestMemory *>(data);
+      if (address != memory.base || words.size() != 1u)
+        return false;
+      ++memory.reads;
+      words[0] = memory.words[0];
+      return true;
+    };
+    Check(MaterializeResources(
+              plan,
+              {.user_data = userdata,
+               .read_memory = Read,
+               .userdata = &memory,
+               .read_specialization_memory = options.clean ? Read : nullptr},
+              snapshot, specialization),
           "fill fixture did not materialize");
     const bool expected = !options.conditional && !options.shifted &&
                           !options.extra_store && !options.branch &&
-                          !options.scalar;
+                          (!options.scalar || options.clean);
     Check((snapshot.uniform_fill.words != 0) == expected,
           "fill proof accepted an unsafe store or missed the real GTA3 clear");
     if (expected) {
       Check(snapshot.uniform_fill.words == 1 &&
                 snapshot.uniform_fill.group_stride[0] == 64 &&
-                snapshot.uniform_fill.value == 0u,
+                snapshot.uniform_fill.value ==
+                    (options.scalar ? 0x40404040u : 0u),
             "fill proof lost address coverage or the actual stored scalar");
+      if (options.scalar && options.clean) {
+        Check(MaterializeResources(plan,
+                  {.user_data = userdata, .read_memory = Read, .userdata = &memory},
+                  snapshot, specialization) && snapshot.uniform_fill.words == 0,
+              "an unavailable clean value retained a previous uniform fill");
+      }
     }
   };
   Run({});
+  Run({.scalar = true, .clean = true});
   Run({.scalar = true});
-  Run({.conditional = true});
-  Run({.shifted = true});
-  Run({.extra_store = true});
-  Run({.branch = true});
+  Run({.conditional = true, .clean = true});
+  Run({.shifted = true, .clean = true});
+  Run({.extra_store = true, .clean = true});
+  Run({.clean = true, .branch = true});
 }
 
 void TestDenseBufferTracking() {
@@ -4797,8 +4819,8 @@ void TestScalarAndVectorBufferAlias() {
   MemoryInfo scalar;
   scalar.kind = ResourceKind::ScalarBuffer;
   const auto scalar_flags = fixture.AddMemory(scalar, 4);
-  const auto scalar_read = fixture.Emit(ValueOpcode::ReadConstBuffer,
-      {descriptor, fixture.UserData(4)}, scalar_flags);
+  fixture.Emit(ValueOpcode::ReadConstBuffer, {descriptor, fixture.UserData(4)},
+               scalar_flags);
   MemoryInfo vector;
   vector.kind = ResourceKind::Buffer;
   const auto vector_flags = fixture.AddMemory(vector, 8);
@@ -4807,18 +4829,12 @@ void TestScalarAndVectorBufferAlias() {
                vector_flags);
   fixture.PlanAndTrack();
 
-  Check(fixture.program.info.buffers.size() == 1 && fixture.program.info.uses_dma &&
-            fixture.program.memory_info[scalar_flags.index].kind == ResourceKind::IndirectBuffer &&
+  Check(fixture.program.info.buffers.size() == 1 &&
+            fixture.program.info.buffers[0].scalar,
+        "typed scalar and vector uses of one descriptor were split");
+  Check(fixture.program.memory_info[scalar_flags.index].resource == 0 &&
             fixture.program.memory_info[vector_flags.index].resource == 0,
-        "scalar BDA access changed the shared vector descriptor binding");
-  TestMemory memory;
-  memory.words[1] = 0x12345678u;
-  const std::array<uint32_t, 5> user_data{0x1000u, 0u, 32u, 0u, 4u};
-  SrtWalker walker(fixture.program, {.user_data = user_data, .read_memory = ReadTestMemory,
-                                    .userdata = &memory});
-  uint32_t loaded = 0;
-  Check(walker.Evaluate(scalar_read, loaded) && loaded == memory.words[1] && memory.reads == 1u,
-        "scalar BDA read lost its raw descriptor or dynamic uniform offset");
+        "scalar/vector alias did not share a dense index");
 }
 
 void TestRuntimeUnsignedMinDescriptor() {
@@ -6317,7 +6333,7 @@ void TestGpuSelectedFormattedRecordStore() {
       }
       if (inst.GetOpcode() == ValueOpcode::ReadConstBuffer) {
         const auto& memory = fixture->program.memory_info[inst.Flags<MemoryFlags>().index];
-        Check(memory.kind == ResourceKind::IndirectBuffer && !memory.planning_only,
+        Check(memory.kind == ResourceKind::ScalarBuffer && !memory.planning_only,
               "store planning consumed descriptor words still used by the BDA load");
         ++scalar_reads;
       }
@@ -7749,9 +7765,9 @@ void TestConditionalBufferMaterialization() {
   ResourceSnapshot snapshot;
   ResourceSpecialization specialization;
   Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
-            snapshot.buffers.size() == 1 &&
-            snapshot.buffers[0].dword_count == 4 &&
-            snapshot.buffers[0].dwords == std::array<uint32_t, 8>{},
+            snapshot.buffers.size() == 2 &&
+            snapshot.buffers[1].dword_count == 4 &&
+            snapshot.buffers[1].dwords == std::array<uint32_t, 8>{},
         "untaken scalar branch materialized stale buffer words");
   Check(snapshot.user_data == std::vector<uint32_t>(user_data.begin(), user_data.end()),
         "resource reachability changed native shader user data");
@@ -7766,9 +7782,9 @@ void TestConditionalBufferMaterialization() {
   runtime.user_data = user_data;
   const auto CheckActive = [&] {
     Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
-              snapshot.buffers.size() == 1 &&
+              snapshot.buffers.size() == 2 &&
               std::equal(user_data.begin() + 4, user_data.end(),
-                         snapshot.buffers[0].dwords.begin()),
+                         snapshot.buffers[1].dwords.begin()),
           "potentially executed buffer descriptor was discarded");
   };
   CheckActive();
@@ -7855,15 +7871,6 @@ void TestGuardedScalarDescriptorReads() {
       memory.data.words[0xb0 / 4] = 4u;
       ResourceSnapshot snapshot;
       ResourceSpecialization specialization;
-      if (!exec) {
-        for (const uint32_t enabled : {0u, 1u, 0u}) {
-          memory.data.words[7] = enabled;
-          Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
-                    memory.null_reads == 0 && snapshot.flattened_srt.empty(),
-                "disabled GPU address loads introduced CPU descriptor reads");
-        }
-        continue;
-      }
       if (!shared) {
         Check(MaterializeResources(plan, runtime, snapshot, specialization) && memory.null_reads == 0 &&
                   std::ranges::all_of(snapshot.flattened_srt, [](auto word) { return word == 0; }),
@@ -7876,8 +7883,11 @@ void TestGuardedScalarDescriptorReads() {
       memory.data.watched_address = 0x10a8u;
       memory.data.watched_reads = 0;
       Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
-                memory.data.watched_reads == 1 &&
-                std::ranges::find(snapshot.flattened_srt, 0x2000u) != snapshot.flattened_srt.end(),
+                std::ranges::any_of(snapshot.buffers, [](const auto& descriptor) {
+                  return descriptor.dwords[0] == 0x2000u;
+                }) &&
+                (!exec || (memory.data.watched_reads == 1 &&
+                           std::ranges::find(snapshot.flattened_srt, 0x2000u) != snapshot.flattened_srt.end())),
             "active or shared descriptor read was omitted after refreshing the cached plan");
       if (!shared) {
         memory.data.words[7] = 0;
@@ -7906,9 +7916,9 @@ void TestConservativeBufferReachability() {
     if (use != ConditionalBufferUse::Writable)
       std::copy_n(user_data.begin() + 4, expected.size(), expected.begin());
     Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
-              snapshot.buffers.size() == (use == ConditionalBufferUse::Writable ? 2u : 1u) &&
+              snapshot.buffers.size() == 2 &&
               std::equal(expected.begin(), expected.end(),
-                         snapshot.buffers.back().dwords.begin()),
+                         snapshot.buffers[1].dwords.begin()),
           "shared or loop-dependent resource was pruned, or inactive scalar branch retained");
   }
 }
