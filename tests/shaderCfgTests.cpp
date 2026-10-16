@@ -16852,7 +16852,7 @@ void CheckSpirvBlockSourceMapping(TestCompileResult &result) {
             SpirvInstructionOpcodeCount(result.spirv, spv::OpLine) == 0,
         "default emission unexpectedly contains source mapping");
   const auto mapped = Spirv::EmitProgram(result.program, options.input_info, 0,
-                                         false, true);
+                                         false, {}, {}, true);
   CheckSpirvBinaryValidates(mapped);
   uint32_t source = 0;
   uint32_t label = 0;
