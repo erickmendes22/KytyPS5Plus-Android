@@ -25,6 +25,7 @@ struct SrtRuntime {
 	// a scalar address there can be unmapped (e.g. a null pointer the guest never follows).
 	// Such a read yields zero instead of a host fault, as an AMD GPU's unmapped-page read does.
 	SrtAddressProbe           mapped                     = nullptr;
+	uint64_t                  indirect_args_address = 0;
 };
 
 class SrtReadCapture {

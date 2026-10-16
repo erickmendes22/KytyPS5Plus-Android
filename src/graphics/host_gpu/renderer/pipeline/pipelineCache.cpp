@@ -7,6 +7,7 @@
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/threads.h"
+#include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/debug.h"
@@ -20,7 +21,6 @@
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "kernel/memory.h"
-#include "kytyGitVersion.h"
 #include "loader/systemContent.h"
 
 #include <algorithm>
@@ -41,6 +41,14 @@
 namespace Libs::Graphics {
 
 namespace {
+
+// Android ends apps without running destructors, so it checkpoints the driver cache much more
+// often (on a worker thread, see CheckpointDriverCache).
+#if defined(__ANDROID__)
+constexpr auto DriverCacheSaveInterval = std::chrono::seconds {10};
+#else
+constexpr auto DriverCacheSaveInterval = std::chrono::minutes {5};
+#endif
 
 uint8_t RemapSourceAlphaFactor(uint8_t factor) {
 	switch (static_cast<Prospero::BlendFactor>(factor)) {
@@ -81,7 +89,8 @@ std::string DriverCacheSignature(const vk::PhysicalDeviceProperties& properties)
 		uuid[i * 2]     = hex[properties.pipelineCacheUUID[i] >> 4u];
 		uuid[i * 2 + 1] = hex[properties.pipelineCacheUUID[i] & 0xfu];
 	}
-	return fmt::format("KytyPC1:{}:{:08x}:{:08x}:{:08x}:{}\n", KYTY_GIT_REVISION,
+	// Driver cache entries already distinguish shader code and pipeline state across builds.
+	return fmt::format("KytyPC2:{:08x}:{:08x}:{:08x}:{}\n",
 	                   properties.vendorID, properties.deviceID, properties.driverVersion, uuid);
 }
 
@@ -352,6 +361,7 @@ struct PipelineCache::ProgramCache {
 		};
 		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
 			runtime.workgroup_counts = input_info.workgroup_counts;
+			runtime.indirect_args_address = input_info.indirect_args_address;
 		}
 		bool source_changed = false;
 		if (entry != programs.end()) {
@@ -413,6 +423,7 @@ struct PipelineCache::ProgramCache {
 		options.back_code      = params.back_code;
 		options.dump_ir     = Config::GetShaderLogDirection() != Config::LogDirection::Silent;
 		options.early_dump  = options.dump_ir;
+		options.emit_debug_info = Config::GraphicsDebugDumpEnabled();
 		options.dump_label  = label;
 		options.input_info  = stage_input;
 
@@ -503,7 +514,7 @@ struct PipelineCache::ProgramCache {
 
 PipelineCache::PipelineCache(GraphicContext& graphics)
     : m_graphics(graphics), m_program_cache(std::make_unique<ProgramCache>(graphics)),
-      m_last_flush(std::chrono::steady_clock::now()) {
+      m_next_driver_cache_save(std::chrono::steady_clock::now() + DriverCacheSaveInterval) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 	InitializeDriverCache();
 }
@@ -534,22 +545,6 @@ void PipelineCache::InitializeDriverCache() {
 		PipelineCacheLog("Vulkan pipeline cache: disabled (non-Release build)");
 		return;
 	}
-	const std::string_view git_hash     = KYTY_GIT_HASH;
-	const std::string_view git_revision = KYTY_GIT_REVISION;
-	if (git_hash == "unknown" || git_revision == "unknown") {
-		PipelineCacheLog("Vulkan pipeline cache: disabled (unknown git revision)");
-		return;
-	}
-#if !defined(__ANDROID__)
-	if (git_hash.ends_with("-dirty")) {
-		PipelineCacheLog("Vulkan pipeline cache: disabled (dirty build)");
-		return;
-	}
-#endif
-	// Android builds are usually dev builds, and mobile drivers compile pipelines slowly enough that
-	// every new one is a visible hitch. Stale entries are harmless: the driver keys them by the full
-	// pipeline state and rejects a cache from another driver (checked through the file signature).
-
 	m_driver_cache_path     = std::filesystem::path("_PipelineCache") / (title_id + ".bin");
 	const auto path         = Common::PathToString(m_driver_cache_path);
 	const bool cache_exists = Common::File::IsFileExisting(m_driver_cache_path);
@@ -582,7 +577,7 @@ void PipelineCache::InitializeDriverCache() {
 			    XXH3_64bits(initial_data.data(), initial_data.size()) != payload_hash) {
 				initial_data.clear();
 				PipelineCacheLog(
-				    "Vulkan pipeline cache: invalidating {} (driver, emulator, or data mismatch)",
+				    "Vulkan pipeline cache: invalidating {} (driver or data mismatch)",
 				    path);
 			}
 		} else {
@@ -616,13 +611,47 @@ void PipelineCache::InitializeDriverCache() {
 	}
 }
 
+void PipelineCache::CheckpointDriverCache() {
+	if (m_driver_cache == nullptr) {
+		return;
+	}
+	m_driver_cache_dirty = true;
+	if (std::chrono::steady_clock::now() < m_next_driver_cache_save) {
+		return;
+	}
+#if defined(__ANDROID__)
+	// Android ends apps without running destructors, so new pipelines are written out in the
+	// background, at most once per DriverCacheSaveInterval, instead of only at shutdown.
+	if (m_flush_thread.joinable()) {
+		m_flush_thread.join();
+	}
+	m_next_driver_cache_save = std::chrono::steady_clock::now() + DriverCacheSaveInterval;
+	m_driver_cache_dirty     = false;
+	m_flush_thread           = std::thread([this] { (void)WriteDriverCacheFile(); });
+#else
+	Save();
+#endif
+}
+
+void PipelineCache::Save() {
+	if (m_flush_thread.joinable()) {
+		m_flush_thread.join();
+	}
+	if (m_driver_cache == nullptr || !m_driver_cache_dirty) {
+		return;
+	}
+	m_next_driver_cache_save = std::chrono::steady_clock::now() + DriverCacheSaveInterval;
+	if (WriteDriverCacheFile()) {
+		m_driver_cache_dirty = false;
+	}
+}
+
 // Serializes the driver cache to disk without releasing it. vkGetPipelineCacheData does not need
 // external synchronization against pipeline creation, so this may run on a worker thread.
 bool PipelineCache::WriteDriverCacheFile() const {
 	if (m_driver_cache == nullptr) {
 		return false;
 	}
-
 	size_t               size = 0;
 	vk::Result           result;
 	std::vector<uint8_t> payload;
@@ -664,8 +693,12 @@ bool PipelineCache::WriteDriverCacheFile() const {
 	}
 	const bool flushed = !file.IsInvalid() && file.Flush();
 	file.Close();
-	if (prefix_written != prefix.size() || payload_written != payload.size() || !flushed ||
-	    !Common::File::RenameFile(temp_path, m_driver_cache_path)) {
+	const bool written = prefix_written == prefix.size() && payload_written == payload.size() && flushed;
+	std::error_code error;
+	if (written) {
+		std::filesystem::rename(temp_path, m_driver_cache_path, error);
+	}
+	if (!written || error) {
 		PipelineCacheLog("Vulkan pipeline cache: failed to write {}",
 		                 Common::PathToString(m_driver_cache_path));
 		return false;
@@ -673,45 +706,6 @@ bool PipelineCache::WriteDriverCacheFile() const {
 	PipelineCacheLog("Vulkan pipeline cache: saved {} bytes to {}", payload.size(),
 	                 Common::PathToString(m_driver_cache_path));
 	return true;
-}
-
-void PipelineCache::Save() {
-	if (m_flush_thread.joinable()) {
-		m_flush_thread.join();
-	}
-	if (m_driver_cache == nullptr) {
-		return;
-	}
-	(void)WriteDriverCacheFile();
-	m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
-	m_driver_cache = nullptr;
-}
-
-void PipelineCache::OnPipelineCreated() {
-	if (m_driver_cache != nullptr) {
-		m_unsaved_pipelines++;
-	}
-}
-
-void PipelineCache::MaybeFlushDriverCache() {
-#if defined(__ANDROID__)
-	// Android ends apps without running destructors, so new pipelines are written out in the
-	// background, at most once per kFlushInterval, instead of only at shutdown.
-	constexpr auto kFlushInterval = std::chrono::seconds(10);
-	if (m_unsaved_pipelines == 0) {
-		return;
-	}
-	const auto now = std::chrono::steady_clock::now();
-	if (now - m_last_flush < kFlushInterval) {
-		return;
-	}
-	if (m_flush_thread.joinable()) {
-		m_flush_thread.join();
-	}
-	m_last_flush        = now;
-	m_unsaved_pipelines = 0;
-	m_flush_thread      = std::thread([this] { (void)WriteDriverCacheFile(); });
-#endif
 }
 
 // Mesh emulation runs the mesh workgroup as a compute workgroup, so it is bound by the compute
@@ -748,6 +742,17 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		vertex_params[0] = PrepareProgram(vertex_regs, context, user_config, vertex_info[0]);
 	}
 	const bool mesh_active = vertex_info[0].logical_stage == ShaderType::Mesh;
+	const bool object_primitive_id = context.HasObjectPrimitiveIdOutput();
+	if (object_primitive_id) {
+		// CxObjectIdMode: register source plus a 32-bit pipelined primitive-ID addition.
+		EXIT_NOT_IMPLEMENTED(sh.m_paClObjprimIdCntl != 2u || mesh_active || tess_active ||
+		                     !pixel_active || (sh.m_vgtDrawPayloadCntl & 8u) == 0 ||
+		                     user_config.GetPrimType() != Prospero::PrimitiveType::kTriList);
+		const auto& target = context.GetRenderTarget(7);
+		EXIT_NOT_IMPLEMENTED(Prospero::ResolveRenderTargetFormat(target.info.format,
+		                                                       target.info.channel_type)
+		                         .buffer_format != Prospero::BufferFormat::k32UInt);
+	}
 	const bool mesh_emulated = mesh_active && !m_graphics.mesh_shader_enabled;
 	if (mesh_emulated) {
 		CheckMeshEmulationLimits(m_graphics, vertex_info[0].mesh);
@@ -771,6 +776,29 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 	ShaderParams pixel_params;
 	if (pixel_active) {
 		pixel_params      = PrepareProgram(pixel_regs, sh, target_export_mapping, pixel_info);
+		pixel_info.object_primitive_id = object_primitive_id;
+		for (uint32_t export_index = 0; export_index < 8u; export_index++) {
+			const auto slot = ShaderPixelExportTarget(pixel_info.target_shader_mask, export_index);
+			if (slot >= 8u || pixel_info.target_output_mode[export_index] == 0u) continue;
+			const auto& rt = context.GetRenderTarget(slot);
+			const auto target_mask = render_target_mask_slot(context.GetRenderTargetMask(), slot);
+			if (rt.base.addr == 0 || target_mask == 0u) continue;
+			const auto format = Prospero::ResolveRenderTargetFormat(rt.info.format, rt.info.channel_type);
+			if (format.buffer_format != Prospero::BufferFormat::k11_11_10UNorm) continue;
+			const auto mapping = pixel_info.target_export_mapping[export_index];
+			const auto shader_mask = render_target_mask_slot(pixel_info.target_shader_mask, slot);
+			const bool blend = context.GetBlendControl(slot).enable && !rt.info.blend_bypass;
+			if (blend || (mapping.ApplyMask(target_mask) & 7u) != 7u ||
+			    (mapping.ApplyMask(shader_mask) & 7u) != 7u ||
+			    pixel_info.target_output_mode[export_index] != 9u) {
+				EXIT("unsupported packed UNorm render-target export: slot=%u export=%u mode=%u "
+				     "target_mask=0x%x shader_mask=0x%x mapping=0x%02x blend=%u\n",
+				     slot, export_index, pixel_info.target_output_mode[export_index], target_mask,
+				     shader_mask, mapping.packed, static_cast<uint32_t>(blend));
+			}
+			pixel_info.target_packed_unorm_mask |= 1u << export_index;
+			pixel_info.target_round_mode |= static_cast<uint8_t>(rt.info.round_mode) << export_index;
+		}
 		if (!mesh_active && !tess_active && Prospero::IsRectList(user_config.GetPrimType())) {
 			pixel_info.parameter_mode = ShaderPixelParameterMode::Rectangle;
 		} else if (context.GetModeControl().provoking_vtx_last) {
@@ -827,10 +855,10 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		    static_cast<float>(std::min(limits.maxViewportDimensions[1], 16384u)) * 0.5f;
 		clip.enabled = true;
 	}
-	uint32_t          push_data_cursor =
+	uint32_t push_data_cursor =
 	    mesh_emulated ? ShaderRecompiler::IR::PushData::MeshEmulationDrawDwordCount
-	    : mesh_active ? ShaderRecompiler::IR::PushData::MeshDrawDwordCount
-	                  : 0;
+	                  : ShaderRecompiler::IR::PushData::GraphicsDrawDwords(mesh_active,
+	                                                                       object_primitive_id);
 	GraphicsPrograms  result;
 	if (pixel_active) {
 		result.pixel = m_program_cache->Get(pixel_params, pixel_info, push_data_cursor);
@@ -865,7 +893,6 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 	const auto& vertex_program = programs.vertex[0];
 	const auto& pixel_program  = programs.pixel;
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Gfx)", profiler::colors::DeepOrangeA200);
-	MaybeFlushDriverCache();
 
 	EXIT_IF(colors.size() > RENDER_COLOR_ATTACHMENTS_MAX);
 	EXIT_IF(!vertex_program);
@@ -896,6 +923,9 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 		EXIT_IF(!colors[i].image_id || colors[i].desc.view_info.format == vk::Format::eUndefined);
 		static_params.color_mask[slot] = colors[i].export_mapping.ApplyMask(
 		    render_target_mask_slot(ctx.GetRenderTargetMask(), colors[i].target_slot));
+		if (colors[i].desc.info.guest_format == Prospero::BufferFormat::k11_11_10UNorm) {
+			static_params.color_mask[slot] = 1u;
+		}
 		rendering.color_formats[slot] = colors[i].desc.view_info.format;
 		if (attachment_samples == 0) {
 			attachment_samples = colors[i].desc.info.samples;
@@ -1051,7 +1081,7 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 
 	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
-	OnPipelineCreated();
+	CheckpointDriverCache();
 
 	return *iter->second;
 }
@@ -1060,7 +1090,6 @@ PipelineCache::Pipeline&
 PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
                                   const ShaderProgram&          compute_program) {
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Compute)", profiler::colors::RedA100);
-	MaybeFlushDriverCache();
 
 	EXIT_IF(!compute_program);
 
@@ -1083,7 +1112,7 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 
 	auto [iter, inserted] = m_compute_pipelines.emplace(compute_program.id, std::move(cached));
 	EXIT_IF(!inserted);
-	OnPipelineCreated();
+	CheckpointDriverCache();
 
 	return *iter->second;
 }
@@ -1091,7 +1120,6 @@ PipelineCache::Pipeline&
 PipelineCache::GetMeshEmulationPipeline(const ShaderVertexInputInfo& mesh_input,
                                         const ShaderProgram&         mesh_program) {
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(MeshEmulation)", profiler::colors::RedA100);
-	MaybeFlushDriverCache();
 	EXIT_IF(!mesh_program || !mesh_input.stage ||
 	        !mesh_input.stage.program->info.mesh_emulation);
 	// Program ids are unique across stages, so emulated mesh programs share the compute map.
@@ -1105,7 +1133,7 @@ PipelineCache::GetMeshEmulationPipeline(const ShaderVertexInputInfo& mesh_input,
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 	auto [iter, inserted] = m_compute_pipelines.emplace(mesh_program.id, std::move(cached));
 	EXIT_IF(!inserted);
-	OnPipelineCreated();
+	CheckpointDriverCache();
 	LOGF("Mesh emulation: compute pipeline MS=0x%016" PRIx64 " threads=%u vertices=%u "
 	     "primitives=%u\n",
 	     mesh_input.stage.program->shader_hash, mesh_input.mesh.threads_num[0],

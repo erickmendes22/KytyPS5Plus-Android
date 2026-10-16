@@ -22,6 +22,7 @@ struct CompileOptions {
 	uint64_t                    shader_hash     = 0;
 	bool                        dump_ir                    = true;
 	bool                        early_dump                 = false;
+	bool                        emit_debug_info            = false;
 	bool                        maintenance8_enabled       = false;
 	ShaderDeviceFeatures        device_features {};
 	ShaderDeviceQuirks          device_quirks {};

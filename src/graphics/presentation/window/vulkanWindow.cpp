@@ -64,6 +64,7 @@ vk::PhysicalDeviceVulkan12Features WindowContext::RequiredVulkan12Features() noe
 	features.shaderBufferInt64Atomics  = VK_TRUE;
 	features.storageBuffer8BitAccess   = VK_TRUE;
 	features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+	features.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
 	features.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
 	return features;
 }
@@ -257,6 +258,9 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		check_feature(features12.shaderSampledImageArrayNonUniformIndexing,
 		              "shaderSampledImageArrayNonUniformIndexing",
 		              required_features12.shaderSampledImageArrayNonUniformIndexing);
+		check_feature(features12.shaderStorageImageArrayNonUniformIndexing,
+		              "shaderStorageImageArrayNonUniformIndexing",
+		              required_features12.shaderStorageImageArrayNonUniformIndexing);
 		check_feature(features12.shaderStorageBufferArrayNonUniformIndexing,
 		              "shaderStorageBufferArrayNonUniformIndexing",
 		              required_features12.shaderStorageBufferArrayNonUniformIndexing);
@@ -524,6 +528,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		subgroup_size_control.pNext = &graphics.mesh_shader_properties;
 	}
 	physical_device.getProperties2(&properties2);
+	EXIT_NOT_IMPLEMENTED(!(properties11.subgroupSupportedOperations & vk::SubgroupFeatureFlagBits::eVote));
 
 	graphics.subgroup_size                 = properties11.subgroupSize;
 	graphics.min_subgroup_size             = subgroup_size_control.minSubgroupSize;

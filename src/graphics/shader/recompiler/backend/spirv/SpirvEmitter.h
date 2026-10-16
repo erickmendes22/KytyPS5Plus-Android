@@ -15,7 +15,8 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
                                   uint32_t push_data_start_dword = 0,
                                   bool maintenance8_enabled = false,
                                   const ShaderDeviceFeatures& device_features = {},
-                                  const ShaderDeviceQuirks&   device_quirks   = {});
+                                  const ShaderDeviceQuirks&   device_quirks   = {},
+                                  bool                        emit_debug_info = false);
 
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv
 
