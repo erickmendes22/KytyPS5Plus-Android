@@ -300,9 +300,10 @@ int Main(int argc, char** argv) {
 				      .device_id      = props.deviceID,
 				      .driver_id      = static_cast<uint32_t>(device->Driver().driverID),
 				      .driver_version = props.driverVersion});
-				fmt::print("device: {} | driver {} {} | emulator shader quirks: {} | {} records\n",
-				           props.deviceName.data(), device->Driver().driverName.data(),
-				           device->Driver().driverInfo.data(),
+				std::string info = device->Driver().driverInfo.data();
+				std::ranges::replace(info, '\n', ' ');
+				fmt::print("device: {} | {} | {} | emulator shader quirks: {} | {} records\n",
+				           props.deviceName.data(), device->Driver().driverName.data(), info,
 				           Libs::Graphics::DescribeShaderQuirks(quirks), args.records.size());
 				std::fflush(stdout);
 				_exit(0);

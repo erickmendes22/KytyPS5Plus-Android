@@ -97,7 +97,8 @@ STATUS=$?
 set -e
 # Driver diagnostics only (Adreno logs "Failed to link shaders." / "Pipeline create failed").
 DRIVER_LOG="$(adb logcat -d 2>/dev/null |
-	grep -E "(Adreno|AdrenoVK|mesa|turnip|vulkan)[^:]*: .*([Ff]ail|[Ee]rror|[Cc]rash|abort)" || true)"
+	grep -E "(Adreno|AdrenoVK|mesa|turnip|vulkan)[^:]*: .*([Ff]ail|[Ee]rror|[Cc]rash|abort)" |
+	grep -v "QSPM-HAL" || true)"
 if [ -n "$DRIVER_LOG" ]; then
 	echo
 	echo "driver log:"
