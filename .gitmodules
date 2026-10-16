@@ -42,3 +42,6 @@
 [submodule "3rdparty/imgui"]
 	path = 3rdparty/imgui
 	url = https://github.com/ocornut/imgui.git
+[submodule "3rdparty/libadrenotools"]
+	path = 3rdparty/libadrenotools
+	url = https://github.com/bylaws/libadrenotools.git

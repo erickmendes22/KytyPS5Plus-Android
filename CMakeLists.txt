@@ -369,7 +369,9 @@ if(LINUX)
 endif()
 
 if(KYTY_ANDROID)
-	list(APPEND kyty_emulator_link_libraries log android)
+	list(APPEND kyty_emulator_link_libraries log android adrenotools)
+	# Loaded at runtime from nativeLibraryDir by adrenotools_open_libvulkan (--gpu-driver).
+	set(KYTY_ADRENOTOOLS_HOOKS hook_impl main_hook file_redirect_hook gsl_alloc_hook)
 endif()
 
 set(inc_headers
@@ -816,6 +818,7 @@ if(KYTY_ANDROID)
 	# SDLActivity dlopen()s libmain.so and calls its exported SDL_main().
 	add_library(kyty_emulator SHARED "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
 	set_target_properties(kyty_emulator PROPERTIES OUTPUT_NAME main)
+	add_dependencies(kyty_emulator ${KYTY_ADRENOTOOLS_HOOKS})
 else()
 	add_executable(kyty_emulator "${KYTY_SOURCE_DIR}/main.cpp" ${kyty_emulator_src})
 endif()
