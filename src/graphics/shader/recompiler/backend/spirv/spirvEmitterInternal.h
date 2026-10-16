@@ -6,6 +6,7 @@
 #include "graphics/shader/deviceQuirks.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvBuilder.h"
+#include "graphics/shader/recompiler/ir/MeshEmulationLayout.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
@@ -147,6 +148,7 @@ struct EmitterState {
 	uint32_t                   mesh_primitive_data                   = 0;
 	uint32_t                   mesh_primitives                       = 0;
 	uint32_t                   mesh_cull                             = 0;
+	IR::MeshEmulationLayout    mesh_emulation_layout;
 	uint32_t                   entry_label                           = 0;
 	uint32_t                   current_label                         = 0;
 	const IR::Block*           current_block                         = nullptr;
@@ -298,6 +300,11 @@ uint32_t PixelParameterLocation(const EmitterState& state, uint32_t attr);
 bool PixelParameterIsFlat(const EmitterState& state, uint32_t attr);
 
 bool PixelParameterIsCustom(const EmitterState& state, uint32_t attr);
+
+// A Mesh stage emitted as a compute shader writing vertex and index buffers (no mesh shaders).
+inline bool MeshEmulated(const EmitterState& state) {
+	return state.program.stage == ShaderType::Mesh && !state.device_features.mesh_shader;
+}
 
 // The pixel shader reads barycentrics and per-vertex parameters from a generated geometry stage.
 inline bool BarycentricsEmulated(const EmitterState& state) {

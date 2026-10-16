@@ -1107,6 +1107,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	const auto vertex_stages =
 	    std::span {state.vertex_info.data(), state.programs.VertexStageCount()};
 	const bool mesh_active = state.vertex_info[0].stage.program->stage == ShaderType::Mesh;
+	// Without VK_EXT_mesh_shader the mesh stage runs as compute and a generated vertex stage
+	// draws its output as an indexed triangle list.
+	const bool mesh_emulated =
+	    mesh_active && state.vertex_info[0].stage.program->info.mesh_emulation;
 	uint32_t   mesh_groups = 0;
 	if (mesh_active) {
 		const auto& mesh = state.vertex_info[0].mesh;
@@ -1127,7 +1131,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 		mesh_groups        = (primitives - 1u) / mesh.primitives_per_group + 1u;
 		const auto& limits = m_context.GetGraphics().mesh_shader_properties;
-		if (mesh_groups > limits.maxMeshWorkGroupCount[0] ||
+		if (mesh_emulated) {
+			const auto& compute = m_context.GetGraphics().GetPhysicalDeviceProperties().limits;
+			if (mesh_groups > compute.maxComputeWorkGroupCount[0] ||
+			    draw.instance_count > compute.maxComputeWorkGroupCount[1]) {
+				EXIT("mesh emulation: draw exceeds host compute workgroup counts: %ux%u\n",
+				     mesh_groups, draw.instance_count);
+			}
+		} else if (mesh_groups > limits.maxMeshWorkGroupCount[0] ||
 		    draw.instance_count > limits.maxMeshWorkGroupCount[1] ||
 		    static_cast<uint64_t>(mesh_groups) * draw.instance_count >
 		        limits.maxMeshWorkGroupTotalCount) {
@@ -1170,8 +1181,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 	auto& pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(
 	    std::span {state.color_info, state.color_count}, state.depth_info, vertex_stages, buffer,
-	    state.ps_active ? &state.ps_input_info : nullptr, topology, primitive_restart_enable,
-	    state.programs);
+	    state.ps_active ? &state.ps_input_info : nullptr,
+	    mesh_emulated ? vk::PrimitiveTopology::eTriangleList : topology,
+	    mesh_emulated ? false : primitive_restart_enable, state.programs);
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering =
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info,
@@ -1188,21 +1200,34 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (state.ps_active && !draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x300u);
 	}
-	CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
-	if (mesh_active) {
-		const uint32_t draw_data[] {
-		    draw.index_count,
-		    draw.IsIndexed() ? static_cast<uint32_t>(emit.vertex_offset) : emit.first_vertex,
-		    emit.first_instance, index_source.guest_element_size,
-		    static_cast<uint32_t>(index_source.address),
-		    static_cast<uint32_t>(index_source.address >> 32u)};
-		static_assert(std::size(draw_data) == ShaderRecompiler::IR::PushData::MeshDrawDwordCount);
-		vk_buffer.pushConstants(pipeline.pipeline_layout,
-		                        vk::ShaderStageFlagBits::eMeshEXT |
-		                            vk::ShaderStageFlagBits::eFragment,
-		                        0, sizeof(draw_data), draw_data);
+	const uint32_t mesh_draw_data[] {
+	    draw.index_count,
+	    draw.IsIndexed() ? static_cast<uint32_t>(emit.vertex_offset) : emit.first_vertex,
+	    emit.first_instance, index_source.guest_element_size,
+	    static_cast<uint32_t>(index_source.address),
+	    static_cast<uint32_t>(index_source.address >> 32u)};
+	static_assert(std::size(mesh_draw_data) == ShaderRecompiler::IR::PushData::MeshDrawDwordCount);
+	EmulatedMeshDraw emulated_mesh;
+	if (mesh_emulated) {
+		emulated_mesh = DispatchEmulatedMesh(buffer, state.vertex_info[0], state.programs.vertex[0],
+		                                     bindings.vertex[0], mesh_draw_data, mesh_groups,
+		                                     draw.instance_count);
+		// Only the pixel stage binds resources in the graphics pipeline.
+		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages.subspan(1));
+		const uint32_t vertex_data[] {static_cast<uint32_t>(emulated_mesh.vertex_address),
+		                              static_cast<uint32_t>(emulated_mesh.vertex_address >> 32u)};
+		vk_buffer.pushConstants(pipeline.pipeline_layout, pipeline.push_constant_stages, 0,
+		                        sizeof(vertex_data), vertex_data);
 	} else {
-		CommitIndexBuffer(vk_buffer, index_binding);
+		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
+		if (mesh_active) {
+			vk_buffer.pushConstants(pipeline.pipeline_layout,
+			                        vk::ShaderStageFlagBits::eMeshEXT |
+			                            vk::ShaderStageFlagBits::eFragment,
+			                        0, sizeof(mesh_draw_data), mesh_draw_data);
+		} else {
+			CommitIndexBuffer(vk_buffer, index_binding);
+		}
 	}
 
 	auto& dynamic_state = m_context.GetCommandScheduler().GetDynamicState();
@@ -1220,7 +1245,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
-	if (mesh_active) {
+	if (mesh_emulated) {
+		vk_buffer.drawIndexed(emulated_mesh.index_count, 1, 0, 0, 0);
+	} else if (mesh_active) {
 		vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
 	} else {
 		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
@@ -1232,7 +1259,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	vk::PipelineStageFlags shader_write_stages = {};
 	for (const auto& stage: vertex_stages) {
 		if (HasShaderBufferWrites(stage.stage)) {
-			shader_write_stages |= ShaderPipelineStages(NativeShaderStage(stage.logical_stage));
+			shader_write_stages |= ShaderPipelineStages(NativeShaderStage(*stage.stage.program));
 		}
 	}
 	if (state.ps_active && HasShaderBufferWrites(state.ps_input_info.stage)) {

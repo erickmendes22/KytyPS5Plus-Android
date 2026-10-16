@@ -17,6 +17,7 @@
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/barycentricGeometryShader.h"
+#include "graphics/shader/meshVertexPullShader.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/rectListShader.h"
@@ -27,6 +28,7 @@
 #include <atomic>
 #include <bit>
 #include <limits>
+#include <optional>
 #include <span>
 #include <vector>
 #include <fmt/format.h>
@@ -238,7 +240,7 @@ static BarycentricPrimitive BarycentricPrimitiveFor(vk::PrimitiveTopology topolo
 static vk::ShaderModule CreateBarycentricGeometryModule(
     GraphicContext& graphics, std::span<const ShaderVertexInputInfo> vertex_info,
     const ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology, bool rect_list,
-    bool mesh) {
+    bool mesh, const MeshVertexPullStage* mesh_vertex_pull) {
 	if (ps_input_info == nullptr) {
 		return nullptr;
 	}
@@ -247,7 +249,7 @@ static vk::ShaderModule CreateBarycentricGeometryModule(
 	if (!emulation.enabled) {
 		return nullptr;
 	}
-	if (mesh) {
+	if (mesh && mesh_vertex_pull == nullptr) {
 		EXIT("pixel shader 0x%016" PRIx64 " needs emulated fragment barycentrics, which need a "
 		     "geometry stage, and a mesh pipeline cannot have one\n",
 		     pixel_program.shader_hash);
@@ -260,6 +262,11 @@ static vk::ShaderModule CreateBarycentricGeometryModule(
 		// The rect-list evaluation stage emits triangles and forwards only the parameters.
 		stage.primitive          = BarycentricPrimitive::Triangles;
 		stage.previous_locations = RectListParameterLocations(vertex_info.front(), ps_input_info);
+	} else if (mesh_vertex_pull != nullptr) {
+		// An emulated mesh stage draws triangles through the generated vertex stage.
+		stage.primitive          = BarycentricPrimitive::Triangles;
+		stage.previous           = MeshVertexPullOutputs(*mesh_vertex_pull);
+		stage.previous_locations = MeshVertexPullParameterMask(*mesh_vertex_pull);
 	} else {
 		const auto& previous     = *vertex_info.back().stage.program;
 		stage.primitive          = vertex_info.size() == 3 ? BarycentricPrimitive::Triangles
@@ -300,6 +307,29 @@ static vk::ShaderModule CreateBarycentricGeometryModule(
 	return module;
 }
 
+static vk::ShaderModule CreateMeshVertexPullModule(
+    GraphicContext& graphics, const ShaderRecompiler::IR::CompiledShaderInfo& mesh_program,
+    const MeshVertexPullStage& stage) {
+	const auto code = BuildMeshVertexPullShader(stage);
+	if (graphics_debug_dump_enabled()) {
+		static std::atomic_uint32_t s_dumps = 0;
+		const auto path = Config::GetShaderLogFolder() /
+		                  fmt::format("{:04d}_mesh_vertex_pull_{:016x}.spv", s_dumps++,
+		                              mesh_program.shader_hash);
+		Common::File::CreateDirectories(path.parent_path());
+		Common::File file(path);
+		if (!file.IsInvalid()) {
+			file.Write(code.data(), code.size() * sizeof(uint32_t));
+		}
+	}
+	static std::atomic_uint32_t s_pipelines = 0;
+	LOGF("Mesh emulation: vertex stage #%u MS=0x%016" PRIx64 " stride=%u dwords fields=%zu "
+	     "words=%zu\n",
+	     ++s_pipelines, mesh_program.shader_hash, stage.layout->stride_dwords,
+	     stage.layout->fields.size(), code.size());
+	return CompileSPV(code, graphics.device);
+}
+
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                             const PipelineRenderingState&          rendering,
@@ -319,9 +349,36 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	                        rendering.stencil_format != vk::Format::eUndefined;
 	EXIT_IF(!vs_input_info.stage);
 	const bool mesh = vs_input_info.stage.program->stage == ShaderType::Mesh;
-	EXIT_NOT_IMPLEMENTED(mesh && !graphics.mesh_shader_enabled);
+	// Without VK_EXT_mesh_shader the mesh stage ran as compute; a generated vertex stage reads
+	// its vertex records back for an ordinary indexed triangle-list draw.
+	const bool mesh_native   = mesh && !vs_input_info.stage.program->info.mesh_emulation;
+	const bool mesh_emulated = mesh && !mesh_native;
+	EXIT_IF(mesh_native && !graphics.mesh_shader_enabled);
+	EXIT_IF(mesh_emulated && static_params.topology != vk::PrimitiveTopology::eTriangleList);
 	const bool rect_list =
 	    !mesh && !tessellation && static_params.topology == vk::PrimitiveTopology::ePatchList;
+	std::optional<ShaderRecompiler::IR::MeshEmulationLayout> mesh_layout;
+	std::optional<MeshVertexPullStage>                       mesh_vertex_pull;
+	vk::ShaderModule                                         mesh_vertex_module = nullptr;
+	if (mesh_emulated) {
+		mesh_layout = ShaderRecompiler::IR::BuildMeshEmulationLayout(
+		    std::span<const ShaderRecompiler::IR::StageOutput>(
+		        vs_input_info.stage.program->info.outputs));
+		mesh_vertex_pull = MeshVertexPullStage {.layout = &*mesh_layout};
+		const auto& features = graphics.optional_features;
+		if (!features.fragment_shader_barycentric && features.geometry_varying_locations != 0) {
+			// The same location vertex shaders mirror layer/viewport into for that stage.
+			mesh_vertex_pull->layer_viewport_location = features.geometry_varying_locations - 1u;
+			const auto location = mesh_vertex_pull->layer_viewport_location;
+			if (location >= 32u || (MeshVertexPullParameterMask(*mesh_vertex_pull) &
+			                        (1u << location)) != 0) {
+				// Parameters own that location; the geometry stage then sees layer 0.
+				mesh_vertex_pull->layer_viewport_location = UINT32_MAX;
+			}
+		}
+		mesh_vertex_module = CreateMeshVertexPullModule(graphics, *vs_input_info.stage.program,
+		                                                *mesh_vertex_pull);
+	}
 
 	vk::ShaderModule tess_control_shader_module = nullptr;
 	vk::ShaderModule tess_eval_shader_module    = nullptr;
@@ -349,15 +406,21 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	const auto geometry_shader_module = CreateBarycentricGeometryModule(
 	    graphics, vertex_info, ps_active ? ps_input_info : nullptr, static_params.topology,
-	    rect_list, mesh);
+	    rect_list, mesh, mesh_vertex_pull ? &*mesh_vertex_pull : nullptr);
 
 	vk::PipelineShaderStageCreateInfo shader_stages[5] {};
 	uint32_t                          shader_stage_count = 0;
-	for (uint32_t i = 0; i < vertex_info.size(); i++) {
-		shader_stages[shader_stage_count++] = {.stage =
-		                                           NativeShaderStage(vertex_info[i].logical_stage),
-		                                       .module = programs.vertex[i].module,
+	if (mesh_emulated) {
+		shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eVertex,
+		                                       .module = mesh_vertex_module,
 		                                       .pName  = "main"};
+	} else {
+		for (uint32_t i = 0; i < vertex_info.size(); i++) {
+			shader_stages[shader_stage_count++] = {
+			    .stage  = NativeShaderStage(vertex_info[i].logical_stage),
+			    .module = programs.vertex[i].module,
+			    .pName  = "main"};
+		}
 	}
 	if (rect_list) {
 		shader_stages[shader_stage_count++] = {.stage =
@@ -548,10 +611,16 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	std::vector<vk::DescriptorSetLayoutBinding> descriptor_bindings;
 	vk::ShaderStageFlags graphics_stages = vk::ShaderStageFlagBits::eFragment;
-	for (const auto& stage: vertex_info) {
-		const auto native_stage = NativeShaderStage(stage.logical_stage);
-		AddLayoutBindings(descriptor_bindings, *stage.stage.program, native_stage);
-		graphics_stages |= native_stage;
+	if (mesh_emulated) {
+		// The mesh program's resources belong to its compute pipeline; the generated vertex
+		// stage reads only push data.
+		graphics_stages |= vk::ShaderStageFlagBits::eVertex;
+	} else {
+		for (const auto& stage: vertex_info) {
+			const auto native_stage = NativeShaderStage(stage.logical_stage);
+			AddLayoutBindings(descriptor_bindings, *stage.stage.program, native_stage);
+			graphics_stages |= native_stage;
+		}
 	}
 	if (ps_active) {
 		EXIT_IF(!ps_input_info->stage);
@@ -561,6 +630,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	CreateDescriptorLayout(graphics, pipeline, descriptor_bindings);
 	const vk::PushConstantRange push_constants {graphics_stages, 0,
 	                                            ShaderRecompiler::IR::NativePushConstantSize};
+	pipeline.push_constant_stages = graphics_stages;
 
 	vk::PipelineLayoutCreateInfo pipeline_layout_info {};
 	pipeline_layout_info.setLayoutCount         = 1;
@@ -627,8 +697,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	pipeline_info.pNext                    = &rendering_info;
 	pipeline_info.stageCount               = shader_stage_count;
 	pipeline_info.pStages                  = shader_stages;
-	pipeline_info.pVertexInputState        = mesh ? nullptr : &vertex_input_info;
-	pipeline_info.pInputAssemblyState      = mesh ? nullptr : &input_assembly;
+	pipeline_info.pVertexInputState        = mesh_native ? nullptr : &vertex_input_info;
+	pipeline_info.pInputAssemblyState      = mesh_native ? nullptr : &input_assembly;
 	vk::PipelineTessellationStateCreateInfo tessellation_state {};
 	tessellation_state.patchControlPoints =
 	    tessellation ? vs_input_info.tess.input_control_points : 3u;
@@ -687,6 +757,12 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
 		     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	}
+	if (result != vk::Result::eSuccess && mesh_emulated) {
+		EXIT("vkCreateGraphicsPipelines failed: %s for emulated mesh stage 0x%016" PRIx64
+		     " PS=%" PRIu64 "\n",
+		     vk::to_string(result).c_str(), vs_input_info.stage.program->shader_hash,
+		     pixel_program.id);
+	}
 	if (result != vk::Result::eSuccess && geometry_shader_module != nullptr) {
 		EXIT("vkCreateGraphicsPipelines failed: %s for VS=%" PRIu64 " PS=%" PRIu64
 		     " with an emulated-barycentric geometry stage\n",
@@ -707,11 +783,14 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	if (geometry_shader_module != nullptr) {
 		graphics.device.destroyShaderModule(geometry_shader_module, nullptr);
 	}
+	if (mesh_vertex_module != nullptr) {
+		graphics.device.destroyShaderModule(mesh_vertex_module, nullptr);
+	}
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
-                            const ShaderComputeInputInfo& input_info,
+                            const ShaderRecompiler::IR::CompiledShaderInfo& program,
                             vk::ShaderModule compute_module, vk::PipelineCache driver_cache) {
 	EXIT_IF(compute_module == nullptr);
 
@@ -720,8 +799,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	comp_shader_stage_info.stage  = vk::ShaderStageFlagBits::eCompute;
 	comp_shader_stage_info.module = compute_module;
 	comp_shader_stage_info.pName  = "main";
-	EXIT_IF(!input_info.stage);
-	const auto wave_size = input_info.stage.program->wave_size;
+	const auto wave_size = program.wave_size;
 	if (graphics.compute_subgroup_size_control_enabled &&
 	    wave_size >= graphics.min_subgroup_size && wave_size <= graphics.max_subgroup_size) {
 		comp_subgroup_size.requiredSubgroupSize = wave_size;
@@ -729,11 +807,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	}
 
 	std::vector<vk::DescriptorSetLayoutBinding> descriptor_bindings;
-	AddLayoutBindings(descriptor_bindings, *input_info.stage.program,
-	                  vk::ShaderStageFlagBits::eCompute);
+	AddLayoutBindings(descriptor_bindings, program, vk::ShaderStageFlagBits::eCompute);
 	CreateDescriptorLayout(graphics, pipeline, descriptor_bindings);
 	const vk::PushConstantRange push_constants {vk::ShaderStageFlagBits::eCompute, 0,
 	                                            ShaderRecompiler::IR::NativePushConstantSize};
+	pipeline.push_constant_stages = vk::ShaderStageFlagBits::eCompute;
 
 	vk::PipelineLayoutCreateInfo pipeline_layout_info {};
 	pipeline_layout_info.setLayoutCount         = 1;

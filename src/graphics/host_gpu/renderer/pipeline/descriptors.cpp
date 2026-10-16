@@ -928,9 +928,8 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 	    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eMeshEXT |
 	    vk::ShaderStageFlagBits::eTessellationControl |
 	    vk::ShaderStageFlagBits::eTessellationEvaluation | vk::ShaderStageFlagBits::eFragment;
-	vk::ShaderStageFlags push_stages = pipeline_bind_point == vk::PipelineBindPoint::eGraphics
-	                                       ? vk::ShaderStageFlagBits::eFragment
-	                                       : vk::ShaderStageFlags {};
+	// Push data reaches every stage of the layout's range, including generated stages.
+	vk::ShaderStageFlags push_stages = pipeline.push_constant_stages;
 	for (const auto* prepared: prepared_bindings) {
 		EXIT_IF(prepared == nullptr || prepared->runtime == nullptr || !*prepared->runtime);
 		const auto& program = *prepared->runtime->program;
@@ -943,8 +942,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 				image_descriptor_count += count;
 			}
 		}
-		const auto shader_stage = NativeShaderStage(program.stage);
-		push_stages |= shader_stage;
+		const auto shader_stage = NativeShaderStage(program);
 		EXIT_IF((pipeline_bind_point == vk::PipelineBindPoint::eGraphics &&
 		         (shader_stage & GraphicsStages) == vk::ShaderStageFlags {}) ||
 		        (pipeline_bind_point == vk::PipelineBindPoint::eCompute &&
@@ -993,7 +991,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 	for (auto* prepared: prepared_bindings) {
 		const auto& program       = *prepared->runtime->program;
 		auto&       descriptors   = *prepared;
-		const auto  shader_stage  = NativeShaderStage(program.stage);
+		const auto  shader_stage  = NativeShaderStage(program);
 		const auto  shader_stages = ShaderPipelineStages(shader_stage);
 		if (descriptors.gds.buffer != nullptr) {
 			buffer.EndRendering();

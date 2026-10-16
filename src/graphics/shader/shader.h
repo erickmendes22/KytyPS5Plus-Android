@@ -226,6 +226,9 @@ struct ShaderDeviceFeatures {
 	bool subgroup_vertex         = true; // Vertex, Local
 	bool subgroup_tessellation   = true; // TessellationControl, TessellationEvaluation
 	bool subgroup_fragment       = true; // Pixel
+	// VK_EXT_mesh_shader. Without it a Mesh stage is emitted as a compute shader that writes its
+	// vertices and triangles to buffers a generated vertex shader reads back (mesh emulation).
+	bool mesh_shader = true;
 };
 
 // True when a shader of this stage may emit native subgroup operations on the device.

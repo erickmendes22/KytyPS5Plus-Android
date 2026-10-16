@@ -560,6 +560,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		     graphics.mesh_shader_properties.maxMeshOutputVertices,
 		     graphics.mesh_shader_properties.maxMeshOutputPrimitives,
 		     graphics.mesh_shader_properties.maxMeshSharedMemorySize);
+	} else {
+		LOGF("Vulkan MeshEXT: unsupported; mesh stages are emulated with compute shaders\n");
 	}
 	// VulkanFindPhysicalDevice already checked the required creation features. These
 	// requirements are specific to this creation path and are not part of device selection.

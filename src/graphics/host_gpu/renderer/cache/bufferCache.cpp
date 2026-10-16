@@ -271,6 +271,13 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	m_critical_gc_memory = static_cast<uint64_t>(std::max<int64_t>(critical, 2 * GiB));
 }
 
+MeshEmulationRing& BufferCache::GetMeshEmulationRing() {
+	if (!m_mesh_emulation_ring) {
+		m_mesh_emulation_ring = std::make_unique<MeshEmulationRing>(m_graphics, m_scheduler);
+	}
+	return *m_mesh_emulation_ring;
+}
+
 BufferCache::~BufferCache() {
 	if (!m_gpu_modified_ranges.Empty()) {
 		EXIT("BufferCache: destroyed with pending GPU-modified ranges\n");

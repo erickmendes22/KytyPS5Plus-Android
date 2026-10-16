@@ -10,6 +10,8 @@
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/shader/barycentricGeometryShader.h"
+#include "graphics/shader/meshVertexPullShader.h"
+#include "graphics/shader/recompiler/ir/MeshEmulationLayout.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
@@ -11424,6 +11426,215 @@ void TestMeshExportStorage() {
   }
 }
 
+// Without VK_EXT_mesh_shader a mesh stage is emitted as a compute shader that writes vertex
+// records and triangle indices through buffer device addresses, and a generated vertex stage
+// reads the records back. Covers variable (GS_ALLOC_REQ) output counts, the record layout,
+// per-primitive Layer, clip/cull distances, triangle slots past the invocation count, the
+// barycentric geometry stage after the generated vertex stage, and that the desktop mesh
+// output does not change.
+void TestEmulatedMeshCompute() {
+  using ShaderRecompiler::IR::PushData;
+  using ShaderRecompiler::IR::StageOutputKind;
+  constexpr uint32_t kMeshShadingExt = spv::CapabilityMeshShadingEXT;
+  constexpr uint32_t kPhysicalStorageBufferAddresses = spv::CapabilityPhysicalStorageBufferAddresses;
+  constexpr uint32_t kShaderLayer = spv::CapabilityShaderLayer;
+  constexpr uint32_t kOpSetMeshOutputs = spv::OpSetMeshOutputsEXT;
+  constexpr uint32_t kOpConvertUToPtr = spv::OpConvertUToPtr;
+  constexpr uint32_t kLocalSize = spv::ExecutionModeLocalSize;
+  constexpr uint32_t kOutputVertices = spv::ExecutionModeOutputVertices;
+  constexpr uint32_t kBuiltIn = spv::DecorationBuiltIn;
+  const auto entry_model = [](const std::vector<uint32_t> &binary) {
+    for (size_t i = 5; i < binary.size(); i += binary[i] >> 16u) {
+      if ((binary[i] & 0xffffu) == 15u) {
+        return binary[i + 1];
+      }
+    }
+    return UINT32_MAX;
+  };
+  const uint32_t front[] = {
+      EncodeSMovB32(12, 255), 0x1003u,
+      EncodeSop1(0x20, 0, 6), // merged-stage handoff
+  };
+  const uint32_t back[] = {
+      EncodeSMovB32(124, 12), EncodeSopp(0x10, 9), // GS allocation from s12
+      EncodeVop1(0x01, 0, 128),
+      EncodeExp0(0x0c, 0xf, false), EncodeExp1(0, 0, 0, 0),
+      EncodeExp0(0x20, 0xf, false), EncodeExp1(0, 0, 0, 0),
+      EncodeExp0(0x21, 0xf, false), EncodeExp1(0, 0, 0, 0),
+      EncodeExp0(0x22, 0xf, false), EncodeExp1(0, 0, 0, 0),
+      EncodeExp0(0x0d, 0x4, false), EncodeExp1(0, 0, 0, 0), // Layer
+      EncodeExp0(0x0e, 0x9, false), EncodeExp1(0, 0, 0, 0), // Clip distances 0, 3
+      EncodeExp0(0x0f, 0x6, false), EncodeExp1(0, 0, 0, 0), // Cull distances 1, 2
+      EncodeExp0(0x14, 0x1), EncodeExp1(0, 0, 0, 0), // primitive
+      EncodeSopp(0x01),
+  };
+  ShaderVertexInputInfo input{};
+  input.pa_cl_vs_out_cntl = (1u << 21u) | (1u << 18u) | 0x00c0f00fu;
+  auto &mesh = input.mesh;
+  mesh.threads_num[0] = 64;
+  mesh.threads_num[1] = mesh.threads_num[2] = 1;
+  mesh.lds_size_dwords = 256;
+  mesh.primitives_per_group = 62;
+  mesh.vertices_per_group = 64;
+  mesh.max_vertices = 64;
+  mesh.max_primitives = 176; // Triangle slots past the 64 invocations stay degenerate.
+  std::array<uint32_t, 14> user_data{};
+  ShaderRecompiler::CompileOptions options{};
+  options.stage = ShaderType::Mesh;
+  options.input_info.vertex = &input;
+  options.user_data = user_data;
+  options.back_code = back;
+
+  for (const uint32_t subgroup_size : {32u, 64u}) {
+    mesh.host_subgroup_size = subgroup_size;
+    options.device_features.mesh_shader = true;
+    const auto desktop =
+        RecompileForTest(front, options, nullptr, nullptr, PushData::MeshDrawDwordCount);
+    CheckSpirvBinaryValidates(desktop.spirv);
+    Check(entry_model(desktop.spirv) == spv::ExecutionModelMeshEXT &&
+              SpirvContainsCapability(desktop.spirv, kMeshShadingExt) &&
+              SpirvContainsOpcode(desktop.spirv, kOpSetMeshOutputs) &&
+              SpirvContainsExecutionMode(desktop.spirv, kOutputVertices) &&
+              !desktop.program.info.mesh_emulation,
+          "desktop mesh stage changed with the emulation flag present");
+
+    options.device_features.mesh_shader = false;
+    for (const uint32_t push_start :
+         {PushData::MeshEmulationDrawDwordCount, PushData::DwordCount}) {
+      const auto emulated = RecompileForTest(front, options, nullptr, nullptr, push_start);
+      CheckSpirvBinaryValidates(emulated.spirv);
+      const auto &binary = emulated.spirv;
+      const auto source = DisassembleSpirvBinary(binary);
+      Check(entry_model(binary) == spv::ExecutionModelGLCompute &&
+                !SpirvContainsCapability(binary, kMeshShadingExt) &&
+                SpirvContainsCapability(binary, kPhysicalStorageBufferAddresses) &&
+                !SpirvContainsOpcode(binary, kOpSetMeshOutputs) &&
+                !SpirvContainsExecutionMode(binary, kOutputVertices) &&
+                SpirvContainsExecutionMode(binary, kLocalSize) &&
+                emulated.program.info.mesh_emulation,
+            "emulated mesh stage is not a compute shader");
+      // No mesh output built-ins remain; the records go through two device addresses.
+      for (const uint32_t builtin :
+           {spv::BuiltInPosition, spv::BuiltInClipDistance, spv::BuiltInCullDistance,
+            spv::BuiltInLayer, spv::BuiltInPrimitiveTriangleIndicesEXT,
+            spv::BuiltInCullPrimitiveEXT}) {
+        Check(!SpirvHasDecorationValue(binary, kBuiltIn, builtin),
+              "emulated mesh stage kept a mesh output built-in");
+      }
+      Check(SpirvInstructionOpcodeCount(binary, kOpConvertUToPtr) >= 2u &&
+                SpirvHasDecorationValue(binary, kBuiltIn, spv::BuiltInWorkgroupId),
+            "emulated mesh stage does not address its record slot");
+      for (const uint32_t dword :
+           {PushData::MeshEmulationVertexAddressDword, PushData::MeshEmulationIndexAddressDword,
+            PushData::MeshEmulationGroupCountDword}) {
+        const auto operand = "vsharp %uint_0 %uint_" + std::to_string(dword);
+        Check(SpirvSourceHasInstructionUsing(source, "OpAccessChain", operand.c_str()),
+              "emulated mesh stage does not read its output addresses from push data");
+      }
+      // The guest allocation request is clamped to the declared maxima.
+      Check(SpirvSourceHasInstructionUsing(source, "UMin", "%uint_64") &&
+                SpirvSourceHasInstructionUsing(source, "UMin", "%uint_176"),
+            "emulated mesh output counts are not clamped to the slot size");
+      Check(!emulated.program.bindings.UsesPushData() ||
+                emulated.program.bindings.push_data_start_dword >=
+                    PushData::MeshEmulationDrawDwordCount,
+            "emulated mesh push data overlaps its output addresses");
+    }
+  }
+
+  // Record layout: position, three parameters, layer, clip 0/3, cull 1/2.
+  options.device_features.mesh_shader = false;
+  const auto emulated =
+      RecompileForTest(front, options, nullptr, nullptr, PushData::MeshEmulationDrawDwordCount);
+  const auto layout = ShaderRecompiler::IR::BuildMeshEmulationLayout(
+      std::span<const ShaderRecompiler::IR::StageOutput>(emulated.program.info.outputs));
+  Check(layout.stride_dwords == 4u + 3u * 4u + 1u + 2u + 2u &&
+            layout.clip_distance_count == 4u && layout.cull_distance_count == 3u &&
+            layout.Find(StageOutputKind::Position, 0) != nullptr &&
+            layout.Find(StageOutputKind::Parameter, 2) != nullptr &&
+            layout.Find(StageOutputKind::Layer, 0) != nullptr &&
+            layout.Find(StageOutputKind::ClipDistance, 3) != nullptr &&
+            layout.Find(StageOutputKind::CullDistance, 1) != nullptr &&
+            layout.Find(StageOutputKind::ClipDistance, 1) == nullptr,
+        "mesh emulation record layout lost an export");
+
+  // The generated vertex stage: with and without the barycentric layer mirror.
+  ShaderPixelInputInfo pixel_info{};
+  pixel_info.input_num = 1;
+  pixel_info.ps_perspective_center_vgpr = 4;
+  SetIdentityInterpolatorSettings(&pixel_info);
+  const uint32_t pixel_shader[] = {
+      EncodeVintrp(0, 6, 0, 0, 4), EncodeVintrp(1, 6, 0, 0, 5),
+      EncodeVop2(0x03, 7, 4 + 256, 6), EncodeExp0(0x00, 0x1), EncodeExp1(7, 7, 7, 7),
+      0xbf810000u,
+  };
+  auto pixel_options = MakeCompileOptions(ShaderType::Pixel);
+  pixel_options.input_info.pixel = &pixel_info;
+  const auto desktop_pixel = RecompileForTest(pixel_shader, pixel_options);
+  pixel_options.device_features.fragment_shader_barycentric = false;
+  const auto emulated_pixel = RecompileForTest(pixel_shader, pixel_options);
+  for (const uint32_t mirror : {UINT32_MAX, 31u}) {
+    const MeshVertexPullStage stage{.layout = &layout, .layer_viewport_location = mirror};
+    const auto vertex = BuildMeshVertexPullShader(stage);
+    CheckSpirvBinaryValidates(vertex);
+    Check(entry_model(vertex) == spv::ExecutionModelVertex &&
+              SpirvContainsCapability(vertex, kShaderLayer) &&
+              SpirvHasDecorationValue(vertex, kBuiltIn, 42u /* VertexIndex */) &&
+              SpirvHasDecorationValue(vertex, kBuiltIn, 9u /* Layer */) &&
+              SpirvHasMemberDecorationValue(vertex, kBuiltIn, 0u /* Position */) &&
+              SpirvHasMemberDecorationValue(vertex, kBuiltIn, 3u /* ClipDistance */) &&
+              SpirvHasMemberDecorationValue(vertex, kBuiltIn, 4u /* CullDistance */),
+          "generated vertex stage lost a mesh output built-in");
+    const auto outputs = SpirvLocationInterface(vertex, 3u);
+    for (uint32_t location = 0; location < 3u; location++) {
+      Check(outputs.contains(location) && outputs.at(location).type == "f32x4",
+            "generated vertex stage lost a parameter");
+    }
+    Check(MeshVertexPullParameterMask(stage) == 0x7u &&
+              outputs.contains(31u) == (mirror == 31u) &&
+              (mirror != 31u || outputs.at(31u).type == "u32x2"),
+          "generated vertex stage layer mirror does not follow the request");
+    CheckStageInterfaceMatches(vertex, desktop_pixel.spirv, false,
+                               "generated vertex stage does not feed the pixel shader");
+    const auto raster = MeshVertexPullOutputs(stage);
+    Check(raster.layer && raster.clip_distance_count == 4u &&
+              raster.cull_distance_count == 3u && raster.layer_viewport_location == mirror,
+          "generated vertex stage reports the wrong built-ins");
+    // An emulated-barycentric pixel shader gets its geometry stage after the generated one.
+    BarycentricGeometryStage geometry_stage{
+        .primitive = BarycentricPrimitive::Triangles,
+        .fragment = &emulated_pixel.program.info.barycentric_emulation,
+        .previous = raster,
+        .previous_locations = MeshVertexPullParameterMask(stage)};
+    const auto geometry = BuildBarycentricGeometryShader(geometry_stage);
+    CheckSpirvBinaryValidates(geometry);
+    CheckStageInterfaceMatches(vertex, geometry, true,
+                               "geometry stage reads a location the generated stage lacks");
+    CheckStageInterfaceMatches(geometry, emulated_pixel.spirv, false,
+                               "geometry stage does not feed the pixel shader");
+  }
+
+  // A position-only stage, as point sprites expand to: no optional built-ins.
+  const std::vector<ShaderRecompiler::IR::StageOutput> position_only{
+      {StageOutputKind::Position, 0, 0, "pos"}};
+  const auto minimal = ShaderRecompiler::IR::BuildMeshEmulationLayout(position_only);
+  const auto minimal_vertex = BuildMeshVertexPullShader({.layout = &minimal});
+  CheckSpirvBinaryValidates(minimal_vertex);
+  Check(minimal.stride_dwords == 4u && !SpirvContainsCapability(minimal_vertex, kShaderLayer) &&
+            !SpirvHasMemberDecorationValue(minimal_vertex, kBuiltIn, 3u),
+        "position-only generated vertex stage declares unused built-ins");
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+  // Outputs the native mesh path does not support stay named rejections.
+  ExpectFatal(
+      [] {
+        const std::vector<ShaderRecompiler::IR::StageOutput> point_size{
+            {StageOutputKind::PointSize, 0, 0, "psize"}};
+        (void)ShaderRecompiler::IR::BuildMeshEmulationLayout(point_size);
+      },
+      "mesh emulation accepted a point-size output");
+#endif
+}
+
 void TestMergedShaderUserDataSnapshot() {
   using namespace ShaderRecompiler;
   const uint32_t front[] = {
@@ -16431,6 +16642,7 @@ int main() {
   TestMemoryFedScalarLeafCall();
   TestFusedShaderHandoffPreservesRegisters();
   TestMeshExportStorage();
+  TestEmulatedMeshCompute();
   TestMergedShaderUserDataSnapshot();
   TestMeshInputAssembly();
   TestEmbeddedFetchPreservesSharedScalarLoad();
