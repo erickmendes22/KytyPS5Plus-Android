@@ -10,6 +10,7 @@
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "kernel/caseInsensitivePath.h"
 #include "kernel/memory.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -57,8 +58,19 @@ public:
 	[[nodiscard]] std::filesystem::path ResolvePath(const std::string& mounted_name);
 
 private:
+	struct HostPath {
+		std::filesystem::path path;
+		bool                  match_case = false; // a host directory, not an archive or no mount
+	};
+
+	// Host path for a guest path, before case-insensitive matching.
+	[[nodiscard]] HostPath MapToHost(const std::string& mounted_name);
+
 	std::vector<MountPair> m_mount_pairs;
 	Common::Mutex          m_mutex;
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+	CaseInsensitivePathResolver m_case_resolver;
+#endif
 };
 
 struct File {
@@ -284,58 +296,25 @@ void MountPoints::Umount(const std::string& folder_or_point) {
 	}
 }
 
-#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
-// Resolve guest paths case-insensitively on case-sensitive hosts.
-static std::filesystem::path ResolvePathIgnoringCase(const std::filesystem::path& path) {
-	std::error_code ec;
-	if (std::filesystem::exists(path, ec)) {
-		return path;
-	}
-
-	// Preserve unmatched components for the caller's ENOENT path.
-	std::filesystem::path resolved =
-	    path.has_root_path() ? path.root_path() : std::filesystem::path(".");
-	bool matched = true;
-
-	for (const auto& component: path.relative_path()) {
-		if (component.empty()) {
-			continue;
-		}
-
-		auto candidate = resolved / component;
-		if (!matched || std::filesystem::exists(candidate, ec)) {
-			resolved = std::move(candidate);
-			continue;
-		}
-
-		bool found = false;
-		for (std::filesystem::directory_iterator entry(resolved, ec), end; entry != end;
-		     entry.increment(ec)) {
-			if (ec) {
-				break;
-			}
-			if (Common::EqualNoCase(entry->path().filename().string(), component.string())) {
-				resolved = entry->path();
-				found    = true;
-				break;
-			}
-		}
-
-		if (!found) {
-			resolved = std::move(candidate);
-			matched  = false;
-		}
-	}
-
-	return resolved;
-}
-#else
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 static bool HasWindowsForbiddenFilenameCharacter(const std::string& relative_path) {
 	return relative_path.find_first_of("<>:\"|?*") != std::string::npos;
 }
 #endif
 
 std::filesystem::path MountPoints::ResolvePath(const std::string& mounted_name) {
+	auto host = MapToHost(mounted_name);
+#if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+	// Case-insensitive matching may list a directory (slow on FUSE storage), so it runs outside
+	// the mount lock: other threads keep opening files meanwhile.
+	if (host.match_case) {
+		return m_case_resolver.Resolve(host.path);
+	}
+#endif
+	return std::move(host.path);
+}
+
+MountPoints::HostPath MountPoints::MapToHost(const std::string& mounted_name) {
 	Common::LockGuard lock(m_mutex);
 
 	// Match the entire guest path so a mount root works with or without a trailing slash.
@@ -352,17 +331,15 @@ std::filesystem::path MountPoints::ResolvePath(const std::string& mounted_name) 
 
 		const auto native_rel_path = Common::PathFromUtf8(rel_path);
 		if (Common::IsArchivePath(p.dir)) {
-			return p.dir / native_rel_path;
+			return {p.dir / native_rel_path, false};
 		}
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		if (HasWindowsForbiddenFilenameCharacter(rel_path)) {
 			::printf("FileSystem: Windows-incompatible guest filename: %s\n", mounted_name.c_str());
 		}
-		return p.dir / native_rel_path;
-#else
-		return ResolvePathIgnoringCase(p.dir / native_rel_path);
 #endif
+		return {p.dir / native_rel_path, true};
 	}
 
 	// Unmounted guest paths must not fall through to the host filesystem.
