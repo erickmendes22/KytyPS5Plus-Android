@@ -19,10 +19,11 @@ constexpr size_t kFileTop = 60;
 
 std::atomic<uint32_t> g_instances {0};
 
-std::string LabelName(const char* kind, uint64_t hash, uint32_t width, uint32_t height) {
+std::string LabelName(const char* kind, uint64_t hash, const GpuPassInfo& pass) {
 	char buf[96];
-	if (width != 0) {
-		std::snprintf(buf, sizeof(buf), "%s %ux%u 0x%016" PRIx64, kind, width, height, hash);
+	if (pass.width != 0) {
+		std::snprintf(buf, sizeof(buf), "%s %ux%u c%u%s 0x%016" PRIx64, kind, pass.width,
+		              pass.height, pass.colors, pass.depth ? "d" : "", hash);
 	} else {
 		std::snprintf(buf, sizeof(buf), "%s 0x%016" PRIx64, kind, hash);
 	}
@@ -95,15 +96,15 @@ void GpuTimer::Begin(vk::CommandBuffer buffer) {
 	m_recording = true;
 }
 
-void GpuTimer::Mark(vk::CommandBuffer buffer, const char* kind, uint64_t hash, uint32_t width,
-                    uint32_t height) {
+void GpuTimer::Mark(vk::CommandBuffer buffer, const char* kind, uint64_t hash,
+                    const GpuPassInfo& pass) {
 	// Keep the last query for End().
 	if (!m_recording || m_current.count + 1 >= kQueriesPerBuffer) {
 		return;
 	}
 	buffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, m_current.pool,
 	                      m_current.count++);
-	m_current.labels.push_back({kind, hash, width, height});
+	m_current.labels.push_back({kind, hash, pass});
 }
 
 void GpuTimer::End(vk::CommandBuffer buffer) {
@@ -158,9 +159,11 @@ void GpuTimer::Account(const Recording& recording, const std::vector<uint64_t>& 
 	m_window_busy_ns += busy;
 	for (uint32_t i = 1; i < recording.count; i++) {
 		const auto& label = recording.labels[i];
-		auto&       cost  = m_costs[LabelName(label.kind, label.hash, label.width, label.height)];
+		auto& cost = m_costs[LabelName(label.kind, label.hash, label.pass)];
 		cost.ns += to_ns(stamps[i], stamps[i - 1]);
 		cost.count++;
+		cost.draws += label.pass.draws;
+		cost.indices += label.pass.indices;
 	}
 }
 
@@ -184,15 +187,18 @@ void GpuTimer::MaybeDump() {
 	char        file_name[32];
 	std::snprintf(file_name, sizeof(file_name), "_perf_gpu%u.txt", m_instance);
 	if (FILE* out = std::fopen(file_name, "w"); out != nullptr) {
-		std::fprintf(out, "# last %.1f s, GPU busy %.1f ms/s; region ms/s, count/s, us/each\n",
+		std::fprintf(out, "# last %.1f s, GPU busy %.1f ms/s; region ms/s, count/s, us/each, "
+		                  "draws/each, Kindices/each\n",
 		             seconds, static_cast<double>(m_window_busy_ns) / 1e6 / seconds);
 		for (size_t i = 0; i < std::min(sorted.size(), kFileTop); i++) {
 			const auto& [name, cost] = sorted[i];
-			std::fprintf(out, "%8.2f %7.1f %8.1f  %s\n",
+			const auto each = static_cast<double>(cost.count);
+			std::fprintf(out, "%8.2f %7.1f %8.1f %6.1f %8.1f  %s\n",
 			             static_cast<double>(cost.ns) / 1e6 / seconds,
 			             static_cast<double>(cost.count) / seconds,
-			             static_cast<double>(cost.ns) / 1e3 / static_cast<double>(cost.count),
-			             name.c_str());
+			             static_cast<double>(cost.ns) / 1e3 / each,
+			             static_cast<double>(cost.draws) / each,
+			             static_cast<double>(cost.indices) / 1e3 / each, name.c_str());
 		}
 		std::fclose(out);
 	}

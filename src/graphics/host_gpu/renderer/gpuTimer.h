@@ -15,6 +15,16 @@ namespace Libs::Graphics {
 struct GraphicContext;
 class MasterSemaphore;
 
+// A timed render pass: its size and how many draws / indices it held.
+struct GpuPassInfo {
+	uint32_t width   = 0;
+	uint32_t height  = 0;
+	uint32_t colors  = 0;
+	bool     depth   = false;
+	uint32_t draws   = 0;
+	uint64_t indices = 0;
+};
+
 // GPU execution time from Vulkan timestamps (--perf-stats only; inert otherwise). Every command
 // buffer gets a timestamp at its start and end, which yields the true GPU busy time; Mark()
 // closes a region (a render pass, a dispatch) and charges the time since the previous timestamp
@@ -30,8 +40,7 @@ public:
 
 	// Recording thread only: the command buffer was begun / is about to end / was submitted.
 	void Begin(vk::CommandBuffer buffer);
-	void Mark(vk::CommandBuffer buffer, const char* kind, uint64_t hash, uint32_t width = 0,
-	          uint32_t height = 0);
+	void Mark(vk::CommandBuffer buffer, const char* kind, uint64_t hash, const GpuPassInfo& pass = {});
 	void End(vk::CommandBuffer buffer);
 	void Submitted(uint64_t tick);
 	// Reads finished command buffers' timestamps.
@@ -39,10 +48,9 @@ public:
 
 private:
 	struct Label {
-		const char* kind   = nullptr;
-		uint64_t    hash   = 0;
-		uint32_t    width  = 0;
-		uint32_t    height = 0;
+		const char* kind = nullptr;
+		uint64_t    hash = 0;
+		GpuPassInfo pass;
 	};
 	struct Recording {
 		vk::QueryPool      pool  = nullptr;
@@ -51,8 +59,10 @@ private:
 		std::vector<Label> labels; // labels[i] closes the region ending at query i
 	};
 	struct Cost {
-		uint64_t ns    = 0;
-		uint64_t count = 0;
+		uint64_t ns      = 0;
+		uint64_t count   = 0;
+		uint64_t draws   = 0;
+		uint64_t indices = 0;
 	};
 
 	static constexpr uint32_t kQueriesPerBuffer = 1024;

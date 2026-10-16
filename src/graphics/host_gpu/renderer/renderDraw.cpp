@@ -1249,7 +1249,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	Common::PerfStats::Count(Common::PerfStats::Counter::Draws);
 	if (Common::PerfStats::Enabled()) {
 		const auto& named = state.ps_active ? state.ps_input_info.stage : state.vertex_info[0].stage;
-		buffer.NotePassShader(named.program != nullptr ? named.program->shader_hash : 0);
+		const uint64_t indices = mesh_emulated ? uint64_t {emulated_mesh.index_count}
+		                                       : uint64_t {draw.index_count} * draw.instance_count;
+		buffer.NotePassDraw(named.program != nullptr ? named.program->shader_hash : 0, indices);
 	}
 	if (mesh_emulated) {
 		vk_buffer.drawIndexed(emulated_mesh.index_count, 1, 0, 0, 0);

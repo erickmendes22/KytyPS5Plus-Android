@@ -125,9 +125,17 @@ void CommandBuffer::EndRendering() const {
 	}
 	Handle().endRendering();
 	if (m_timer.Enabled()) {
-		m_timer.Mark(Handle(), "pass", m_pass_shader, m_render_state.width, m_render_state.height);
+		m_timer.Mark(Handle(), "pass", m_pass_shader,
+		             {.width   = m_render_state.width,
+		              .height  = m_render_state.height,
+		              .colors  = m_render_state.num_color_attachments,
+		              .depth   = m_render_state.depth_stencil_attachment.image_view != nullptr,
+		              .draws   = m_pass_draws,
+		              .indices = m_pass_indices});
 	}
 	m_pass_shader  = 0;
+	m_pass_draws   = 0;
+	m_pass_indices = 0;
 	m_rendering    = false;
 	m_render_state = {};
 }
