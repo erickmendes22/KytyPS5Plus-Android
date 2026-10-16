@@ -215,7 +215,22 @@ void CommandScheduler::Wait(uint64_t tick) {
 }
 
 void CommandScheduler::PopPendingOperations() {
-	m_master.Refresh();
+	// Runs per draw and dispatch: query the timeline only when the oldest operation belongs to a
+	// submitted command buffer not yet known to be complete. The query is a kernel call on some
+	// drivers (Turnip on KGSL walks its emulated timeline).
+	{
+		std::lock_guard lock(m_operation_mutex);
+		if (m_pending_operations.empty()) {
+			return;
+		}
+		const auto tick = m_pending_operations.front().tick;
+		if (tick >= CurrentTick()) {
+			return;
+		}
+		if (!m_master.IsFree(tick)) {
+			m_master.Refresh();
+		}
+	}
 	for (;;) {
 		PendingOperation operation;
 		{
