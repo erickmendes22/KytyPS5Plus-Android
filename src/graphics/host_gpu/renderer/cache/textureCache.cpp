@@ -16,6 +16,7 @@
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "kernel/memory.h"
+#include "libs/audio.h"
 
 #include <algorithm>
 #include <array>
@@ -974,8 +975,48 @@ bool TextureCache::CanDownload(const Image& image) const {
 	       info.LinearSize() != 0;
 }
 
+// --perf-stats: classify uploads of AvPlayer video frames (race with the decoder write, or a
+// frame whose sampled luma is entirely black) to pin down black flashes during video playback.
+void TextureCache::NoteVideoUpload(const Image& image) {
+	const auto address = image.info.data.address;
+	const auto size    = image.info.data.size;
+	if (!Libs::Audio::AvPlayer::IsVideoBuffer(address, size)) {
+		return;
+	}
+	Common::PerfStats::Count(Common::PerfStats::Counter::VideoUploads);
+	static std::atomic_uint32_t s_logged = 0;
+	if (Libs::Audio::AvPlayer::VideoBufferBeingWritten(address, size)) {
+		Common::PerfStats::Count(Common::PerfStats::Counter::VideoUploadRaces);
+		if (s_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF("TextureCache: video frame at 0x%016" PRIx64 " uploaded while AvPlayer was still "
+			     "writing it\n",
+			     address);
+		}
+	}
+	// Sample the first plane (luma for NV12): black video is 16 (limited) or 0 (full range).
+	const auto* bytes = reinterpret_cast<const uint8_t*>(address);
+	constexpr uint32_t kSamples = 64;
+	const auto         span     = std::max<uint64_t>(size * 2 / 3, kSamples);
+	bool               black    = true;
+	for (uint32_t i = 0; i < kSamples && black; i++) {
+		const auto value = bytes[span * i / kSamples];
+		black            = value == 16 || value == 0;
+	}
+	if (black) {
+		Common::PerfStats::Count(Common::PerfStats::Counter::VideoBlackUploads);
+		if (s_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF("TextureCache: video frame at 0x%016" PRIx64 " (%" PRIu64
+			     " bytes) uploaded all black\n",
+			     address, size);
+		}
+	}
+}
+
 void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_offset) {
 	Common::PerfStats::Count(Common::PerfStats::Counter::ImageUploadBytes, image.info.data.size);
+	if (Common::PerfStats::Enabled()) {
+		NoteVideoUpload(image);
+	}
 	auto& destination = image.depth_id ? m_slot_images[image.depth_id] : image;
 	const auto& info        = image.info;
 	const auto  binding     = image.depth_id ? BindingType::DepthTarget : UploadBinding(image);

@@ -122,12 +122,15 @@ std::string TakeWaitSummary(double seconds, uint64_t flips) {
 	const double per_frame = flips == 0 ? 1.0 / seconds : 1.0 / static_cast<double>(flips);
 	const auto   gpu_ns    = TakeCounter(Counter::GpuBusyNs);
 	const auto   timed     = TakeCounter(Counter::GpuSubmitsTimed);
-	char         head[384];
+	char         head[768];
 	std::snprintf(
 	    head, sizeof(head),
 	    "[perf-wait] per %s: gpu_busy=%.1fms (%.0f%% of wall, %.0f cmdbufs) submits=%.0f "
 	    "passes=%.0f draws=%.0f dispatches=%.0f mesh=%.0f (%.0fK idx) up=%.0fKB img_up=%.0fKB "
-	    "down=%.0fKB (%.0f sync) img_down=%.0fKB | ms(count):",
+	    "down=%.0fKB (%.0f sync) img_down=%.0fKB video: req=%.0f got=%.0f starved=%.0f "
+	    "up=%.0f black=%.0f races=%.0f vo_refresh=%.0f blank=%.0f pass_end: state=%.0f "
+	    "transit=%.0f image=%.0f buffer=%.0f compute=%.0f write=%.0f submit=%.0f other=%.0f | "
+	    "ms(count):",
 	    flips == 0 ? "second" : "frame", static_cast<double>(gpu_ns) / 1e6 * per_frame,
 	    static_cast<double>(gpu_ns) / 1e7 / seconds, static_cast<double>(timed) * per_frame,
 	    static_cast<double>(TakeCounter(Counter::Submits)) * per_frame,
@@ -140,7 +143,23 @@ std::string TakeWaitSummary(double seconds, uint64_t flips) {
 	    static_cast<double>(TakeCounter(Counter::ImageUploadBytes)) / 1024.0 * per_frame,
 	    static_cast<double>(TakeCounter(Counter::DownloadBytes)) / 1024.0 * per_frame,
 	    static_cast<double>(TakeCounter(Counter::SyncDownloads)) * per_frame,
-	    static_cast<double>(TakeCounter(Counter::ImageDownloadBytes)) / 1024.0 * per_frame);
+	    static_cast<double>(TakeCounter(Counter::ImageDownloadBytes)) / 1024.0 * per_frame,
+	    static_cast<double>(TakeCounter(Counter::VideoFrameRequests)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::VideoFrameDelivered)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::VideoFrameStarved)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::VideoUploads)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::VideoBlackUploads)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::VideoUploadRaces)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::VideoOutRefreshUploads)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::BlankPresents)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::PassEndState)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::PassEndTransit)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::PassEndImageCopy)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::PassEndBuffer)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::PassEndCompute)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::PassEndShaderWrite)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::PassEndSubmit)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::PassEndOther)) * per_frame);
 	std::string line = head;
 	AppendWaits(line, "gpu-thread", Wait::GpuIdle, Wait::TimelineQuery, per_frame);
 	AppendWaits(line, "sem", Wait::SemFinish, Wait::SemOther, per_frame);

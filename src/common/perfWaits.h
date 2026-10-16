@@ -65,6 +65,23 @@ enum class Counter : uint8_t {
 	ImageDownloadBytes,
 	GpuBusyNs,        // command buffer execution time (Vulkan timestamps)
 	GpuSubmitsTimed,
+	VideoUploadRaces, // video texture uploads while AvPlayer was still writing that buffer
+	VideoFrameRequests, // sceAvPlayerGetVideoData calls while playing
+	VideoFrameDelivered,
+	VideoFrameStarved,  // ...that found the decoded-frame queue empty
+	VideoBlackUploads,  // video texture uploads whose sampled luma was all black
+	VideoUploads,       // texture uploads sourced from an AvPlayer video buffer
+	VideoOutRefreshUploads, // display buffers re-uploaded from guest memory before a flip
+	BlankPresents,      // swapchain presents with no (or a blank) main-bus frame
+	// Why render passes with draws ended (CommandBuffer::EndRendering reasons).
+	PassEndState,       // next draw targets different attachments
+	PassEndTransit,     // image layout transition (barrier) for a sampled/stored image
+	PassEndImageCopy,   // image upload/download/copy/blit/resolve
+	PassEndBuffer,      // buffer cache / stream buffer upload or download
+	PassEndCompute,     // compute dispatch (incl. mesh ring reuse)
+	PassEndShaderWrite, // shader buffer writes or GDS barriers
+	PassEndSubmit,      // command buffer submitted
+	PassEndOther,
 	Count
 };
 

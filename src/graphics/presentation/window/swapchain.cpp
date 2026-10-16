@@ -349,6 +349,19 @@ struct Presenter::Impl {
 		const auto image_id   = cache.FindImage(desc);
 		auto&      image      = cache.GetImage(image_id);
 		image.usage.video_out = true;
+		if (Common::PerfStats::Enabled() && (image.IsCpuDirty() || image.IsBufferModified())) {
+			// The display buffer is about to be refreshed from guest memory, which the GPU-written
+			// frame never reached: the presented frame would be stale or black.
+			Common::PerfStats::Count(Common::PerfStats::Counter::VideoOutRefreshUploads);
+			static std::atomic_uint32_t s_logged = 0;
+			if (s_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+				LOGF("Presenter: display buffer 0x%016" PRIx64 " is CPU-dirty (%s) before the flip\n",
+				     info.data.address,
+				     image.IsBufferModified() ? "buffer-modified"
+				     : image.IsDefinitelyCpuDirty() ? "cpu-dirty"
+				                                    : "maybe-cpu-dirty");
+			}
+		}
 		cache.UpdateImage(image_id);
 		return image;
 	}
@@ -477,12 +490,15 @@ void Swapchain::Create() {
 	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
 	                     "vkCreateSwapchainKHR");
 	EXIT_IF(m_handle == nullptr);
-	LOGF("Vulkan presentation: %s\n", m_hdr_active ? "HDR10 (PQ)" : "SDR");
 
 	m_images = EnumerateVulkan<vk::Image>(
 	    "vkGetSwapchainImagesKHR", [&](uint32_t* count, vk::Image* images) {
 		    return graphics.device.getSwapchainImagesKHR(m_handle, count, images);
 	    });
+	LOGF("Vulkan presentation: %s, format=%s mode=%s composite=%s images=%u extent=%ux%u\n",
+	     m_hdr_active ? "HDR10 (PQ)" : "SDR", vk::to_string(m_format).c_str(),
+	     vk::to_string(create_info.presentMode).c_str(), vk::to_string(composite).c_str(),
+	     static_cast<unsigned>(m_images.size()), m_extent.width, m_extent.height);
 	EXIT_NOT_IMPLEMENTED(m_images.empty());
 
 	m_image_views.resize(m_images.size());
@@ -1031,6 +1047,9 @@ void Presenter::Impl::Present() {
 	const auto overlay_visual = GetSystemOverlayVisualState();
 	// Keep black/blank flips in the current color space; only real main-bus frames switch it.
 	const auto* main_frame = layers[0].frame;
+	if (main_frame == nullptr || main_frame->blank) {
+		Common::PerfStats::Count(Common::PerfStats::Counter::BlankPresents);
+	}
 	const bool hdr_changed = main_frame != nullptr && !main_frame->blank &&
 	                         swapchain.SetHdr(main_frame->hdr);
 	// Some window systems keep presenting an old swapchain after a resize.

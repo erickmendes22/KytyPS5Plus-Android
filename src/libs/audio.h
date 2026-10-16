@@ -204,6 +204,12 @@ const char* KYTY_SYSV_ABI AjmStrError(int error);
 
 namespace AvPlayer {
 
+// True while an AvPlayer decoder thread is filling a video output buffer overlapping
+// [address, address + size). Instrumentation for --perf-stats (video texture upload races).
+bool VideoBufferBeingWritten(uint64_t address, uint64_t size);
+// True when [address, address + size) lies inside a live AvPlayer video output buffer.
+bool IsVideoBuffer(uint64_t address, uint64_t size);
+
 struct AvPlayerInitData;
 struct AvPlayerFrameInfoEx;
 struct AvPlayerFrameInfo;

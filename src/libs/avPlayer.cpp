@@ -1,5 +1,7 @@
 #include "common/common.h"
+#include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/perfWaits.h"
 #include "common/logging/log.h"
 #include "kernel/fileSystem.h"
 #include "kernel/pthread.h"
@@ -22,6 +24,7 @@
 #include <magic_enum.hpp>
 #include <memory>
 #include <mutex>
+#include <vector>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -71,6 +74,37 @@ constexpr uint32_t AVPLAYER_DEMUX_BUFFER_DEFAULT   = 4 * 1024 * 1024;
 constexpr uint32_t AVPLAYER_DEMUX_BUFFER_MIN       = 128 * 1024;
 constexpr uint32_t AVPLAYER_DEMUX_BUFFER_MAX       = 32 * 1024 * 1024;
 constexpr int      AVPLAYER_AUDIO_BUFFERS          = 8;
+// Frames the guest has moved past stay untouched this many deliveries longer. The host GPU
+// thread uploads a video texture when it reaches the draw, which can be several guest frames
+// after sceAvPlayerGetVideoData returned the next one; recycling the previous buffer at once
+// let the decoder clear it to black (Y=16) under a draw that was still sampling it.
+constexpr size_t   AVPLAYER_VIDEO_RETIRE_DEPTH     = 4;
+
+// Range of the video buffer currently being filled by a decoder thread (one at a time is
+// enough for the instrumentation: a race needs the newest frame's buffer).
+std::atomic<uint64_t> g_writing_address = 0;
+std::atomic<uint64_t> g_writing_size    = 0;
+
+// Live video output buffers, for --perf-stats upload instrumentation.
+std::mutex                                       g_video_buffers_mutex;
+std::vector<std::pair<uint64_t, uint64_t>>       g_video_buffers;
+
+void RegisterVideoBuffer(const void* data, uint32_t size) {
+	std::lock_guard lock(g_video_buffers_mutex);
+	g_video_buffers.emplace_back(reinterpret_cast<uint64_t>(data), size);
+}
+
+void UnregisterVideoBuffer(const void* data) {
+	std::lock_guard lock(g_video_buffers_mutex);
+	std::erase_if(g_video_buffers,
+	              [data](const auto& b) { return b.first == reinterpret_cast<uint64_t>(data); });
+}
+
+size_t VideoRetireDepth() {
+	// --video-retire-depth overrides the default (0 reproduces the immediate recycling).
+	const auto configured = Config::GetVideoRetireDepth();
+	return configured == UINT32_MAX ? AVPLAYER_VIDEO_RETIRE_DEPTH : configured;
+}
 
 enum AvPlayerUriType : uint32_t { AvPlayerUriTypeSource = 0 };
 enum AvPlayerSourceType : uint32_t {
@@ -472,6 +506,9 @@ public:
 		m_data = static_cast<uint8_t*>(
 		    texture ? Loader::GuestHost::CallGuestFunction(mem.allocate_texture, mem.object_pointer, align, size)
 		            : Loader::GuestHost::CallGuestFunction(mem.allocate, mem.object_pointer, align, size));
+		if (texture && m_data != nullptr) {
+			RegisterVideoBuffer(m_data, size);
+		}
 	}
 	~GuestBuffer() { Reset(); }
 	GuestBuffer(const GuestBuffer&)            = delete;
@@ -500,6 +537,7 @@ private:
 	void Reset() {
 		if (m_data != nullptr) {
 			if (m_texture) {
+				UnregisterVideoBuffer(m_data);
 				Loader::GuestHost::CallGuestFunction(m_mem.deallocate_texture, m_mem.object_pointer, m_data);
 			} else {
 				Loader::GuestHost::CallGuestFunction(m_mem.deallocate, m_mem.object_pointer, m_data);
@@ -990,6 +1028,11 @@ public:
 		if (paused && !deliver_seek_frame) {
 			return false;
 		}
+		Common::PerfStats::Count(Common::PerfStats::Counter::VideoFrameRequests);
+		if (video_frames.Empty()) {
+			// The decoder has not produced the next frame yet: the guest gets nothing this call.
+			Common::PerfStats::Count(Common::PerfStats::Counter::VideoFrameStarved);
+		}
 		auto frame = video_frames.TryPopIf([&](const ReadyFrame& candidate) {
 			if (deliver_seek_frame || sync_mode != 0) {
 				return true;
@@ -1000,8 +1043,9 @@ public:
 		if (!frame) {
 			return false;
 		}
+		Common::PerfStats::Count(Common::PerfStats::Counter::VideoFrameDelivered);
 		if (current_video) {
-			video_buffers.Push(std::move(current_video->buffer));
+			RetireVideoBufferNoLock(std::move(current_video->buffer));
 		}
 		current_video = std::move(*frame);
 		*out          = current_video->info;
@@ -1058,6 +1102,13 @@ private:
 		return demux_eof && video_done && audio_done && video_frames.Empty() &&
 		       audio_frames.Empty();
 	}
+	void RetireVideoBufferNoLock(std::unique_ptr<GuestBuffer> buffer) {
+		retired_video.push_back(std::move(buffer));
+		while (retired_video.size() > VideoRetireDepth()) {
+			video_buffers.Push(std::move(retired_video.front()));
+			retired_video.pop_front();
+		}
+	}
 	void RecordLoopBoundary(const ReadyFrame& frame) {
 		if (frame.timestamp_offset > last_output_loop_offset) {
 			last_output_loop_offset = frame.timestamp_offset;
@@ -1078,6 +1129,7 @@ private:
 		audio_frames.Clear();
 		video_buffers.Clear();
 		audio_buffers.Clear();
+		retired_video.clear();
 		if (!retain_output_buffers) {
 			current_video.reset();
 			current_audio.reset();
@@ -1152,6 +1204,11 @@ private:
 		if (c == nullptr) {
 			return false;
 		}
+		if (s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+			// 0 lets FFmpeg pick frame/slice threading for the core count; a single decoder
+			// thread cannot keep a 1080p stream ahead of the guest on this hardware.
+			c->thread_count = static_cast<int>(Config::GetVideoDecoderThreads());
+		}
 		if (avcodec_parameters_to_context(c, s->codecpar) < 0 ||
 		    avcodec_open2(c, dec, nullptr) < 0) {
 			avcodec_free_context(&c);
@@ -1173,7 +1230,8 @@ private:
 		if (video_id) {
 			auto size     = VideoBufferSize(fmt->streams[video_id.value()]);
 			auto retained = current_video ? 1u : 0u;
-			for (size_t i = retained; i < static_cast<size_t>(max_video_buffers); i++) {
+			const auto total = static_cast<size_t>(max_video_buffers) + VideoRetireDepth();
+			for (size_t i = retained; i < total; i++) {
 				auto buffer = std::make_unique<GuestBuffer>(mem, 0x100, size, true);
 				if (!buffer->Valid()) {
 					return false;
@@ -1583,6 +1641,8 @@ private:
 		}
 		auto* dst = buffer->Get();
 		auto* c   = dst + pitch * h;
+		g_writing_address.store(reinterpret_cast<uint64_t>(dst), std::memory_order_relaxed);
+		g_writing_size.store(static_cast<uint64_t>(pitch) * h * 3 / 2, std::memory_order_release);
 		// PPSA02433 samples the padded columns; zero chroma would turn them green.
 		std::memset(dst, s->codecpar->color_range == AVCOL_RANGE_JPEG ? 0 : 16,
 		            static_cast<size_t>(pitch) * h);
@@ -1593,6 +1653,7 @@ private:
 		for (int y = 0; y < src->height / 2; y++) {
 			std::memcpy(c + y * pitch, nv12->data[1] + y * nv12->linesize[1], src->width);
 		}
+		g_writing_size.store(0, std::memory_order_release);
 		std::memset(info, 0, sizeof(*info));
 		info->data       = dst;
 		info->time_stamp = to_ms(
@@ -1694,6 +1755,7 @@ private:
 	PacketQueue                              video_packets;
 	PacketQueue                              audio_packets;
 	WorkQueue<std::unique_ptr<GuestBuffer>>  video_buffers;
+	std::deque<std::unique_ptr<GuestBuffer>> retired_video;
 	WorkQueue<std::unique_ptr<GuestBuffer>>  audio_buffers;
 	WorkQueue<ReadyFrame>                    video_frames;
 	WorkQueue<ReadyFrame>                    audio_frames;
@@ -2101,6 +2163,22 @@ int KYTY_SYSV_ABI AvPlayerSetLogCallback(void* callback, void* user_data) {
 	LOGF("\t callback  = 0x%016" PRIx64 "\n\t user_data = 0x%016" PRIx64 "\n",
 	     reinterpret_cast<uint64_t>(callback), reinterpret_cast<uint64_t>(user_data));
 	return 0;
+}
+
+bool IsVideoBuffer(uint64_t address, uint64_t size) {
+	std::lock_guard lock(g_video_buffers_mutex);
+	return std::ranges::any_of(g_video_buffers, [&](const auto& b) {
+		return address >= b.first && address + size <= b.first + b.second;
+	});
+}
+
+bool VideoBufferBeingWritten(uint64_t address, uint64_t size) {
+	const auto writing_size = g_writing_size.load(std::memory_order_acquire);
+	if (writing_size == 0 || size == 0) {
+		return false;
+	}
+	const auto writing_address = g_writing_address.load(std::memory_order_relaxed);
+	return address < writing_address + writing_size && writing_address < address + size;
 }
 
 } // namespace Libs::Audio::AvPlayer

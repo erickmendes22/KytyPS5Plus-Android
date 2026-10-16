@@ -60,6 +60,13 @@ struct ConfigOptions {
 	bool                   amd_cpu_enabled             = false;
 	bool                   network_connected           = false;
 	uint32_t               vblank_frequency            = 60;
+	// AvPlayer keeps this many superseded video frames unrecycled (UINT32_MAX = built-in default).
+	uint32_t               video_retire_depth          = UINT32_MAX;
+	// FFmpeg video decoder thread count (0 = automatic).
+	uint32_t               video_decoder_threads       = 0;
+	// 0: record render passes immediately (one pass per emulated mesh draw); 1: defer passes to
+	// secondary command buffers; 2: 1 + run mesh-emulation dispatches ahead of the open pass.
+	uint32_t               render_pass_mode            = 0;
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;
@@ -111,6 +118,9 @@ bool     VrEnabled();
 bool     AmdCpuEnabled();
 bool     IsNetworkConnected();
 uint32_t GetVblankFrequency();
+uint32_t GetVideoRetireDepth();
+uint32_t GetVideoDecoderThreads();
+uint32_t GetRenderPassMode();
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();
 

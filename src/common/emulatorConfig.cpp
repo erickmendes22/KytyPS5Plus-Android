@@ -92,6 +92,19 @@ uint32_t GetVblankFrequency() {
 	return std::clamp(g_config->vblank_frequency, 30u, 360u);
 }
 
+uint32_t GetRenderPassMode() {
+	return std::min(g_config->render_pass_mode, 2u);
+}
+
+uint32_t GetVideoDecoderThreads() {
+	return std::min(g_config->video_decoder_threads, 16u);
+}
+
+uint32_t GetVideoRetireDepth() {
+	const auto depth = g_config->video_retire_depth;
+	return depth == UINT32_MAX ? depth : std::min(depth, 16u);
+}
+
 uint32_t GetConsoleLanguage() {
 	return g_config->console_language;
 }

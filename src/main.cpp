@@ -498,6 +498,21 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid vblank frequency: %s\n", value.c_str());
 				return false;
 			}
+		} else if (arg == "--render-pass-mode") {
+			if (!ParseUint32(value, options.config.render_pass_mode)) {
+				::printf("invalid render pass mode: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--video-decoder-threads") {
+			if (!ParseUint32(value, options.config.video_decoder_threads)) {
+				::printf("invalid video decoder thread count: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--video-retire-depth") {
+			if (!ParseUint32(value, options.config.video_retire_depth)) {
+				::printf("invalid video retire depth: %s\n", value.c_str());
+				return false;
+			}
 		} else if (arg == "--trophy-duration") {
 			if (!ParseUint32(value, options.config.trophy_duration_seconds)) {
 				::printf("invalid trophy duration: %s\n", value.c_str());
