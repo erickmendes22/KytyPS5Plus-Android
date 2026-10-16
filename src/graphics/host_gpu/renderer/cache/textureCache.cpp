@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cinttypes>
 #include <cstring>
 #include <limits>
@@ -1964,6 +1965,57 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 	}
 }
 
+void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
+	constexpr int64_t LogIntervalNs = 10'000'000'000;
+	const auto        now           = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count();
+	if (m_last_memory_log_ns != 0 && now - m_last_memory_log_ns < LogIntervalNs) {
+		return;
+	}
+	m_last_memory_log_ns = now;
+	enum Category : uint32_t { Target, Depth, Storage, VideoOut, Sampled, Count };
+	std::array<uint64_t, Count> bytes {};
+	std::array<uint32_t, Count> images {};
+	uint64_t                    guest_bytes = 0;
+	m_slot_images.ForEach([&](ImageId, const Image& image) {
+		if (image.backing.allocation == nullptr || m_graphics.allocator == nullptr) {
+			return;
+		}
+		VmaAllocationInfo info {};
+		vmaGetAllocationInfo(m_graphics.allocator, image.backing.allocation, &info);
+		const auto category = image.info.IsDepth()             ? Depth
+		                      : image.usage.video_out           ? VideoOut
+		                      : image.usage.render_target       ? Target
+		                      : image.usage.storage             ? Storage
+		                                                        : Sampled;
+		bytes[category] += info.size;
+		images[category]++;
+		guest_bytes += image.AccountedSize();
+	});
+	VmaTotalStatistics stats {};
+	if (m_graphics.allocator != nullptr) {
+		vmaCalculateStatistics(m_graphics.allocator, &stats);
+	}
+	uint64_t image_bytes = 0;
+	for (const auto value: bytes) {
+		image_bytes += value;
+	}
+	const auto allocated = stats.total.statistics.allocationBytes;
+	constexpr uint64_t MiB = 1024ull * 1024;
+	LOGF("GPU memory: device_usage=%" PRIu64 " vma_blocks=%" PRIu64 " vma_allocs=%" PRIu64
+	     " MiB | images=%" PRIu64 " MiB (rt %u:%" PRIu64 " depth %u:%" PRIu64 " storage %u:%" PRIu64
+	     " videoout %u:%" PRIu64 " sampled %u:%" PRIu64 ") guest_accounted=%" PRIu64
+	     " | non_image=%" PRIu64 " MiB | metas=%zu | gc trigger/pressure/critical=%" PRIu64
+	     "/%" PRIu64 "/%" PRIu64 " MiB\n",
+	     used_memory / MiB, stats.total.statistics.blockBytes / MiB, allocated / MiB,
+	     image_bytes / MiB, images[Target], bytes[Target] / MiB, images[Depth], bytes[Depth] / MiB,
+	     images[Storage], bytes[Storage] / MiB, images[VideoOut], bytes[VideoOut] / MiB,
+	     images[Sampled], bytes[Sampled] / MiB, guest_bytes / MiB,
+	     (allocated > image_bytes ? allocated - image_bytes : 0) / MiB, m_surface_metas.size(),
+	     m_trigger_gc_memory / MiB, m_pressure_gc_memory / MiB, m_critical_gc_memory / MiB);
+}
+
 void TextureCache::RunGarbageCollector() {
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
@@ -1971,6 +2023,7 @@ void TextureCache::RunGarbageCollector() {
 	// separate from the owned-byte counter decremented during unregistration.
 	auto used_memory = m_graphics.CanReportMemoryUsage()
 	    ? m_graphics.GetDeviceMemoryUsage() : m_total_used_memory;
+	LogMemoryBreakdown(used_memory);
 	if (used_memory < m_trigger_gc_memory) {
 		return;
 	}
