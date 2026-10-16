@@ -6817,6 +6817,24 @@ void TestNativePixelInterpolationFallback() {
                 "native raw I/J read was not rejected");
   }
 
+  // The I VGPR reused as an exec-masked destination only keeps raw I in the skipped lanes; that
+  // carried value needs no barycentrics.
+  const uint32_t carried_ij_shader[] = {
+      EncodeVintrp(0, 6, 0, 0, 4), EncodeVintrp(1, 6, 0, 0, 5),
+      EncodeVopc(0x14, 128, 6),   // v_cmpx_gt_f32 0, v6
+      EncodeVop1(0x01, 4, 6 + 256), // v_mov_b32 v4, v6
+      EncodeExp0(0x00, 0x1), EncodeExp1(4, 4, 4, 4),
+      0xbf810000u,
+  };
+  {
+    const auto native = RecompileForTest(carried_ij_shader, native_options(linear_info));
+    CheckSpirvBinaryValidates(native.spirv);
+    Check(!SpirvContainsCapability(native.spirv, kFragmentBarycentricCapability),
+          "native PS carrying raw I through an exec-masked write required FragmentBarycentricKHR");
+    const auto desktop = RecompileForTest(carried_ij_shader, desktop_options(linear_info));
+    CheckSpirvBinaryValidates(desktop.spirv);
+  }
+
   // A flat and a smooth parameter sharing one slot cannot both be native inputs.
   const uint32_t mixed_slot_shader[] = {
       EncodeVintrp(1, 6, 0, 0, 5), EncodeVintrp(1, 7, 1, 0, 5),

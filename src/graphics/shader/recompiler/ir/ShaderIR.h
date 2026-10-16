@@ -285,6 +285,14 @@ inline PositionExportComponent DecodePositionExportComponent(uint32_t control,
 	return result;
 }
 
+// Flags of a SelectU32. ExecMerge marks the select every exec-masked VGPR write lowers to:
+// Select(exec, written value, previous register value). Its false operand is only what the
+// lanes the write skipped keep in that register.
+enum class SelectOrigin : uint64_t {
+	Value,
+	ExecMerge,
+};
+
 // Sampling position requested by a fragment-stage interpolation. Ordered so that merging several
 // requests on one parameter slot is a maximum: sample subsumes centroid, which subsumes center.
 enum class PixelInterpolationSampling : uint8_t {

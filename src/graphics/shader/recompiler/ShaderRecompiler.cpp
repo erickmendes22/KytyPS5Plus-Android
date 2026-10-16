@@ -873,6 +873,9 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	}
 	ir.value_storage.clear();
 	IR::RemoveIdentities(ir.blocks);
+	if (ir.stage == ShaderType::Pixel && !options.device_features.fragment_shader_barycentric) {
+		IR::DropCarriedBarycentrics(ir);
+	}
 	IR::EliminateDeadCode(ir.blocks);
 
 	IR::CollectShaderInfo(ir, options.input_info,

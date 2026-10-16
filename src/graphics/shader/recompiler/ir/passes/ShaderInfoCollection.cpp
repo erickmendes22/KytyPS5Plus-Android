@@ -4,6 +4,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <algorithm>
+#include <vector>
 #include <fmt/format.h>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
@@ -622,7 +623,60 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 	}
 }
 
+bool IsRawBarycentricRead(const Inst& inst) {
+	if (inst.GetOpcode() != ValueOpcode::GetBuiltin || !inst.Arg(0).IsImmediate()) {
+		return false;
+	}
+	switch (static_cast<StageInputKind>(inst.Arg(0).U32())) {
+		case StageInputKind::BaryCoordSmooth:
+		case StageInputKind::BaryCoordSmoothSample:
+		case StageInputKind::BaryCoordSmoothCentroid:
+		case StageInputKind::BaryCoordNoPerspective: return true;
+		default: return false;
+	}
+}
+
+// True when every use of value only carries it as the previous register value of exec-masked
+// writes, directly or through phis that are themselves only carried.
+bool OnlyCarriedThroughExecMerges(const Inst& value, std::vector<const Inst*>& visited) {
+	for (const auto& use: value.Uses()) {
+		const auto& user = *use.user;
+		if (user.GetOpcode() == ValueOpcode::SelectU32 && use.operand == 2u &&
+		    user.Flags<SelectOrigin>() == SelectOrigin::ExecMerge) {
+			continue;
+		}
+		if (user.GetOpcode() == ValueOpcode::Phi) {
+			if (std::ranges::find(visited, &user) != visited.end()) {
+				continue;
+			}
+			visited.push_back(&user);
+			if (OnlyCarriedThroughExecMerges(user, visited)) {
+				continue;
+			}
+		}
+		return false;
+	}
+	return true;
+}
+
 } // namespace
+
+uint32_t DropCarriedBarycentrics(Program& program) {
+	uint32_t replaced = 0;
+	for (auto* block: program.blocks) {
+		for (auto& inst: *block) {
+			if (!IsRawBarycentricRead(inst) || !inst.HasUses()) {
+				continue;
+			}
+			std::vector<const Inst*> visited;
+			if (OnlyCarriedThroughExecMerges(inst, visited)) {
+				inst.ReplaceUsesWith(Value(0u));
+				replaced++;
+			}
+		}
+	}
+	return replaced;
+}
 
 void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info,
                        bool barycentric_available) {

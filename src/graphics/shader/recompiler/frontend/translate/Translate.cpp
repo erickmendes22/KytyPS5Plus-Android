@@ -334,7 +334,8 @@ void Translator::WriteRawU32(const Decoder::Operand& operand, IR::U32 value) {
 				value = IR::U32(ir.Emit(IR::ValueOpcode::DppUpdateU32, {value, old, ir.GetExec()},
 				                        DppFlags(operand)));
 			} else {
-				value = ir.Select(ir.GetExec(), value, old);
+				value = IR::U32(ir.Emit(IR::ValueOpcode::SelectU32, {ir.GetExec(), value, old},
+				                        IR::SelectOrigin::ExecMerge));
 			}
 			ir.SetVectorReg(reg, value);
 			break;

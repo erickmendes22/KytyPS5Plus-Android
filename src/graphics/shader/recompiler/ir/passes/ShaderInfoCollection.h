@@ -11,6 +11,13 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info,
                        bool barycentric_available = true);
 
+// Without barycentrics there is no raw I/J value. The I/J VGPRs are still the "previous value" of
+// any exec-masked write that reuses those registers (Select operand 2 of an ExecMerge select,
+// possibly through phis); that value only survives in the lanes the write skipped. Such reads are
+// replaced with zero so the pair stops being a live raw read. Returns the number of replaced reads.
+// Any other read of a raw I/J VGPR is left for CollectShaderInfo to reject.
+uint32_t DropCarriedBarycentrics(Program& program);
+
 } // namespace Libs::Graphics::ShaderRecompiler::IR
 
 #endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_RECOMPILER_SHADERINFOCOLLECTION_H_ */
