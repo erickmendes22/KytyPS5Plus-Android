@@ -15,14 +15,75 @@
 #endif
 
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cinttypes>
+#include <fstream>
+#include <string>
 
 namespace Libs::Graphics {
+
+namespace {
+
+struct HeapTotals {
+	uint64_t usage  = 0; // driver-reported (VK_EXT_memory_budget) or VMA's own estimate
+	uint64_t budget = 0;
+	uint64_t blocks = 0; // VMA block bytes
+	uint64_t allocs = 0; // VMA allocation bytes
+};
+
+// The heaps the collectors count: device-local ones on discrete GPUs, all on unified memory.
+HeapTotals SumHeaps(const GraphicContext& ctx) {
+	HeapTotals totals {};
+	if (ctx.allocator == nullptr) {
+		return totals;
+	}
+	VmaBudget budgets[VK_MAX_MEMORY_HEAPS] {};
+	vmaGetHeapBudgets(ctx.allocator, budgets);
+	const auto& properties = ctx.physical_device_memory_properties;
+	const bool  discrete =
+	    ctx.physical_device_properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu;
+	for (uint32_t heap = 0; heap < properties.memoryHeapCount; heap++) {
+		const bool device_local = static_cast<bool>(properties.memoryHeaps[heap].flags &
+		                                            vk::MemoryHeapFlagBits::eDeviceLocal);
+		if (discrete && !device_local) {
+			continue;
+		}
+		totals.usage += budgets[heap].usage;
+		totals.budget += budgets[heap].budget;
+		totals.blocks += budgets[heap].statistics.blockBytes;
+		totals.allocs += budgets[heap].statistics.allocationBytes;
+	}
+	return totals;
+}
+
+// MemAvailable from /proc/meminfo (Linux, Android); 0 elsewhere or when unreadable.
+uint64_t ReadMemAvailable() {
+	std::ifstream meminfo("/proc/meminfo");
+	std::string   key;
+	uint64_t      kib = 0;
+	std::string   unit;
+	while (meminfo >> key >> kib >> unit) {
+		if (key == "MemAvailable:") {
+			return kib * 1024;
+		}
+	}
+	return 0;
+}
+
+int64_t NowNs() {
+	return std::chrono::duration_cast<std::chrono::nanoseconds>(
+	           std::chrono::steady_clock::now().time_since_epoch())
+	    .count();
+}
+
+} // namespace
 
 bool GraphicContext::CreateAllocator() {
 	KYTY_PROFILER_FUNCTION();
@@ -43,13 +104,78 @@ bool GraphicContext::CreateAllocator() {
 	if (memory_budget_ext_enabled) {
 		info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
 	}
+	// --vma-block-size: smaller blocks return to the system once eviction empties them.
+	info.preferredLargeHeapBlockSize = uint64_t {Config::GetVmaBlockSizeMb()} * GpuBudget::MiB;
 
 	const auto result = static_cast<vk::Result>(vmaCreateAllocator(&info, &allocator));
 	if (result != vk::Result::eSuccess) {
 		LOGF("vmaCreateAllocator failed: %s\n", vk::to_string(result).c_str());
 		return false;
 	}
+	InitMemoryBudget();
 	return true;
+}
+
+void GraphicContext::InitMemoryBudget() {
+	const auto option = Config::GetGpuMemoryBudgetMb();
+	if (option == 0 || allocator == nullptr) {
+		LOGF("GPU memory budget: off (legacy heap-size thresholds), vma block=%u MiB\n",
+		     Config::GetVmaBlockSizeMb());
+		return;
+	}
+	const auto totals    = SumHeaps(*this);
+	auto       available = ReadMemAvailable();
+	if (available == 0 && memory_budget_ext_enabled && totals.budget > totals.usage) {
+		// Drivers report usage + 90 % of what the system can spare (Mesa).
+		available = (totals.budget - totals.usage) / 9 * 10;
+	}
+	memory_budget_configured = option > 0 ? uint64_t {static_cast<uint32_t>(option)} * GpuBudget::MiB
+	                                      : GpuBudget::AutoBudget(available);
+	memory_budget_effective  = memory_budget_configured;
+	const auto thresholds    = GpuBudget::ForBudget(memory_budget_configured);
+	LOGF("GPU memory budget: %s %" PRIu64 " MiB (MemAvailable %" PRIu64 " MiB, driver usage %" PRIu64
+	     " budget %" PRIu64 " MiB) -> gc trigger/pressure/critical %" PRIu64 "/%" PRIu64 "/%" PRIu64
+	     " MiB, vma block=%u MiB\n",
+	     option > 0 ? "fixed" : "auto", memory_budget_configured / GpuBudget::MiB,
+	     available / GpuBudget::MiB, totals.usage / GpuBudget::MiB, totals.budget / GpuBudget::MiB,
+	     thresholds.trigger / GpuBudget::MiB, thresholds.pressure / GpuBudget::MiB,
+	     thresholds.critical / GpuBudget::MiB, Config::GetVmaBlockSizeMb());
+}
+
+uint64_t GraphicContext::UpdateMemoryBudget() {
+	if (!MemoryBudgetEnabled() || !memory_budget_ext_enabled) {
+		return memory_budget_effective;
+	}
+	constexpr int64_t UpdateIntervalNs = 1'000'000'000;
+	const auto        now              = NowNs();
+	if (memory_budget_update_ns != 0 && now - memory_budget_update_ns < UpdateIntervalNs) {
+		return memory_budget_effective;
+	}
+	memory_budget_update_ns = now;
+	// Makes VMA re-query VK_EXT_memory_budget; it otherwise refreshes only every 30 allocations.
+	vmaSetCurrentFrameIndex(allocator, static_cast<uint32_t>(now / UpdateIntervalNs));
+	const auto totals   = SumHeaps(*this);
+	const auto previous = memory_budget_effective;
+	memory_budget_effective =
+	    GpuBudget::Effective(memory_budget_configured, totals.usage, totals.budget);
+	// Log real moves only: the headroom jitters by a few MiB every second.
+	constexpr uint64_t LogStep = 128 * GpuBudget::MiB;
+	const auto         moved   = memory_budget_effective > previous
+	                                 ? memory_budget_effective - previous
+	                                 : previous - memory_budget_effective;
+	if (moved >= LogStep || (moved != 0 && memory_budget_effective == memory_budget_configured)) {
+		LOGF("GPU memory budget: %" PRIu64 " -> %" PRIu64 " MiB (driver usage %" PRIu64
+		     " budget %" PRIu64 " MiB)\n",
+		     previous / GpuBudget::MiB, memory_budget_effective / GpuBudget::MiB,
+		     totals.usage / GpuBudget::MiB, totals.budget / GpuBudget::MiB);
+	}
+	return memory_budget_effective;
+}
+
+uint64_t GraphicContext::GetLiveDeviceMemory() const {
+	const auto totals = SumHeaps(*this);
+	const auto usage  = std::max(totals.usage, totals.blocks);
+	return usage - (totals.blocks - std::min(totals.allocs, totals.blocks));
 }
 
 void GraphicContext::DestroyAllocator() {

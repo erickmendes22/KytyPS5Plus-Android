@@ -185,6 +185,16 @@ static void PrintUsage() {
 	::printf("  --idle-submit <0|1>                  Submit the open command buffer between PM4 packets\n"
 	         "                                       once the GPU has run out of work. Default: 1 on\n"
 	         "                                       Android, 0 elsewhere.\n");
+	::printf("  --gpu-memory-budget <auto|0|MiB>     Device memory the texture/buffer cache collectors\n"
+	         "                                       keep to (auto: MemAvailable at start - 4 GiB, at most\n"
+	         "                                       4 GiB, lowered when the system runs low; 0: legacy\n"
+	         "                                       heap-size thresholds). Default: auto on Android, 0\n"
+	         "                                       elsewhere.\n");
+	::printf("  --gpu-evict-written <0|1>            With a GPU memory budget, also download and evict\n"
+	         "                                       long-unused GPU-written images under pressure.\n"
+	         "                                       Default: 0.\n");
+	::printf("  --vma-block-size <0-1024>            VMA block size in MiB (0 = VMA default 256).\n"
+	         "                                       Default: 64 on Android, 0 elsewhere.\n");
 	::printf("  --render-scale <0.25-2.0>            Internal resolution of frame-sized render\n"
 	         "                                       targets (0.5 = quarter the pixels). Default: 1.0.\n");
 	::printf("  --env <NAME=VALUE>                   Set an environment variable (e.g. FEX_* options).\n");
@@ -598,6 +608,29 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.config.targeted_readback = mode != 0;
+		} else if (arg == "--gpu-memory-budget") {
+			uint32_t mib = 0;
+			if (value == "auto") {
+				options.config.gpu_memory_budget_mb = -1;
+			} else if (ParseUint32(value, mib) && mib <= 1024u * 1024u) {
+				options.config.gpu_memory_budget_mb = static_cast<int32_t>(mib);
+			} else {
+				::printf("invalid GPU memory budget (auto, 0 or MiB): %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--gpu-evict-written") {
+			uint32_t mode = 0;
+			if (!ParseUint32(value, mode) || mode > 1) {
+				::printf("invalid GPU evict written mode (0 or 1): %s\n", value.c_str());
+				return false;
+			}
+			options.config.gpu_evict_written = mode != 0;
+		} else if (arg == "--vma-block-size") {
+			if (!ParseUint32(value, options.config.vma_block_size_mb) ||
+			    options.config.vma_block_size_mb > 1024) {
+				::printf("invalid VMA block size (0-1024 MiB): %s\n", value.c_str());
+				return false;
+			}
 		} else if (arg == "--idle-submit") {
 			uint32_t mode = 0;
 			if (!ParseUint32(value, mode) || mode > 1) {

@@ -149,6 +149,27 @@ struct ConfigOptions {
 #else
 	bool                   idle_submit                 = false;
 #endif
+	// --gpu-memory-budget: device-memory budget (MiB) the texture and buffer cache collectors keep
+	// to; -1 = auto (MemAvailable at start minus a CPU-side reserve, at most 4 GiB, lowered at run
+	// time when VK_EXT_memory_budget reports little headroom), 0 = legacy thresholds from the
+	// driver-reported heap size.
+#if defined(__ANDROID__)
+	int32_t                gpu_memory_budget_mb        = -1;
+#else
+	int32_t                gpu_memory_budget_mb        = 0;
+#endif
+	// --gpu-evict-written: with a budget, the collector may also download GPU-written images
+	// (render targets of an earlier scene, tiled ones included) to guest memory and evict them
+	// when long unused under pressure. Off: only images guest memory already holds are evicted
+	// (allocation failures still download and evict).
+	bool                   gpu_evict_written           = false;
+	// --vma-block-size: VMA's preferred block size (MiB) for large heaps; 0 = VMA default (256).
+	// Smaller blocks empty out (and return to the system) sooner after eviction.
+#if defined(__ANDROID__)
+	uint32_t               vma_block_size_mb           = 64;
+#else
+	uint32_t               vma_block_size_mb           = 0;
+#endif
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;
@@ -214,6 +235,9 @@ uint32_t GetGpuFramesInFlight();
 bool     SubmitCoalesceEnabled();
 bool     TargetedReadbackEnabled();
 bool     IdleSubmitEnabled();
+int32_t  GetGpuMemoryBudgetMb();
+bool     GpuEvictWrittenEnabled();
+uint32_t GetVmaBlockSizeMb();
 constexpr uint32_t MAX_GPU_FRAMES_IN_FLIGHT = 4;
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();

@@ -152,6 +152,16 @@ struct GraphicContext {
 	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
 	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
 	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;
+	// --gpu-memory-budget (gpuMemoryBudget.h). InitMemoryBudget runs once the allocator exists;
+	// UpdateMemoryBudget re-reads VK_EXT_memory_budget (at most once a second) and returns the
+	// budget the collectors keep to now. 0 = disabled: legacy heap-size thresholds.
+	void                   InitMemoryBudget();
+	uint64_t               UpdateMemoryBudget();
+	[[nodiscard]] bool     MemoryBudgetEnabled() const noexcept { return memory_budget_configured != 0; }
+	[[nodiscard]] uint64_t MemoryBudget() const noexcept { return memory_budget_effective; }
+	// Device memory held by live allocations: driver usage minus the free space inside VMA blocks
+	// (which eviction cannot return until a whole block empties).
+	[[nodiscard]] uint64_t GetLiveDeviceMemory() const;
 	[[nodiscard]] bool     CreateImage(const vk::ImageCreateInfo& info, VulkanImage& image);
 	void                   DeleteImage(VulkanImage& image);
 
@@ -159,6 +169,10 @@ struct GraphicContext {
 	uint32_t screen_height = 0;
 
 private:
+	uint64_t memory_budget_configured = 0;
+	uint64_t memory_budget_effective  = 0;
+	int64_t  memory_budget_update_ns  = 0;
+
 	mutable std::mutex                                 m_format_properties_mutex;
 	mutable std::map<vk::Format, vk::FormatProperties> m_format_properties;
 	mutable std::mutex                                 m_image_format_properties_mutex;

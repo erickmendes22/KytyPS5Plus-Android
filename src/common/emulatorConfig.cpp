@@ -141,6 +141,18 @@ bool IdleSubmitEnabled() {
 	return g_config->idle_submit;
 }
 
+int32_t GetGpuMemoryBudgetMb() {
+	return g_config->gpu_memory_budget_mb;
+}
+
+bool GpuEvictWrittenEnabled() {
+	return g_config->gpu_evict_written;
+}
+
+uint32_t GetVmaBlockSizeMb() {
+	return std::min(g_config->vma_block_size_mb, 1024u);
+}
+
 uint32_t GetVideoDecoderThreads() {
 	return std::min(g_config->video_decoder_threads, 16u);
 }

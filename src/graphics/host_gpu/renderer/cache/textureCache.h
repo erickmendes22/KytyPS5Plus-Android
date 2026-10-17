@@ -88,6 +88,10 @@ public:
 
 private:
 	bool EvictForAllocation(ImageId keep);
+	// --gpu-memory-budget (textureCacheBudget.cpp). Caller holds m_lock.
+	void ApplyBudgetThresholds(uint64_t budget);
+	void CollectWithinBudget(uint64_t tick, uint64_t used_memory);
+	void NoteEviction(const Image& image, bool downloaded);
 	struct MetaDataInfo {
 		enum class Type : uint8_t { CMask, FMask, HTile };
 
@@ -200,6 +204,12 @@ private:
 	uint64_t                                          m_pressure_gc_memory = 1536ull * 1024 * 1024;
 	uint64_t         m_critical_gc_memory     = 3ull * 1024 * 1024 * 1024;
 	uint64_t         m_gc_tick                = 0;
+	bool             m_budget_mode            = false;
+	bool             m_evict_written          = false;
+	// Evictions since the last "GPU memory:" line.
+	uint64_t         m_log_evictions          = 0;
+	uint64_t         m_log_evicted_bytes      = 0;
+	uint64_t         m_log_downloads          = 0;
 	mutable uint32_t m_image_query_epoch      = 0;
 	bool             m_readback_linear_images = false;
 

@@ -93,6 +93,11 @@ enum class Counter : uint8_t {
 	FaultsGuestRead,
 	FaultsGuestWrite,
 	IdleSubmits, // --idle-submit: command buffers submitted early because the GPU ran dry
+	// Texture cache eviction (collector and evict-for-allocation): images, their bytes, and how
+	// many of them were GPU-written and downloaded to guest memory first.
+	GcEvictions,
+	GcEvictedBytes,
+	GcDownloads,
 	Count
 };
 

@@ -7,6 +7,7 @@
 #include "common/perfWaits.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/graphicsRun.h"
+#include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
@@ -430,6 +431,11 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	    m_slot_buffers.insert(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0, AllFlags, 16);
 	EXIT_IF(null_id != NULL_BUFFER_ID);
 	SetVulkanObjectNameF(m_graphics.device, GetBuffer(null_id).Handle(), "Kyty.NullBuffer");
+	if (m_graphics.MemoryBudgetEnabled()) {
+		m_budget_mode = true;
+		ApplyBudgetThresholds(m_graphics.MemoryBudget());
+		return;
+	}
 	if (!m_graphics.CanReportMemoryUsage()) {
 		return;
 	}
@@ -442,6 +448,17 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	const auto critical  = std::min(budget - 2 * threshold / 10, budget - GiB / 2);
 	m_trigger_gc_memory  = static_cast<uint64_t>(std::max<int64_t>(expected, GiB));
 	m_critical_gc_memory = static_cast<uint64_t>(std::max<int64_t>(critical, 2 * GiB));
+}
+
+// --gpu-memory-budget: clean buffers unused for a while go from the texture cache's pressure
+// threshold on; GPU-written ones (a download and a full GPU wait each) only past the budget itself.
+void BufferCache::ApplyBudgetThresholds(uint64_t budget) {
+	m_trigger_gc_memory  = GpuBudget::ForBudget(budget).pressure;
+	m_critical_gc_memory = budget;
+}
+
+uint64_t BufferCache::MeshRingCapacity() const noexcept {
+	return m_mesh_emulation_ring ? m_mesh_emulation_ring->Capacity() : 0;
 }
 
 MeshEmulationRing& BufferCache::GetMeshEmulationRing() {
@@ -839,10 +856,16 @@ bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
 
 void BufferCache::RunGarbageCollector() {
 	const auto tick = m_gc_tick++;
+	if (m_budget_mode) {
+		// The texture cache updated the budget for this tick just before.
+		ApplyBudgetThresholds(m_graphics.MemoryBudget());
+	}
 	// Driver usage includes other caches and allocator reservations. Keep it
 	// separate from the owned-byte counter decremented during unregistration.
-	const auto used_memory = m_graphics.CanReportMemoryUsage()
-	    ? m_graphics.GetDeviceMemoryUsage() : m_total_used_memory;
+	const auto used_memory = m_budget_mode ? m_graphics.GetLiveDeviceMemory()
+	                         : m_graphics.CanReportMemoryUsage()
+	                             ? m_graphics.GetDeviceMemoryUsage()
+	                             : m_total_used_memory;
 	if (used_memory < m_trigger_gc_memory) {
 		return;
 	}

@@ -91,6 +91,9 @@ public:
 		m_memory_tracker.QueueBdaSync(vaddr, size);
 	}
 	void               RunGarbageCollector();
+	// Bytes of guest-mirroring buffers the cache owns, and the mesh emulation ring (0 if unused).
+	[[nodiscard]] uint64_t TotalUsedMemory() const noexcept { return m_total_used_memory; }
+	[[nodiscard]] uint64_t MeshRingCapacity() const noexcept;
 	// --targeted-readback: GPU writes acquired since the last call are recorded by now; give them
 	// the open command buffer's tick. The command processor calls this between PM4 packets.
 	void StampPendingWrites() {
@@ -100,6 +103,7 @@ public:
 	}
 
 private:
+	void ApplyBudgetThresholds(uint64_t budget);
 	friend struct BufferCacheTestAccess;
 
 	bool IsBufferInvalid(BufferId id) const {
@@ -175,6 +179,7 @@ private:
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;
 	uint64_t m_critical_gc_memory = 2ull * 1024 * 1024 * 1024;
 	uint64_t m_gc_tick            = 0;
+	bool     m_budget_mode        = false;
 	struct WriteTick {
 		uint64_t end  = 0;
 		uint64_t tick = 0;

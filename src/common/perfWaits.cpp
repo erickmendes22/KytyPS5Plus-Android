@@ -171,13 +171,20 @@ std::string TakeReadbackSummary(double seconds, uint64_t flips) {
 	const auto   faults    = [&](Counter kind) {
         return static_cast<double>(TakeCounter(kind)) * per_frame;
 	};
-	char head[256];
+	char head[384];
+	// Eviction totals for the whole period (not per frame), to line up with its fps and p95.
+	const auto evictions = TakeCounter(Counter::GcEvictions);
+	const auto evicted   = TakeCounter(Counter::GcEvictedBytes);
+	const auto downloads = TakeCounter(Counter::GcDownloads);
 	std::snprintf(head, sizeof(head),
 	              "[perf-readback] per %s: faults gpu r=%.1f w=%.1f guest r=%.1f w=%.1f "
-	              "idle_submits=%.1f |",
+	              "idle_submits=%.1f gc_evict=%llu (%.1f MiB, %llu downloaded) |",
 	              flips == 0 ? "second" : "frame", faults(Counter::FaultsGpuRead),
 	              faults(Counter::FaultsGpuWrite), faults(Counter::FaultsGuestRead),
-	              faults(Counter::FaultsGuestWrite), faults(Counter::IdleSubmits));
+	              faults(Counter::FaultsGuestWrite), faults(Counter::IdleSubmits),
+	              static_cast<unsigned long long>(evictions),
+	              static_cast<double>(evicted) / (1024.0 * 1024.0),
+	              static_cast<unsigned long long>(downloads));
 	std::string line = head;
 	if (taken.empty()) {
 		return line + " none";

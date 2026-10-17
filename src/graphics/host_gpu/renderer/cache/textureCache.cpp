@@ -127,7 +127,11 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
       m_tiler(graphics, scheduler, buffer_cache.GetUtilityBuffer(MemoryUsage::Stream)),
       m_buffer_cache(buffer_cache),
       m_readback_linear_images(Config::ReadbackLinearImagesEnabled()) {
-	if (m_graphics.CanReportMemoryUsage()) {
+	if (m_graphics.MemoryBudgetEnabled()) {
+		m_budget_mode   = true;
+		m_evict_written = Config::GpuEvictWrittenEnabled();
+		ApplyBudgetThresholds(m_graphics.MemoryBudget());
+	} else if (m_graphics.CanReportMemoryUsage()) {
 		constexpr int64_t GiB = 1024ll * 1024 * 1024;
 		const auto        budget =
 		    static_cast<int64_t>(std::min<uint64_t>(m_graphics.GetTotalMemoryBudget(), INT64_MAX));
@@ -2084,22 +2088,42 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	}
 	const auto allocated = stats.total.statistics.allocationBytes;
 	constexpr uint64_t MiB = 1024ull * 1024;
-	LOGF("GPU memory: device_usage=%" PRIu64 " vma_blocks=%" PRIu64 " vma_allocs=%" PRIu64
+	const auto device_usage =
+	    m_graphics.CanReportMemoryUsage() ? m_graphics.GetDeviceMemoryUsage() : used_memory;
+	LOGF("GPU memory: device_usage=%" PRIu64 " gc_used=%" PRIu64 " budget=%" PRIu64
+	     " MiB | evicted %" PRIu64 " images %" PRIu64 " MiB (%" PRIu64 " downloaded) | buffers=%" PRIu64
+	     " MiB mesh_ring=%" PRIu64 " MiB | vma_blocks=%" PRIu64 " vma_allocs=%" PRIu64
 	     " MiB | images=%" PRIu64 " MiB (rt %u:%" PRIu64 " depth %u:%" PRIu64 " storage %u:%" PRIu64
 	     " videoout %u:%" PRIu64 " sampled %u:%" PRIu64 ") guest_accounted=%" PRIu64
 	     " | non_image=%" PRIu64 " MiB | metas=%zu | gc trigger/pressure/critical=%" PRIu64
 	     "/%" PRIu64 "/%" PRIu64 " MiB\n",
-	     used_memory / MiB, stats.total.statistics.blockBytes / MiB, allocated / MiB,
+	     device_usage / MiB, used_memory / MiB, m_graphics.MemoryBudget() / MiB, m_log_evictions,
+	     m_log_evicted_bytes / MiB, m_log_downloads, m_buffer_cache.TotalUsedMemory() / MiB,
+	     m_buffer_cache.MeshRingCapacity() / MiB, stats.total.statistics.blockBytes / MiB,
+	     allocated / MiB,
 	     image_bytes / MiB, images[Target], bytes[Target] / MiB, images[Depth], bytes[Depth] / MiB,
 	     images[Storage], bytes[Storage] / MiB, images[VideoOut], bytes[VideoOut] / MiB,
 	     images[Sampled], bytes[Sampled] / MiB, guest_bytes / MiB,
 	     (allocated > image_bytes ? allocated - image_bytes : 0) / MiB, m_surface_metas.size(),
 	     m_trigger_gc_memory / MiB, m_pressure_gc_memory / MiB, m_critical_gc_memory / MiB);
+	m_log_evictions     = 0;
+	m_log_evicted_bytes = 0;
+	m_log_downloads     = 0;
 }
 
 void TextureCache::RunGarbageCollector() {
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
+	if (m_budget_mode) {
+		ApplyBudgetThresholds(m_graphics.UpdateMemoryBudget());
+		// Live allocations: free space inside VMA blocks is not something eviction can return.
+		const auto used_memory = m_graphics.GetLiveDeviceMemory();
+		LogMemoryBreakdown(used_memory);
+		if (used_memory >= m_trigger_gc_memory) {
+			CollectWithinBudget(tick, used_memory);
+		}
+		return;
+	}
 	// Driver usage includes other caches and allocator reservations. Keep it
 	// separate from the owned-byte counter decremented during unregistration.
 	auto used_memory = m_graphics.CanReportMemoryUsage()
@@ -2147,6 +2171,7 @@ void TextureCache::RunGarbageCollector() {
 				}
 			}
 			used_memory -= std::min(used_memory, owner->AccountedSize());
+			NoteEviction(*owner, owner->IsGpuModified() && owner->SafeToDownload());
 			FreeImage(id);
 			if (used_memory < m_critical_gc_memory && aggressive) {
 				deletions >>= 2;
@@ -2199,9 +2224,11 @@ bool TextureCache::EvictForAllocation(ImageId keep) {
 	size_t freed = 0;
 	for (const auto id: victims) {
 		auto& image = m_slot_images[id];
-		if (image.IsGpuModified() && image.SafeToDownload() && !DownloadImageMemory(id)) {
+		const bool download = image.IsGpuModified() && image.SafeToDownload();
+		if (download && !DownloadImageMemory(id)) {
 			continue;
 		}
+		NoteEviction(image, download);
 		FreeImage(id);
 		freed++;
 	}
