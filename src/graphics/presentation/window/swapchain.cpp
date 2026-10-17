@@ -15,6 +15,7 @@
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
+#include "graphics/presentation/window/surfaceLifecycle.h"
 #include "graphics/presentation/window/windowInternal.h"
 
 #include <algorithm>
@@ -268,8 +269,11 @@ public:
 	~Swapchain();
 	KYTY_CLASS_NO_COPY(Swapchain);
 
-	void                 Create();
-	void                 Recreate(bool surface_lost = false);
+	// Both return false when no swapchain could be made for the window (its native surface is
+	// gone); the swapchain is then left destroyed.
+	[[nodiscard]] bool   Create();
+	[[nodiscard]] bool   Recreate(bool surface_lost = false);
+	void                 Destroy();
 	[[nodiscard]] bool   NeedsResize() const;
 	// VK_SUBOPTIMAL_KHR from acquire or present: recreate once (extent or format may have
 	// changed), then keep the swapchain. Android reports it for as long as the pre-transform
@@ -295,7 +299,6 @@ public:
 
 private:
 	vk::SurfaceFormatKHR SelectFormat();
-	void Destroy();
 	void DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer);
 
 	WindowContext&   m_window;
@@ -328,16 +331,24 @@ struct Presenter::Impl {
 	    : renderer(*owner.render_context), window(owner), swapchain(owner),
 	      present_scheduler(renderer, owner.graphic_ctx), frames(owner, present_scheduler) {
 		EXIT_IF(owner.render_context == nullptr);
-		swapchain.Create();
+		EXIT_IF(!swapchain.Create());
 		frames.Initialize(swapchain.ImageCount(), swapchain.Format());
 	}
 
-	void RecoverSwapchain(Swapchain::Status status) {
+	[[nodiscard]] bool RecoverSwapchain(Swapchain::Status status) {
 		LOGF("Recovering Vulkan swapchain%s\n",
 		     status == Swapchain::Status::SurfaceLost ? " and surface" : "");
-		swapchain.Recreate(status == Swapchain::Status::SurfaceLost);
+		if (!swapchain.Recreate(status == Swapchain::Status::SurfaceLost)) {
+			LOGF("Vulkan swapchain unavailable; dropping frames until the window returns\n");
+			window.surface_lifecycle.Lost(SDL_GetTicks());
+			return false;
+		}
 		frames.SetFormat(swapchain.Format());
+		return true;
 	}
+
+	// Follows the window lifecycle before a present. False: no surface, drop this frame.
+	[[nodiscard]] bool EnsureSurface();
 
 	Image& ResolveSurface(const ImageInfo& info) {
 		TextureCache::ImageDesc desc {};
@@ -418,7 +429,7 @@ vk::SurfaceFormatKHR Swapchain::SelectFormat() {
 	EXIT("no supported UNORM swapchain format\n");
 }
 
-void Swapchain::Create() {
+bool Swapchain::Create() {
 	auto& graphics = m_window.graphic_ctx;
 	EXIT_IF(graphics.device == nullptr);
 	EXIT_IF(m_window.surface == nullptr);
@@ -494,8 +505,15 @@ void Swapchain::Create() {
 		create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
 	create_info.clipped = VK_TRUE;
-	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
-	                     "vkCreateSwapchainKHR");
+	if (const auto result = graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle);
+	    result == vk::Result::eErrorSurfaceLostKHR ||
+	    result == vk::Result::eErrorNativeWindowInUseKHR) {
+		LOGF("vkCreateSwapchainKHR returned %s\n", vk::to_string(result).c_str());
+		m_handle = nullptr;
+		return false;
+	} else {
+		RequireVulkanSuccess(result, "vkCreateSwapchainKHR");
+	}
 	EXIT_IF(m_handle == nullptr);
 
 	m_images = EnumerateVulkan<vk::Image>(
@@ -541,6 +559,7 @@ void Swapchain::Create() {
 	}
 	m_image_index = static_cast<uint32_t>(-1);
 	m_frame_index = 0;
+	return true;
 }
 
 Swapchain::~Swapchain() {
@@ -617,22 +636,49 @@ Swapchain::Status Swapchain::OnSuboptimal(const char* call) {
 	return Status::Success;
 }
 
-void Swapchain::Recreate(bool surface_lost) {
+namespace {
+
+bool RecreateWindowSurface(WindowContext& window) {
+#if defined(__APPLE__)
+	// Surface recreation goes through SDL_Vulkan_CreateSurface, which touches the
+	// window's view/layer and must run on the main thread on macOS.
+	struct Call {
+		WindowContext* window;
+		bool           ok;
+	} call {&window, false};
+	EXIT_IF(!SDL_RunOnMainThread(
+	    [](void* data) {
+		    auto* c = static_cast<Call*>(data);
+		    c->ok   = c->window->RecreateSurface();
+	    },
+	    &call, true));
+	return call.ok;
+#else
+	return window.RecreateSurface();
+#endif
+}
+
+void DestroyWindowSurface(WindowContext& window) {
+#if defined(__APPLE__)
+	EXIT_IF(!SDL_RunOnMainThread(
+	    [](void* data) { static_cast<WindowContext*>(data)->DestroySurface(); }, &window, true));
+#else
+	window.DestroySurface();
+#endif
+}
+
+} // namespace
+
+bool Swapchain::Recreate(bool surface_lost) {
 	Destroy();
 	if (surface_lost) {
 		m_suboptimal_recreates = 0;
 		m_suboptimal_kept      = false;
-#if defined(__APPLE__)
-		// Surface recreation goes through SDL_Vulkan_CreateSurface, which touches the
-		// window's view/layer and must run on the main thread on macOS.
-		EXIT_IF(!SDL_RunOnMainThread(
-		    [](void* window) { static_cast<WindowContext*>(window)->RecreateSurface(); }, &m_window,
-		    true));
-#else
-		m_window.RecreateSurface();
-#endif
+		if (!RecreateWindowSurface(m_window)) {
+			return false;
+		}
 	}
-	Create();
+	return Create();
 }
 
 bool Swapchain::NeedsResize() const {
@@ -1020,6 +1066,11 @@ bool Presenter::PresentLastFrame() {
 	return true;
 }
 
+void Presenter::FollowWindowLifecycle() {
+	Common::LockGuard lock(m_impl->present_mutex);
+	(void)m_impl->EnsureSurface();
+}
+
 bool Presenter::IsGuestPaused() const noexcept {
 	return m_impl->window.loop.paused.load(std::memory_order_acquire);
 }
@@ -1069,8 +1120,45 @@ void Presenter::ClearLayer(int bus) {
 	}
 }
 
+bool Presenter::Impl::EnsureSurface() {
+	auto& lifecycle = window.surface_lifecycle;
+	for (;;) {
+		switch (lifecycle.Next(SDL_GetTicks())) {
+			case SurfaceLifecycle::Action::Present: return true;
+			case SurfaceLifecycle::Action::Drop: return false;
+			case SurfaceLifecycle::Action::Teardown:
+				LOGF("Window surface going away: releasing the Vulkan swapchain and surface\n");
+				swapchain.Destroy();
+				DestroyWindowSurface(window);
+				lifecycle.TornDown();
+				break; // ask again: rebuild at once if the app is already back
+			case SurfaceLifecycle::Action::Rebuild: {
+				const bool ok = RecreateWindowSurface(window) && swapchain.Create();
+				if (!ok) {
+					swapchain.Destroy();
+				}
+				lifecycle.Rebuilt(ok, SDL_GetTicks());
+				if (ok) {
+					frames.SetFormat(swapchain.Format());
+					LOGF("Window surface back: Vulkan swapchain rebuilt\n");
+				} else if (lifecycle.FailedRebuilds() == 1) {
+					LOGF("Window surface not available yet; retrying every %u ms\n",
+					     static_cast<unsigned>(SurfaceLifecycle::RetryDelayMs));
+				}
+				return ok;
+			}
+		}
+	}
+}
+
 void Presenter::Impl::Present() {
 	KYTY_PROFILER_FUNCTION();
+
+	if (!EnsureSurface()) {
+		// No window surface (Android background): drop the frame. The caller still completes the
+		// flip for the guest.
+		return;
+	}
 
 	const auto overlay_visual = GetSystemOverlayVisualState();
 	// Keep black/blank flips in the current color space; only real main-bus frames switch it.
@@ -1081,13 +1169,16 @@ void Presenter::Impl::Present() {
 	const bool hdr_changed = main_frame != nullptr && !main_frame->blank &&
 	                         swapchain.SetHdr(main_frame->hdr);
 	// Some window systems keep presenting an old swapchain after a resize.
-	if (hdr_changed || swapchain.NeedsResize()) {
-		RecoverSwapchain(Swapchain::Status::Recreate);
+	if ((hdr_changed || swapchain.NeedsResize()) &&
+	    !RecoverSwapchain(Swapchain::Status::Recreate)) {
+		return;
 	}
 	for (uint32_t attempt = 0; attempt < 2; attempt++) {
 		auto status = swapchain.AcquireNextImage(present_scheduler);
 		if (status != Swapchain::Status::Success) {
-			RecoverSwapchain(status);
+			if (!RecoverSwapchain(status)) {
+				return;
+			}
 			continue;
 		}
 		// present_mutex owns the prepared frames and this scheduler. Only queue submission
@@ -1105,7 +1196,9 @@ void Presenter::Impl::Present() {
 		}
 		status = swapchain.Present();
 		if (status != Swapchain::Status::Success) {
-			RecoverSwapchain(status);
+			if (!RecoverSwapchain(status)) {
+				return;
+			}
 			continue;
 		}
 

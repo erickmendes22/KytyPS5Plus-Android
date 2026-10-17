@@ -1233,17 +1233,25 @@ void WindowContext::RefreshSurfaceCapabilities() {
 	GetSurfaceCapabilities(graphic_ctx.physical_device, surface, surface_capabilities);
 }
 
-void WindowContext::RecreateSurface() {
-	EXIT_IF(window == nullptr || graphic_ctx.instance == nullptr);
+void WindowContext::DestroySurface() {
 	if (surface != nullptr) {
 		graphic_ctx.instance.destroySurfaceKHR(surface, nullptr);
 		surface = nullptr;
 	}
+}
+
+bool WindowContext::RecreateSurface() {
+	EXIT_IF(window == nullptr || graphic_ctx.instance == nullptr);
+	DestroySurface();
 	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
 	if (!VulkanDriver::CreateSurface(window, graphic_ctx.instance, &native_surface)) {
-		EXIT("Could not recreate the Vulkan surface: %s\n", SDL_GetError());
+		// Android: no ANativeWindow while the app is in the background. Not fatal; the presenter
+		// drops frames and tries again after the app returns.
+		LOGF("Could not recreate the Vulkan surface: %s\n", SDL_GetError());
+		return false;
 	}
 	surface = native_surface;
+	return true;
 }
 
 WindowContext::~WindowContext() {

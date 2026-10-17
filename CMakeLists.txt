@@ -544,6 +544,9 @@ add_executable(render_scale_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/RenderScal
 target_link_libraries(render_scale_tests Vulkan::Headers)
 target_include_directories(render_scale_tests PRIVATE ${inc_headers})
 
+add_executable(surface_lifecycle_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/SurfaceLifecycleTests.cpp")
+target_include_directories(surface_lifecycle_tests PRIVATE ${inc_headers})
+
 add_executable(gpu_memory_budget_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/GpuMemoryBudgetTests.cpp")
 target_include_directories(gpu_memory_budget_tests PRIVATE ${inc_headers})
 
@@ -744,6 +747,7 @@ if(BUILD_TESTING)
 	add_test(NAME render_scale COMMAND $<TARGET_FILE:render_scale_tests>)
 	add_test(NAME gpu_diagnostics COMMAND $<TARGET_FILE:gpu_diagnostics_tests>)
 	add_test(NAME gpu_memory_budget COMMAND $<TARGET_FILE:gpu_memory_budget_tests>)
+	add_test(NAME surface_lifecycle COMMAND $<TARGET_FILE:surface_lifecycle_tests>)
 	add_test(NAME page_manager COMMAND $<TARGET_FILE:page_manager_tests>)
 	add_test(NAME perf_waits COMMAND $<TARGET_FILE:perf_waits_tests>)
 	add_test(NAME archive_file COMMAND $<TARGET_FILE:archive_file_tests>)

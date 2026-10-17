@@ -31,6 +31,9 @@ public:
 	[[nodiscard]] Frame&         PrepareBlankFrame(uint32_t width, uint32_t height, bool opaque,
 	                                               CommandBuffer* producer = nullptr);
 	[[nodiscard]] bool           PresentLastFrame();
+	// Releases the swapchain and window surface as soon as the window goes to the background,
+	// without presenting. Present() does the same, and rebuilds them after the window returns.
+	void                         FollowWindowLifecycle();
 	[[nodiscard]] bool           IsGuestPaused() const noexcept;
 	[[nodiscard]] bool           IsHdrSupported() const noexcept;
 	[[nodiscard]] bool           NeedsSystemOverlayRefresh() const noexcept;

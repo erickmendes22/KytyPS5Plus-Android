@@ -6,6 +6,7 @@
 #include "common/threads.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/presentation/window/surfaceLifecycle.h"
 
 #include <atomic>
 #include <cstdint>
@@ -40,7 +41,10 @@ struct WindowContext {
 	[[nodiscard]] static vk::PhysicalDeviceVulkan13Features RequiredVulkan13Features() noexcept;
 	[[nodiscard]] static uint32_t InitialWindowFlags(bool fullscreen) noexcept;
 	void                                                    CreateVulkan();
-	void                                                    RecreateSurface();
+	// Both return false instead of exiting when the window has no native surface (Android in the
+	// background); the caller drops frames and retries.
+	[[nodiscard]] bool                                      RecreateSurface();
+	void                                                    DestroySurface();
 	void                                                    RefreshSurfaceCapabilities();
 	void                                                    UpdateIcon();
 	void UpdateTitle(uint64_t frame_num, double current_fps);
@@ -57,6 +61,7 @@ struct WindowContext {
 	std::unique_ptr<RenderContext> render_context;
 	std::unique_ptr<Presenter>     presenter;
 	WindowLoopState                loop;
+	SurfaceLifecycle               surface_lifecycle;
 
 	Common::Mutex mutex;
 };

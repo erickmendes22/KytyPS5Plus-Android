@@ -350,12 +350,24 @@ static void GameEventLowMemory() {
 	LOGF("Event: low_memory\n");
 }
 
-// --gpu-turbo pins a device-global GPU clock: drop it while the app is in the background and when
-// Android terminates it, and take it again on return.
-static bool SDLCALL GpuClockLifecycleWatch(void* /*userdata*/, SDL_Event* event) {
+// Runs where SDL raises the event. On Android that is inside the event pump, which then blocks
+// until the app returns, so the main loop sees WILL_ENTER_BACKGROUND only after the return; and
+// SDL releases the ANativeWindow around the same time. Here the presenter learns at once that the
+// surface is going (it stops presenting and rebuilds on return), the guest pauses, and the
+// device-global --gpu-turbo clock is dropped while in the background and taken again on return.
+static bool SDLCALL LifecycleEventWatch(void* userdata, SDL_Event* event) {
+	auto* context = static_cast<WindowContext*>(userdata);
 	switch (event->type) {
-		case SDL_EVENT_WILL_ENTER_BACKGROUND: VulkanDriver::SuspendGpuTurbo(); break;
-		case SDL_EVENT_DID_ENTER_FOREGROUND: VulkanDriver::ResumeGpuTurbo(); break;
+		case SDL_EVENT_WILL_ENTER_BACKGROUND:
+			context->surface_lifecycle.EnterBackground();
+			context->loop.paused.store(true, std::memory_order_release);
+			VulkanDriver::SuspendGpuTurbo();
+			break;
+		case SDL_EVENT_DID_ENTER_FOREGROUND:
+			VulkanDriver::ResumeGpuTurbo();
+			context->surface_lifecycle.EnterForeground();
+			context->loop.paused.store(false, std::memory_order_release);
+			break;
 		case SDL_EVENT_TERMINATING: VulkanDriver::ReleaseGpuTurbo(); break;
 		default: break;
 	}
@@ -805,7 +817,7 @@ static void WindowCreate(WindowContext& context) {
 		EXIT("%s\n", SDL_GetError());
 	}
 	// Runs where SDL raises the event, before Android's pause handling can block the loop.
-	if (!SDL_AddEventWatch(GpuClockLifecycleWatch, nullptr)) {
+	if (!SDL_AddEventWatch(LifecycleEventWatch, &context)) {
 		LOGF("SDL_AddEventWatch failed: %s\n", SDL_GetError());
 	}
 
@@ -886,6 +898,7 @@ void WindowShutdown() {
 	if (g_window != nullptr) {
 		HostInputShutdown();
 		Controller::EmergencyShutdown();
+		SDL_RemoveEventWatch(LifecycleEventWatch, g_window.get());
 		g_window.reset();
 	}
 }

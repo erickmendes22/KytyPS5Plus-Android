@@ -864,7 +864,8 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		const auto period  = std::max(frequency / refresh, uint64_t {1});
 
 		if (m_presenter.IsGuestPaused()) {
-			(void)m_presenter.PresentLastFrame();
+			// Paused means the app is in the background: no window surface to present to.
+			m_presenter.FollowWindowLifecycle();
 			const auto frame_end = Common::Timer::QueryPerformanceCounter();
 			total_wait +=
 			    static_cast<int64_t>(period) - static_cast<int64_t>(frame_end - frame_begin);
