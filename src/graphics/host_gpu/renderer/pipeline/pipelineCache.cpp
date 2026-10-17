@@ -569,6 +569,8 @@ struct PipelineCache::ProgramCache {
 		         .storage_image_array_non_uniform_indexing =
 		             graphics.optional_features.storage_image_array_non_uniform_indexing,
 		         .mesh_shader       = graphics.mesh_shader_enabled,
+		         .native_float_min_max = fast_paths.native_float_min_max,
+		         .robust_buffer_loads  = fast_paths.robust_buffer_loads,
 		         .render_scale      = RenderScale::Active(Config::GetRenderScale()),
 		         .render_scale_keep_fragcoord =
 		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_FRAGCOORD) != 0,
@@ -713,7 +715,8 @@ struct PipelineCache::ProgramCache {
 
 	ProgramCache(GraphicContext& graphics, ShaderWorkerPool& workers)
 	    : graphics(graphics), workers(workers),
-	      device_quirks(ResolveShaderDeviceQuirks(graphics.physical_device)) {
+	      device_quirks(ResolveShaderDeviceQuirks(graphics.physical_device)),
+	      fast_paths(ResolveShaderFastPaths(graphics)) {
 		lookup_key.static_state.reserve(MaxStaticKeyWords);
 	}
 	~ProgramCache() {
@@ -736,6 +739,7 @@ struct PipelineCache::ProgramCache {
 	GraphicContext&                                             graphics;
 	ShaderWorkerPool&                                           workers;
 	ShaderDeviceQuirks                                          device_quirks;
+	ShaderFastPaths                                             fast_paths;
 	uint64_t                                                    next_shader_id = 0;
 };
 

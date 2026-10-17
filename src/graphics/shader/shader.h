@@ -255,6 +255,14 @@ struct ShaderDeviceFeatures {
 	// VK_EXT_mesh_shader. Without it a Mesh stage is emitted as a compute shader that writes its
 	// vertices and triangles to buffers a generated vertex shader reads back (mesh emulation).
 	bool mesh_shader = true;
+	// V_MIN/V_MAX/V_MED3_F32 use GLSL NMin/NMax plus a signed-zero fix-up (equal operands
+	// combine their bits) instead of classifying both operands in integer code. Same results
+	// except the payload when both operands are NaN (KYTY_FAST_FMINMAX; default Mesa Turnip).
+	bool native_float_min_max = false;
+	// robustBufferAccess2 returns zero for out-of-range storage buffer reads, which is what the
+	// per-load bounds branch produces: 32-bit buffer loads skip it (KYTY_ROBUST_LOADS; default
+	// Mesa Turnip, needs robustBufferAccess2 with a 4-byte access alignment).
+	bool robust_buffer_loads = false;
 	// --render-scale is active: pixel and compute shaders read the rescale push dwords
 	// (IR::PushData::Rescale*) to unscale gl_FragCoord and scale texel coordinates. Off, the
 	// emitted SPIR-V is unchanged.

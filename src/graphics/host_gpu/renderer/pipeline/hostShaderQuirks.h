@@ -12,6 +12,17 @@ namespace Libs::Graphics {
 // Logs the result.
 [[nodiscard]] ShaderDeviceQuirks ResolveShaderDeviceQuirks(vk::PhysicalDevice physical_device);
 
+struct GraphicContext;
+
+// Emitter fast paths that depend on the host driver (ShaderDeviceFeatures::native_float_min_max,
+// robust_buffer_loads). Each defaults to on for Mesa Turnip only. Environment overrides:
+// KYTY_FAST_FMINMAX, KYTY_ROBUST_LOADS (1 on, 0 off). Logs the result.
+struct ShaderFastPaths {
+	bool native_float_min_max = false;
+	bool robust_buffer_loads  = false;
+};
+[[nodiscard]] ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics);
+
 } // namespace Libs::Graphics
 
 #endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_HOSTSHADERQUIRKS_H_ */

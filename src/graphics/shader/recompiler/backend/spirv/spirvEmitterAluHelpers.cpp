@@ -101,6 +101,20 @@ uint32_t EmitClassMaskF16(EmitterState& state, uint32_t bits, uint32_t mask) {
 }
 
 uint32_t EmitMinMaxF32Value(EmitterState& state, uint32_t lhs, uint32_t rhs, bool max_value) {
+	if (state.device_features.native_float_min_max) {
+		// NMin/NMax return the other operand for one NaN. Equal operands differ only as signed
+		// zeros: max keeps +0 (AND of the bits), min keeps -0 (OR).
+		const auto chosen =
+		    max_value ? EmitGlsl<GLSLstd450NMax, IR::Type::F32>(state, lhs, rhs)
+		              : EmitGlsl<GLSLstd450NMin, IR::Type::F32>(state, lhs, rhs);
+		const auto equal =
+		    Binary(state, spv::OpFOrdEqual, TypeBool(state), lhs, rhs);
+		const auto lhs_bits  = EmitBitcastF32ToU32(state, lhs);
+		const auto rhs_bits  = EmitBitcastF32ToU32(state, rhs);
+		const auto zero_bits = max_value ? EmitAndU32(state, lhs_bits, rhs_bits)
+		                                 : EmitOrU32(state, lhs_bits, rhs_bits);
+		return Select(state, TypeF32(state), equal, EmitBitcastU32ToF32(state, zero_bits), chosen);
+	}
 	const auto lhs_class = EmitClassifyF32(state, lhs);
 	const auto rhs_class = EmitClassifyF32(state, rhs);
 

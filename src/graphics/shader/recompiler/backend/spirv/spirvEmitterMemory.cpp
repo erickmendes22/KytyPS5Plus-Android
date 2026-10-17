@@ -387,9 +387,20 @@ uint32_t BufferIndexInBounds(ValueEmitContext& ctx, const IR::Inst& inst,
 	        Binary(state, spv::OpULessThanEqual, TypeBool(state), ctx.Arg(inst, 1), last_record)));
 }
 
+// ShaderDeviceFeatures::robust_buffer_loads: the driver already reads zero past the binding.
+bool RobustBufferLoad(const EmitterState& state, const MemoryResourceAccess& resource) {
+	return state.device_features.robust_buffer_loads && resource.object_pointer != 0 &&
+	       resource.element_bits == 32u &&
+	       (resource.kind == IR::ResourceKind::Buffer ||
+	        resource.kind == IR::ResourceKind::ScalarBuffer);
+}
+
 uint32_t LoadWordPrepared(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
                           const MemoryResourceAccess& resource, uint32_t guard = 0) {
 	const auto index     = DwordIndex(ctx, inst, mem, resource.byte_offset);
+	if (RobustBufferLoad(ctx.state, resource) && !BranchlessLoads(ctx.state)) {
+		return LoadWordInBounds(ctx, resource, index);
+	}
 	auto       in_bounds = EmitMemoryElementInBounds(ctx.state, resource, index);
 	if (BranchlessLoads(ctx.state)) {
 		if (guard != 0) in_bounds = AndCondition(ctx.state, guard, in_bounds);
