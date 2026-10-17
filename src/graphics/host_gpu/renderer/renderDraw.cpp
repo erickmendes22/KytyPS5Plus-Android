@@ -1042,6 +1042,12 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 	                  (color_output_mask != 0 ||
 	                   PixelShaderHasDepthOrCoverageSideEffects(shader_regs));
 	RefreshShaders(buffer, draw, color_output_mask, state);
+	if (!state.programs.ready) {
+		// --async-shaders: a program is still translating on a worker. The draw is dropped for
+		// this frame (its stage pointers are unset) and drawn once the program is installed.
+		Common::PerfStats::CountSkippedDraw();
+		return false;
+	}
 	uint32_t mrt_mask = 0;
 	if (state.ps_active) {
 		for (const auto& output: state.ps_input_info.stage.program->info.outputs) {
@@ -1313,11 +1319,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (draw.IsIndexed()) {
 		LogDrawPhase(draw.Name(), "CreatePipeline");
 	}
-	auto& pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(
+	auto* pipeline_ptr = m_context.GetPipelineCache().GetGraphicsPipeline(
 	    std::span {state.color_info, state.color_count}, state.depth_info, vertex_stages, buffer,
 	    state.ps_active ? &state.ps_input_info : nullptr,
 	    mesh_emulated ? vk::PrimitiveTopology::eTriangleList : topology,
 	    mesh_emulated ? false : primitive_restart_enable, state.programs);
+	if (pipeline_ptr != nullptr && mesh_emulated &&
+	    m_context.GetPipelineCache().TryGetMeshEmulationPipeline(
+	        state.vertex_info[0], state.programs.vertex[0]) == nullptr) {
+		pipeline_ptr = nullptr;
+	}
+	if (pipeline_ptr == nullptr) {
+		// --async-shaders: the pipeline is being created on a worker. Nothing recorded so far
+		// depends on it (bindings and buffers were only prepared), so the draw is dropped for
+		// this frame and drawn once the pipeline is installed.
+		Common::PerfStats::CountSkippedDraw();
+		return;
+	}
+	auto& pipeline = *pipeline_ptr;
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering =
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info,

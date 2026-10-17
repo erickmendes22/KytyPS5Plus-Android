@@ -760,7 +760,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	     push_constants},
 	    std::span(guest_hashes).first(guest_hash_count));
 	{
-		const Common::PerfStats::ScopedStall timing(Common::PerfStats::StallKind::PipelineCompile);
+		// On a shader worker this is not a GPU-thread stall; it is reported as worker time.
+		const Common::PerfStats::ScopedStall timing(
+		    ShaderWorkerPool::OnWorkerThread() ? Common::PerfStats::StallKind::PipelineWorker
+		                                       : Common::PerfStats::StallKind::PipelineCompile);
 		result = graphics.device.createGraphicsPipelines(driver_cache, 1, &pipeline_info, nullptr,
 		                                                 &pipeline.pipeline);
 	}
@@ -870,7 +873,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	     push_constants},
 	    guest_hash);
 	{
-		const Common::PerfStats::ScopedStall timing(Common::PerfStats::StallKind::PipelineCompile);
+		// On a shader worker this is not a GPU-thread stall; it is reported as worker time.
+		const Common::PerfStats::ScopedStall timing(
+		    ShaderWorkerPool::OnWorkerThread() ? Common::PerfStats::StallKind::PipelineWorker
+		                                       : Common::PerfStats::StallKind::PipelineCompile);
 		result = graphics.device.createComputePipelines(driver_cache, 1, &info, nullptr,
 		                                                &pipeline.pipeline);
 	}

@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderWorkerPool.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/shader.h"
@@ -101,7 +102,10 @@ struct ShaderProgram {
 	explicit operator bool() const { return id != 0 && module != nullptr; }
 };
 
-// The owning renderer serializes access, including saves while the GPU is running.
+// The owning renderer serializes access, including saves while the GPU is running. All
+// methods run on the GPU thread; with --async-shaders, shader translation and pipeline
+// creation run as ShaderWorkerPool jobs that own their inputs and results until this thread
+// installs them (see ProgramCache::Get and PollPipeline).
 class PipelineCache {
 public:
 	explicit PipelineCache(GraphicContext& graphics);
@@ -120,6 +124,9 @@ public:
 	struct GraphicsPrograms {
 		std::array<ShaderProgram, 3> vertex;
 		ShaderProgram pixel;
+		// False while a requested program is still translating on a worker: the draw must be
+		// skipped (the stage pointers of its input infos are not set).
+		bool ready = true;
 
 		[[nodiscard]] uint32_t VertexStageCount() const { return vertex[1] ? 3u : 1u; }
 	};
@@ -135,20 +142,27 @@ public:
 	                                const HW::ShaderRegisters&   sh,
 	                                ShaderComputeInputInfo&      input_info);
 
-	Pipeline& GetGraphicsPipeline(std::span<const RenderColorInfo>       colors,
+	// Null while the pipeline is still being created on a worker (--async-shaders): the caller
+	// skips the draw and retries on the next draw with the same state.
+	Pipeline* GetGraphicsPipeline(std::span<const RenderColorInfo>       colors,
 	                              const RenderDepthInfo&                 depth,
 	                              std::span<const ShaderVertexInputInfo> vertex_info,
 	                              CommandBuffer& command, const ShaderPixelInputInfo* ps_input_info,
 	                              vk::PrimitiveTopology topology, bool primitive_restart_enable,
 	                              const GraphicsPrograms& programs);
+	// Compute dispatches always wait: their results feed the game.
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	                             const ShaderProgram&          compute_program);
 	// Mesh emulation (no VK_EXT_mesh_shader): the compute pipeline that runs a mesh program.
+	// Try* is null while it is still being created; Get* requires it to be ready.
+	Pipeline* TryGetMeshEmulationPipeline(const ShaderVertexInputInfo& mesh_input,
+	                                      const ShaderProgram&         mesh_program);
 	Pipeline& GetMeshEmulationPipeline(const ShaderVertexInputInfo& mesh_input,
 	                                   const ShaderProgram&         mesh_program);
 
 private:
 	struct ProgramCache;
+	struct PipelineJob;
 
 	struct GraphicsPipelineKey {
 		PipelineRenderingState   rendering;
@@ -175,8 +189,9 @@ private:
 		std::size_t operator()(const GraphicsPipelineKey& key) const;
 	};
 
-	GraphicContext&               m_graphics;
-	std::unique_ptr<ProgramCache> m_program_cache;
+	GraphicContext&                   m_graphics;
+	std::unique_ptr<ShaderWorkerPool> m_workers;
+	std::unique_ptr<ProgramCache>     m_program_cache;
 	vk::PipelineCache             m_driver_cache = nullptr;
 	std::filesystem::path         m_driver_cache_path;
 	std::chrono::steady_clock::time_point m_next_driver_cache_save;
@@ -186,7 +201,17 @@ private:
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<Pipeline>, GraphicsPipelineKeyHash>
 	                                                        m_graphics_pipelines;
 	std::unordered_map<uint64_t, std::unique_ptr<Pipeline>> m_compute_pipelines;
+	// Pipelines being created on workers, by the key they will be installed under.
+	std::unordered_map<GraphicsPipelineKey, std::shared_ptr<PipelineJob>, GraphicsPipelineKeyHash>
+	                                                             m_pending_graphics;
+	std::unordered_map<uint64_t, std::shared_ptr<PipelineJob>> m_pending_compute;
 
+	// Installs a finished job's pipeline, or submits one (make_job) and returns null while it
+	// runs. A blocking caller runs the job on this thread instead.
+	template <typename Key, typename Hash, typename MakeJob>
+	Pipeline* PollPipeline(std::unordered_map<Key, std::unique_ptr<Pipeline>, Hash>&   installed,
+	                       std::unordered_map<Key, std::shared_ptr<PipelineJob>, Hash>& pending,
+	                       const Key& key, MakeJob&& make_job, bool blocking);
 	void InitializeDriverCache();
 	[[nodiscard]] bool WriteDriverCacheFile() const;
 	void CheckpointDriverCache();

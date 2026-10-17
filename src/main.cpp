@@ -165,6 +165,10 @@ static void PrintUsage() {
 	::printf("  --printf-output-file <path>          Guest printf output file.\n");
 	::printf("  --profile                            Enable the Tracy profiler.\n");
 	::printf("  --perf-stats                         Log fps/HLE/fault rates and sample CPU time.\n");
+	::printf("  --async-shaders <0|1>                Translate shaders and build pipelines on worker\n"
+	         "                                       threads; a draw whose pipeline is not ready is\n"
+	         "                                       skipped (default 1 on Android, 0 elsewhere).\n");
+	::printf("  --shader-threads <n>                 Shader worker threads (0 = automatic).\n");
 	::printf("  --env <NAME=VALUE>                   Set an environment variable (e.g. FEX_* options).\n");
 	::printf("  --spirv-debug-printf <true|false>    Enable SPIR-V debug printf.\n");
 	::printf(
@@ -506,6 +510,18 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--layout-mode") {
 			if (!ParseUint32(value, options.config.layout_mode)) {
 				::printf("invalid layout mode: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--async-shaders") {
+			uint32_t mode = 0;
+			if (!ParseUint32(value, mode) || mode > 1) {
+				::printf("invalid async shader mode (0 or 1): %s\n", value.c_str());
+				return false;
+			}
+			options.config.async_shaders = mode != 0;
+		} else if (arg == "--shader-threads") {
+			if (!ParseUint32(value, options.config.shader_threads)) {
+				::printf("invalid shader thread count: %s\n", value.c_str());
 				return false;
 			}
 		} else if (arg == "--video-decoder-threads") {

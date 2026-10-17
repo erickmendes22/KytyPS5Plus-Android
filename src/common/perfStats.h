@@ -64,20 +64,46 @@ inline void CountAudioUnderrun() {
 
 // Timed one-off work that stalls the thread issuing it: host pipeline compilations
 // (vkCreate*Pipelines) and guest shader translations (GCN -> SPIR-V -> shader module).
-enum class StallKind { PipelineCompile, ShaderTranslate, Count };
+// ShaderWorker is the same translation work when it runs on a shader worker thread
+// (--async-shaders): it does not stall the GPU thread and is reported separately.
+enum class StallKind { PipelineCompile, ShaderTranslate, ShaderWorker, PipelineWorker, Count };
 
 void CountStall(StallKind kind, uint64_t micros);
 
+// Sub-phases of one guest shader translation, accumulated per thread while a ShaderTranslate or
+// ShaderWorker stall is open: long stall events print the breakdown, and the "[perf]" line
+// reports the per-second totals ("xlate ir=.. plan=.. mat=.. emit=.. mod=.. ms").
+enum class TranslatePhase { Translate, Plan, Materialize, Emit, Module, Count };
+
+void AddTranslatePhase(TranslatePhase phase, uint64_t micros);
+
+class ScopedTranslatePhase {
+public:
+	explicit ScopedTranslatePhase(TranslatePhase phase);
+	~ScopedTranslatePhase();
+	ScopedTranslatePhase(const ScopedTranslatePhase&)            = delete;
+	ScopedTranslatePhase& operator=(const ScopedTranslatePhase&) = delete;
+
+private:
+	TranslatePhase phase_;
+	int64_t        start_ns_ = 0;
+};
+
+// A graphics draw skipped because its shaders or pipeline were still compiling on a worker.
+void CountSkippedDraw();
+
+// label (a static string, e.g. the shader stage) is printed with a long stall's event line.
 class ScopedStall {
 public:
-	explicit ScopedStall(StallKind kind);
+	explicit ScopedStall(StallKind kind, const char* label = nullptr);
 	~ScopedStall();
 	ScopedStall(const ScopedStall&)            = delete;
 	ScopedStall& operator=(const ScopedStall&) = delete;
 
 private:
-	StallKind kind_;
-	int64_t   start_ns_ = 0;
+	StallKind   kind_;
+	const char* label_;
+	int64_t     start_ns_ = 0;
 };
 
 // Touch-to-guest latency probe. MarkInput is called when the event loop handles a press that

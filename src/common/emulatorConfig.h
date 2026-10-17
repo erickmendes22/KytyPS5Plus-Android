@@ -78,6 +78,16 @@ struct ConfigOptions {
 	// Default 0: on Turnip v32 the merged passes ran slower (Astro Bot intro 5.9 -> 5.5 fps,
 	// the hot volumetric draw 3.3 -> 6.5 ms each) although passes fell from 133 to 96 per frame.
 	uint32_t               layout_mode                 = 0;
+	// Translate guest shaders and build host pipelines on worker threads; a graphics draw whose
+	// pipeline is not ready yet is skipped for that frame (compute dispatches always wait).
+	// Default on for Android, where a translation stalls the GPU thread for 0.3-4.6 s.
+#if defined(__ANDROID__)
+	bool                   async_shaders               = true;
+#else
+	bool                   async_shaders               = false;
+#endif
+	// Shader worker threads (0 = automatic: cores / 2 - 1, at most 3).
+	uint32_t               shader_threads              = 0;
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;
@@ -133,6 +143,8 @@ uint32_t GetVideoRetireDepth();
 uint32_t GetVideoDecoderThreads();
 uint32_t GetRenderPassMode();
 uint32_t GetLayoutMode();
+bool     AsyncShadersEnabled();
+uint32_t GetShaderThreads();
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();
 

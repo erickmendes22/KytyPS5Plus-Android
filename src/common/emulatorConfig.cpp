@@ -101,6 +101,14 @@ uint32_t GetLayoutMode() {
 	return std::min(g_config->layout_mode, 2u);
 }
 
+bool AsyncShadersEnabled() {
+	return g_config->async_shaders;
+}
+
+uint32_t GetShaderThreads() {
+	return std::min(g_config->shader_threads, 8u);
+}
+
 uint32_t GetVideoDecoderThreads() {
 	return std::min(g_config->video_decoder_threads, 16u);
 }

@@ -38,6 +38,21 @@ std::atomic<uint64_t> g_present_max_us {0};
 std::atomic<int64_t>  g_last_flip_ns {0};
 std::atomic<uint64_t> g_flip_gap_max_us {0};
 constexpr uint64_t    kLongEventUs = 5000; // stalls logged individually with a timestamp
+constexpr size_t      kTranslatePhases = static_cast<size_t>(TranslatePhase::Count);
+std::atomic<uint64_t> g_translate_phase_us[kTranslatePhases] {};
+std::atomic<uint64_t> g_skipped_draws {0};
+// Per-thread phase totals: a long stall event prints the phases that ran inside it.
+thread_local uint64_t t_translate_phase_us[kTranslatePhases] {};
+
+const char* StallName(StallKind kind) {
+	switch (kind) {
+		case StallKind::PipelineCompile: return "pipeline_compile";
+		case StallKind::ShaderTranslate: return "shader_translate";
+		case StallKind::ShaderWorker: return "shader_worker";
+		case StallKind::PipelineWorker: return "pipeline_worker";
+		default: return "stall";
+	}
+}
 std::mutex            g_frame_mutex;
 std::vector<uint32_t> g_frame_times_us; // flip intervals of the current period
 
@@ -120,15 +135,28 @@ std::string TakeFrameSummary(uint64_t flips) {
 	};
 	uint64_t       pipeline_us = 0;
 	uint64_t       shader_us   = 0;
+	uint64_t       worker_us   = 0;
 	const uint64_t pipelines   = take(StallKind::PipelineCompile, &pipeline_us);
 	const uint64_t shaders     = take(StallKind::ShaderTranslate, &shader_us);
-	char           buf[256];
-	std::snprintf(buf, sizeof(buf), "shaders=%llu (%.1fms) pipelines=%llu (%.1fms) flip_gap_max=%.1fms submit->present avg=%.1f max=%.1fms present_call avg=%.1f max=%.1fms",
+	const uint64_t workers     = take(StallKind::ShaderWorker, &worker_us);
+	uint64_t       pipeline_worker_us = 0;
+	const uint64_t pipeline_workers   = take(StallKind::PipelineWorker, &pipeline_worker_us);
+	double         phase_ms[kTranslatePhases] {};
+	for (size_t i = 0; i < kTranslatePhases; i++) {
+		phase_ms[i] = static_cast<double>(g_translate_phase_us[i].exchange(0, std::memory_order_relaxed)) / 1000.0;
+	}
+	const uint64_t skipped = g_skipped_draws.exchange(0, std::memory_order_relaxed);
+	char           buf[512];
+	std::snprintf(buf, sizeof(buf), "shaders=%llu (%.1fms) pipelines=%llu (%.1fms) flip_gap_max=%.1fms submit->present avg=%.1f max=%.1fms present_call avg=%.1f max=%.1fms"
+	              " | shader_workers=%llu (%.1fms) pipeline_workers=%llu (%.1fms) skipped_draws=%llu xlate ir=%.0f plan=%.0f mat=%.0f emit=%.0f mod=%.0f ms",
 	              static_cast<unsigned long long>(shaders), static_cast<double>(shader_us) / 1000.0,
 	              static_cast<unsigned long long>(pipelines), static_cast<double>(pipeline_us) / 1000.0,
 	              static_cast<double>(gap_max) / 1000.0, static_cast<double>(latency_sum) / n / 1000.0,
 	              static_cast<double>(latency_max) / 1000.0, static_cast<double>(present_sum) / n / 1000.0,
-	              static_cast<double>(present_max) / 1000.0);
+	              static_cast<double>(present_max) / 1000.0, static_cast<unsigned long long>(workers),
+	              static_cast<double>(worker_us) / 1000.0, static_cast<unsigned long long>(pipeline_workers),
+	              static_cast<double>(pipeline_worker_us) / 1000.0, static_cast<unsigned long long>(skipped),
+	              phase_ms[0], phase_ms[1], phase_ms[2], phase_ms[3], phase_ms[4]);
 	return buf;
 }
 
@@ -137,8 +165,7 @@ void CountStall(StallKind kind, uint64_t micros) {
 		if (micros >= kLongEventUs) {
 			char line[96];
 			std::snprintf(line, sizeof(line), "[perf-event] t=%.1f %s %.1fms",
-			              static_cast<double>(NowNs()) / 1e6,
-			              kind == StallKind::PipelineCompile ? "pipeline_compile" : "shader_translate",
+			              static_cast<double>(NowNs()) / 1e6, StallName(kind),
 			              static_cast<double>(micros) / 1000.0);
 			EmitLine(line);
 		}
@@ -147,11 +174,53 @@ void CountStall(StallKind kind, uint64_t micros) {
 	}
 }
 
-ScopedStall::ScopedStall(StallKind kind): kind_(kind), start_ns_(Enabled() ? NowNs() : 0) {}
+ScopedStall::ScopedStall(StallKind kind, const char* label)
+    : kind_(kind), label_(label), start_ns_(Enabled() ? NowNs() : 0) {
+	if (start_ns_ != 0 && (kind == StallKind::ShaderTranslate || kind == StallKind::ShaderWorker)) {
+		std::fill(std::begin(t_translate_phase_us), std::end(t_translate_phase_us), uint64_t {0});
+	}
+}
 
 ScopedStall::~ScopedStall() {
+	if (start_ns_ == 0) {
+		return;
+	}
+	const auto micros = static_cast<uint64_t>(NowNs() - start_ns_) / 1000;
+	if ((kind_ == StallKind::ShaderTranslate || kind_ == StallKind::ShaderWorker) && micros >= kLongEventUs) {
+		char line[192];
+		std::snprintf(line, sizeof(line),
+		              "[perf-event] t=%.1f %s %s phases ir=%.1f plan=%.1f mat=%.1f emit=%.1f mod=%.1f ms",
+		              static_cast<double>(NowNs()) / 1e6, StallName(kind_),
+		              label_ != nullptr ? label_ : "-",
+		              static_cast<double>(t_translate_phase_us[0]) / 1000.0,
+		              static_cast<double>(t_translate_phase_us[1]) / 1000.0,
+		              static_cast<double>(t_translate_phase_us[2]) / 1000.0,
+		              static_cast<double>(t_translate_phase_us[3]) / 1000.0,
+		              static_cast<double>(t_translate_phase_us[4]) / 1000.0);
+		EmitLine(line);
+	}
+	CountStall(kind_, micros);
+}
+
+void AddTranslatePhase(TranslatePhase phase, uint64_t micros) {
+	if (Enabled() && phase < TranslatePhase::Count) {
+		t_translate_phase_us[static_cast<size_t>(phase)] += micros;
+		g_translate_phase_us[static_cast<size_t>(phase)].fetch_add(micros, std::memory_order_relaxed);
+	}
+}
+
+ScopedTranslatePhase::ScopedTranslatePhase(TranslatePhase phase)
+    : phase_(phase), start_ns_(Enabled() ? NowNs() : 0) {}
+
+ScopedTranslatePhase::~ScopedTranslatePhase() {
 	if (start_ns_ != 0) {
-		CountStall(kind_, static_cast<uint64_t>(NowNs() - start_ns_) / 1000);
+		AddTranslatePhase(phase_, static_cast<uint64_t>(NowNs() - start_ns_) / 1000);
+	}
+}
+
+void CountSkippedDraw() {
+	if (Enabled()) {
+		g_skipped_draws.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 
