@@ -185,6 +185,10 @@ static void PrintUsage() {
 	::printf("  --idle-submit <0|1>                  Submit the open command buffer between PM4 packets\n"
 	         "                                       once the GPU has run out of work. Default: 1 on\n"
 	         "                                       Android, 0 elsewhere.\n");
+	::printf("  --gpu-indirect <0|1|2>               Execute indirect draws on the GPU instead of reading\n"
+	         "                                       their arguments back to the CPU (2: not for records\n"
+	         "                                       that drew nothing last time). Default: 1 on\n"
+	         "                                       Android, 0 elsewhere.\n");
 	::printf("  --gpu-memory-budget <auto|0|MiB>     Device memory the texture/buffer cache collectors\n"
 	         "                                       keep to (auto: MemAvailable at start - 4 GiB, at most\n"
 	         "                                       4 GiB, lowered when the system runs low; 0: legacy\n"
@@ -648,6 +652,13 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.config.idle_submit = mode != 0;
+		} else if (arg == "--gpu-indirect") {
+			uint32_t mode = 0;
+			if (!ParseUint32(value, mode) || mode > 2) {
+				::printf("invalid GPU indirect mode (0, 1 or 2): %s\n", value.c_str());
+				return false;
+			}
+			options.config.gpu_indirect = mode;
 		} else if (arg == "--gpu-frames-in-flight") {
 			if (!ParseUint32(value, options.config.gpu_frames_in_flight) ||
 			    options.config.gpu_frames_in_flight > Config::MAX_GPU_FRAMES_IN_FLIGHT) {

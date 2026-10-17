@@ -14,25 +14,27 @@ namespace Libs::Graphics {
 
 namespace {
 
+// Indirect: --gpu-indirect keeps its fixed-up draw records in a ring of this kind.
 constexpr vk::BufferUsageFlags RingUsage = vk::BufferUsageFlagBits::eStorageBuffer |
                                            vk::BufferUsageFlagBits::eIndexBuffer |
+                                           vk::BufferUsageFlagBits::eIndirectBuffer |
                                            vk::BufferUsageFlagBits::eShaderDeviceAddress;
 
 std::unique_ptr<Buffer> CreateRingBuffer(GraphicContext& graphics, CommandScheduler& scheduler,
-                                         uint64_t size) {
+                                         uint64_t size, const char* name) {
 	auto buffer = std::make_unique<Buffer>(graphics, scheduler, MemoryUsage::DeviceLocal, 0,
 	                                       RingUsage, size);
-	SetVulkanObjectNameF(graphics.device, buffer->Handle(), "Kyty.MeshEmulationRing");
+	SetVulkanObjectNameF(graphics.device, buffer->Handle(), "{}", name);
 	return buffer;
 }
 
 } // namespace
 
 MeshEmulationRing::MeshEmulationRing(GraphicContext& graphics, CommandScheduler& scheduler,
-                                     uint64_t size)
-    : m_graphics(graphics), m_scheduler(scheduler),
-      m_buffer(CreateRingBuffer(graphics, scheduler, size)) {
-	LOGF("Mesh emulation: ring buffer %" PRIu64 " MiB\n", size >> 20u);
+                                     uint64_t size, const char* name)
+    : m_graphics(graphics), m_scheduler(scheduler), m_name(name),
+      m_buffer(CreateRingBuffer(graphics, scheduler, size, name)) {
+	LOGF("%s: ring buffer %" PRIu64 " KiB\n", name, size >> 10u);
 }
 
 MeshEmulationRing::~MeshEmulationRing() = default;
@@ -58,7 +60,7 @@ void MeshEmulationRing::Grow(uint64_t size) {
 	     " byte draw\n",
 	     Capacity() >> 20u, capacity >> 20u, size);
 	m_retired.emplace_back(std::move(m_buffer), m_scheduler.CurrentTick());
-	m_buffer = CreateRingBuffer(m_graphics, m_scheduler, capacity);
+	m_buffer = CreateRingBuffer(m_graphics, m_scheduler, capacity, m_name);
 	m_offset = 0;
 	m_ranges.clear();
 }

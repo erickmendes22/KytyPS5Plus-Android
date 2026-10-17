@@ -36,7 +36,7 @@ public:
 	static constexpr uint64_t Alignment   = 256;
 
 	MeshEmulationRing(GraphicContext& graphics, CommandScheduler& scheduler,
-	                  uint64_t size = InitialSize);
+	                  uint64_t size = InitialSize, const char* name = "Kyty.MeshEmulationRing");
 	~MeshEmulationRing();
 	KYTY_CLASS_NO_COPY(MeshEmulationRing);
 
@@ -56,6 +56,7 @@ private:
 
 	GraphicContext&                                       m_graphics;
 	CommandScheduler&                                     m_scheduler;
+	const char*                                           m_name;
 	std::unique_ptr<Buffer>                               m_buffer;
 	uint64_t                                              m_offset = 0;
 	std::deque<Range>                                     m_ranges;

@@ -11,6 +11,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <array>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -33,6 +34,9 @@ struct DrawCallInfo;
 struct DrawEmitInfo;
 struct DrawIndexBufferSource;
 struct DrawRenderState;
+class IndirectDrawFixup;
+struct IndirectDrawSources;
+struct MeshDispatchSource;
 class RenderContext;
 class CommandScheduler;
 class GpuTimer;
@@ -69,6 +73,20 @@ struct DrawAutoArgs {
 	uint32_t         first_instance             = 0;
 	DrawOffsetSource offset_source              = DrawOffsetSource::DrawState;
 	uint32_t         render_target_slice_offset = 0;
+};
+
+// --gpu-indirect: a DRAW_(INDEX_)INDIRECT(_MULTI) packet executed with Vulkan indirect draws that
+// read the guest records (VkDraw(Indexed)IndirectCommand layout) on the GPU.
+struct IndirectDrawArgs {
+	uint64_t               args_addr           = 0; // first record
+	uint32_t               stride              = 0; // bytes between records
+	uint32_t               max_count           = 0; // records, or their upper bound with count_addr
+	uint64_t               count_addr          = 0; // GPU-written record count, 0 if none
+	bool                   indexed             = false;
+	uint32_t               index_type_and_size = 0;
+	uint64_t               index_base_addr     = 0;
+	uint32_t               index_buffer_size   = 0; // INDEX_BUFFER_SIZE, in indices
+	ShaderIndirectDrawInfo sgprs;
 };
 
 struct SubmitInfo {
@@ -189,7 +207,8 @@ private:
 
 class RenderExecutor {
 public:
-	explicit RenderExecutor(RenderContext& context): m_context(context) {}
+	explicit RenderExecutor(RenderContext& context);
+	~RenderExecutor();
 	KYTY_CLASS_NO_COPY(RenderExecutor);
 
 	void DispatchDirect(uint64_t submit_id, CommandBuffer& buffer, uint32_t thread_group_x,
@@ -217,6 +236,14 @@ public:
 private:
 	void DrawIndex(uint64_t submit_id, CommandBuffer& buffer, const DrawIndexArgs& args);
 	void DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const DrawAutoArgs& args);
+	// --gpu-indirect. False, before anything was recorded or any guest memory read, when the draw
+	// needs the CPU path (the reason is logged once).
+	[[nodiscard]] bool DrawIndirect(uint64_t submit_id, CommandBuffer& buffer,
+	                                const IndirectDrawArgs& args);
+	// --gpu-indirect: see IndirectDrawFixup::LikelyEmpty.
+	[[nodiscard]] bool IndirectDrawLikelyEmpty(uint64_t args_addr);
+	void               NoteIndirectDrawCpuResult(uint64_t args_addr, bool empty);
+	IndirectDrawFixup& GetIndirectDrawFixup();
 
 	struct GraphicsBindings {
 		std::array<PreparedBindings, 3> vertex;
@@ -241,7 +268,8 @@ private:
 	void ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buffer, const DrawCallInfo& draw,
 	                         DrawRenderState& state, vk::PrimitiveTopology topology,
 	                         const DrawEmitInfo& emit, const DrawIndexBufferSource& index_source,
-	                         bool primitive_restart_enable);
+	                         bool primitive_restart_enable,
+	                         const IndirectDrawArgs* indirect = nullptr);
 	// Mesh emulation result: the vertex records' address for the generated vertex stage and the
 	// index count of the triangle-list draw that reads them.
 	struct EmulatedMeshDraw {
@@ -249,6 +277,9 @@ private:
 		vk::Buffer index_buffer   = nullptr;
 		uint64_t   index_offset   = 0;
 		uint32_t   index_count    = 0;
+		// --gpu-indirect: the VkDrawIndexedIndirectCommand of the triangle-list draw.
+		vk::Buffer draw_buffer = nullptr;
+		uint64_t   draw_offset = 0;
 	};
 	// Records the compute pass of an emulated mesh draw on the primary command buffer, ahead of
 	// the deferred render pass, and returns its triangle indices to bind as the index buffer.
@@ -259,6 +290,17 @@ private:
 	                                                    PreparedBindings&            mesh_bindings,
 	                                                    std::span<const uint32_t>    draw_data,
 	                                                    uint32_t groups, uint32_t instances);
+	[[nodiscard]] EmulatedMeshDraw RecordEmulatedMesh(CommandBuffer&               buffer,
+	                                                  const ShaderVertexInputInfo& mesh_input,
+	                                                  const ShaderProgram&         mesh_program,
+	                                                  PreparedBindings&            mesh_bindings,
+	                                                  const MeshDispatchSource&    source);
+	// --gpu-indirect: the same for an indirect draw. Its fix-up pass derives the workgroup counts
+	// and the draw record from the guest record, ahead of the compute pass.
+	[[nodiscard]] EmulatedMeshDraw DispatchEmulatedMeshIndirect(
+	    CommandBuffer& buffer, const ShaderVertexInputInfo& mesh_input,
+	    const ShaderProgram& mesh_program, PreparedBindings& mesh_bindings,
+	    const IndirectDrawArgs& args, const IndirectDrawSources& sources);
 	[[nodiscard]] RenderState AcquireRenderTargets(CommandBuffer& buffer, RenderColorInfo* colors,
 	                                               uint32_t color_count, RenderDepthInfo& depth,
 	                                               vk::ImageAspectFlags& feedback_aspects,
@@ -300,6 +342,8 @@ private:
 	// --render-scale: the attachments acquired for the current draw are at the scaled size
 	// (AcquireRenderTargets); pixel shaders then unscale gl_FragCoord. Reset with the bindings.
 	bool                                  m_pass_scaled = false;
+	// --gpu-indirect argument fix-up pass, created on the first GPU indirect draw.
+	std::unique_ptr<IndirectDrawFixup>    m_indirect_fixup;
 
 	friend class CommandProcessor;
 	friend struct RenderExecutorTestAccess;

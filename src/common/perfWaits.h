@@ -98,6 +98,11 @@ enum class Counter : uint8_t {
 	GcEvictions,
 	GcEvictedBytes,
 	GcDownloads,
+	// Indirect draw packets (per draw record) executed on the GPU (--gpu-indirect) or with a CPU
+	// read of their arguments.
+	IndirectDrawsGpu,
+	IndirectDrawsCpu,
+	IndirectDrawsCpuEmpty, // ...of IndirectDrawsCpu: predicted empty (see IndirectDrawFixup)
 	Count
 };
 

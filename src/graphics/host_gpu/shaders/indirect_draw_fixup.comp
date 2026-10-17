@@ -1,0 +1,137 @@
+// --gpu-indirect: turns the guest records of one DRAW_(INDEX_)INDIRECT(_MULTI) packet into what the
+// host draw reads.
+// - Draws: tightly packed VkDraw(Indexed)IndirectCommand records. Indexed draws are limited to
+//   INDEX_BUFFER_SIZE (the bound index range ends there), as the CPU path clamps the index count
+//   to it. With a GPU-written draw count, records at or past it draw nothing.
+// - Emulated mesh draws (one indexed record): the mesh compute pass's draw record
+//   (PushData::MeshIndirect*), its VkDispatchIndirectCommand and the VkDrawIndexedIndirectCommand
+//   of the triangle list it writes, laid out as MESH_* below.
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer GuestWords {
+    uint words[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer HostWords {
+    uint words[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer FeedbackWord {
+    uint word;
+};
+
+layout(push_constant, std430) uniform Params {
+    uint64_t source;       // first guest record
+    uint64_t destination;  // host output
+    uint64_t count_source; // guest draw count, 0 if none
+    uint64_t index_base;   // guest index buffer (mesh)
+    uint64_t feedback;     // host-visible word zeroed by the host, 0 if none: mesh draws store
+                           // the groups x instances asked for, draws set it if any is non-empty
+    uint     stride_words; // between guest records
+    uint     max_count;
+    uint     index_limit;  // INDEX_BUFFER_SIZE (indexed draws)
+    uint     indexed;
+    uint     mesh;         // 1: emulated mesh outputs
+    uint     element_bytes;
+    uint     primitive_size;
+    uint     primitive_step;
+    uint     primitives_per_group;
+    uint     indices_per_group; // triangle-list indices one workgroup slot owns
+    uint     max_slots;         // reserved workgroup slots (groups x instances)
+    uint     max_groups;        // host workgroup count limits along x and y
+    uint     max_instances;
+} params;
+
+// Word offsets of the mesh outputs.
+const uint MESH_RECORD   = 0u;  // 9 words: draw prefix, groups, base vertex, base instance
+const uint MESH_DISPATCH = 12u; // 3 words
+const uint MESH_DRAW     = 16u; // 5 words
+
+uint ClampedIndexCount(uint count, uint first) {
+    return min(count, params.index_limit - min(first, params.index_limit));
+}
+
+void EmitMesh() {
+    GuestWords source      = GuestWords(params.source);
+    HostWords  destination = HostWords(params.destination);
+    const uint first       = source.words[2];
+    const uint indices     = ClampedIndexCount(source.words[0], first);
+    uint       instances   = min(source.words[1], params.max_instances);
+    // MeshInputInfo::InputPrimitiveCount
+    const uint primitives  = indices < params.primitive_size
+                                 ? 0u
+                                 : (indices - params.primitive_size) / params.primitive_step + 1u;
+    uint groups = primitives == 0u ? 0u
+                                   : (primitives - 1u) / params.primitives_per_group + 1u;
+    groups = min(groups, params.max_groups);
+    const uint64_t requested = uint64_t(groups) * instances;
+    if (params.feedback != 0ul) {
+        FeedbackWord(params.feedback).word = uint(min(requested, uint64_t(0xffffffffu)));
+    }
+    if (requested > params.max_slots) {
+        instances = params.max_slots / groups;
+    }
+    if (groups == 0u || instances == 0u) {
+        groups    = 0u;
+        instances = 0u;
+    }
+    const uint64_t index_address = params.index_base + uint64_t(first) * params.element_bytes;
+    destination.words[MESH_RECORD + 0u] = indices;
+    destination.words[MESH_RECORD + 1u] = 0u; // vertex offset: the base goes to the user SGPR
+    destination.words[MESH_RECORD + 2u] = 0u; // first instance: likewise
+    destination.words[MESH_RECORD + 3u] = params.element_bytes;
+    destination.words[MESH_RECORD + 4u] = uint(index_address);
+    destination.words[MESH_RECORD + 5u] = uint(index_address >> 32u);
+    destination.words[MESH_RECORD + 6u] = groups;
+    destination.words[MESH_RECORD + 7u] = source.words[3];
+    destination.words[MESH_RECORD + 8u] = source.words[4];
+    destination.words[MESH_DISPATCH + 0u] = groups;
+    destination.words[MESH_DISPATCH + 1u] = instances;
+    destination.words[MESH_DISPATCH + 2u] = 1u;
+    destination.words[MESH_DRAW + 0u] = groups * instances * params.indices_per_group;
+    destination.words[MESH_DRAW + 1u] = 1u;
+    destination.words[MESH_DRAW + 2u] = 0u;
+    destination.words[MESH_DRAW + 3u] = 0u;
+    destination.words[MESH_DRAW + 4u] = 0u;
+}
+
+void main() {
+    const uint draw = gl_GlobalInvocationID.x;
+    if (draw >= params.max_count) {
+        return;
+    }
+    if (params.mesh != 0u) {
+        EmitMesh();
+        return;
+    }
+    uint count = params.max_count;
+    if (params.count_source != 0ul) {
+        count = min(GuestWords(params.count_source).words[0], params.max_count);
+    }
+    const uint record_words = params.indexed != 0u ? 5u : 4u;
+    HostWords destination = HostWords(params.destination + uint64_t(draw * record_words * 4u));
+    if (draw >= count) {
+        // Records past the count may not be mapped; an empty draw needs none of them.
+        for (uint i = 0u; i < record_words; i++) {
+            destination.words[i] = 0u;
+        }
+        return;
+    }
+    GuestWords source = GuestWords(params.source + uint64_t(draw) * params.stride_words * 4ul);
+    uint values[5];
+    for (uint i = 0u; i < record_words; i++) {
+        values[i] = source.words[i];
+    }
+    if (params.indexed != 0u) {
+        // indexCount, instanceCount, firstIndex, vertexOffset, firstInstance
+        values[0] = ClampedIndexCount(values[0], values[2]);
+    }
+    if (params.feedback != 0ul && values[0] != 0u && values[1] != 0u) {
+        atomicMax(FeedbackWord(params.feedback).word, 1u);
+    }
+    for (uint i = 0u; i < record_words; i++) {
+        destination.words[i] = values[i];
+    }
+}

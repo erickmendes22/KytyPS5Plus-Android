@@ -312,6 +312,20 @@ add_custom_command(
 	DEPENDS "${fault_buffer_shader_source}"
 	VERBATIM
 )
+set(indirect_fixup_shader_source "${gpu_tiler_shader_dir}/indirect_draw_fixup.comp")
+set(indirect_fixup_shader_spv "${gpu_tiler_generated_dir}/indirect_draw_fixup.spv")
+set(indirect_fixup_shader_header "${gpu_tiler_generated_dir}/indirect_draw_fixup_spv.h")
+add_custom_command(
+	OUTPUT "${indirect_fixup_shader_header}"
+	COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_tiler_generated_dir}"
+	COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
+	        -o "${indirect_fixup_shader_spv}" "${indirect_fixup_shader_source}"
+	COMMAND ${CMAKE_COMMAND} -DINPUT=${indirect_fixup_shader_spv} -DOUTPUT=${indirect_fixup_shader_header}
+	        -DSYMBOL=INDIRECT_DRAW_FIXUP_SPV -P "${KYTY_SOURCE_DIR}/embed_spirv.cmake"
+	DEPENDS "${indirect_fixup_shader_source}"
+	VERBATIM
+)
+list(APPEND kyty_emulator_src "${indirect_fixup_shader_header}")
 list(APPEND kyty_emulator_src "${fault_buffer_shader_header}")
 list(APPEND kyty_emulator_src ${gpu_tiler_shader_headers})
 

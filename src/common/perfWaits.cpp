@@ -178,10 +178,13 @@ std::string TakeReadbackSummary(double seconds, uint64_t flips) {
 	const auto downloads = TakeCounter(Counter::GcDownloads);
 	std::snprintf(head, sizeof(head),
 	              "[perf-readback] per %s: faults gpu r=%.1f w=%.1f guest r=%.1f w=%.1f "
-	              "idle_submits=%.1f gc_evict=%llu (%.1f MiB, %llu downloaded) |",
+	              "idle_submits=%.1f indirect gpu=%.1f cpu=%.1f (empty=%.1f) "
+	              "gc_evict=%llu (%.1f MiB, %llu downloaded) |",
 	              flips == 0 ? "second" : "frame", faults(Counter::FaultsGpuRead),
 	              faults(Counter::FaultsGpuWrite), faults(Counter::FaultsGuestRead),
 	              faults(Counter::FaultsGuestWrite), faults(Counter::IdleSubmits),
+	              faults(Counter::IndirectDrawsGpu), faults(Counter::IndirectDrawsCpu),
+	              faults(Counter::IndirectDrawsCpuEmpty),
 	              static_cast<unsigned long long>(evictions),
 	              static_cast<double>(evicted) / (1024.0 * 1024.0),
 	              static_cast<unsigned long long>(downloads));

@@ -141,6 +141,14 @@ bool IdleSubmitEnabled() {
 	return g_config->idle_submit;
 }
 
+bool GpuIndirectEnabled() {
+	return g_config->gpu_indirect != 0;
+}
+
+bool GpuIndirectPredictsEmpty() {
+	return g_config->gpu_indirect == 2;
+}
+
 int32_t GetGpuMemoryBudgetMb() {
 	return g_config->gpu_memory_budget_mb;
 }

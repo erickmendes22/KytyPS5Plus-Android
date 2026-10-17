@@ -73,6 +73,8 @@ public:
 	}
 	// Mesh emulation output ring, created on the first emulated mesh draw.
 	[[nodiscard]] MeshEmulationRing& GetMeshEmulationRing();
+	// --gpu-indirect fixed-up draw records, created on the first GPU indirect draw.
+	[[nodiscard]] MeshEmulationRing& GetIndirectDrawRing();
 	[[nodiscard]] const Buffer* GetGdsBuffer() const noexcept { return &m_gds_buffer; }
 	[[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept { return &m_bda_pagetable_buffer; }
 	[[nodiscard]] Buffer* GetFaultBuffer() noexcept { return m_fault_manager.GetFaultBuffer(); }
@@ -174,6 +176,7 @@ private:
 	StreamBuffer                                      m_download_buffer;
 	StreamBuffer                                      m_device_buffer;
 	std::unique_ptr<MeshEmulationRing>                m_mesh_emulation_ring;
+	std::unique_ptr<MeshEmulationRing>                m_indirect_draw_ring;
 	TextureCache&                                     m_texture_cache;
 	uint64_t                                          m_total_used_memory  = 0;
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;

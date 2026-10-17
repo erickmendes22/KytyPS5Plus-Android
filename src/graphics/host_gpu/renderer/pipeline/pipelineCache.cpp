@@ -1073,13 +1073,22 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
     const HW::VertexShaderInfo& vertex_regs, const HW::PixelShaderInfo& pixel_regs,
     const HW::ShaderRegisters& sh, const HW::Context& context, const HW::UserConfig& user_config,
     std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping, bool pixel_active,
-    std::array<ShaderVertexInputInfo, 3>& vertex_info, ShaderPixelInputInfo& pixel_info) {
+    std::array<ShaderVertexInputInfo, 3>& vertex_info, ShaderPixelInputInfo& pixel_info,
+    const ShaderIndirectDrawInfo& indirect) {
 	const bool tess_active = user_config.GetPrimType() == Prospero::PrimitiveType::kPatch;
 	std::array<ShaderParams, 3> vertex_params;
 	if (tess_active) {
 		vertex_params = PrepareTessellationPrograms(vertex_regs, context, vertex_info);
 	} else {
 		vertex_params[0] = PrepareProgram(vertex_regs, context, user_config, vertex_info[0]);
+		// --gpu-indirect is translated for the plain vertex stage and for emulated mesh stages
+		// (not fast launch); the caller falls back to CPU-read arguments for the others.
+		const auto& stage_info = vertex_info[0];
+		if (stage_info.logical_stage == ShaderType::Vertex ||
+		    (stage_info.logical_stage == ShaderType::Mesh && !m_graphics.mesh_shader_enabled &&
+		     !stage_info.mesh.fast_launch)) {
+			vertex_info[0].indirect = indirect;
+		}
 	}
 	const bool mesh_active = vertex_info[0].logical_stage == ShaderType::Mesh;
 	const bool object_primitive_id = context.HasObjectPrimitiveIdOutput();

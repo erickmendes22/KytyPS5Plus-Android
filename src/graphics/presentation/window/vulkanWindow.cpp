@@ -425,6 +425,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	supported_features12.pNext = workgroup_layout_extension ? &supported_workgroup_layout : nullptr;
 	vk::PhysicalDeviceVulkan13Features supported_features13 {};
 	supported_features13.pNext = &supported_features12;
+	vk::PhysicalDeviceVulkan11Features supported_features11 {};
+	supported_features11.pNext = supported_features13.pNext;
+	supported_features13.pNext = &supported_features11;
 
 	const auto robustness2_ext_enabled =
 	    HasExtension(device_extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
@@ -529,6 +532,12 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	optional.fragment_shader_barycentric =
 	    barycentric_extension && supported_barycentric.fragmentShaderBarycentric == VK_TRUE;
 	optional.depth_bounds = supported_features2.features.depthBounds == VK_TRUE;
+	// --gpu-indirect: guest records carry a first instance, and the vertex prologue reads the
+	// draw parameters.
+	optional.gpu_indirect_draws =
+	    supported_features11.shaderDrawParameters == VK_TRUE &&
+	    supported_features2.features.drawIndirectFirstInstance == VK_TRUE;
+	optional.multi_draw_indirect = supported_features2.features.multiDrawIndirect == VK_TRUE;
 
 	auto features12 = WindowContext::RequiredVulkan12Features();
 	features12.shaderSharedInt64Atomics = supported_features12.shaderSharedInt64Atomics;
@@ -546,6 +555,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	features12.pNext = workgroup_layout_extension ? static_cast<void*>(&workgroup_layout)
 	                                             : static_cast<void*>(&depth_clip_control);
 	auto features11 = WindowContext::RequiredVulkan11Features();
+	features11.shaderDrawParameters = optional.gpu_indirect_draws ? VK_TRUE : VK_FALSE;
 	features11.pNext = features12.pNext;
 	features12.pNext = &features11;
 	optional.shader_shared_int64_atomics = features12.shaderSharedInt64Atomics == VK_TRUE &&
@@ -649,6 +659,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	device_features.multiViewport                        = VK_TRUE;
 	device_features.fillModeNonSolid                      = VK_TRUE;
 	device_features.vertexPipelineStoresAndAtomics       = VK_TRUE;
+	device_features.drawIndirectFirstInstance = optional.gpu_indirect_draws ? VK_TRUE : VK_FALSE;
+	device_features.multiDrawIndirect         = optional.multi_draw_indirect ? VK_TRUE : VK_FALSE;
 	// The geometry stage only emulates fragment barycentrics, so it is enabled only without them.
 	optional.geometry_shader = !optional.fragment_shader_barycentric &&
 	                           supported_features2.features.geometryShader == VK_TRUE;

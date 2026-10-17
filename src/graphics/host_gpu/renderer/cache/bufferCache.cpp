@@ -468,6 +468,15 @@ MeshEmulationRing& BufferCache::GetMeshEmulationRing() {
 	return *m_mesh_emulation_ring;
 }
 
+MeshEmulationRing& BufferCache::GetIndirectDrawRing() {
+	if (!m_indirect_draw_ring) {
+		constexpr uint64_t IndirectRingSize = 1024ull * 1024;
+		m_indirect_draw_ring = std::make_unique<MeshEmulationRing>(
+		    m_graphics, m_scheduler, IndirectRingSize, "Kyty.IndirectDrawRing");
+	}
+	return *m_indirect_draw_ring;
+}
+
 BufferCache::~BufferCache() {
 	if (!m_gpu_modified_ranges.Empty()) {
 		EXIT("BufferCache: destroyed with pending GPU-modified ranges\n");

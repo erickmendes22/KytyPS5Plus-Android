@@ -149,6 +149,20 @@ struct ConfigOptions {
 #else
 	bool                   idle_submit                 = false;
 #endif
+	// --gpu-indirect: DRAW_INDIRECT / DRAW_INDEX_INDIRECT(_MULTI) execute as Vulkan indirect draws
+	// that read the guest arguments on the GPU (a compute pass clamps them first) instead of a
+	// synchronous CPU readback of arguments that a shader wrote earlier in the same frame. The
+	// vertex shader reads the base vertex/instance user SGPRs from gl_BaseVertex/gl_BaseInstance.
+	// Draws it cannot express (tessellation, fast-launch or multi-record emulated mesh draws, 8-bit
+	// or scanned-restart indices, rect/quad lists, metadata operations) keep the CPU path.
+	// 2: also keep the CPU path for records whose last draw was empty (GPU feedback): an empty
+	// GPU draw still costs its compute and render pass, which is the slower choice while the GPU
+	// is the bottleneck (Astro Bot's logo scene), the faster one otherwise.
+#if defined(__ANDROID__)
+	uint32_t               gpu_indirect                = 1;
+#else
+	uint32_t               gpu_indirect                = 0;
+#endif
 	// --gpu-memory-budget: device-memory budget (MiB) the texture and buffer cache collectors keep
 	// to; -1 = auto (MemAvailable at start minus a CPU-side reserve, at most 4 GiB, lowered at run
 	// time when VK_EXT_memory_budget reports little headroom), 0 = legacy thresholds from the
@@ -242,6 +256,8 @@ uint32_t GetGpuFramesInFlight();
 bool     SubmitCoalesceEnabled();
 bool     TargetedReadbackEnabled();
 bool     IdleSubmitEnabled();
+bool     GpuIndirectEnabled();
+bool     GpuIndirectPredictsEmpty();
 int32_t  GetGpuMemoryBudgetMb();
 bool     GpuEvictWrittenEnabled();
 uint32_t GetVmaBlockSizeMb();

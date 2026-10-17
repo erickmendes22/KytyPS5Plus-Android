@@ -215,6 +215,7 @@ void CommandProcessor::Reset() {
 	m_index_buffer_size                = 0;
 	m_index_base_addr                  = 0;
 	m_num_instances                    = 1;
+	m_pending_instances                = {};
 	m_predicate_skip                   = false;
 	m_user_data_marker                 = HW::UserSgprType::Unknown;
 	m_draw_indirect_args_base_addr     = 0;
@@ -915,7 +916,8 @@ void CommandProcessor::SetNumInstances(uint32_t num_instances) {
 		num_instances = 1;
 	}
 
-	m_num_instances = num_instances;
+	m_num_instances     = num_instances;
+	m_pending_instances = {};
 }
 
 void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t wait_op,
@@ -972,7 +974,7 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 	args.index_type_and_size = m_index_type_and_size;
 	if (args.instance_count == 0) {
-		args.instance_count = m_num_instances;
+		args.instance_count = NumInstances();
 	}
 	if (GraphicsRunDebugDumpEnabled() && (args.base_vertex != 0 || args.first_instance != 0)) {
 		LOGF("\t draw indexed offsets: base_vertex = %" PRId32 ", first_instance = %" PRIu32 "\n",
@@ -1025,6 +1027,15 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 	EXIT_NOT_IMPLEMENTED((draw_initiator & ~0x20u) != (indexed ? 0u : 2u));
 	EXIT_NOT_IMPLEMENTED(m_draw_indirect_args_base_addr == 0);
 
+	if (Config::GpuIndirectEnabled() &&
+	    TryDrawIndirectOnGpu(data_offset, max_count_or_count, count_addr, stride_in_bytes,
+	                         registers, indexed)) {
+		Common::PerfStats::Count(Common::PerfStats::Counter::IndirectDrawsGpu);
+		return;
+	}
+	Common::PerfStats::Count(Common::PerfStats::Counter::IndirectDrawsCpu);
+	m_pending_instances = {};
+
 	uint32_t draw_count = max_count_or_count;
 	if (count_addr != nullptr) {
 		draw_count = *count_addr;
@@ -1033,7 +1044,16 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		}
 	}
 
+	// --gpu-indirect 2 learns which records tend to draw nothing (IndirectDrawFixup::LikelyEmpty).
+	bool       empty  = true;
+	const auto record = m_draw_indirect_args_base_addr + data_offset;
+	const auto note   = [&] {
+		if (Config::GpuIndirectPredictsEmpty()) {
+			m_renderer.GetRenderExecutor().NoteIndirectDrawCpuResult(record, empty);
+		}
+	};
 	if (draw_count == 0) {
+		note();
 		return;
 	}
 
@@ -1059,6 +1079,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 			PatchIndirectDrawOffsets(*this, registers, args->start_vertex_location,
 			                         args->start_instance_location, 0);
 			m_num_instances = args->instance_count;
+			empty &= args->vertex_count_per_instance == 0 || args->instance_count == 0;
 			DrawIndexAuto({.vertex_count   = args->vertex_count_per_instance,
 			               .instance_count = args->instance_count,
 			               .first_vertex   = args->start_vertex_location,
@@ -1068,6 +1089,19 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		}
 
 		auto* args = reinterpret_cast<const DrawIndexedIndirectArgs*>(args_addr);
+		{
+			static std::atomic<uint32_t> log_count {0};
+			const auto n = log_count.fetch_add(1, std::memory_order_relaxed);
+			if (n < 16 || n % 512 == 0) {
+				LOGF("DrawIndexIndirect (CPU args) #%u: record %u/%u stride=%u indices=%u "
+				     "instances=%u first_index=%u base_vertex=%d first_instance=%u "
+				     "INDEX_BUFFER_SIZE=%u index_type=%u\n",
+				     n, i, draw_count, stride_in_bytes, args->index_count_per_instance,
+				     args->instance_count, args->start_index_location,
+				     static_cast<int32_t>(args->base_vertex_location),
+				     args->start_instance_location, m_index_buffer_size, m_index_type_and_size);
+			}
+		}
 		PatchIndirectDrawOffsets(*this, registers, args->base_vertex_location,
 		                         args->start_instance_location, args->start_index_location);
 
@@ -1088,6 +1122,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		}
 
 		m_num_instances = args->instance_count;
+		empty &= index_count == 0 || args->instance_count == 0;
 		DrawIndex({.index_count    = index_count,
 		           .index_addr     = index_addr,
 		           .instance_count = args->instance_count,
@@ -1095,6 +1130,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		           .first_instance = args->start_instance_location,
 		           .offset_source  = DrawOffsetSource::IndirectArgs});
 	}
+	note();
 }
 
 void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_group_y,
@@ -1142,7 +1178,7 @@ void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 
 void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 	if (args.instance_count == 0) {
-		args.instance_count = m_num_instances;
+		args.instance_count = NumInstances();
 	}
 	m_renderer.GetRenderExecutor().DrawAuto(m_submit_id, CurrentBuffer(), args);
 }
