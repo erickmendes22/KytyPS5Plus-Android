@@ -440,7 +440,19 @@ uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uin
 
 uint32_t EmitLocalInvocationIndex(EmitterState& state);
 
+// Host lane `lane` (a subgroup invocation id) is set in a subgroup ballot.
 uint32_t EmitBallotLaneActiveBool(EmitterState& state, uint32_t ballot, uint32_t lane);
+
+// A wave32 (wave64) program on a wider host subgroup (Adreno: 64 or 128 lanes) runs one guest
+// wave per aligned group of 32 (64) host lanes. WaveSliced: the IR's lane masks and lane numbers
+// use that per-wave view. EmitWaveLocalLane: the guest lane. EmitWaveLaneBase: the wave's first
+// host lane. EmitWaveBallot: the guest EXEC-style mask (low, high, 0, 0) of the caller's wave out
+// of a subgroup ballot. EmitWaveLaneToSubgroupLane: host lane of a guest lane in the same wave.
+bool     WaveSliced(const EmitterState& state);
+uint32_t EmitWaveLocalLane(EmitterState& state);
+uint32_t EmitWaveLaneBase(EmitterState& state);
+uint32_t EmitWaveBallot(EmitterState& state, uint32_t subgroup_ballot);
+uint32_t EmitWaveLaneToSubgroupLane(EmitterState& state, uint32_t wave_lane);
 
 uint32_t EmitSubgroupLaneActiveBool(EmitterState& state, uint32_t lane);
 uint32_t EmitSubgroupBallot(EmitterState& state, uint32_t predicate);

@@ -571,8 +571,11 @@ struct PipelineCache::ProgramCache {
 		         .mesh_shader       = graphics.mesh_shader_enabled,
 		         .native_float_min_max = fast_paths.native_float_min_max,
 		         .robust_buffer_loads  = fast_paths.robust_buffer_loads,
-		         .lane_exec_branches   = fast_paths.lane_exec_branches,
-		         .wqm_entry_lane_fold  = fast_paths.wqm_entry_lane_fold,
+		         .lane_exec_branches   = fast_paths.lane_exec_branches &&
+		                               LaneFastPathAllowed(LaneFastPath::LaneBranches, params.hash),
+		         .wqm_entry_lane_fold  = fast_paths.wqm_entry_lane_fold &&
+		                               LaneFastPathAllowed(LaneFastPath::WqmLaneFold, params.hash),
+		         .wave_slices          = fast_paths.wave_slices,
 		         .render_scale      = RenderScale::Active(Config::GetRenderScale()),
 		         .render_scale_keep_fragcoord =
 		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_FRAGCOORD) != 0,

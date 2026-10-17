@@ -1535,7 +1535,10 @@ uint32_t EmitAppendConsume(ValueEmitContext& ctx, const IR::Inst& inst) {
 	    Binary(state, spv::OpShiftRightLogical, TypeU32(state), address, ConstantU32(state, 2));
 	const auto access = PrepareMemoryResourceAccess(state, mem);
 	const auto exec   = ctx.Arg(inst, 1);
-	const auto ballot = ctx.Ballot(inst.Arg(1));
+	// One counter update per guest wave: count and elect within the caller's wave.
+	const bool sliced = WaveSliced(state);
+	const auto ballot = sliced ? EmitWaveBallot(state, ctx.Ballot(inst.Arg(1)))
+	                           : ctx.Ballot(inst.Arg(1));
 	const auto low    = state.builder.AllocateId();
 	const auto high   = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), low, ballot, 0);
@@ -1545,7 +1548,8 @@ uint32_t EmitAppendConsume(ValueEmitContext& ctx, const IR::Inst& inst) {
 	                          Unary(state, spv::OpBitCount, TypeU32(state), high));
 	const auto first = ctx.FirstLane(ballot);
 	const auto source_lane =
-	    state.lane_count == 2
+	    sliced ? EmitWaveLaneToSubgroupLane(state, first)
+	    : state.lane_count == 2
 	        ? Binary(state, spv::OpBitwiseAnd, TypeU32(state), first, ConstantU32(state, 31))
 	        : first;
 	const auto is_first       = Binary(state, spv::OpIEqual, TypeBool(state),

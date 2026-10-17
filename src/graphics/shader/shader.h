@@ -265,12 +265,17 @@ struct ShaderDeviceFeatures {
 	bool robust_buffer_loads = false;
 	// S_CBRANCH_EXECZ-style vote branches around lane-local regions become per-lane branches
 	// on the EXEC predicate (Spirv::ConvertExecVoteBranches; KYTY_LANE_BRANCHES=1). Experimental,
-	// off: with it and wqm_entry_lane_fold on, Astro Bot's intro loses its particle swarm.
+	// off: the Astro Bot intro's particle swarm is not confirmed to render with it.
 	bool lane_exec_branches = false;
 	// Pixel-shader prologues save EXEC, apply S_WQM and restore it as a lane mask; the lane's own
 	// bit of WQM(ballot(true)) is always set, so its predicate folds to true instead of a select
 	// per VALU write (KYTY_WQM_LANE_FOLD=1). Experimental, off (see lane_exec_branches).
 	bool wqm_entry_lane_fold = false;
+	// A wave32 (wave64) program on a wider host subgroup (Adreno: 64/128 lanes) sees its own
+	// 32 (64) lanes: IR ballots return the wave's words, LaneId / READLANE / WRITELANE /
+	// READFIRSTLANE / DS_APPEND use wave-local lane numbers (KYTY_WAVE_SLICES=1). Without it,
+	// host lanes >= 32 read lane (n & 31) of the first wave's mask. Experimental, off.
+	bool wave_slices = false;
 	// --render-scale is active: pixel and compute shaders read the rescale push dwords
 	// (IR::PushData::Rescale*) to unscale gl_FragCoord and scale texel coordinates. Off, the
 	// emitted SPIR-V is unchanged.

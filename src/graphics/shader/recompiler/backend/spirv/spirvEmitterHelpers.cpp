@@ -266,7 +266,64 @@ uint32_t EmitSubgroupLaneActiveBool(EmitterState& state, uint32_t lane) {
 	return EmitBallotLaneActiveBool(state, EmitSubgroupBallot(state, ConstantBool(state, true)),
 	                                lane);
 }
+bool WaveSliced(const EmitterState& state) {
+	return state.device_features.wave_slices && !state.subgroup_isolated && state.lane_count == 1u &&
+	       state.program.stage != ShaderType::TessellationControl;
+}
+
+uint32_t EmitWaveLocalLane(EmitterState& state) {
+	return EmitBinaryU32(state, spv::OpBitwiseAnd, EmitSubgroupLocalInvocationId(state),
+	                     ConstantU32(state, state.program.wave_size - 1u));
+}
+
+uint32_t EmitWaveLaneBase(EmitterState& state) {
+	return EmitBinaryU32(state, spv::OpBitwiseAnd, EmitSubgroupLocalInvocationId(state),
+	                     ConstantU32(state, ~(state.program.wave_size - 1u)));
+}
+
+uint32_t EmitWaveBallot(EmitterState& state, uint32_t subgroup_ballot) {
+	const auto word = [&](uint32_t index) {
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpVectorExtractDynamic, TypeU32(state), result,
+		                          subgroup_ballot, index);
+		return result;
+	};
+	const auto first_word = EmitBinaryU32(state, spv::OpShiftRightLogical, EmitWaveLaneBase(state),
+	                                      ConstantU32(state, 5));
+	const auto zero = ConstantU32(state, 0);
+	const auto low  = word(first_word);
+	const auto high = state.program.wave_size == 64u
+	                      ? word(EmitAddU32(state, first_word, ConstantU32(state, 1)))
+	                      : zero;
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(state, 4), result, low, high,
+	                          zero, zero);
+	return result;
+}
+
+uint32_t EmitWaveLaneToSubgroupLane(EmitterState& state, uint32_t wave_lane) {
+	return EmitBinaryU32(state, spv::OpBitwiseOr, EmitWaveLaneBase(state),
+	                     EmitBinaryU32(state, spv::OpBitwiseAnd, wave_lane,
+	                                   ConstantU32(state, state.program.wave_size - 1u)));
+}
+
 uint32_t EmitBallotLaneActiveBool(EmitterState& state, uint32_t active_ballot, uint32_t lane) {
+	if (WaveSliced(state)) {
+		// Host lane numbers index the whole subgroup ballot.
+		const auto word = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpVectorExtractDynamic, TypeU32(state), word, active_ballot,
+		                          EmitBinaryU32(state, spv::OpShiftRightLogical, lane,
+		                                        ConstantU32(state, 5)));
+		const auto bit = EmitBinaryU32(
+		    state, spv::OpBitwiseAnd,
+		    EmitBinaryU32(state, spv::OpShiftRightLogical, word,
+		                  EmitBinaryU32(state, spv::OpBitwiseAnd, lane, ConstantU32(state, 31))),
+		    ConstantU32(state, 1));
+		const auto active = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpINotEqual, TypeBool(state), active, bit,
+		                          ConstantU32(state, 0));
+		return active;
+	}
 	const auto low = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), low, active_ballot, 0);
 	uint32_t mask = low;
