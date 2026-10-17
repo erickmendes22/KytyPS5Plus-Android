@@ -317,6 +317,16 @@ inline bool MeshEmulated(const EmitterState& state) {
 	return state.program.stage == ShaderType::Mesh && !state.device_features.mesh_shader;
 }
 
+// --gpu-indirect emulated mesh draw: draw parameters come from a GPU-written record
+// (PushData::MeshIndirect*), not from push data.
+inline bool MeshIndirectRecord(const EmitterState& state) {
+	return MeshEmulated(state) && state.input_info.vertex != nullptr &&
+	       state.input_info.vertex->indirect.enabled;
+}
+
+// Loads a dword of that record.
+uint32_t EmitMeshIndirectRecordLoad(EmitterState& state, uint32_t dword);
+
 // The pixel shader reads barycentrics and per-vertex parameters from a generated geometry stage.
 inline bool BarycentricsEmulated(const EmitterState& state) {
 	return state.program.stage == ShaderType::Pixel &&

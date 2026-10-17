@@ -448,6 +448,12 @@ void BuildStageStaticKey(const ShaderVertexInputInfo& info, std::vector<uint32_t
 		key.push_back(static_cast<uint32_t>(destination.attr_id));
 		key.push_back(resource.fields[3] & 0x7ffffu); // Channels and format used by embedded fetch.
 	}
+	// Last and only when set, so keys of ordinary draws stay as they were (resources_num above
+	// fixes the length before it).
+	if (info.indirect.enabled) {
+		key.push_back(0x1d000000u | (static_cast<uint32_t>(static_cast<uint8_t>(info.indirect.vertex_sgpr)) << 8u) |
+		              static_cast<uint8_t>(info.indirect.instance_sgpr));
+	}
 }
 
 void BuildStageStaticKey(const ShaderPixelInputInfo& info, std::vector<uint32_t>& key) {

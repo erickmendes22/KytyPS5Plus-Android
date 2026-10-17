@@ -61,6 +61,7 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 		return bits;
 	}
 	if (kind == IR::StageInputKind::VertexIndex || kind == IR::StageInputKind::InstanceIndex ||
+	    kind == IR::StageInputKind::BaseVertex || kind == IR::StageInputKind::BaseInstance ||
 	    kind == IR::StageInputKind::InvocationId || kind == IR::StageInputKind::PrimitiveId ||
 	    kind == IR::StageInputKind::Layer || kind == IR::StageInputKind::SampleId) {
 		const auto value = state.builder.AllocateId();
@@ -717,12 +718,16 @@ uint32_t EmitLaneId(EmitterState& state) {
 }
 
 uint32_t EmitMeshDrawParameter(ValueEmitContext& ctx, const IR::Inst& inst) {
-	auto&      state  = ctx.state;
-	const auto index  = inst.Arg(0).U32();
-	if (state.program.stage != ShaderType::Mesh || index >= IR::PushData::MeshDrawDwordCount) {
+	auto&      state    = ctx.state;
+	const auto index    = inst.Arg(0).U32();
+	const bool indirect = MeshIndirectRecord(state);
+	if (state.program.stage != ShaderType::Mesh ||
+	    index >= (indirect ? IR::PushData::MeshIndirectRecordDwords
+	                       : IR::PushData::MeshDrawDwordCount)) {
 		ctx.Fail(inst, "invalid mesh draw parameter");
 	}
-	return EmitPushDataLoad(state, ConstantU32(state, index));
+	return indirect ? EmitMeshIndirectRecordLoad(state, index)
+	                : EmitPushDataLoad(state, ConstantU32(state, index));
 }
 
 uint32_t EmitGetUserData(EmitterState& state, IR::ScalarReg reg) {

@@ -458,6 +458,8 @@ uint32_t BuiltInForInput(IR::StageInputKind kind) {
 		case IR::StageInputKind::PrimitiveId: return spv::BuiltInPrimitiveId;
 		case IR::StageInputKind::TessCoord: return spv::BuiltInTessCoord;
 		case IR::StageInputKind::InstanceIndex: return spv::BuiltInInstanceIndex;
+		case IR::StageInputKind::BaseVertex: return spv::BuiltInBaseVertex;
+		case IR::StageInputKind::BaseInstance: return spv::BuiltInBaseInstance;
 		case IR::StageInputKind::FragCoord: return spv::BuiltInFragCoord;
 		case IR::StageInputKind::FrontFacing: return spv::BuiltInFrontFacing;
 		case IR::StageInputKind::Layer: return spv::BuiltInLayer;
@@ -628,6 +630,8 @@ void DefineInputs(EmitterState& state) {
 			case IR::StageInputKind::InvocationId:
 			case IR::StageInputKind::PrimitiveId:
 			case IR::StageInputKind::InstanceIndex:
+			case IR::StageInputKind::BaseVertex:
+			case IR::StageInputKind::BaseInstance:
 			case IR::StageInputKind::Layer:
 			case IR::StageInputKind::SampleId: type = TypeI32(state); break;
 			case IR::StageInputKind::WorkgroupId:
@@ -943,6 +947,11 @@ void DefineModule(EmitterState& state) {
 	if (state.layer_variable != 0 || InputVariableForKind(state, IR::StageInputKind::Layer) != 0) {
 		state.builder.RequireVersion(0x00010500u);
 		state.builder.RequireCapability(spv::CapabilityShaderLayer);
+	}
+	if (InputVariableForKind(state, IR::StageInputKind::BaseVertex) != 0 ||
+	    InputVariableForKind(state, IR::StageInputKind::BaseInstance) != 0) {
+		state.builder.RequireVersion(0x00010300u);
+		state.builder.RequireCapability(spv::CapabilityDrawParameters);
 	}
 	if (state.viewport_index_variable != 0) {
 		state.builder.RequireVersion(0x00010500u);

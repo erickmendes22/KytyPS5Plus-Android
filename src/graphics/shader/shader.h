@@ -136,6 +136,16 @@ struct ShaderTessellationInputInfo {
 	uint32_t output_topology       = 0;
 };
 
+// --gpu-indirect: a draw whose arguments stay in GPU memory. The hardware vertex/instance ID
+// VGPRs exclude the draw's base vertex and base instance, which the command processor writes into
+// the user SGPRs the draw packet names; here the shader derives all of them from the Vulkan draw
+// parameters instead (gl_VertexIndex - gl_BaseVertex, gl_BaseVertex, ...).
+struct ShaderIndirectDrawInfo {
+	bool   enabled       = false;
+	int8_t vertex_sgpr   = -1; // absolute SGPR receiving the base vertex, -1 if none
+	int8_t instance_sgpr = -1; // absolute SGPR receiving the base instance, -1 if none
+};
+
 struct ShaderVertexInputInfo {
 	static constexpr int RES_MAX = 32;
 
@@ -156,6 +166,7 @@ struct ShaderVertexInputInfo {
 	ShaderTessellationInputInfo tess;
 	bool                    fetch_external      = false;
 	bool                    fetch_embedded      = false;
+	ShaderIndirectDrawInfo  indirect;
 };
 
 struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {

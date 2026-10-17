@@ -1225,6 +1225,17 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				return IR::U32(
 				    entry_ir.Emit(IR::ValueOpcode::MeshDrawParameter, {IR::Value(index)}));
 			};
+			// --gpu-indirect: the record supplies the bases the CPU path writes to user SGPRs.
+			if (const auto& indirect = options.input_info.vertex->indirect; indirect.enabled) {
+				if (indirect.vertex_sgpr >= 0) {
+					entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(indirect.vertex_sgpr),
+					                      draw(IR::PushData::MeshIndirectBaseVertexDword));
+				}
+				if (indirect.instance_sgpr >= 0) {
+					entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(indirect.instance_sgpr),
+					                      draw(IR::PushData::MeshIndirectBaseInstanceDword));
+				}
+			}
 			const auto minimum = [&](IR::U32 lhs, IR::U32 rhs) {
 				return IR::U32(entry_ir.Emit(IR::ValueOpcode::UMin32, {lhs, rhs}));
 			};
@@ -1409,10 +1420,26 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			                      IR::U32(IR::Value(options.wave_size << 12u)));
 			entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(3),
 			                      entry_ir.BitwiseOr(vertex_count, IR::U32(IR::Value(1u << 28u))));
-			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5),
-			                      builtin(IR::StageInputKind::VertexIndex));
-			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(8),
-			                      builtin(IR::StageInputKind::InstanceIndex));
+			auto vertex_id   = builtin(IR::StageInputKind::VertexIndex);
+			auto instance_id = builtin(IR::StageInputKind::InstanceIndex);
+			// --gpu-indirect: the ID VGPRs exclude the draw's bases, which the packet's user
+			// SGPRs carry (see ShaderIndirectDrawInfo).
+			if (const auto& indirect = options.input_info.vertex->indirect; indirect.enabled) {
+				const auto base_vertex   = builtin(IR::StageInputKind::BaseVertex);
+				const auto base_instance = builtin(IR::StageInputKind::BaseInstance);
+				vertex_id   = entry_ir.ISub(vertex_id, base_vertex);
+				instance_id = entry_ir.ISub(instance_id, base_instance);
+				if (indirect.vertex_sgpr >= 0) {
+					entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(indirect.vertex_sgpr),
+					                      base_vertex);
+				}
+				if (indirect.instance_sgpr >= 0) {
+					entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(indirect.instance_sgpr),
+					                      base_instance);
+				}
+			}
+			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5), vertex_id);
+			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(8), instance_id);
 		}
 	}
 	const bool flush_f32_inputs = options.stage == ShaderType::Compute &&

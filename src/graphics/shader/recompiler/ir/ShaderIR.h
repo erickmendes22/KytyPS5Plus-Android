@@ -242,6 +242,8 @@ enum class StageInputKind {
 	LocalInvocationId,
 	LocalInvocationIndex,
 	GlobalInvocationId,
+	BaseVertex,   // gl_BaseVertex (--gpu-indirect draws)
+	BaseInstance, // gl_BaseInstance (--gpu-indirect draws)
 	Parameter,
 };
 
@@ -423,6 +425,13 @@ struct PushData {
 	static constexpr uint32_t MeshEmulationIndexAddressDword  = MeshDrawDwordCount + 2u;
 	static constexpr uint32_t MeshEmulationGroupCountDword    = MeshDrawDwordCount + 4u;
 	static constexpr uint32_t MeshEmulationDrawDwordCount     = MeshDrawDwordCount + 5u;
+	// --gpu-indirect mesh emulation: dwords 0..1 address a GPU-written record instead, holding the
+	// draw prefix, the workgroup count along x and the base vertex/instance that the packet's
+	// user SGPRs receive (ShaderIndirectDrawInfo).
+	static constexpr uint32_t MeshIndirectGroupCountDword   = MeshDrawDwordCount;
+	static constexpr uint32_t MeshIndirectBaseVertexDword   = MeshDrawDwordCount + 1u;
+	static constexpr uint32_t MeshIndirectBaseInstanceDword = MeshDrawDwordCount + 2u;
+	static constexpr uint32_t MeshIndirectRecordDwords      = MeshDrawDwordCount + 3u;
 	static constexpr uint32_t NoStart    = UINT32_MAX;
 	// --render-scale (renderer/image/renderScale.h): the last dwords carry, for the pixel or
 	// compute stage of the pipeline, whether the pass's attachments are scaled (gl_FragCoord is

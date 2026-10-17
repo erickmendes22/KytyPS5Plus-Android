@@ -121,7 +121,10 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 	EXIT_IF(threads == 0u || mesh.max_vertices == 0u || mesh.max_primitives == 0u);
 	const auto vertex_buffer = MeshEmulationBuffer(state, PushData::MeshEmulationVertexAddressDword);
 	const auto index_buffer  = MeshEmulationBuffer(state, PushData::MeshEmulationIndexAddressDword);
-	const auto groups_x      = MeshPushDword(state, PushData::MeshEmulationGroupCountDword);
+	const auto groups_x =
+	    MeshIndirectRecord(state)
+	        ? EmitMeshIndirectRecordLoad(state, PushData::MeshIndirectGroupCountDword)
+	        : MeshPushDword(state, PushData::MeshEmulationGroupCountDword);
 	const auto group_x  = EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 0);
 	const auto group_y  = EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 1);
 	const auto slot     = EmitAddU32(state, EmitBinaryU32(state, spv::OpIMul, group_y, groups_x),
@@ -191,6 +194,17 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 }
 
 } // namespace
+
+uint32_t EmitMeshIndirectRecordLoad(EmitterState& state, uint32_t dword) {
+	const auto record  = MeshEmulationBuffer(state, 0);
+	const auto pointer = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAccessChain, TypePhysicalU32Pointer(state), pointer, record,
+	                          ConstantU32(state, 0), ConstantU32(state, dword));
+	const auto value = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, pointer,
+	                          spv::MemoryAccessAlignedMask, static_cast<uint32_t>(sizeof(uint32_t)));
+	return value;
+}
 
 void DefineMeshOutputs(EmitterState& state, uint32_t clip_distance_count,
                        uint32_t cull_distance_count) {
