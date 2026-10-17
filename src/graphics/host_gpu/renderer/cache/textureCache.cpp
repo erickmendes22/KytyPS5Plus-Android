@@ -1884,6 +1884,8 @@ bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uin
 		return false;
 	}
 	m_texture_cache.DownloadImage(image, buffer, buf_offset, copy_size, levels);
+	// The copy rewrites these bytes on the GPU timeline: in-place readbacks wait for it.
+	MarkWritten(image.info.data.address, copy_size);
 	return true;
 }
 

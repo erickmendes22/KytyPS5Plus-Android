@@ -57,6 +57,12 @@ public:
 	[[nodiscard]] int  StreamScore() const noexcept { return stream_score; }
 	void               Flush(uint64_t offset, uint64_t size);
 	void               Invalidate(uint64_t offset, uint64_t size);
+	// Host view of the buffer for reading GPU results in place (--targeted-readback). A
+	// host-visible allocation that is not persistently mapped (device-local memory on a
+	// unified-memory GPU) is mapped on first use; empty when the memory is not host-visible.
+	[[nodiscard]] std::span<const uint8_t> ReadbackView();
+	// Makes GPU writes in [offset, offset + size) visible to ReadbackView() reads.
+	void InvalidateReadback(uint64_t offset, uint64_t size);
 	void CopyFrom(CommandBuffer& command, const Buffer& source, uint64_t source_offset,
 	              uint64_t destination_offset, uint64_t size,
 	              vk::AccessFlags source_before      = vk::AccessFlagBits::eMemoryWrite,
@@ -91,7 +97,10 @@ private:
 	VmaAllocation                 m_allocation = nullptr;
 	uint64_t                      m_size;
 	bool                          m_coherent = false;
+	bool                          m_host_visible = false;
+	bool                          m_readback_mapped = false;
 	std::span<uint8_t>            m_mapped;
+	std::span<const uint8_t>      m_readback;
 };
 
 class StreamBuffer final: public Buffer {

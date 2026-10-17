@@ -106,6 +106,7 @@ CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graph
 	if (threaded_submit) {
 		m_submit_thread = std::jthread([this](const std::stop_token& stop) { SubmitThread(stop); });
 	}
+	m_host_visible_writes = Config::TargetedReadbackEnabled();
 	if (Config::TimelineTrackerEnabled()) {
 		m_master.StartTracker();
 	}
@@ -390,6 +391,19 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	        submit.num_signal_semaphores >= SubmitInfo::MaxSemaphores);
 
 	m_command.EndRendering(PassEnd::Submit);
+	if (m_host_visible_writes) {
+		// --targeted-readback reads GPU results straight from host-visible buffer memory once
+		// the writer's tick completes: make this command buffer's writes available to the host.
+		vk::MemoryBarrier2 barrier {};
+		barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+		barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
+		barrier.dstStageMask  = vk::PipelineStageFlagBits2::eHost;
+		barrier.dstAccessMask = vk::AccessFlagBits2::eHostRead;
+		vk::DependencyInfo dependency {};
+		dependency.memoryBarrierCount = 1;
+		dependency.pMemoryBarriers    = &barrier;
+		m_command.m_buffer.pipelineBarrier2(dependency);
+	}
 	m_gpu_timer.End(m_command.m_buffer);
 	m_command.End();
 	EXIT_IF(m_graphics.queue == nullptr);
@@ -423,7 +437,8 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	}
 	m_gpu_timer.Submitted(pending.tick);
 
-	m_command.m_buffer = nullptr;
+	m_command.m_buffer  = nullptr;
+	m_work_since_submit = 0;
 	return pending.tick;
 }
 

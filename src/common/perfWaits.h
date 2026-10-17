@@ -87,6 +87,12 @@ enum class Counter : uint8_t {
 	PassEndAttachSame,  // ...of PassEndAttach: same attachment images, only their layout changed
 	RenderScaleUpBlits,   // --render-scale: images blitted from guest size to the scaled size
 	RenderScaleDownBlits, // --render-scale: images blitted back to guest size
+	// Write-tracking faults handled, by thread and access (GPU thread = command processor).
+	FaultsGpuRead,
+	FaultsGpuWrite,
+	FaultsGuestRead,
+	FaultsGuestWrite,
+	IdleSubmits, // --idle-submit: command buffers submitted early because the GPU ran dry
 	Count
 };
 
@@ -157,6 +163,30 @@ void EmitLine(const std::string& line);
 
 // The "[perf-wait]" report of the last period, per presented frame; resets the period.
 std::string TakeWaitSummary(double seconds, uint64_t flips);
+
+// --- Readbacks of GPU-written guest memory (BufferCache::ReadMemory), by reader ---
+// How a synchronous readback got its bytes.
+enum class ReadbackMode : uint8_t {
+	CopyFlush,     // copy recorded in the open command buffer, which is submitted and waited for
+	InPlaceDone,   // read from the host-visible buffer; the writer had already completed
+	InPlaceWait,   // read in place after waiting for the writer's (older) command buffer
+	InPlaceFlush,  // read in place after submitting the open command buffer that wrote it
+	Count
+};
+// The PM4 opcode the command processor is executing on this thread (0 = none), so readbacks
+// taken by the GPU thread can be attributed to the packet that read the memory.
+void               SetPm4Opcode(uint32_t opcode);
+[[nodiscard]] uint32_t CurrentPm4Opcode();
+// Reader tags for readbacks requested by other threads.
+constexpr uint32_t kReaderGuestRead  = 0x1000;
+constexpr uint32_t kReaderGuestWrite = 0x1001;
+constexpr uint32_t kReaderOther      = 0x1002;
+// `lag` = ticks between the open command buffer and the newest writer of the bytes (0 = the
+// open one wrote them).
+void RecordReadback(Wait site, uint32_t reader, uint64_t address, uint64_t bytes, uint64_t wait_ns,
+                    uint64_t lag, ReadbackMode mode);
+// The "[perf-readback]" line of the last period (empty when nothing was read back); resets it.
+std::string TakeReadbackSummary(double seconds, uint64_t flips);
 
 } // namespace Common::PerfStats
 

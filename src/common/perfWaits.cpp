@@ -1,9 +1,13 @@
 #include "common/perfWaits.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <map>
 #include <mutex>
+#include <tuple>
+#include <vector>
 
 #if defined(__ANDROID__)
 #include <android/log.h>
@@ -27,8 +31,25 @@ int64_t MonotonicNs() {
 
 namespace {
 
-thread_local Wait t_wait_site  = Wait::SemOther;
-thread_local bool t_gpu_thread = false;
+thread_local Wait     t_wait_site  = Wait::SemOther;
+thread_local bool     t_gpu_thread = false;
+thread_local uint32_t t_pm4_opcode = 0;
+
+// Readbacks of the current period, by (site, reader, 4 KiB page).
+struct ReadbackStats {
+	uint64_t count   = 0;
+	uint64_t bytes   = 0;
+	uint64_t wait_ns = 0;
+	uint64_t lag_sum = 0;
+	uint64_t lag_max = 0;
+	std::array<uint64_t, static_cast<size_t>(ReadbackMode::Count)> modes {};
+};
+using ReadbackKey = std::tuple<uint8_t, uint32_t, uint64_t>;
+std::mutex                            g_readback_mutex;
+std::map<ReadbackKey, ReadbackStats>  g_readbacks;
+
+constexpr std::array<const char*, static_cast<size_t>(ReadbackMode::Count)> kReadbackModeNames = {
+    "copy", "done", "wait", "flush"};
 
 constexpr std::array<const char*, static_cast<size_t>(Wait::Count)> kWaitNames = {
     "idle",       "blocked",  "flip_done",   "flip_slot", "sync_cmd", "fault",
@@ -115,6 +136,103 @@ bool IsGpuThread() {
 
 Wait CurrentWaitSite() {
 	return t_wait_site;
+}
+
+void SetPm4Opcode(uint32_t opcode) {
+	t_pm4_opcode = opcode;
+}
+
+uint32_t CurrentPm4Opcode() {
+	return t_pm4_opcode;
+}
+
+void RecordReadback(Wait site, uint32_t reader, uint64_t address, uint64_t bytes, uint64_t wait_ns,
+                    uint64_t lag, ReadbackMode mode) {
+	if (!Enabled() || mode >= ReadbackMode::Count) {
+		return;
+	}
+	std::lock_guard lock(g_readback_mutex);
+	auto& stats = g_readbacks[{static_cast<uint8_t>(site), reader, address >> 12u}];
+	stats.count++;
+	stats.bytes += bytes;
+	stats.wait_ns += wait_ns;
+	stats.lag_sum += lag;
+	stats.lag_max = std::max(stats.lag_max, lag);
+	stats.modes[static_cast<size_t>(mode)]++;
+}
+
+std::string TakeReadbackSummary(double seconds, uint64_t flips) {
+	std::map<ReadbackKey, ReadbackStats> taken;
+	{
+		std::lock_guard lock(g_readback_mutex);
+		taken.swap(g_readbacks);
+	}
+	const double per_frame = flips == 0 ? 1.0 / seconds : 1.0 / static_cast<double>(flips);
+	const auto   faults    = [&](Counter kind) {
+        return static_cast<double>(TakeCounter(kind)) * per_frame;
+	};
+	char head[256];
+	std::snprintf(head, sizeof(head),
+	              "[perf-readback] per %s: faults gpu r=%.1f w=%.1f guest r=%.1f w=%.1f "
+	              "idle_submits=%.1f |",
+	              flips == 0 ? "second" : "frame", faults(Counter::FaultsGpuRead),
+	              faults(Counter::FaultsGpuWrite), faults(Counter::FaultsGuestRead),
+	              faults(Counter::FaultsGuestWrite), faults(Counter::IdleSubmits));
+	std::string line = head;
+	if (taken.empty()) {
+		return line + " none";
+	}
+	std::array<uint64_t, static_cast<size_t>(ReadbackMode::Count)> modes {};
+	uint64_t count = 0, wait_ns = 0;
+	std::vector<std::pair<ReadbackKey, ReadbackStats>> sorted(taken.begin(), taken.end());
+	for (const auto& [key, stats]: sorted) {
+		count += stats.count;
+		wait_ns += stats.wait_ns;
+		for (size_t i = 0; i < modes.size(); i++) {
+			modes[i] += stats.modes[i];
+		}
+	}
+	char part[256];
+	std::snprintf(part, sizeof(part), " n=%.1f wait=%.1fms", static_cast<double>(count) * per_frame,
+	              static_cast<double>(wait_ns) / 1e6 * per_frame);
+	line += part;
+	for (size_t i = 0; i < modes.size(); i++) {
+		std::snprintf(part, sizeof(part), " %s=%.1f", kReadbackModeNames[i],
+		              static_cast<double>(modes[i]) * per_frame);
+		line += part;
+	}
+	line += " | top:";
+	// Heaviest readers first (by wait time, then count); a handful is enough to name them.
+	std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+		return std::tie(a.second.wait_ns, a.second.count) > std::tie(b.second.wait_ns, b.second.count);
+	});
+	constexpr size_t kTop = 6;
+	for (size_t i = 0; i < std::min(kTop, sorted.size()); i++) {
+		const auto& [key, stats] = sorted[i];
+		const auto [site, reader, page] = key;
+		char reader_name[16];
+		if (reader == kReaderGuestRead) {
+			std::snprintf(reader_name, sizeof(reader_name), "guest-r");
+		} else if (reader == kReaderGuestWrite) {
+			std::snprintf(reader_name, sizeof(reader_name), "guest-w");
+		} else if (reader == kReaderOther) {
+			std::snprintf(reader_name, sizeof(reader_name), "other");
+		} else {
+			std::snprintf(reader_name, sizeof(reader_name), "pm4:%03x", reader);
+		}
+		std::snprintf(part, sizeof(part),
+		              " [%s %s 0x%010llx n=%llu %lluB wait=%.1fms lag=%.1f/%llu %s=%llu]",
+		              reader_name, kWaitNames[site], static_cast<unsigned long long>(page << 12u),
+		              static_cast<unsigned long long>(stats.count),
+		              static_cast<unsigned long long>(stats.bytes),
+		              static_cast<double>(stats.wait_ns) / 1e6,
+		              static_cast<double>(stats.lag_sum) / static_cast<double>(stats.count),
+		              static_cast<unsigned long long>(stats.lag_max),
+		              kReadbackModeNames[static_cast<size_t>(std::max_element(stats.modes.begin(), stats.modes.end()) - stats.modes.begin())],
+		              static_cast<unsigned long long>(*std::max_element(stats.modes.begin(), stats.modes.end())));
+		line += part;
+	}
+	return line;
 }
 
 std::string TakeWaitSummary(double seconds, uint64_t flips) {

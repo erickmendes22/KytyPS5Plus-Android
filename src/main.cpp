@@ -179,6 +179,12 @@ static void PrintUsage() {
 	         "                                       at AgcSuspendPoint (0 = never wait). Default: 1.\n");
 	::printf("  --submit-coalesce <0|1>              Share one vkQueueSubmit between consecutive guest\n"
 	         "                                       graphics submissions. Default: 1 on Android, 0 elsewhere.\n");
+	::printf("  --targeted-readback <0|1>            CPU readbacks of GPU-written buffers wait only for the\n"
+	         "                                       writing command buffer and read host-visible memory\n"
+	         "                                       in place. Default: 1 on Android, 0 elsewhere.\n");
+	::printf("  --idle-submit <0|1>                  Submit the open command buffer between PM4 packets\n"
+	         "                                       once the GPU has run out of work. Default: 1 on\n"
+	         "                                       Android, 0 elsewhere.\n");
 	::printf("  --render-scale <0.25-2.0>            Internal resolution of frame-sized render\n"
 	         "                                       targets (0.5 = quarter the pixels). Default: 1.0.\n");
 	::printf("  --env <NAME=VALUE>                   Set an environment variable (e.g. FEX_* options).\n");
@@ -585,6 +591,20 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.config.submit_coalesce = mode != 0;
+		} else if (arg == "--targeted-readback") {
+			uint32_t mode = 0;
+			if (!ParseUint32(value, mode) || mode > 1) {
+				::printf("invalid targeted readback mode (0 or 1): %s\n", value.c_str());
+				return false;
+			}
+			options.config.targeted_readback = mode != 0;
+		} else if (arg == "--idle-submit") {
+			uint32_t mode = 0;
+			if (!ParseUint32(value, mode) || mode > 1) {
+				::printf("invalid idle submit mode (0 or 1): %s\n", value.c_str());
+				return false;
+			}
+			options.config.idle_submit = mode != 0;
 		} else if (arg == "--gpu-frames-in-flight") {
 			if (!ParseUint32(value, options.config.gpu_frames_in_flight) ||
 			    options.config.gpu_frames_in_flight > Config::MAX_GPU_FRAMES_IN_FLIGHT) {

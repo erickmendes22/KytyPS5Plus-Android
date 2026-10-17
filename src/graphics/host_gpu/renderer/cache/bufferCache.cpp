@@ -2,6 +2,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/perfWaits.h"
 #include "common/profiler.h"
@@ -180,6 +181,38 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		return false;
 	}
 
+	int64_t  start_ns = 0;
+	uint64_t writer   = 0;
+	uint64_t lag      = 0;
+	if constexpr (!async) {
+		if (m_targeted_readback || Common::PerfStats::Enabled()) {
+			start_ns = Common::PerfStats::Detail::MonotonicNs();
+			for (const auto& copy: copies) {
+				const auto begin = buffer_address + copy.srcOffset;
+				writer           = std::max(writer, WriterTick(begin, begin + copy.size));
+			}
+			const auto current = m_scheduler.CurrentTick();
+			lag = current - (writer != 0 ? writer : m_scheduler.GetMasterSemaphore().KnownGpuTick());
+		}
+		if (m_targeted_readback) {
+			std::vector<std::pair<uint64_t, uint64_t>> ranges;
+			ranges.reserve(copies.size());
+			for (const auto& copy: copies) {
+				ranges.emplace_back(copy.srcOffset, copy.size);
+			}
+			const auto mode = buffer.ReadbackView().empty()
+			                      ? Common::PerfStats::ReadbackMode::Count
+			                      : ReadBackInPlace(buffer, ranges, writer);
+			if (mode != Common::PerfStats::ReadbackMode::Count) {
+				Common::PerfStats::RecordReadback(
+				    Common::PerfStats::CurrentWaitSite(), m_readback_reader, vaddr, total_size,
+				    static_cast<uint64_t>(Common::PerfStats::Detail::MonotonicNs() - start_ns), lag,
+				    mode);
+				return true;
+			}
+		}
+	}
+
 	auto [mapped, offset] = m_download_buffer.Map(total_size, 64);
 	std::unique_ptr<Buffer> temporary;
 	if (mapped == nullptr) {
@@ -242,8 +275,139 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		m_scheduler.Wait(tick);
 		m_scheduler.WaitPriorityOperations(tick);
 		publish();
+		if (start_ns != 0) {
+			Common::PerfStats::RecordReadback(
+			    Common::PerfStats::CurrentWaitSite(), m_readback_reader, vaddr, total_size,
+			    static_cast<uint64_t>(Common::PerfStats::Detail::MonotonicNs() - start_ns), lag,
+			    Common::PerfStats::ReadbackMode::CopyFlush);
+		}
 	}
 	return true;
+}
+
+Common::PerfStats::ReadbackMode
+BufferCache::ReadBackInPlace(Buffer& buffer, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
+                             uint64_t writer) {
+	using Common::PerfStats::ReadbackMode;
+	const auto view = buffer.ReadbackView();
+	EXIT_IF(view.empty() || ranges.empty());
+	const Common::PerfStats::ScopedWaitSite wait_site(
+	    Common::PerfStats::CurrentWaitSite() == Common::PerfStats::Wait::SemOther
+	        ? Common::PerfStats::Wait::SemDownload
+	        : Common::PerfStats::CurrentWaitSite());
+	auto&        master = m_scheduler.GetMasterSemaphore();
+	ReadbackMode mode   = ReadbackMode::InPlaceDone;
+	if (writer != 0 && !master.IsFree(writer)) {
+		const auto current = m_scheduler.CurrentTick();
+		if (writer >= current) {
+			// The open command buffer wrote these bytes: submit it (its end makes every write
+			// visible to the host) and wait for it.
+			mode = ReadbackMode::InPlaceFlush;
+			m_scheduler.Wait(current);
+		} else {
+			// Only the writer's command buffer, not the backlog queued after it.
+			mode = ReadbackMode::InPlaceWait;
+			m_scheduler.Wait(writer);
+		}
+	}
+	// Guest-memory completions queued up to the writer (e.g. an older asynchronous download of
+	// the same bytes) must publish before these newer bytes do.
+	m_scheduler.WaitPriorityOperations(writer != 0 ? writer : master.KnownGpuTick());
+
+	uint64_t lowest = UINT64_MAX, highest = 0, bytes = 0;
+	for (const auto& [offset, size]: ranges) {
+		EXIT_IF(offset > view.size() || size > view.size() - offset);
+		lowest  = std::min(lowest, offset);
+		highest = std::max(highest, offset + size);
+		bytes += size;
+	}
+	buffer.InvalidateReadback(lowest, highest - lowest);
+	const auto buffer_address = buffer.CpuAddress();
+	for (const auto& [offset, size]: ranges) {
+		Libs::LibKernel::Memory::WriteBacking(buffer_address + offset, view.data() + offset, size);
+	}
+	Common::PerfStats::Count(Common::PerfStats::Counter::DownloadBytes, bytes);
+	if (mode != ReadbackMode::InPlaceDone) {
+		Common::PerfStats::Count(Common::PerfStats::Counter::SyncDownloads);
+	}
+	return mode;
+}
+
+void BufferCache::MarkWritten(uint64_t vaddr, uint64_t size) {
+	if (!m_targeted_readback && !Common::PerfStats::Enabled()) {
+		return;
+	}
+	const auto end = vaddr + size;
+	if (!m_pending_writes.empty() && m_pending_writes.back().first <= vaddr &&
+	    m_pending_writes.back().second >= end) {
+		return;
+	}
+	m_pending_writes.emplace_back(vaddr, end);
+}
+
+void BufferCache::StampPendingWritesSlow() {
+	const auto tick = m_scheduler.CurrentTick();
+	for (const auto& [begin, end]: m_pending_writes) {
+		SetWriteTick(begin, end, tick);
+	}
+	m_pending_writes.clear();
+	// Completed writers need no entry ("none" reads as complete); keep the map small.
+	constexpr size_t PruneThreshold = 4096;
+	if (m_write_ticks.size() > PruneThreshold) {
+		const auto known = m_scheduler.GetMasterSemaphore().KnownGpuTick();
+		std::erase_if(m_write_ticks, [known](const auto& entry) { return entry.second.tick <= known; });
+	}
+}
+
+void BufferCache::SetWriteTick(uint64_t begin, uint64_t end, uint64_t tick) {
+	if (const auto exact = m_write_ticks.find(begin);
+	    exact != m_write_ticks.end() && exact->second.end == end) {
+		exact->second.tick = tick;
+		return;
+	}
+	auto first = m_write_ticks.lower_bound(begin);
+	if (first != m_write_ticks.begin()) {
+		const auto previous = std::prev(first);
+		if (previous->second.end > begin) {
+			first = previous;
+		}
+	}
+	// Split partially covered neighbours; their outside parts keep their own ticks.
+	std::array<std::pair<uint64_t, WriteTick>, 2> kept {};
+	size_t                                        kept_count = 0;
+	for (auto it = first; it != m_write_ticks.end() && it->first < end;) {
+		const auto [entry_begin, entry] = *it;
+		it                              = m_write_ticks.erase(it);
+		if (entry_begin < begin) {
+			kept[kept_count++] = {entry_begin, {begin, entry.tick}};
+		}
+		if (entry.end > end) {
+			kept[kept_count++] = {end, {entry.end, entry.tick}};
+		}
+	}
+	for (size_t i = 0; i < kept_count; i++) {
+		m_write_ticks.emplace(kept[i].first, kept[i].second);
+	}
+	m_write_ticks.emplace(begin, WriteTick {end, tick});
+}
+
+uint64_t BufferCache::WriterTick(uint64_t begin, uint64_t end) const {
+	for (const auto& [pending_begin, pending_end]: m_pending_writes) {
+		if (pending_begin < end && begin < pending_end) {
+			return m_scheduler.CurrentTick();
+		}
+	}
+	uint64_t tick  = 0;
+	auto     first = m_write_ticks.upper_bound(begin);
+	if (first != m_write_ticks.begin()) {
+		--first;
+	}
+	for (auto it = first; it != m_write_ticks.end() && it->first < end; ++it) {
+		if (it->second.end > begin) {
+			tick = std::max(tick, it->second.tick);
+		}
+	}
+	return tick;
 }
 
 BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
@@ -257,7 +421,7 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
-      m_texture_cache(texture_cache) {
+      m_texture_cache(texture_cache), m_targeted_readback(Config::TargetedReadbackEnabled()) {
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));
 	m_gds_buffer.Flush(0, m_gds_buffer.Size());
 	SetVulkanObjectNameF(m_graphics.device, m_bda_pagetable_buffer.Handle(),
@@ -315,12 +479,19 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
 		     vaddr, size);
 	}
+	uint32_t reader = Common::PerfStats::kReaderOther;
+	if (!GuestGpu::IsGpuThread()) {
+		reader = is_write ? Common::PerfStats::kReaderGuestWrite : Common::PerfStats::kReaderGuestRead;
+	} else if (const auto opcode = Common::PerfStats::CurrentPm4Opcode(); opcode != 0) {
+		reader = opcode;
+	}
 	m_scheduler.Context().GetGpu().SendCommandSync(
-	    [this, vaddr, size, is_write, site = Common::PerfStats::CurrentWaitSite()] {
+	    [this, vaddr, size, is_write, reader, site = Common::PerfStats::CurrentWaitSite()] {
 		const Common::PerfStats::ScopedWaitSite wait_site(site);
 		if (is_write && !IsRegionRegistered(vaddr, size)) {
 			return;
 		}
+		m_readback_reader = reader;
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
 
 		if (DownloadBufferMemory<false>(buffer, vaddr, size)) {
@@ -421,6 +592,8 @@ void BufferCache::JoinOverlap(BufferId new_id, BufferId overlap_id, bool accumul
 	}
 	new_buffer.CopyFrom(m_scheduler.Current(), overlap, 0,
 	                    overlap.CpuAddress() - new_buffer.CpuAddress(), overlap.Size());
+	// The merged bytes reach the new buffer on the GPU timeline, in the open command buffer.
+	MarkWritten(overlap.CpuAddress(), overlap.Size());
 	DeleteBuffer(overlap_id);
 }
 
@@ -541,6 +714,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer);
 	if (is_written) {
 		m_gpu_modified_ranges.Add(vaddr, size);
+		MarkWritten(vaddr, size);
 	}
 	return {&buffer, buffer.Offset(vaddr)};
 }

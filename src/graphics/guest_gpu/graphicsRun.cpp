@@ -428,7 +428,11 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 	if (!decode_gds(dst_sel, dst_gds)) {
 		EXIT("unsupported dmaData destination selector 0x%02" PRIx8 "\n", dst_sel);
 	}
-	auto& buffer_cache = m_renderer.GetBufferCache();
+	auto&      buffer_cache = m_renderer.GetBufferCache();
+	const bool idle_submit  = Config::IdleSubmitEnabled();
+	// Small enough to refill an idle GPU quickly, large enough that a submit's fixed cost
+	// (a few ms of driver time on Turnip/KGSL, on the submit thread) stays amortised.
+	constexpr uint32_t kIdleSubmitMinWork = 16;
 	if (src_sel == 2) {
 		buffer_cache.FillBuffer(
 		    dst_address_or_offset, num_bytes,
@@ -759,7 +763,19 @@ void CommandProcessor::SuspendPm4() {
 }
 
 void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
+	auto&      buffer_cache = m_renderer.GetBufferCache();
+	const bool idle_submit  = Config::IdleSubmitEnabled();
+	// Small enough to refill an idle GPU quickly, large enough that a submit's fixed cost
+	// (a few ms of driver time on Turnip/KGSL, on the submit thread) stays amortised.
+	constexpr uint32_t kIdleSubmitMinWork = 16;
 	while (!execution.m_buffer_stack.empty()) {
+		// Every GPU write the previous packet acquired is recorded by now: give those writes
+		// their command buffer's tick before anything (a sync command) reads them back.
+		buffer_cache.StampPendingWrites();
+		if (idle_submit && GetScheduler().Active() && GetScheduler().GpuStarved(kIdleSubmitMinWork)) {
+			Common::PerfStats::Count(Common::PerfStats::Counter::IdleSubmits);
+			BufferFlush();
+		}
 		if (g_gpu_state != nullptr) {
 			g_gpu_state->ProcessCommands();
 		}
@@ -848,10 +864,14 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			     total_dw - remaining_dw, packet_header);
 		}
 
+		Common::PerfStats::SetPm4Opcode(
+		    opcode == Pm4::IT_NOP ? opcode | (KYTY_PM4_R(packet_header) << 8u) : opcode);
 		const auto packet_dw =
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
+		Common::PerfStats::SetPm4Opcode(0);
 		EXIT_IF(packet_dw > remaining_dw);
 		if (execution.m_suspended) {
+			buffer_cache.StampPendingWrites();
 			return;
 		}
 		cursor.offset_dw += packet_dw;
@@ -866,6 +886,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			execution.m_next_buffer = {};
 		}
 	}
+	buffer_cache.StampPendingWrites();
 }
 
 void CommandProcessor::SetIndexType(uint32_t index_type_and_size) {

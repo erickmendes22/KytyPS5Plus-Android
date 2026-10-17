@@ -711,6 +711,7 @@ void Reporter() {
 		}
 		Emit(line);
 		Emit(TakeWaitSummary(dt, flips - last_flips));
+		Emit(TakeReadbackSummary(dt, flips - last_flips));
 
 		last_hle    = hle;
 		last_faults = faults;

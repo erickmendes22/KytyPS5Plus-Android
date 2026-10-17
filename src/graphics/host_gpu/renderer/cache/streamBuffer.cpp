@@ -97,6 +97,7 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 	VkMemoryPropertyFlags properties = 0;
 	vmaGetAllocationMemoryProperties(graphics.allocator, m_allocation, &properties);
 	m_coherent = (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+	m_host_visible = (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
 	if (allocation_result.pMappedData != nullptr) {
 		m_mapped = {static_cast<uint8_t*>(allocation_result.pMappedData),
 		            static_cast<size_t>(size)};
@@ -105,7 +106,38 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 
 Buffer::~Buffer() {
 	if (m_buffer != nullptr) {
+		if (m_readback_mapped) {
+			vmaUnmapMemory(m_graphics->allocator, m_allocation);
+		}
 		vmaDestroyBuffer(m_graphics->allocator, m_buffer, m_allocation);
+	}
+}
+
+std::span<const uint8_t> Buffer::ReadbackView() {
+	if (!m_mapped.empty()) {
+		return m_mapped;
+	}
+	if (!m_readback.empty() || !m_host_visible) {
+		return m_readback;
+	}
+	void*      data   = nullptr;
+	const auto result = static_cast<vk::Result>(vmaMapMemory(m_graphics->allocator, m_allocation, &data));
+	if (result != vk::Result::eSuccess || data == nullptr) {
+		// Not fatal: the caller falls back to a copy into download memory.
+		m_host_visible = false;
+		return {};
+	}
+	m_readback_mapped = true;
+	m_readback        = {static_cast<const uint8_t*>(data), static_cast<size_t>(m_size)};
+	return m_readback;
+}
+
+void Buffer::InvalidateReadback(uint64_t offset, uint64_t size) {
+	EXIT_IF(offset > Size() || size > Size() - offset);
+	if (!IsCoherent() && size != 0) {
+		const auto result =
+		    vmaInvalidateAllocation(m_graphics->allocator, m_allocation, offset, size);
+		EXIT_NOT_IMPLEMENTED(static_cast<vk::Result>(result) != vk::Result::eSuccess);
 	}
 }
 

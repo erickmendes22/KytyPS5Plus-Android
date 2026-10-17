@@ -921,7 +921,12 @@ bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noex
 	                                                    : Common::PerfStats::Wait::GuestFault);
 	const bool handled = g_gpu_resources != nullptr && g_gpu_resources->HandleFault(access, fault_vaddr);
 	if (handled) {
+		using Common::PerfStats::Counter;
 		Common::PerfStats::CountGpuFault();
+		const bool write = access == Graphics::PageFaultAccess::Write;
+		Common::PerfStats::Count(Common::PerfStats::IsGpuThread()
+		                             ? (write ? Counter::FaultsGpuWrite : Counter::FaultsGpuRead)
+		                             : (write ? Counter::FaultsGuestWrite : Counter::FaultsGuestRead));
 	}
 	return handled;
 }

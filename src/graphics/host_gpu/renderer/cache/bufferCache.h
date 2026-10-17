@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/common.h"
 #include "common/lruCache.h"
+#include "common/perfWaits.h"
 #include "common/slotVector.h"
 #include "graphics/host_gpu/memoryTracker.h"
 #include "kernel/addressLayout.h"
@@ -90,6 +91,13 @@ public:
 		m_memory_tracker.QueueBdaSync(vaddr, size);
 	}
 	void               RunGarbageCollector();
+	// --targeted-readback: GPU writes acquired since the last call are recorded by now; give them
+	// the open command buffer's tick. The command processor calls this between PM4 packets.
+	void StampPendingWrites() {
+		if (!m_pending_writes.empty()) {
+			StampPendingWritesSlow();
+		}
+	}
 
 private:
 	friend struct BufferCacheTestAccess;
@@ -130,6 +138,21 @@ private:
 	// Synchronous downloads publish before returning; asynchronous callers wait before reuse.
 	template <bool async>
 	[[nodiscard]] bool DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t size);
+	// Writer tracking for --targeted-readback (and --perf-stats readback lag): every GPU write to
+	// guest-backed buffer bytes is pending until the next packet boundary, then stamped with the
+	// tick of the command buffer that recorded it. Ticks the GPU has completed may be pruned, so
+	// "no entry" means "complete".
+	void MarkWritten(uint64_t vaddr, uint64_t size);
+	void StampPendingWritesSlow();
+	void SetWriteTick(uint64_t begin, uint64_t end, uint64_t tick);
+	// Newest tick that wrote any byte of [begin, end): 0 when complete or unknown-but-complete,
+	// CurrentTick() when a pending write overlaps (it is in the open command buffer).
+	[[nodiscard]] uint64_t WriterTick(uint64_t begin, uint64_t end) const;
+	// In-place readback of `ranges` (buffer offsets, sizes) from a host-visible buffer after
+	// waiting only for their writer; returns how it waited.
+	[[nodiscard]] Common::PerfStats::ReadbackMode
+	ReadBackInPlace(Buffer& buffer, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
+	                uint64_t writer);
 
 	GraphicContext&                                   m_graphics;
 	CommandScheduler&                                 m_scheduler;
@@ -152,6 +175,15 @@ private:
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;
 	uint64_t m_critical_gc_memory = 2ull * 1024 * 1024 * 1024;
 	uint64_t m_gc_tick            = 0;
+	struct WriteTick {
+		uint64_t end  = 0;
+		uint64_t tick = 0;
+	};
+	bool                                       m_targeted_readback = false;
+	bool                                       m_track_writers     = false;
+	std::map<uint64_t, WriteTick>              m_write_ticks;
+	std::vector<std::pair<uint64_t, uint64_t>> m_pending_writes;
+	uint32_t                                   m_readback_reader = 0;
 };
 
 } // namespace Libs::Graphics

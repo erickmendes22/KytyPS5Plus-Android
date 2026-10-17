@@ -1502,6 +1502,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::Draws);
+	m_context.GetCommandScheduler().NoteWork();
 	if (Common::PerfStats::Enabled()) {
 		const auto& named = state.ps_active ? state.ps_input_info.stage : state.vertex_info[0].stage;
 		const uint64_t indices = mesh_emulated ? uint64_t {emulated_mesh.index_count}

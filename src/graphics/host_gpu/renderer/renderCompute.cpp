@@ -444,6 +444,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	buffer.MarkGpu("misc");
 	vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
+	m_context.GetCommandScheduler().NoteWork();
 	buffer.MarkGpu("cs", program.shader_hash);
 
 	// The removed host fence also ordered read-only dispatches before later writers.
@@ -516,6 +517,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	buffer.MarkGpu("misc");
 	vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
+	m_context.GetCommandScheduler().NoteWork();
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ResetBindings();

@@ -131,6 +131,24 @@ struct ConfigOptions {
 #else
 	bool                   submit_coalesce             = false;
 #endif
+	// --targeted-readback: a synchronous readback of GPU-written buffer memory waits only for the
+	// command buffer that last wrote those bytes (not at all once it completed) and, where the
+	// buffer's memory is host-visible (unified-memory GPUs), reads it in place instead of
+	// recording a copy into the open command buffer and waiting for the whole submit backlog.
+#if defined(__ANDROID__)
+	bool                   targeted_readback           = true;
+#else
+	bool                   targeted_readback           = false;
+#endif
+	// --idle-submit: between PM4 packets, submit the open command buffer as soon as the GPU has
+	// run out of submitted work and it holds a batch of draws/dispatches, instead of letting the
+	// GPU idle until the guest submission (or a coalesced batch of them) ends. After a readback
+	// has drained the GPU, the rest of the frame then overlaps with its own recording.
+#if defined(__ANDROID__)
+	bool                   idle_submit                 = true;
+#else
+	bool                   idle_submit                 = false;
+#endif
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;
@@ -194,6 +212,8 @@ bool     SubmitThreadEnabled();
 bool     TimelineTrackerEnabled();
 uint32_t GetGpuFramesInFlight();
 bool     SubmitCoalesceEnabled();
+bool     TargetedReadbackEnabled();
+bool     IdleSubmitEnabled();
 constexpr uint32_t MAX_GPU_FRAMES_IN_FLIGHT = 4;
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();

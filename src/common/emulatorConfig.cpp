@@ -133,6 +133,14 @@ bool SubmitCoalesceEnabled() {
 	return g_config->submit_coalesce;
 }
 
+bool TargetedReadbackEnabled() {
+	return g_config->targeted_readback;
+}
+
+bool IdleSubmitEnabled() {
+	return g_config->idle_submit;
+}
+
 uint32_t GetVideoDecoderThreads() {
 	return std::min(g_config->video_decoder_threads, 16u);
 }

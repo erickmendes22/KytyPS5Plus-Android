@@ -50,6 +50,14 @@ public:
 	void                      DeferOperation(Common::UniqueFunction<void>&& operation);
 	void                      DeferPriorityOperation(Common::UniqueFunction<void>&& operation);
 	[[nodiscard]] bool        HasPendingPriorityOperations();
+	// --idle-submit: draws and dispatches recorded into the open command buffer.
+	void NoteWork() noexcept { m_work_since_submit++; }
+	// The GPU has completed every command buffer handed to it, so it idles until the open one is
+	// submitted, and the open one already holds at least `min_work` draws/dispatches.
+	[[nodiscard]] bool GpuStarved(uint32_t min_work) const noexcept {
+		return m_work_since_submit >= min_work && !m_command.IsInvalid() &&
+		       m_master.KnownGpuTick() + 1 >= m_master.CurrentTick();
+	}
 	[[nodiscard]] static bool InDeferredOperation() noexcept;
 
 	[[nodiscard]] bool Active() const noexcept { return m_command.m_registers != nullptr; }
@@ -138,6 +146,8 @@ private:
 	bool                         m_priority_active      = false;
 	uint64_t                     m_priority_active_tick = 0;
 	OperationState               m_operation_state      = OperationState::Open;
+	bool                         m_host_visible_writes  = false;
+	uint32_t                     m_work_since_submit    = 0;
 };
 
 } // namespace Libs::Graphics
