@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv {
@@ -287,8 +288,33 @@ private:
 		return enabled;
 	}
 
+	// KYTY_LANE_BRANCHES_REGION_SKIP=<n>[-<m>][:...]: keep the vote branch for the convertible
+	// regions with these ordinals (program block order, counted per shader; bisecting aid).
+	static bool RegionSkipped(uint32_t ordinal) {
+		static const std::vector<std::pair<uint32_t, uint32_t>> ranges = [] {
+			std::vector<std::pair<uint32_t, uint32_t>> result;
+			const char* spec = std::getenv("KYTY_LANE_BRANCHES_REGION_SKIP");
+			while (spec != nullptr && *spec != '\0') {
+				char* end   = nullptr;
+				const auto lo = static_cast<uint32_t>(std::strtoul(spec, &end, 10));
+				auto       hi = lo;
+				if (end != nullptr && *end == '-') hi = static_cast<uint32_t>(std::strtoul(end + 1, &end, 10));
+				if (end == spec) break;
+				result.emplace_back(lo, hi);
+				spec = (end != nullptr && *end == ':') ? end + 1 : end;
+				if (spec != nullptr && *spec != '\0' && *spec != ':' && (*spec < '0' || *spec > '9')) break;
+			}
+			return result;
+		}();
+		for (const auto& [lo, hi]: ranges) {
+			if (ordinal >= lo && ordinal <= hi) return true;
+		}
+		return false;
+	}
+
 	void LogRegion(const Block& branch, const Block& merge, const VoteBranch& vote,
-	               const std::unordered_set<const Block*>& region) const {
+	               const std::unordered_set<const Block*>& region, uint32_t ordinal,
+	               bool skipped) const {
 		std::string blocks;
 		uint32_t    loops = 0, votes = 0, ballots = 0, samples = 0, loads = 0, writes = 0, phis = 0;
 		for (const auto* block: m_program.blocks) {
@@ -311,9 +337,9 @@ private:
 		uint32_t merge_phis = 0;
 		for (const auto& inst: merge) merge_phis += inst.GetOpcode() == ValueOpcode::Phi ? 1u : 0u;
 		const auto* predicate = InstOf(vote.predicate);
-		LOGF("lane branch hash=0x%016" PRIx64 " #%u branch=%u merge=%u pred=%s blocks=[%s ] loops=%u "
+		LOGF("lane branch hash=0x%016" PRIx64 " #%u%s branch=%u merge=%u pred=%s blocks=[%s ] loops=%u "
 		     "votes=%u ballots=%u samples=%u loads=%u writes=%u phis=%u merge_phis=%u\n",
-		     m_program.shader_hash, m_stats.converted, branch.id, merge.id,
+		     m_program.shader_hash, ordinal, skipped ? " (skipped)" : "", branch.id, merge.id,
 		     predicate != nullptr ? std::string(IR::ValueOpcodeName(predicate->GetOpcode())).c_str()
 		                          : "imm",
 		     blocks.c_str(), loops, votes, ballots, samples, loads, writes, phis, merge_phis);
@@ -329,7 +355,10 @@ private:
 		const bool convertible = Convertible(branch, *merge, vote, region);
 		m_region = nullptr;
 		if (!convertible) return false;
-		if (LogRegions()) LogRegion(branch, *merge, vote, region);
+		const uint32_t ordinal = m_candidates++;
+		const bool     skipped = RegionSkipped(ordinal);
+		if (LogRegions()) LogRegion(branch, *merge, vote, region, ordinal, skipped);
+		if (skipped) return false;
 		const bool region_is_true = branch.terminator.true_block == vote.region;
 		if (region_is_true) {
 			branch.condition = vote.predicate;
@@ -385,6 +414,7 @@ public:
 private:
 	IR::Program&                            m_program;
 	uint32_t                                m_allowed_hazards = 0;
+	uint32_t                                m_candidates      = 0;
 	const std::unordered_set<const Block*>* m_region          = nullptr;
 	LaneBranchStats                         m_stats;
 };
