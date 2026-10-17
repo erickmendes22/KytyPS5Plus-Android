@@ -39,6 +39,9 @@ struct OptionalDeviceFeatures {
 	bool null_descriptor = false;
 	// Vulkan 1.2 shaderStorageImageArrayNonUniformIndexing (see ShaderDeviceFeatures).
 	bool storage_image_array_non_uniform_indexing = false;
+	// VK_EXT_robustness2 robustBufferAccess2 with robustStorageBufferAccessSizeAlignment <= 4:
+	// every out-of-range 32-bit storage buffer read returns zero.
+	bool robust_buffer_access2_dword = false;
 };
 
 struct GraphicContext {
@@ -57,6 +60,12 @@ struct GraphicContext {
 	bool                               attachment_feedback_loop_enabled      = false;
 	bool                               provoking_vertex_last_enabled         = false;
 	bool                               maintenance8_enabled                  = false;
+	// VkPhysicalDeviceDriverProperties::driverID of the selected device.
+	vk::DriverId                       driver_id                             = {};
+	// VK_KHR_pipeline_executable_properties, enabled only for KYTY_PIPELINE_STATS.
+	bool                               pipeline_executable_info_enabled      = false;
+	// VK_EXT_image_compression_control, enabled only for KYTY_UBWC_PROBE.
+	bool                               image_compression_probe_enabled       = false;
 	bool                               supports_block_texel_view              = false;
 	bool                                      mesh_shader_enabled                   = false;
 	vk::PhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties                = {};
@@ -108,6 +117,10 @@ struct GraphicContext {
 			*properties = it->second.second;
 		}
 		return it->second.first;
+	}
+
+	[[nodiscard]] bool IsMesaTurnip() const noexcept {
+		return driver_id == vk::DriverId::eMesaTurnip;
 	}
 
 	[[nodiscard]] bool SupportsComputeWave64() const noexcept {

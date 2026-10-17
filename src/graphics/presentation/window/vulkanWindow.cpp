@@ -11,6 +11,8 @@
 #include "common/threads.h"
 #include "common/timer.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/image/ubwcProbe.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
@@ -463,6 +465,21 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		maintenance8.pNext = supported_features2.pNext;
 		supported_features2.pNext = &maintenance8;
 	}
+	// Diagnostics only (KYTY_PIPELINE_STATS / KYTY_UBWC_PROBE): requested by the caller.
+	const bool executable_info_extension =
+	    HasExtension(device_extensions, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+	vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR executable_info {};
+	if (executable_info_extension) {
+		executable_info.pNext     = supported_features2.pNext;
+		supported_features2.pNext = &executable_info;
+	}
+	const bool compression_control_extension =
+	    HasExtension(device_extensions, VK_EXT_IMAGE_COMPRESSION_CONTROL_EXTENSION_NAME);
+	vk::PhysicalDeviceImageCompressionControlFeaturesEXT compression_control {};
+	if (compression_control_extension) {
+		compression_control.pNext = supported_features2.pNext;
+		supported_features2.pNext = &compression_control;
+	}
 	const bool image_atomic_int64_extension =
 	    HasExtension(device_extensions, VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME);
 	vk::PhysicalDeviceShaderImageAtomicInt64FeaturesEXT image_atomic_int64 {};
@@ -578,13 +595,14 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	    subgroup_size_control.maxSubgroupSize >= 64;
 
 	LOGF("Vulkan subgroup: default=%u min=%u max=%u stages=0x%08x supported_stages=0x%08x "
-	     "supported_ops=0x%08x size_control=%s wave64=%s\n",
+	     "supported_ops=0x%08x size_control=%s wave64=%s max_compute_shared=%u\n",
 	     graphics.subgroup_size, graphics.min_subgroup_size, graphics.max_subgroup_size,
 	     static_cast<vk::ShaderStageFlags::MaskType>(graphics.required_subgroup_size_stages),
 	     static_cast<vk::ShaderStageFlags::MaskType>(graphics.subgroup_supported_stages),
 	     static_cast<vk::SubgroupFeatureFlags::MaskType>(graphics.subgroup_supported_operations),
 	     graphics.compute_subgroup_size_control_enabled ? "true" : "false",
-	     graphics.SupportsComputeWave64() ? "true" : "false");
+	     graphics.SupportsComputeWave64() ? "true" : "false",
+	     graphics.physical_device_properties.limits.maxComputeSharedMemorySize);
 	graphics.provoking_vertex_last_enabled = provoking_extension && provoking_vertex.provokingVertexLast;
 	graphics.attachment_feedback_loop_enabled =
 	    feedback_extensions && feedback_layout.attachmentFeedbackLoopLayout &&
@@ -684,6 +702,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	}
 	optional.null_descriptor = robustness2_ext_enabled && robustness2.nullDescriptor == VK_TRUE &&
 	                           !VulkanFeatureDisabled("nullDescriptor");
+	if (robustness2_ext_enabled && robustness2.robustBufferAccess2 == VK_TRUE) {
+		vk::PhysicalDeviceRobustness2PropertiesEXT robustness2_properties {};
+		vk::PhysicalDeviceProperties2              robustness2_query {};
+		robustness2_query.pNext = &robustness2_properties;
+		graphics.physical_device.getProperties2(&robustness2_query);
+		optional.robust_buffer_access2_dword =
+		    robustness2_properties.robustStorageBufferAccessSizeAlignment <= 4;
+		LOGF("Vulkan robustBufferAccess2: storage alignment=%" PRIu64 "\n",
+		     static_cast<uint64_t>(robustness2_properties.robustStorageBufferAccessSizeAlignment));
+	}
 
 	auto features13 = WindowContext::RequiredVulkan13Features();
 	features13.pNext = robustness2_ext_enabled ? static_cast<void*>(&robustness2)
@@ -754,6 +782,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	if (graphics.maintenance8_enabled) {
 		maintenance8.pNext = const_cast<void*>(create_info.pNext);
 		create_info.pNext = &maintenance8;
+	}
+	if (executable_info_extension && executable_info.pipelineExecutableInfo == VK_TRUE) {
+		executable_info.pNext = const_cast<void*>(create_info.pNext);
+		create_info.pNext     = &executable_info;
+		graphics.pipeline_executable_info_enabled = true;
+	}
+	if (compression_control_extension && compression_control.imageCompressionControl == VK_TRUE) {
+		compression_control.pNext = const_cast<void*>(create_info.pNext);
+		create_info.pNext         = &compression_control;
+		graphics.image_compression_probe_enabled = true;
 	}
 	create_info.pQueueCreateInfos       = &queue_create_info;
 	create_info.queueCreateInfoCount    = 1;
@@ -1091,10 +1129,13 @@ void WindowContext::CreateVulkan() {
 		EXIT("Could not find suitable device:%s", rejected_devices.c_str());
 	}
 
+	vk::PhysicalDeviceDriverProperties         driver_properties {};
 	vk::PhysicalDevicePushDescriptorProperties push_descriptor_properties {};
+	push_descriptor_properties.pNext = &driver_properties;
 	vk::PhysicalDeviceProperties2              physical_device_properties {};
 	physical_device_properties.pNext = &push_descriptor_properties;
 	graphic_ctx.physical_device.getProperties2(&physical_device_properties);
+	graphic_ctx.driver_id = driver_properties.driverID;
 	graphic_ctx.physical_device_properties = physical_device_properties.properties;
 	graphic_ctx.max_push_descriptors       = push_descriptor_properties.maxPushDescriptors;
 	graphic_ctx.physical_device.getMemoryProperties(&graphic_ctx.physical_device_memory_properties);
@@ -1141,6 +1182,15 @@ void WindowContext::CreateVulkan() {
 			if (HasExtension(available_extensions, extension)) {
 				device_extensions.push_back(extension);
 			}
+		}
+		if (PipelineStats::Requested() &&
+		    HasExtension(available_extensions,
+		                 VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
+			device_extensions.push_back(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+		}
+		if (UbwcProbe::Requested() &&
+		    HasExtension(available_extensions, VK_EXT_IMAGE_COMPRESSION_CONTROL_EXTENSION_NAME)) {
+			device_extensions.push_back(VK_EXT_IMAGE_COMPRESSION_CONTROL_EXTENSION_NAME);
 		}
 		if (HasExtension(available_extensions, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
 		    HasExtension(available_extensions, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME)) {

@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/renderScale.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
+#include "graphics/host_gpu/renderer/image/ubwcProbe.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "kernel/memory.h"
 
@@ -789,6 +790,7 @@ bool Image::CreateBacking(vk::Extent3D extent, VulkanImage& out) {
 	if (!m_graphics.CreateImage(create, out)) {
 		return false;
 	}
+	UbwcProbe::Record(m_graphics, out.image, create, 0u);
 	SetVulkanObjectNameF(
 	    m_graphics.device, out.image,
 	    "Kyty.Image[guest=0x{:016x} size=0x{:x} extent={}x{}x{} host={}x{} format={} mips={} "

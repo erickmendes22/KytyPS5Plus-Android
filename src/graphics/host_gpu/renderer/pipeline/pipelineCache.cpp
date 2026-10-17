@@ -17,6 +17,7 @@
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/hostShaderQuirks.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -46,6 +47,16 @@
 namespace Libs::Graphics {
 
 namespace {
+
+// KYTY_SHADER_IR_DUMP=<hex prefixes> (KYTY_PIPELINE_STATS syntax): the guest disassembly and IR of
+// the matching shaders go to the log without enabling it for every shader.
+bool IrDumpRequested(uint64_t hash) {
+	static const std::vector<std::string> prefixes = [] {
+		const char* spec = std::getenv("KYTY_SHADER_IR_DUMP");
+		return spec != nullptr ? PipelineStats::ParseSpec(spec) : std::vector<std::string> {};
+	}();
+	return !prefixes.empty() && PipelineStats::Matches(prefixes, hash);
+}
 
 // Android ends apps without running destructors, so it checkpoints the driver cache much more
 // often (on a worker thread, see CheckpointDriverCache).
@@ -568,7 +579,8 @@ struct PipelineCache::ProgramCache {
 		options.shader_hash = params.hash;
 		options.user_data   = user_data;
 		options.back_code      = params.back_code;
-		options.dump_ir     = Config::GetShaderLogDirection() != Config::LogDirection::Silent;
+		options.dump_ir     = Config::GetShaderLogDirection() != Config::LogDirection::Silent ||
+		                  IrDumpRequested(params.hash);
 		options.early_dump  = options.dump_ir;
 		options.emit_debug_info = Config::GraphicsDebugDumpEnabled();
 		options.dump_label  = label;

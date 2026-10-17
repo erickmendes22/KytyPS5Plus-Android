@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -752,6 +753,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	if (ps_active) {
 		guest_hashes[guest_hash_count++] = ps_input_info->stage.program->shader_hash;
 	}
+	const bool capture_stats =
+	    PipelineStats::Wants(graphics, std::span(guest_hashes).first(guest_hash_count));
+	if (capture_stats) {
+		pipeline_info.flags |= PipelineStats::CaptureFlags();
+	}
 	const auto dump_record = ShaderDump::RecordGraphicsPipeline(
 	    graphics, pipeline_info,
 	    {descriptor_bindings, pipeline.uses_push_descriptors
@@ -768,6 +774,13 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		                                                 &pipeline.pipeline);
 	}
 	ShaderDump::RecordResult(dump_record, result);
+	if (capture_stats && result == vk::Result::eSuccess) {
+		std::string label = "gfx";
+		for (uint32_t i = 0; i < guest_hash_count; i++) {
+			label += fmt::format("_{:016x}", guest_hashes[i]);
+		}
+		PipelineStats::Write(graphics, pipeline.pipeline, label);
+	}
 	if (result != vk::Result::eSuccess) {
 		std::string stages;
 		for (uint32_t i = 0; i < guest_hash_count; i++) {
@@ -865,6 +878,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
 	const auto guest_hash  = program.shader_hash;
+	const bool capture_stats = PipelineStats::Wants(graphics, std::span(&guest_hash, 1));
+	if (capture_stats) {
+		info.flags |= PipelineStats::CaptureFlags();
+	}
 	const auto dump_record = ShaderDump::RecordComputePipeline(
 	    graphics, info,
 	    {descriptor_bindings, pipeline.uses_push_descriptors
@@ -883,6 +900,9 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	LOGF("PipelineTrace: vkCreateComputePipelines done result=%s pipeline=%p\n",
 	     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	ShaderDump::RecordResult(dump_record, result);
+	if (capture_stats && result == vk::Result::eSuccess) {
+		PipelineStats::Write(graphics, pipeline.pipeline, fmt::format("cs_{:016x}", guest_hash));
+	}
 	if (result != vk::Result::eSuccess) {
 		EXIT("vkCreateComputePipelines failed: %s, guest shader 0x%016" PRIx64 "%s%s\n",
 		     vk::to_string(result).c_str(), guest_hash,
