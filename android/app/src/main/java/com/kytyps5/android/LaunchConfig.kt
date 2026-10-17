@@ -54,6 +54,9 @@ object LaunchArgs {
     private const val FLAG_SCREEN_HEIGHT = "--screen-height"
     private const val FLAG_RENDER_SCALE = "--render-scale"
 
+    /** Max Adreno GPU clock (device-global; the emulator resets it on exit and in the background). */
+    const val FLAG_GPU_TURBO = "--gpu-turbo"
+
     /** Launcher-only extras read by GameActivity (not emulator flags). */
     const val EXTRA_GAME_PATH = "com.kytyps5.android.extra.GAME_PATH"
     const val EXTRA_ENV = "com.kytyps5.android.extra.ENV"
@@ -68,13 +71,15 @@ object LaunchArgs {
         resolution: Resolution,
         gpuDriverDir: String? = null,
         renderScale: RenderScale = RenderScale.NATIVE,
+        gpuTurbo: Boolean = false,
     ): Array<String> =
         arrayOf(
             FLAG_GAME, gamePath,
             FLAG_SCREEN_WIDTH, resolution.width.toString(),
             FLAG_SCREEN_HEIGHT, resolution.height.toString(),
         ) + (gpuDriverDir?.let { arrayOf(FLAG_GPU_DRIVER, it) } ?: emptyArray()) +
-            (if (renderScale == RenderScale.NATIVE) emptyArray() else arrayOf(FLAG_RENDER_SCALE, renderScale.factor))
+            (if (renderScale == RenderScale.NATIVE) emptyArray() else arrayOf(FLAG_RENDER_SCALE, renderScale.factor)) +
+            (if (gpuTurbo) arrayOf(FLAG_GPU_TURBO) else emptyArray())
 }
 
 /** Which GPU driver a launch uses: a per-game override wins over the global choice. */
@@ -96,6 +101,7 @@ data class LaunchOptions(
     val touchControls: Boolean,
     val env: List<EnvVar>,
     val renderScale: RenderScale = RenderScale.NATIVE,
+    val gpuTurbo: Boolean = LauncherSettings.DEFAULT_GPU_TURBO,
 ) {
     companion object {
         fun resolve(
@@ -104,6 +110,7 @@ data class LaunchOptions(
             globalTouch: Boolean,
             game: GameSettings,
             globalRenderScale: RenderScale = RenderScale.NATIVE,
+            globalGpuTurbo: Boolean = LauncherSettings.DEFAULT_GPU_TURBO,
         ) =
             LaunchOptions(
                 resolution = game.resolution ?: globalResolution,
@@ -111,6 +118,7 @@ data class LaunchOptions(
                 touchControls = game.touchControls ?: globalTouch,
                 env = game.envVars,
                 renderScale = game.renderScale ?: globalRenderScale,
+                gpuTurbo = game.gpuTurbo ?: globalGpuTurbo,
             )
     }
 }

@@ -23,6 +23,7 @@ data class GameSettings(
     val hud: Boolean? = null,
     val touchControls: Boolean? = null,
     val renderScale: RenderScale? = null,
+    val gpuTurbo: Boolean? = null,
 ) {
     fun toJson(): String = JSONObject()
         .put("resolution", resolution?.storageValue ?: JSONObject.NULL)
@@ -30,6 +31,7 @@ data class GameSettings(
         .put("env", JSONArray(envVars.map { it.toString() }))
         .put("hud", hud ?: JSONObject.NULL)
         .put("touchControls", touchControls ?: JSONObject.NULL)
+        .put("gpuTurbo", gpuTurbo ?: JSONObject.NULL)
         .toString()
 
     companion object {
@@ -43,9 +45,10 @@ data class GameSettings(
                 GameSettings(
                     resolution = Resolution.entries.firstOrNull { it.storageValue == obj.stringOr("resolution") },
                     envVars = EnvVars.parse((0 until env.length()).joinToString("\n") { env.stringAt(it) }).vars,
-                    hud = if (obj.isNull("hud") || !obj.has("hud")) null else obj.optBoolean("hud"),
-                    touchControls = if (obj.isNull("touchControls") || !obj.has("touchControls")) null else obj.optBoolean("touchControls"),
+                    hud = obj.optionalBoolean("hud"),
+                    touchControls = obj.optionalBoolean("touchControls"),
                     renderScale = RenderScale.entries.firstOrNull { it.storageValue == obj.stringOr("renderScale") },
+                    gpuTurbo = obj.optionalBoolean("gpuTurbo"),
                 )
             } catch (e: JSONException) {
                 DEFAULT
@@ -53,6 +56,9 @@ data class GameSettings(
         }
     }
 }
+
+private fun JSONObject.optionalBoolean(key: String): Boolean? =
+    if (isNull(key) || !has(key)) null else optBoolean(key)
 
 object EnvVars {
     private val KEY = Regex("^[A-Za-z_][A-Za-z0-9_]*$")

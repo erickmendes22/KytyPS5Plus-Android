@@ -55,6 +55,13 @@ class LauncherSettings(context: Context) {
             prefs.edit().putBoolean(KEY_TOUCH_CONTROLS, value).apply()
         }
 
+    /** Max GPU clock (--gpu-turbo) unless a game overrides it: ~1.85x faster GPU work, runs hotter. */
+    var gpuTurbo: Boolean
+        get() = prefs.getBoolean(KEY_GPU_TURBO, DEFAULT_GPU_TURBO)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GPU_TURBO, value).apply()
+        }
+
     fun gameSettings(gamePath: String): GameSettings =
         GameSettings.fromJson(prefs.getString(KEY_GAME_SETTINGS_PREFIX + gamePath, null))
 
@@ -76,6 +83,7 @@ class LauncherSettings(context: Context) {
         /** Stored driver id meaning "the device's own Vulkan driver". */
         const val SYSTEM_DRIVER = ""
         const val DEFAULT_GAMES_ROOT = "/sdcard/KytyPS5/games"
+        const val DEFAULT_GPU_TURBO = true
         private const val PREFS_NAME = "kytyps5_launcher"
         private const val KEY_GAMES_ROOT = "games_root"
         private const val KEY_RESOLUTION = "resolution"
@@ -85,6 +93,7 @@ class LauncherSettings(context: Context) {
         private const val KEY_BUNDLED_DRIVER_VERSION = "bundled_driver_version"
         private const val KEY_HUD = "hud_enabled"
         private const val KEY_TOUCH_CONTROLS = "touch_controls_enabled"
+        private const val KEY_GPU_TURBO = "gpu_turbo"
         private const val KEY_GAME_SETTINGS_PREFIX = "game_settings:"
     }
 }

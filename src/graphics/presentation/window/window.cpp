@@ -20,6 +20,7 @@
 #include "graphics/presentation/renderDoc.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/window/hostInput.h"
+#include "graphics/presentation/window/vulkanDriver.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "kytyGitVersion.h"
 #include "libs/controller.h"
@@ -347,6 +348,18 @@ static void GameEventController([[maybe_unused]] const EventController& f) {
 
 static void GameEventLowMemory() {
 	LOGF("Event: low_memory\n");
+}
+
+// --gpu-turbo pins a device-global GPU clock: drop it while the app is in the background and when
+// Android terminates it, and take it again on return.
+static bool SDLCALL GpuClockLifecycleWatch(void* /*userdata*/, SDL_Event* event) {
+	switch (event->type) {
+		case SDL_EVENT_WILL_ENTER_BACKGROUND: VulkanDriver::SuspendGpuTurbo(); break;
+		case SDL_EVENT_DID_ENTER_FOREGROUND: VulkanDriver::ResumeGpuTurbo(); break;
+		case SDL_EVENT_TERMINATING: VulkanDriver::ReleaseGpuTurbo(); break;
+		default: break;
+	}
+	return true;
 }
 
 static void GameEventWillEnterBackground(WindowLoopState& game) {
@@ -790,6 +803,10 @@ static void WindowCreate(WindowContext& context) {
 #endif
 	if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
 		EXIT("%s\n", SDL_GetError());
+	}
+	// Runs where SDL raises the event, before Android's pause handling can block the loop.
+	if (!SDL_AddEventWatch(GpuClockLifecycleWatch, nullptr)) {
+		LOGF("SDL_AddEventWatch failed: %s\n", SDL_GetError());
 	}
 
 	LOGF("WindowCreate(): width = %d, height = %d\n", width, height);

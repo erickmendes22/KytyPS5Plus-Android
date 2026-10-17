@@ -2,6 +2,7 @@
 #include "common/hostFaultAccess.h"
 
 #include "common/hostArch.h"
+#include "common/processExitHooks.h"
 
 #include <atomic>
 #include <cstdio>
@@ -224,6 +225,8 @@ constexpr uint64_t PAGE_FAULT_ERROR_INSTRUCTION = 0x10;
 
 // Let the kernel handle an unresolved fault on retry.
 static void ChainToDefault(int signal_number) noexcept {
+	// The process dies when the fault is retried: undo external state (GPU clocks) first.
+	RunProcessExitHooks();
 	struct sigaction restore {};
 	restore.sa_handler = SIG_DFL;
 	sigemptyset(&restore.sa_mask);

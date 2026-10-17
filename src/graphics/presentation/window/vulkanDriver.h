@@ -17,8 +17,18 @@ void SetCustomDriverDirectory(std::string directory);
 void SetPrintCaps(bool enabled);
 
 // --gpu-turbo: ask KGSL to keep the Adreno GPU at its maximum clock (thermal limits still apply),
-// as Dolphin does through libadrenotools. Android/Adreno only; elsewhere it logs and does nothing.
-void EnableGpuTurbo();
+// as Dolphin does through libadrenotools. The request is device-global and survives the process,
+// so it is dropped on every exit path the process sees (Common::AddProcessExitHook), while the
+// app is in the background (Suspend/Resume from the SDL lifecycle watch), and at the start of
+// every run without --gpu-turbo (a SIGKILL cannot be caught). Android/Adreno only.
+void RequestGpuTurbo();
+[[nodiscard]] bool GpuTurboRequested();
+// Once, after the command line is parsed: turbo on (and the exit hook) or an explicit reset.
+void ApplyGpuClockPolicy();
+// Idempotent and async-signal-safe.
+void SuspendGpuTurbo() noexcept;
+void ResumeGpuTurbo() noexcept;
+void ReleaseGpuTurbo() noexcept;
 
 } // namespace Libs::Graphics::VulkanDriver
 

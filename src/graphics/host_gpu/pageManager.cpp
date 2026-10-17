@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/pageManager.h"
 
 #include "common/alignment.h"
+#include "common/processExitHooks.h"
 #include "common/virtualMemory.h"
 #include "graphics/host_gpu/regionDefinitions.h"
 #include "kernel/memory.h"
@@ -50,6 +51,7 @@ constexpr uint64_t REGION_PAGES = REGION_SIZE / PAGE_SIZE;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	TerminateProcess(GetCurrentProcess(), static_cast<UINT>(EXCEPTION_NONCONTINUABLE_EXCEPTION));
 #endif
+	Common::RunProcessExitHooks();
 	std::_Exit(322);
 }
 
@@ -61,6 +63,7 @@ constexpr uint64_t REGION_PAGES = REGION_SIZE / PAGE_SIZE;
 	va_end(args);
 	std::fputc('\n', stderr);
 	std::fflush(stderr);
+	Common::RunProcessExitHooks();
 	std::_Exit(322);
 }
 

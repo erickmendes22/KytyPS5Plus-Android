@@ -138,7 +138,8 @@ static void PrintUsage() {
 	         "                                       (meta.json + .so, e.g. Mesa Turnip) via\n"
 	         "                                       libadrenotools. Default: system driver.\n");
 	::printf("  --print-vulkan-caps                  Log the device's extensions and key features.\n");
-	::printf("  --gpu-turbo                          Android: keep Adreno GPU clocks at maximum.\n");
+	::printf("  --gpu-turbo                          Android: keep Adreno GPU clocks at maximum (reset on\n"
+	         "                                       exit and in the background; runs without it reset them).\n");
 	::printf("  --fullscreen                         Run in borderless desktop fullscreen.\n");
 	::printf("  --hdr                                Enable HDR10 output when supported.\n");
 	::printf(
@@ -405,7 +406,7 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		}
 
 		if (arg == "--gpu-turbo") {
-			Libs::Graphics::VulkanDriver::EnableGpuTurbo();
+			Libs::Graphics::VulkanDriver::RequestGpuTurbo();
 			continue;
 		}
 
@@ -645,6 +646,7 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.config.gpu_fatal_dialog = mode != 0;
+
 		} else if (arg == "--idle-submit") {
 			uint32_t mode = 0;
 			if (!ParseUint32(value, mode) || mode > 1) {
@@ -868,6 +870,7 @@ static int Main(int argc, char* argv[]) {
 	}
 #endif
 
+	Libs::Graphics::VulkanDriver::ApplyGpuClockPolicy();
 	Run(options);
 
 	return 0;

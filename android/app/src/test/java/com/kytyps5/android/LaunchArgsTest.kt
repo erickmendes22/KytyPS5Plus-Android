@@ -75,4 +75,51 @@ class LaunchArgsTest {
             LaunchOptions.resolve(Resolution.HD_720, globalHud = false, globalTouch = true, game = game),
         )
     }
+
+    @Test
+    fun gpuTurboEmitsTheFlagOnlyWhenOn() {
+        val off = LaunchArgs.forGame("/g", Resolution.HD_720, null, RenderScale.NATIVE, gpuTurbo = false)
+        assertArrayEquals(arrayOf("--game", "/g", "--screen-width", "1280", "--screen-height", "720"), off)
+
+        val on = LaunchArgs.forGame("/g", Resolution.HD_720, "/drv", RenderScale.HALF, gpuTurbo = true)
+        assertArrayEquals(
+            arrayOf(
+                "--game", "/g", "--screen-width", "1280", "--screen-height", "720",
+                "--gpu-driver", "/drv", "--render-scale", "0.5", "--gpu-turbo",
+            ),
+            on,
+        )
+    }
+
+    @Test
+    fun gpuTurboDefaultsOnAndFollowsGlobalUnlessTheGameOverrides() {
+        val byDefault = LaunchOptions.resolve(Resolution.HD_720, globalHud = false, globalTouch = true, game = GameSettings.DEFAULT)
+        assertEquals(true, byDefault.gpuTurbo)
+
+        val globalOff = LaunchOptions.resolve(
+            Resolution.HD_720, globalHud = false, globalTouch = true, game = GameSettings.DEFAULT, globalGpuTurbo = false,
+        )
+        assertEquals(false, globalOff.gpuTurbo)
+
+        val gameOn = LaunchOptions.resolve(
+            Resolution.HD_720, globalHud = false, globalTouch = true, game = GameSettings(gpuTurbo = true), globalGpuTurbo = false,
+        )
+        assertEquals(true, gameOn.gpuTurbo)
+
+        val gameOff = LaunchOptions.resolve(
+            Resolution.HD_720, globalHud = false, globalTouch = true, game = GameSettings(gpuTurbo = false), globalGpuTurbo = true,
+        )
+        assertEquals(false, gameOff.gpuTurbo)
+    }
+
+    @Test
+    fun gpuTurboOverrideRoundTripsThroughGameSettingsJson() {
+        for (value in listOf(true, false)) {
+            val settings = GameSettings(gpuTurbo = value)
+            assertEquals(settings, GameSettings.fromJson(settings.toJson()))
+        }
+        assertEquals(null, GameSettings.fromJson(GameSettings.DEFAULT.toJson()).gpuTurbo)
+        // Settings saved before the option existed follow the global setting.
+        assertEquals(null, GameSettings.fromJson("""{"resolution":"1080","hud":true}""").gpuTurbo)
+    }
 }

@@ -156,6 +156,7 @@ class MainActivity : Activity() {
                     addView(renderScaleGroup)
                     addView(toggle("Performance HUD", settings.hudEnabled) { settings.hudEnabled = it })
                     addView(toggle("Touch controls", settings.touchControlsEnabled) { settings.touchControlsEnabled = it })
+                    addView(toggle(GameSettingsDialog.GPU_TURBO_LABEL, settings.gpuTurbo) { settings.gpuTurbo = it })
                 },
             )
             addView(label("GPU driver", bold = true))
@@ -296,8 +297,11 @@ class MainActivity : Activity() {
             globalTouch = settings.touchControlsEnabled,
             game = settings.gameSettings(game.path),
             globalRenderScale = settings.renderScale,
+            globalGpuTurbo = settings.gpuTurbo,
         )
-        val args = LaunchArgs.forGame(game.path, options.resolution, drivers.driverDirFor(game.path), options.renderScale)
+        val args = LaunchArgs.forGame(
+            game.path, options.resolution, drivers.driverDirFor(game.path), options.renderScale, options.gpuTurbo,
+        )
         startActivity(
             Intent(this, GameActivity::class.java)
                 .putExtra(LaunchArgs.EXTRA_GAME_ARGS, args)

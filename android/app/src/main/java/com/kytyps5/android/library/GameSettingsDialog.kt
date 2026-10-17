@@ -42,6 +42,7 @@ class GameSettingsDialog(
         renderScale.setSelection(current.renderScale?.let { RenderScale.entries.indexOf(it) + 1 } ?: 0)
         val hud = triState("Performance HUD", current.hud, settings.hudEnabled)
         val touch = triState("Touch controls", current.touchControls, settings.touchControlsEnabled)
+        val gpuTurbo = triState(GPU_TURBO_LABEL, current.gpuTurbo, settings.gpuTurbo)
         val env = EditText(activity).apply {
             setText(EnvVars.format(current.envVars))
             hint = "TU_DEBUG=sysmem"
@@ -67,6 +68,7 @@ class GameSettingsDialog(
             addView(driverButton)
             addView(hud.first)
             addView(touch.first)
+            addView(gpuTurbo.first)
             addView(label("Environment variables (one KEY=VALUE per line)", bold = true))
             addView(env)
             addView(presetsRow(env))
@@ -103,6 +105,7 @@ class GameSettingsDialog(
                         envVars = parsed.vars,
                         hud = hud.second(),
                         touchControls = touch.second(),
+                        gpuTurbo = gpuTurbo.second(),
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                     ),
                 )
@@ -156,8 +159,10 @@ class GameSettingsDialog(
         setPadding(0, 8.dp, 0, 2.dp)
     }
 
-    private companion object {
-        val ENV_PRESETS = listOf(
+    companion object {
+        const val GPU_TURBO_LABEL = "Max GPU clock (faster, runs hotter)"
+
+        private val ENV_PRESETS = listOf(
             "TU_DEBUG=sysmem" to "Force sysmem rendering (fixes GMEM corruption / rainbow textures)",
             "TU_DEBUG=gmem" to "Force GMEM (tile) rendering",
             "TU_DEBUG=noubwc" to "Disable UBWC compression",
