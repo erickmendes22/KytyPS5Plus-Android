@@ -537,7 +537,8 @@ struct PipelineCache::ProgramCache {
 		                               LaneFastPathAllowed(LaneFastPath::LaneBranches, hash),
 		         .wqm_entry_lane_fold  = fast_paths.wqm_entry_lane_fold &&
 		                               LaneFastPathAllowed(LaneFastPath::WqmLaneFold, hash),
-		         .wave_slices          = fast_paths.wave_slices,
+		         .wave_slices          = fast_paths.wave_slices &&
+		                        LaneFastPathAllowed(LaneFastPath::WaveSlices, hash),
 		         .render_scale      = RenderScale::Active(Config::GetRenderScale()),
 		         .render_scale_keep_fragcoord =
 		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_FRAGCOORD) != 0,

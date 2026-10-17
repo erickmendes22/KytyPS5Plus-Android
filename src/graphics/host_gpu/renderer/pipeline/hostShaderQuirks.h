@@ -31,8 +31,9 @@ struct ShaderFastPaths {
 
 // Per-shader bisecting of the lane fast paths: <NAME>_ONLY=<hex prefixes> keeps the path only for
 // matching guest hashes, <NAME>_SKIP=<hex prefixes> drops it for them (KYTY_PIPELINE_STATS
-// syntax; NAME is KYTY_LANE_BRANCHES or KYTY_WQM_LANE_FOLD). Both unset: every shader.
-enum class LaneFastPath { LaneBranches, WqmLaneFold };
+// syntax; NAME is KYTY_LANE_BRANCHES, KYTY_WQM_LANE_FOLD or KYTY_WAVE_SLICES). Both unset: every
+// shader.
+enum class LaneFastPath { LaneBranches, WqmLaneFold, WaveSlices };
 [[nodiscard]] bool LaneFastPathAllowed(LaneFastPath path, uint64_t guest_hash);
 
 } // namespace Libs::Graphics

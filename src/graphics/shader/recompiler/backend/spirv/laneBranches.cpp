@@ -4,6 +4,11 @@
 #include "graphics/shader/recompiler/frontend/cfg/ShaderCFG.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
+#include "common/logging/log.h"
+
+#include <cinttypes>
+#include <cstdlib>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -32,6 +37,8 @@ bool CrossesLanes(const IR::Program& program, const Inst& inst) {
 		case ValueOpcode::ReadLane:
 		case ValueOpcode::WriteLane:
 		case ValueOpcode::Permlane16U32:
+		case ValueOpcode::PermuteU32:
+		case ValueOpcode::BpermuteU32:
 		case ValueOpcode::DppMoveU32:
 		case ValueOpcode::DppUpdateU32:
 		case ValueOpcode::SwizzleU32:
@@ -271,6 +278,47 @@ private:
 		return hazards;
 	}
 
+	// KYTY_LANE_BRANCHES_LOG=1: one line per converted region (diagnostic).
+	static bool LogRegions() {
+		static const bool enabled = [] {
+			const char* value = std::getenv("KYTY_LANE_BRANCHES_LOG");
+			return value != nullptr && value[0] != '\0' && value[0] != '0';
+		}();
+		return enabled;
+	}
+
+	void LogRegion(const Block& branch, const Block& merge, const VoteBranch& vote,
+	               const std::unordered_set<const Block*>& region) const {
+		std::string blocks;
+		uint32_t    loops = 0, votes = 0, ballots = 0, samples = 0, loads = 0, writes = 0, phis = 0;
+		for (const auto* block: m_program.blocks) {
+			if (!region.contains(block)) continue;
+			blocks += " " + std::to_string(block->id);
+			loops += block->terminator.loop_header ? 1u : 0u;
+			for (const auto& inst: *block) {
+				const auto op = inst.GetOpcode();
+				votes += op == ValueOpcode::ConditionRef ? 1u : 0u;
+				ballots += op == ValueOpcode::Ballot || op == ValueOpcode::ReadFirstLane ? 1u : 0u;
+				samples += op == ValueOpcode::ImageSampleRaw ? 1u : 0u;
+				loads += IR::BufferAccessOf(op) == IR::BufferAccess::Read ? 1u : 0u;
+				writes += inst.MayHaveSideEffects() && op != ValueOpcode::Reference &&
+				                  op != ValueOpcode::ReferenceU32
+				              ? 1u
+				              : 0u;
+				phis += op == ValueOpcode::Phi ? 1u : 0u;
+			}
+		}
+		uint32_t merge_phis = 0;
+		for (const auto& inst: merge) merge_phis += inst.GetOpcode() == ValueOpcode::Phi ? 1u : 0u;
+		const auto* predicate = InstOf(vote.predicate);
+		LOGF("lane branch hash=0x%016" PRIx64 " #%u branch=%u merge=%u pred=%s blocks=[%s ] loops=%u "
+		     "votes=%u ballots=%u samples=%u loads=%u writes=%u phis=%u merge_phis=%u\n",
+		     m_program.shader_hash, m_stats.converted, branch.id, merge.id,
+		     predicate != nullptr ? std::string(IR::ValueOpcodeName(predicate->GetOpcode())).c_str()
+		                          : "imm",
+		     blocks.c_str(), loops, votes, ballots, samples, loads, writes, phis, merge_phis);
+	}
+
 	bool TryConvert(Block& branch) {
 		VoteBranch vote;
 		if (!ResolveVote(branch, vote)) return false;
@@ -281,6 +329,7 @@ private:
 		const bool convertible = Convertible(branch, *merge, vote, region);
 		m_region = nullptr;
 		if (!convertible) return false;
+		if (LogRegions()) LogRegion(branch, *merge, vote, region);
 		const bool region_is_true = branch.terminator.true_block == vote.region;
 		if (region_is_true) {
 			branch.condition = vote.predicate;

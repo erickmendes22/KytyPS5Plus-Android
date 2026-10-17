@@ -92,7 +92,10 @@ HashFilter ReadHashFilter(const char* name) {
 bool LaneFastPathAllowed(LaneFastPath path, uint64_t guest_hash) {
 	static const HashFilter lane_branches = ReadHashFilter("KYTY_LANE_BRANCHES");
 	static const HashFilter wqm_fold      = ReadHashFilter("KYTY_WQM_LANE_FOLD");
-	const auto& filter = path == LaneFastPath::LaneBranches ? lane_branches : wqm_fold;
+	static const HashFilter wave_slices   = ReadHashFilter("KYTY_WAVE_SLICES");
+	const auto& filter = path == LaneFastPath::LaneBranches ? lane_branches
+	                   : path == LaneFastPath::WqmLaneFold  ? wqm_fold
+	                                                        : wave_slices;
 	if (!filter.only.empty() && !PipelineStats::Matches(filter.only, guest_hash)) return false;
 	return filter.skip.empty() || !PipelineStats::Matches(filter.skip, guest_hash);
 }
