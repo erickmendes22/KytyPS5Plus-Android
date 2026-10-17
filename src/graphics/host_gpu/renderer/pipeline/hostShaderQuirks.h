@@ -18,7 +18,7 @@ struct GraphicContext;
 // robust_buffer_loads, lane_exec_branches, wqm_entry_lane_fold, wave_slices, uniform constant
 // buffers). The first two default to on for Mesa Turnip only, the experimental others to off.
 // Environment overrides: KYTY_FAST_FMINMAX, KYTY_ROBUST_LOADS, KYTY_LANE_BRANCHES,
-// KYTY_WQM_LANE_FOLD, KYTY_WAVE_SLICES, KYTY_UBO_CONSTANTS (1 on, 0 off).
+// KYTY_WQM_LANE_FOLD, KYTY_WAVE_SLICES, KYTY_UBO_CONSTANTS, KYTY_QUAD_DPP (1 on, 0 off).
 // Logs the result.
 struct ShaderFastPaths {
 	bool native_float_min_max = false;
@@ -26,6 +26,8 @@ struct ShaderFastPaths {
 	bool lane_exec_branches   = false;
 	bool wqm_entry_lane_fold  = false;
 	bool wave_slices          = false;
+	// ShaderDeviceFeatures::subgroup_quad_dpp (KYTY_QUAD_DPP).
+	bool quad_dpp             = false;
 	// ShaderDeviceFeatures::uniform_constant_buffer_bytes / uniform_buffers_per_stage
 	// (KYTY_UBO_CONSTANTS; needs robustBufferAccess2 for uniform buffers). 0: off.
 	uint32_t uniform_constant_buffer_bytes = 0;

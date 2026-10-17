@@ -260,6 +260,11 @@ struct ShaderDeviceFeatures {
 	// keep their DPP lowering instead of becoming OpGroupNonUniform*Min.
 	bool subgroup_vote           = true;
 	bool subgroup_arithmetic     = true;
+	// DPP quad permutations (quad_perm, row_xmask:1..3) become GroupNonUniformQuad swaps and
+	// broadcasts in pixel and compute shaders instead of an indexed shuffle, which Mesa ir3
+	// lowers to a loop over the distinct lane deltas (KYTY_QUAD_DPP; needs the quad subgroup
+	// feature). Same results: both read the same lane of the quad.
+	bool subgroup_quad_dpp       = false;
 	// shaderStorageImageArrayNonUniformIndexing. Without it, GPU-selected storage images are
 	// indexed dynamically without the NonUniform decoration (shaderStorageImageArrayDynamicIndexing).
 	bool storage_image_array_non_uniform_indexing = true;

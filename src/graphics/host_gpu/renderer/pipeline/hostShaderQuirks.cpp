@@ -57,6 +57,8 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	    .lane_exec_branches   = EnvToggle("KYTY_LANE_BRANCHES", false),
 	    .wqm_entry_lane_fold  = EnvToggle("KYTY_WQM_LANE_FOLD", false),
 	    .wave_slices          = EnvToggle("KYTY_WAVE_SLICES", false),
+	    .quad_dpp             = EnvToggle("KYTY_QUAD_DPP", false) &&
+	                graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eQuad),
 	};
 	if (EnvToggle("KYTY_UBO_CONSTANTS", false) && graphics.optional_features.robust_uniform_buffer_access2) {
 		const auto& limits = graphics.GetPhysicalDeviceProperties().limits;
@@ -72,11 +74,12 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	}
 	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: native_float_min_max={} "
 	                                      "robust_buffer_loads={} lane_exec_branches={} "
-	                                      "wqm_entry_lane_fold={} wave_slices={} "
+	                                      "wqm_entry_lane_fold={} wave_slices={} quad_dpp={} "
 	                                      "ubo_constants={}B x{}\n",
 	                                      paths.native_float_min_max, paths.robust_buffer_loads,
 	                                      paths.lane_exec_branches, paths.wqm_entry_lane_fold,
-	                                      paths.wave_slices, paths.uniform_constant_buffer_bytes,
+	                                      paths.wave_slices, paths.quad_dpp,
+	                                      paths.uniform_constant_buffer_bytes,
 	                                      paths.uniform_buffers_per_stage));
 	return paths;
 }

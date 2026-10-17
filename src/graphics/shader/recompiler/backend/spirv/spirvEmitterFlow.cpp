@@ -3,7 +3,9 @@
 #include "common/logging/log.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <optional>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 namespace {
@@ -761,11 +763,93 @@ uint32_t EmitUndefU1(EmitterState& state, const IR::Inst& inst) {
 	return result;
 }
 
+// KYTY_QUAD_DPP: for a DPP control that reads within the lane's own quad (quad_perm and
+// row_xmask:1..3), the xor from each quad position to the position it reads; nullopt otherwise.
+static std::optional<std::array<uint32_t, 4>> DppQuadSourceXors(const IR::DppMoveFlags& flags) {
+	if (flags.dpp8) {
+		return std::nullopt;
+	}
+	std::array<uint32_t, 4> xors {};
+	if (flags.control <= 0xffu) {
+		for (uint32_t position = 0; position < 4u; position++) {
+			xors[position] = ((flags.control >> (position * 2u)) & 3u) ^ position;
+		}
+		return xors;
+	}
+	if (flags.control >= 0x161u && flags.control <= 0x163u) {
+		xors.fill(flags.control & 3u);
+		return xors;
+	}
+	return std::nullopt;
+}
+
+// The value DPP reads from lane (lane & ~3) | source, built from native quad operations:
+// a broadcast when the whole quad reads one position, otherwise up to three quad swaps
+// (horizontal = xor 1, vertical = xor 2, diagonal = xor 3) selected per quad position. Mesa
+// ir3 maps these to its quad shuffle instructions; a generic indexed shuffle becomes a loop.
+static std::optional<uint32_t> EmitDppQuadRead(ValueEmitContext& ctx, const IR::Inst& inst,
+                                               const IR::DppMoveFlags& flags) {
+	auto& state = ctx.state;
+	if (!state.device_features.subgroup_quad_dpp || ctx.other_half != nullptr ||
+	    state.lane_half != 0 || state.subgroup_isolated ||
+	    (state.program.stage != ShaderType::Pixel && state.program.stage != ShaderType::Compute)) {
+		return std::nullopt;
+	}
+	const auto xors = DppQuadSourceXors(flags);
+	if (!xors) {
+		return std::nullopt;
+	}
+	state.builder.RequireCapability(spv::CapabilityGroupNonUniformQuad);
+	const auto type  = TypeId(state, inst.Arg(0).GetType());
+	const auto value = ctx.Arg(inst, 0);
+	const auto scope = ConstantU32(state, spv::ScopeSubgroup);
+	const auto source0 = (*xors)[0];
+	if (std::ranges::all_of(std::array {1u, 2u, 3u},
+	                        [&](uint32_t position) { return ((*xors)[position] ^ position) == source0; })) {
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpGroupNonUniformQuadBroadcast, type, result, scope, value,
+		                          ConstantU32(state, source0));
+		return result;
+	}
+	std::array<uint32_t, 4> swapped {value, 0, 0, 0};
+	for (const auto x: *xors) {
+		if (x != 0 && swapped[x] == 0) {
+			swapped[x] = state.builder.AllocateId();
+			state.builder.AddFunction(spv::OpGroupNonUniformQuadSwap, type, swapped[x], scope, value,
+			                          ConstantU32(state, x - 1u));
+		}
+	}
+	if (std::ranges::all_of(*xors, [&](uint32_t x) { return x == (*xors)[0]; })) {
+		return swapped[(*xors)[0]];
+	}
+	uint32_t table = 0;
+	for (uint32_t position = 0; position < 4u; position++) {
+		table |= (*xors)[position] << (position * 2u);
+	}
+	const auto position = EmitBinaryU32(state, spv::OpBitwiseAnd,
+	                                    EmitSubgroupLocalInvocationId(state), ConstantU32(state, 3));
+	const auto shift = EmitBinaryU32(state, spv::OpShiftLeftLogical, position, ConstantU32(state, 1));
+	const auto x     = EmitBinaryU32(state, spv::OpBitwiseAnd,
+	                                 EmitBinaryU32(state, spv::OpShiftRightLogical,
+	                                               ConstantU32(state, table), shift),
+	                                 ConstantU32(state, 3));
+	auto result = value;
+	for (uint32_t m = 1; m < 4u; m++) {
+		if (swapped[m] == 0) {
+			continue;
+		}
+		const auto is_m = Binary(state, spv::OpIEqual, TypeBool(state), x, ConstantU32(state, m));
+		result          = Select(state, type, is_m, swapped[m], result);
+	}
+	return result;
+}
+
 uint32_t EmitDppMoveU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&      state    = ctx.state;
 	const auto flags    = inst.Flags<IR::DppMoveFlags>();
 	const auto target   = EmitDppTargetLane(state, flags);
-	const auto shuffled = ctx.Shuffle(inst, 0, target.lane);
+	const auto quad     = EmitDppQuadRead(ctx, inst, flags);
+	const auto shuffled = quad ? *quad : ctx.Shuffle(inst, 0, target.lane);
 	if (flags.fetch_inactive) {
 		return shuffled;
 	}
