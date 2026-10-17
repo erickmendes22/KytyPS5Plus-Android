@@ -71,71 +71,48 @@ int SetKgslTurbo(bool turbo) noexcept {
 	return result;
 }
 
-// KYTY_GPU_CLOCK_SAMPLE=<seconds>: logs the average GPU core clock (tag KytyGpu) from the KGSL
-// RBBM always-count perf counter, which counts GPU core cycles while the GPU is powered. Averages
-// include power-collapsed time, so an idle GPU with normal power control reads low while one
-// pinned by --gpu-turbo (power collapse disabled) reads its maximum clock. Diagnostic only.
-void StartGpuClockSampler() {
-	const char* env = std::getenv("KYTY_GPU_CLOCK_SAMPLE");
-	const int   period = env != nullptr ? std::atoi(env) : 0;
-	if (period <= 0) {
-		return;
-	}
-	__android_log_print(ANDROID_LOG_INFO, "KytyGpu", "GPU clock sampler: every %d s", period);
-	std::thread([period] {
-		struct PerfcounterGet {
-			unsigned int groupid, countable, offset, offset_hi, pad;
-		};
-		struct PerfcounterReadGroup {
-			unsigned int       groupid, countable;
-			unsigned long long value;
-		};
-		struct PerfcounterRead {
-			PerfcounterReadGroup* reads;
-			unsigned int          count, pad[2];
-		};
-		constexpr unsigned long Get  = _IOWR(0x09, 0x38, PerfcounterGet);
-		constexpr unsigned long Read = _IOWR(0x09, 0x3B, PerfcounterRead);
-		const int fd = open("/dev/kgsl-3d0", O_RDWR | O_CLOEXEC);
-		PerfcounterGet get {1 /* RBBM */, 0 /* ALWAYS_COUNT */, 0, 0, 0};
-		if (fd < 0 || ioctl(fd, Get, &get) != 0) {
-			__android_log_print(ANDROID_LOG_WARN, "KytyGpu", "GPU clock sampler: unavailable (%s)",
-			                    std::strerror(errno));
-			if (fd >= 0) close(fd);
-			return;
-		}
-		__android_log_print(ANDROID_LOG_INFO, "KytyGpu", "GPU clock sampler: RBBM counter at 0x%x",
-		                    get.offset);
-		PerfcounterReadGroup group {1, 0, 0};
-		PerfcounterRead      read {&group, 1, {0, 0}};
-		auto                 last_cycles = 0ull;
-		auto                 last_time   = std::chrono::steady_clock::now();
-		for (bool first = true;; first = false) {
-			if (ioctl(fd, Read, &read) != 0) {
-				__android_log_print(ANDROID_LOG_WARN, "KytyGpu", "GPU clock sampler: read failed (%s)",
-				                    std::strerror(errno));
-				break;
-			}
-			const auto now = std::chrono::steady_clock::now();
-			if (!first) {
-				const double seconds = std::chrono::duration<double>(now - last_time).count();
-				__android_log_print(ANDROID_LOG_INFO, "KytyGpu", "GPU clock: avg %.0f MHz over %.1f s",
-				                    static_cast<double>(group.value - last_cycles) / seconds / 1e6, seconds);
-			}
-			last_cycles = group.value;
-			last_time   = now;
-			std::this_thread::sleep_for(std::chrono::seconds(period));
-		}
-		close(fd);
-	}).detach();
-}
-
 // The policy runs before the emulator log exists, so it also goes to logcat (tag KytyGpu).
 void ReportClock(const char* what, int error) {
 	const auto line = error == 0 ? fmt::format("GPU clock: {}", what)
 	                             : fmt::format("GPU clock: {} FAILED: {}", what, std::strerror(error));
 	__android_log_write(error == 0 ? ANDROID_LOG_INFO : ANDROID_LOG_WARN, "KytyGpu", line.c_str());
 	Report(line);
+}
+
+// KGSL_PROP_PWRCTRL goes through kgsl_pwrscale_disable/enable, which end in
+// devfreq_suspend_device/devfreq_resume_device. devfreq counts those calls: a resume restarts the
+// GPU governor only once suspend_count drops below 1. Every turbo request a run never released
+// (force-stop, low-memory killer) leaves +1 behind, which one release cannot undo. A release with
+// nothing to undo only resets the governor to its initial frequency, so the default-clock policy
+// sends enough of them to drain any realistic leak. kgsl queues each request as a work item and
+// merges back-to-back ones, hence the spacing.
+constexpr int  KgslReleaseDrainCount = 64;
+constexpr auto KgslRequestSpacing    = std::chrono::milliseconds(5);
+
+void DrainLeakedGpuTurbo() {
+	std::thread([] {
+		int failures   = 0;
+		int last_error = 0;
+		for (int i = 0; i < KgslReleaseDrainCount; i++) {
+			if (const int error = SetKgslTurbo(false); error != 0) {
+				failures++;
+				last_error = error;
+			}
+			std::this_thread::sleep_for(KgslRequestSpacing);
+		}
+		const auto what = fmt::format("default clocks: sent {} releases for leftover --gpu-turbo "
+		                              "requests ({} failed)",
+		                              KgslReleaseDrainCount, failures);
+		ReportClock(what.c_str(), failures == KgslReleaseDrainCount ? last_error : 0);
+	}).detach();
+}
+
+// Takes the clock with a release first, so a request left by a killed run (or a foreground return
+// whose background release was missed) stays balanced: off/on leaves the count where it was.
+int AcquireGpuTurboBalanced() noexcept {
+	(void)SetKgslTurbo(false);
+	std::this_thread::sleep_for(KgslRequestSpacing);
+	return SetKgslTurbo(true);
 }
 #endif
 
@@ -259,23 +236,22 @@ bool GpuTurboRequested() {
 
 void ApplyGpuClockPolicy() {
 #if defined(KYTY_ANDROID)
-	StartGpuClockSampler();
 	if (!GpuTurboRequested()) {
 		if (std::getenv("KYTY_GPU_CLOCK_KEEP") != nullptr) {
 			// Test hook: shows whether a previous run's exit path released the clock.
 			ReportClock("default clocks: leftover request left as is (KYTY_GPU_CLOCK_KEEP)", 0);
 			return;
 		}
-		// The KGSL request is device-global and outlives the process that made it; a run that was
-		// killed (force-stop, low-memory killer) could not undo it, so every run without
-		// --gpu-turbo starts by clearing it.
-		ReportClock("default clocks: cleared any leftover --gpu-turbo request", SetKgslTurbo(false));
+		// The KGSL request is device-global and outlives the process that made it; runs that were
+		// killed (force-stop, low-memory killer) could not undo theirs, so every run without
+		// --gpu-turbo starts by draining them, off the startup path.
+		DrainLeakedGpuTurbo();
 		return;
 	}
 	(void)Common::AddProcessExitHook(ReleaseGpuTurbo);
 	g_turbo_active.store(true, std::memory_order_release);
 	ReportClock("--gpu-turbo: maximum clocks (reset on exit and in the background)",
-	            SetKgslTurbo(true));
+	            AcquireGpuTurboBalanced());
 #else
 	if (GpuTurboRequested()) {
 		Report("GPU driver: --gpu-turbo is only supported on Android");
@@ -294,7 +270,8 @@ void SuspendGpuTurbo() noexcept {
 void ResumeGpuTurbo() noexcept {
 #if defined(KYTY_ANDROID)
 	if (GpuTurboRequested() && !g_turbo_active.exchange(true, std::memory_order_acq_rel)) {
-		ReportClock("--gpu-turbo: maximum clocks again in the foreground", SetKgslTurbo(true));
+		ReportClock("--gpu-turbo: maximum clocks again in the foreground",
+		            AcquireGpuTurboBalanced());
 	}
 #endif
 }
