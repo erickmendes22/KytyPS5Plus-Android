@@ -105,11 +105,19 @@ struct ConfigOptions {
 	// --submit-thread: vkQueueSubmit runs on its own thread so the GPU (command processor)
 	// thread keeps translating PM4 while the driver queues the previous command buffer. On
 	// Turnip/KGSL a submit costs 2-16 ms of the GPU thread (28-34 per frame in Astro Bot).
+#if defined(__ANDROID__)
+	bool                   submit_thread               = true;
+#else
 	bool                   submit_thread               = false;
+#endif
 	// --timeline-tracker: one thread waits for each timeline tick in turn and publishes the
 	// GPU's progress, replacing vkGetSemaphoreCounterValue polls on the working threads (40-55
 	// per frame, about 1 ms each on Turnip/KGSL, which walks its emulated timeline).
+#if defined(__ANDROID__)
+	bool                   timeline_tracker            = true;
+#else
 	bool                   timeline_tracker            = false;
+#endif
 	// --gpu-frames-in-flight: how many AgcSuspendPoint frames the guest may run ahead of the
 	// host GPU's completion; 1 waits at each suspend point for the previous frame's GPU work,
 	// 0 never waits there (the guest's own flip and label waits pace it).
@@ -118,7 +126,11 @@ struct ConfigOptions {
 	// more graphics submissions are queued (flips, suspend points and downloads still do), so
 	// several guest submissions share one vkQueueSubmit. EOP interrupts wait up to 8 ms instead
 	// of 1 ms for a batch; nothing waits past the moment the GPU thread runs out of work.
+#if defined(__ANDROID__)
+	bool                   submit_coalesce             = true;
+#else
 	bool                   submit_coalesce             = false;
+#endif
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;

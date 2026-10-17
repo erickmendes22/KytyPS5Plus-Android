@@ -171,13 +171,14 @@ static void PrintUsage() {
 	         "                                       skipped (default 1 on Android, 0 elsewhere).\n");
 	::printf("  --shader-threads <n>                 Shader worker threads (0 = automatic).\n");
 	::printf("  --submit-thread <0|1>                Call vkQueueSubmit on a submit thread instead of\n"
-	         "                                       the GPU thread. Default: 0.\n");
+	         "                                       the GPU thread. Default: 1 on Android, 0 elsewhere.\n");
 	::printf("  --timeline-tracker <0|1>             Track GPU progress on one wait thread instead of\n"
-	         "                                       polling the timeline semaphore. Default: 0.\n");
+	         "                                       polling the timeline semaphore. Default: 1 on Android,\n"
+	         "                                       0 elsewhere.\n");
 	::printf("  --gpu-frames-in-flight <0-4>         Frames the guest may run ahead of GPU completion\n"
 	         "                                       at AgcSuspendPoint (0 = never wait). Default: 1.\n");
 	::printf("  --submit-coalesce <0|1>              Share one vkQueueSubmit between consecutive guest\n"
-	         "                                       graphics submissions. Default: 0.\n");
+	         "                                       graphics submissions. Default: 1 on Android, 0 elsewhere.\n");
 	::printf("  --render-scale <0.25-2.0>            Internal resolution of frame-sized render\n"
 	         "                                       targets (0.5 = quarter the pixels). Default: 1.0.\n");
 	::printf("  --env <NAME=VALUE>                   Set an environment variable (e.g. FEX_* options).\n");
