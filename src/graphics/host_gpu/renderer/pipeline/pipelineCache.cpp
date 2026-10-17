@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderDiskCache.h"
 
 #include "graphics/host_gpu/renderer/image/renderScale.h"
 
@@ -42,6 +43,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <unordered_set>
+#include <variant>
 #include <xxhash.h>
 
 namespace Libs::Graphics {
@@ -477,6 +480,92 @@ struct PipelineCache::ProgramCache {
 		            counts[static_cast<size_t>(ShaderType::TessellationEvaluation)]);
 	}
 
+	static std::pair<const char*, const char*> StageLabels(ShaderType stage) {
+		switch (stage) {
+			case ShaderType::Vertex: return {"ShaderRecompiler VS", "vs"};
+			case ShaderType::Mesh: return {"ShaderRecompiler MS", "ms"};
+			case ShaderType::Local: return {"ShaderRecompiler LS", "ls"};
+			case ShaderType::TessellationControl: return {"ShaderRecompiler HS", "hs"};
+			case ShaderType::TessellationEvaluation: return {"ShaderRecompiler DS", "ds"};
+			case ShaderType::Pixel: return {"ShaderRecompiler PS", "ps"};
+			case ShaderType::Compute: return {"ShaderRecompiler CS", "cs"};
+			default: EXIT("invalid pipeline shader stage\n");
+		}
+		return {};
+	}
+
+	// Everything the recompiler is told besides the program itself. The spans and input_info must
+	// outlive the options (MakeJob re-points them at the job's own copies).
+	template <typename InputInfo>
+	ShaderRecompiler::CompileOptions MakeOptions(ShaderType stage, uint64_t hash,
+	                                             std::span<const uint32_t> user_data,
+	                                             std::span<const uint32_t> back_code,
+	                                             const InputInfo& input_info, const char* label) const {
+		ShaderStageInputInfo stage_input {};
+		if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
+			stage_input.vertex = &input_info;
+		} else if constexpr (std::is_same_v<InputInfo, ShaderPixelInputInfo>) {
+			stage_input.pixel = &input_info;
+		} else {
+			stage_input.compute = &input_info;
+		}
+		ShaderRecompiler::CompileOptions options;
+		options.stage       = stage;
+		options.maintenance8_enabled = graphics.maintenance8_enabled;
+		options.device_features      = {
+		         .fragment_shader_barycentric = graphics.optional_features.fragment_shader_barycentric,
+		         .geometry_varying_locations  = graphics.optional_features.geometry_varying_locations,
+		         .shader_float64              = graphics.optional_features.shader_float64,
+		         .shader_shared_int64_atomics = graphics.optional_features.shader_shared_int64_atomics,
+		         .signed_zero_inf_nan_preserve_f32 =
+		             graphics.optional_features.shader_signed_zero_inf_nan_preserve_f32,
+		         .subgroup_vertex       = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eVertex),
+		         .subgroup_tessellation =
+		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationControl) &&
+		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationEvaluation),
+		         .subgroup_fragment = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eFragment),
+		         .subgroup_vote =
+		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eVote),
+		         .subgroup_arithmetic =
+		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eArithmetic),
+		         .storage_image_array_non_uniform_indexing =
+		             graphics.optional_features.storage_image_array_non_uniform_indexing,
+		         .mesh_shader       = graphics.mesh_shader_enabled,
+		         .native_float_min_max = fast_paths.native_float_min_max,
+		         .robust_buffer_loads  = fast_paths.robust_buffer_loads,
+		         .lane_exec_branches   = fast_paths.lane_exec_branches,
+		         .wqm_entry_lane_fold  = fast_paths.wqm_entry_lane_fold,
+		         .render_scale      = RenderScale::Active(Config::GetRenderScale()),
+		         .render_scale_keep_fragcoord =
+		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_FRAGCOORD) != 0,
+		         .render_scale_keep_texels =
+		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_TEXELS) != 0,
+		};
+		options.device_quirks = device_quirks;
+		options.shader_hash = hash;
+		options.user_data   = user_data;
+		options.back_code      = back_code;
+		options.dump_ir     = Config::GetShaderLogDirection() != Config::LogDirection::Silent ||
+		                  IrDumpRequested(hash);
+		options.early_dump  = options.dump_ir;
+		options.emit_debug_info = Config::GraphicsDebugDumpEnabled();
+		options.dump_label  = label;
+		options.input_info  = stage_input;
+
+		if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
+			options.user_data_base = 8;
+			options.wave_size = input_info.wave_size;
+			if (stage == ShaderType::Mesh || stage == ShaderType::TessellationControl) {
+				options.user_data_base = 0;
+				options.wave_size = stage == ShaderType::Mesh ? input_info.mesh.wave_size : 64u;
+			}
+		} else {
+			options.wave_size = input_info.wave_size;
+		}
+
+		return options;
+	}
+
 	// Returns the program for this draw, or a null program while it is still translating on a
 	// worker (allow_async; the caller skips the draw). A caller that cannot skip (compute) gets
 	// the translation on this thread.
@@ -527,79 +616,8 @@ struct PipelineCache::ProgramCache {
 			}
 		}
 
-		ShaderStageInputInfo stage_input {};
-		if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
-			stage_input.vertex = &input_info;
-		} else if constexpr (std::is_same_v<InputInfo, ShaderPixelInputInfo>) {
-			stage_input.pixel = &input_info;
-		} else {
-			stage_input.compute = &input_info;
-		}
-		const char* label = nullptr;
-		const char* stage_name = nullptr;
-		switch (stage) {
-			case ShaderType::Vertex: label = "ShaderRecompiler VS"; stage_name = "vs"; break;
-			case ShaderType::Mesh: label = "ShaderRecompiler MS"; stage_name = "ms"; break;
-			case ShaderType::Local: label = "ShaderRecompiler LS"; stage_name = "ls"; break;
-			case ShaderType::TessellationControl: label = "ShaderRecompiler HS"; stage_name = "hs"; break;
-			case ShaderType::TessellationEvaluation: label = "ShaderRecompiler DS"; stage_name = "ds"; break;
-			case ShaderType::Pixel: label = "ShaderRecompiler PS"; stage_name = "ps"; break;
-			case ShaderType::Compute: label = "ShaderRecompiler CS"; stage_name = "cs"; break;
-			default: EXIT("invalid pipeline shader stage\n");
-		}
-		ShaderRecompiler::CompileOptions options;
-		options.stage       = stage;
-		options.maintenance8_enabled = graphics.maintenance8_enabled;
-		options.device_features      = {
-		         .fragment_shader_barycentric = graphics.optional_features.fragment_shader_barycentric,
-		         .geometry_varying_locations  = graphics.optional_features.geometry_varying_locations,
-		         .shader_float64              = graphics.optional_features.shader_float64,
-		         .shader_shared_int64_atomics = graphics.optional_features.shader_shared_int64_atomics,
-		         .signed_zero_inf_nan_preserve_f32 =
-		             graphics.optional_features.shader_signed_zero_inf_nan_preserve_f32,
-		         .subgroup_vertex       = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eVertex),
-		         .subgroup_tessellation =
-		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationControl) &&
-		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationEvaluation),
-		         .subgroup_fragment = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eFragment),
-		         .subgroup_vote =
-		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eVote),
-		         .subgroup_arithmetic =
-		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eArithmetic),
-		         .storage_image_array_non_uniform_indexing =
-		             graphics.optional_features.storage_image_array_non_uniform_indexing,
-		         .mesh_shader       = graphics.mesh_shader_enabled,
-		         .native_float_min_max = fast_paths.native_float_min_max,
-		         .robust_buffer_loads  = fast_paths.robust_buffer_loads,
-		         .lane_exec_branches   = fast_paths.lane_exec_branches,
-		         .wqm_entry_lane_fold  = fast_paths.wqm_entry_lane_fold,
-		         .render_scale      = RenderScale::Active(Config::GetRenderScale()),
-		         .render_scale_keep_fragcoord =
-		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_FRAGCOORD) != 0,
-		         .render_scale_keep_texels =
-		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_TEXELS) != 0,
-		};
-		options.device_quirks = device_quirks;
-		options.shader_hash = params.hash;
-		options.user_data   = user_data;
-		options.back_code      = params.back_code;
-		options.dump_ir     = Config::GetShaderLogDirection() != Config::LogDirection::Silent ||
-		                  IrDumpRequested(params.hash);
-		options.early_dump  = options.dump_ir;
-		options.emit_debug_info = Config::GraphicsDebugDumpEnabled();
-		options.dump_label  = label;
-		options.input_info  = stage_input;
-
-		if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
-			options.user_data_base = 8;
-			options.wave_size = input_info.wave_size;
-			if (stage == ShaderType::Mesh || stage == ShaderType::TessellationControl) {
-				options.user_data_base = 0;
-				options.wave_size = stage == ShaderType::Mesh ? input_info.mesh.wave_size : 64u;
-			}
-		} else {
-			options.wave_size = input_info.wave_size;
-		}
+		const auto [label, stage_name] = StageLabels(stage);
+		auto options = MakeOptions(stage, params.hash, user_data, params.back_code, input_info, label);
 
 		// Installs a compiled permutation for this draw; the GPU thread owns the entry.
 		const auto install = [&](Permutation&& compiled) -> ShaderProgram {
@@ -622,6 +640,7 @@ struct PipelineCache::ProgramCache {
 			if (entry == programs.end()) {
 				if (const auto pending = pending_programs.find(lookup_key); pending != pending_programs.end()) {
 					job = pending->second;
+					workers.Prioritize(job); // a disk cache warm-up job the game now needs
 				}
 			} else {
 				job = entry->second.FindPendingCompile(push_data_cursor);
@@ -656,6 +675,7 @@ struct PipelineCache::ProgramCache {
 					job->permutation.reset();
 					return install(std::move(compiled));
 				}
+				RecordProgram(lookup_key, *job);
 				entry = programs.try_emplace(lookup_key, std::move(job->plan), nullptr).first;
 				{
 					const Common::PerfStats::ScopedTranslatePhase phase(Common::PerfStats::TranslatePhase::Materialize);
@@ -734,6 +754,97 @@ struct PipelineCache::ProgramCache {
 		}
 	}
 
+	// --shader-disk-cache: appends each newly translated source; WarmUp replays the file.
+	void OpenDiskCache(const std::string& title_id) {
+		if (!workers.Async()) {
+			PipelineCacheLog("Shader disk cache: disabled (needs --async-shaders workers)");
+			return;
+		}
+		disk_cache = ShaderDiskCache::Open(std::filesystem::path("_ShaderCache") / (title_id + ".bin"),
+		                                   OptionsSignature());
+		if (!disk_cache) {
+			return;
+		}
+		auto loaded = disk_cache->TakeLoaded();
+		std::vector<std::shared_ptr<ShaderWorkerPool::Job>> warm_up;
+		warm_up.reserve(loaded.size());
+		for (auto& record: loaded) {
+			std::visit([&](auto& input) { QueueWarmUp(record, input, warm_up); }, record.input);
+		}
+		PipelineCacheLog("Shader disk cache: warming up {} of {} programs on background workers",
+		                 warm_up.size(), loaded.size());
+		workers.SubmitBackground(std::move(warm_up));
+	}
+
+	// Everything besides the program inputs that changes translation output. A change starts the
+	// cache over (replayed jobs use the current options anyway; this keeps the file honest).
+	uint64_t OptionsSignature() const {
+		ShaderVertexInputInfo dummy {};
+		const auto  options = MakeOptions(ShaderType::Vertex, 0, {}, {}, dummy, "");
+		const auto& f       = options.device_features;
+		const auto  text    = fmt::format(
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={}", f.fragment_shader_barycentric,
+            f.geometry_varying_locations, f.shader_float64, f.shader_shared_int64_atomics,
+            f.signed_zero_inf_nan_preserve_f32, f.subgroup_vertex, f.subgroup_tessellation,
+            f.subgroup_fragment, f.subgroup_vote, f.subgroup_arithmetic,
+            f.storage_image_array_non_uniform_indexing, f.mesh_shader, f.native_float_min_max,
+            f.robust_buffer_loads, f.lane_exec_branches, f.wqm_entry_lane_fold, f.render_scale,
+            f.render_scale_keep_fragcoord, f.render_scale_keep_texels, options.maintenance8_enabled,
+            options.device_quirks.branchless_bounds_checks);
+		return XXH3_64bits(text.data(), text.size());
+	}
+
+	template <typename InputInfo>
+	void QueueWarmUp(const ShaderDiskCache::Record& record, InputInfo& input_info,
+	                 std::vector<std::shared_ptr<ShaderWorkerPool::Job>>& out) {
+		ProgramKey key;
+		key.stage           = record.stage;
+		key.hash            = record.hash;
+		key.user_data_count = record.user_data_count;
+		key.code_size       = static_cast<uint32_t>(record.code.size());
+		BuildStageStaticKey(input_info, key.static_state);
+		if (!recorded.insert(key).second) {
+			return; // duplicate record
+		}
+		ShaderParams params;
+		params.code            = record.code;
+		params.back_code       = record.back_code;
+		params.user_data       = record.user_data;
+		params.user_data_count = record.user_data_count;
+		params.hash            = record.hash;
+		const auto [label, stage_name] = StageLabels(record.stage);
+		const auto user_data = std::span<const uint32_t>(params.user_data).first(params.user_data_count);
+		const auto options =
+		    MakeOptions(record.stage, record.hash, user_data, params.back_code, input_info, label);
+		auto job = MakeJob(params, input_info, options, stage_name, nullptr, 0);
+		pending_programs.emplace(std::move(key), job);
+		out.push_back(std::move(job));
+	}
+
+	// The inputs of a source translated for the first time, for the next run's warm-up.
+	void RecordProgram(const ProgramKey& key, const TranslateJob& job) {
+		if (!disk_cache || !recorded.insert(key).second) {
+			return;
+		}
+		ShaderDiskCache::Record record;
+		record.stage           = key.stage;
+		record.hash            = key.hash;
+		record.user_data_count = key.user_data_count;
+		std::copy(job.user_data.begin(), job.user_data.end(), record.user_data.begin());
+		record.code      = job.code;
+		record.back_code = job.back_code;
+		if (key.stage == ShaderType::Pixel) {
+			record.input = job.pixel_input;
+		} else if (key.stage == ShaderType::Compute) {
+			record.input = job.compute_input;
+		} else {
+			record.input = job.vertex_input;
+		}
+		disk_cache->Append(record);
+	}
+
+	std::unique_ptr<ShaderDiskCache>                            disk_cache;
+	std::unordered_set<ProgramKey, ProgramKeyHash>              recorded;
 	std::unordered_map<ProgramKey, SourceEntry, ProgramKeyHash> programs;
 	// Translations of sources without an entry yet, by the key they will get.
 	std::unordered_map<ProgramKey, std::shared_ptr<TranslateJob>, ProgramKeyHash> pending_programs;
@@ -845,6 +956,11 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 	                 m_workers->Async() ? "async shaders: draws skip pipelines that are not ready"
 	                                    : "synchronous");
 	InitializeDriverCache();
+	if (Config::ShaderDiskCacheEnabled()) {
+		if (const auto title_id = PipelineCacheTitleId(); !title_id.empty()) {
+			m_program_cache->OpenDiskCache(title_id);
+		}
+	}
 }
 
 PipelineCache::~PipelineCache() {

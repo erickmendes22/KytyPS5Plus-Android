@@ -203,6 +203,10 @@ static void PrintUsage() {
 	::printf("  --gpu-fatal-dialog <0|1>             Show the reason in a message box before exiting on\n"
 	         "                                       GPU device loss or out of device memory. Default: 1\n"
 	         "                                       on Android, 0 elsewhere.\n");
+	::printf("  --shader-disk-cache <0|1>            Remember the shaders a game translates and translate\n"
+	         "                                       them in the background from the next boot on\n"
+	         "                                       (_ShaderCache/<title>.bin). Default: 0 (not yet\n"
+	         "                                       measured on device).\n");
 	::printf("  --render-scale <0.25-2.0>            Internal resolution of frame-sized render\n"
 	         "                                       targets (0.5 = quarter the pixels). Default: 1.0.\n");
 	::printf("  --env <NAME=VALUE>                   Set an environment variable (e.g. FEX_* options).\n");
@@ -646,7 +650,13 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				return false;
 			}
 			options.config.gpu_fatal_dialog = mode != 0;
-
+		} else if (arg == "--shader-disk-cache") {
+			uint32_t mode = 0;
+			if (!ParseUint32(value, mode) || mode > 1) {
+				::printf("invalid shader disk cache mode (0 or 1): %s\n", value.c_str());
+				return false;
+			}
+			options.config.shader_disk_cache = mode != 0;
 		} else if (arg == "--idle-submit") {
 			uint32_t mode = 0;
 			if (!ParseUint32(value, mode) || mode > 1) {

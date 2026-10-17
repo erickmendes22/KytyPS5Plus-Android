@@ -191,6 +191,10 @@ struct ConfigOptions {
 #else
 	bool                   gpu_fatal_dialog            = false;
 #endif
+	// --shader-disk-cache: persist the guest programs a title translates (_ShaderCache/<title>.bin)
+	// and translate them on background workers from the next boot on.
+	// Off until measured on device (cold vs warm run).
+	bool                   shader_disk_cache           = false;
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;
@@ -262,6 +266,7 @@ int32_t  GetGpuMemoryBudgetMb();
 bool     GpuEvictWrittenEnabled();
 uint32_t GetVmaBlockSizeMb();
 bool     GpuFatalDialogEnabled();
+bool     ShaderDiskCacheEnabled();
 constexpr uint32_t MAX_GPU_FRAMES_IN_FLIGHT = 4;
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();

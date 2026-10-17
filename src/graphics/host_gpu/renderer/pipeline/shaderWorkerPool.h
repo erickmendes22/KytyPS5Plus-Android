@@ -38,6 +38,8 @@ public:
 		// Set under the pool's queue lock by whoever takes the job (a worker, Submit on a
 		// synchronous pool, or RunNow), so it runs exactly once.
 		std::atomic<bool>       m_started {false};
+		// Queued with SubmitBackground and not yet moved to the main queue.
+		std::atomic<bool>       m_background {false};
 		std::atomic<bool>       m_done {false};
 		std::mutex              m_mutex;
 		std::condition_variable m_finished;
@@ -51,6 +53,12 @@ public:
 
 	// Queues the job (or runs it inline for a synchronous pool). The job must not be Done().
 	void Submit(std::shared_ptr<Job> job);
+	// Queues low-priority work (the shader disk cache warm-up): workers take it only while the main
+	// queue is empty, and worker 0 leaves it alone so a new request never waits behind it (unless
+	// the pool has a single worker). Ignored by a synchronous pool.
+	void SubmitBackground(std::vector<std::shared_ptr<Job>> jobs);
+	// Moves a background job to the main queue once something actually needs it.
+	void Prioritize(const std::shared_ptr<Job>& job);
 	// Runs the job on the calling thread now (queued, or never submitted), unless a worker
 	// already started it; then waits for that worker. Used when a result is needed before the
 	// caller can continue.
@@ -68,10 +76,12 @@ public:
 private:
 	void WorkerMain(uint32_t index);
 
+	uint32_t                         m_thread_count = 0; // fixed before any worker starts
 	std::vector<std::thread>         m_threads;
 	mutable std::mutex               m_mutex;
 	std::condition_variable          m_wake;
 	std::deque<std::shared_ptr<Job>> m_queue;
+	std::deque<std::shared_ptr<Job>> m_background;
 	bool                             m_stop = false;
 };
 

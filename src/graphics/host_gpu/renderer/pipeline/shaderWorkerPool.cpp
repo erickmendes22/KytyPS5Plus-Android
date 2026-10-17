@@ -42,7 +42,7 @@ void ShaderWorkerPool::Job::Wait() {
 	m_finished.wait(lock, [this] { return m_done.load(std::memory_order_acquire); });
 }
 
-ShaderWorkerPool::ShaderWorkerPool(uint32_t threads) {
+ShaderWorkerPool::ShaderWorkerPool(uint32_t threads): m_thread_count(threads) {
 	m_threads.reserve(threads);
 	for (uint32_t index = 0; index < threads; index++) {
 		m_threads.emplace_back([this, index] { WorkerMain(index); });
@@ -55,6 +55,7 @@ ShaderWorkerPool::~ShaderWorkerPool() {
 		m_stop = true;
 		// Queued jobs are dropped unstarted: their owners' destructors release the inputs.
 		m_queue.clear();
+		m_background.clear();
 	}
 	m_wake.notify_all();
 	for (auto& thread: m_threads) {
@@ -76,6 +77,38 @@ void ShaderWorkerPool::Submit(std::shared_ptr<Job> job) {
 	m_wake.notify_one();
 }
 
+void ShaderWorkerPool::SubmitBackground(std::vector<std::shared_ptr<Job>> jobs) {
+	if (m_threads.empty() || jobs.empty()) {
+		return;
+	}
+	{
+		std::lock_guard lock(m_mutex);
+		for (auto& job: jobs) {
+			job->m_background.store(true, std::memory_order_relaxed);
+			m_background.push_back(std::move(job));
+		}
+	}
+	// Some workers do not take background jobs: wake all so an eligible one sees them.
+	m_wake.notify_all();
+}
+
+void ShaderWorkerPool::Prioritize(const std::shared_ptr<Job>& job) {
+	if (!job->m_background.load(std::memory_order_relaxed)) {
+		return;
+	}
+	{
+		std::lock_guard lock(m_mutex);
+		job->m_background.store(false, std::memory_order_relaxed);
+		const auto found = std::ranges::find(m_background, job);
+		if (found == m_background.end()) {
+			return; // a worker took it already
+		}
+		m_background.erase(found);
+		m_queue.push_back(job);
+	}
+	m_wake.notify_all();
+}
+
 void ShaderWorkerPool::RunNow(const std::shared_ptr<Job>& job) {
 	if (job->Done()) {
 		return;
@@ -85,7 +118,12 @@ void ShaderWorkerPool::RunNow(const std::shared_ptr<Job>& job) {
 		std::lock_guard lock(m_mutex);
 		if (const auto found = std::ranges::find(m_queue, job); found != m_queue.end()) {
 			m_queue.erase(found);
+		} else if (job->m_background.load(std::memory_order_relaxed)) {
+			if (const auto queued = std::ranges::find(m_background, job); queued != m_background.end()) {
+				m_background.erase(queued);
+			}
 		}
+		job->m_background.store(false, std::memory_order_relaxed);
 		// Still false here means no worker took it (it was queued or never submitted).
 		run_here = !job->m_started.exchange(true, std::memory_order_acq_rel);
 	}
@@ -121,12 +159,17 @@ void ShaderWorkerPool::WorkerMain(uint32_t index) {
 		std::shared_ptr<Job> job;
 		{
 			std::unique_lock lock(m_mutex);
-			m_wake.wait(lock, [this] { return m_stop || !m_queue.empty(); });
+			const bool takes_background = index != 0 || m_thread_count == 1;
+			m_wake.wait(lock, [&] {
+				return m_stop || !m_queue.empty() || (takes_background && !m_background.empty());
+			});
 			if (m_stop) {
 				return;
 			}
-			job = std::move(m_queue.front());
-			m_queue.pop_front();
+			auto& queue = !m_queue.empty() ? m_queue : m_background;
+			job         = std::move(queue.front());
+			queue.pop_front();
+			job->m_background.store(false, std::memory_order_relaxed);
 			job->m_started.store(true, std::memory_order_release);
 		}
 		job->Execute();
