@@ -270,6 +270,10 @@ public:
 	void                 Create();
 	void                 Recreate(bool surface_lost = false);
 	[[nodiscard]] bool   NeedsResize() const;
+	// VK_SUBOPTIMAL_KHR from acquire or present: recreate once (extent or format may have
+	// changed), then keep the swapchain. Android reports it for as long as the pre-transform
+	// differs from the display rotation, and this swapchain always uses the identity transform.
+	[[nodiscard]] Status OnSuboptimal(const char* call);
 	[[nodiscard]] Status AcquireNextImage(CommandScheduler& scheduler);
 	[[nodiscard]] bool   PrepareSystemOverlay();
 	void     RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
@@ -298,6 +302,8 @@ private:
 	vk::Format       m_format = vk::Format::eUndefined;
 	std::atomic_bool m_hdr_supported {false};
 	bool             m_hdr_requested = false;
+	uint32_t         m_suboptimal_recreates = 0;
+	bool             m_suboptimal_kept      = false;
 	bool             m_hdr_active    = false;
 	vk::Extent2D     m_extent {};
 	// Drawable pixel size observed when this swapchain was created.
@@ -595,9 +601,26 @@ void Swapchain::Destroy() {
 	m_render_complete.clear();
 }
 
+Swapchain::Status Swapchain::OnSuboptimal(const char* call) {
+	if (m_suboptimal_recreates == 0 || NeedsResize()) {
+		LOGF("%s returned vk::Result::eSuboptimalKHR\n", call);
+		m_suboptimal_recreates++;
+		return Status::Recreate;
+	}
+	if (!m_suboptimal_kept) {
+		LOGF("%s keeps returning vk::Result::eSuboptimalKHR after a recreation (display rotation "
+		     "vs identity pre-transform); keeping the swapchain\n",
+		     call);
+		m_suboptimal_kept = true;
+	}
+	return Status::Success;
+}
+
 void Swapchain::Recreate(bool surface_lost) {
 	Destroy();
 	if (surface_lost) {
+		m_suboptimal_recreates = 0;
+		m_suboptimal_kept      = false;
 #if defined(__APPLE__)
 		// Surface recreation goes through SDL_Vulkan_CreateSurface, which touches the
 		// window's view/layer and must run on the main thread on macOS.
@@ -632,8 +655,10 @@ Swapchain::Status Swapchain::AcquireNextImage(CommandScheduler& scheduler) {
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:
-			LOGF("vkAcquireNextImageKHR returned vk::Result::eSuboptimalKHR\n");
-			return Status::Recreate;
+			if (OnSuboptimal("vkAcquireNextImageKHR") == Status::Recreate) {
+				return Status::Recreate;
+			}
+			break;
 		case vk::Result::eErrorOutOfDateKHR:
 			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorOutOfDateKHR\n");
 			return Status::Recreate;
@@ -920,8 +945,10 @@ Swapchain::Status Swapchain::Present() {
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:
-			LOGF("vkQueuePresentKHR returned vk::Result::eSuboptimalKHR\n");
-			return Status::Recreate;
+			if (OnSuboptimal("vkQueuePresentKHR") == Status::Recreate) {
+				return Status::Recreate;
+			}
+			break;
 		case vk::Result::eErrorOutOfDateKHR:
 			LOGF("vkQueuePresentKHR returned vk::Result::eErrorOutOfDateKHR\n");
 			return Status::Recreate;
