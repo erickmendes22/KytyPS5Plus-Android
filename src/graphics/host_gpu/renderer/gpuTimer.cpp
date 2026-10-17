@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 
 namespace Libs::Graphics {
 
@@ -20,14 +21,29 @@ constexpr size_t kFileTop = 60;
 std::atomic<uint32_t> g_instances {0};
 
 std::string LabelName(const char* kind, uint64_t hash, const GpuPassInfo& pass) {
-	char buf[96];
+	char buf[128];
 	if (pass.width != 0) {
 		std::snprintf(buf, sizeof(buf), "%s %ux%u c%u%s 0x%016" PRIx64, kind, pass.width,
 		              pass.height, pass.colors, pass.depth ? "d" : "", hash);
 	} else {
 		std::snprintf(buf, sizeof(buf), "%s 0x%016" PRIx64, kind, hash);
 	}
-	return buf;
+	std::string name = buf;
+	if (pass.aux != 0) {
+		std::snprintf(buf, sizeof(buf), " vs 0x%016" PRIx64, pass.aux);
+		name += buf;
+	}
+	return name;
+}
+
+// KYTY_PERF_GPU_TOP=<n>: regions per [perf-gpu] log line (default kLogTop).
+size_t LogTop() {
+	static const size_t top = [] {
+		const char* value = std::getenv("KYTY_PERF_GPU_TOP");
+		const long  n     = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
+		return n > 0 ? std::min<size_t>(static_cast<size_t>(n), kFileTop) : kLogTop;
+	}();
+	return top;
 }
 
 } // namespace
@@ -202,9 +218,9 @@ void GpuTimer::MaybeDump() {
 		}
 		std::fclose(out);
 	}
-	for (size_t i = 0; i < std::min(sorted.size(), kLogTop); i++) {
+	for (size_t i = 0; i < std::min(sorted.size(), LogTop()); i++) {
 		const auto& [name, cost] = sorted[i];
-		char part[160];
+		char part[192];
 		std::snprintf(part, sizeof(part), " [%s]=%.1f(%.0f)", name.c_str(),
 		              static_cast<double>(cost.ns) / 1e6 / seconds,
 		              static_cast<double>(cost.count) / seconds);

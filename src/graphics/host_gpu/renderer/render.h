@@ -40,6 +40,7 @@ struct MeshDispatchSource;
 class RenderContext;
 class CommandScheduler;
 class GpuTimer;
+struct GpuPassInfo;
 struct RenderExecutorTestAccess;
 
 enum class CommandBufferDebugOp : uint32_t {
@@ -144,6 +145,7 @@ public:
 	[[nodiscard]] static uint32_t RenderPassMode(const GraphicContext& graphics);
 	// --perf-stats GPU timestamps: closes a timed region (see GpuTimer::Mark).
 	void MarkGpu(const char* kind, uint64_t hash = 0) const;
+	void MarkGpu(const char* kind, uint64_t hash, const GpuPassInfo& info) const;
 	// Names the render pass in GPU timings after the first draw's shader; counts its draws.
 	void NotePassDraw(uint64_t shader_hash, uint64_t indices) const {
 		if (m_pass_shader == 0) {

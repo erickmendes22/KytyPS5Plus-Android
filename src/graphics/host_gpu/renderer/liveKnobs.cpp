@@ -1,0 +1,156 @@
+#include "graphics/host_gpu/renderer/liveKnobs.h"
+
+#include "common/logging/log.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
+
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <sys/stat.h>
+
+namespace Libs::Graphics::LiveKnobs {
+
+namespace {
+
+constexpr const char* kFileName     = "_live.txt";
+constexpr int64_t     kPollInterval = 1'000'000'000;
+constexpr size_t      kMaxFileBytes = 4096;
+
+bool Enabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_LIVE_KNOBS");
+		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
+		if (on) {
+			LOGF("Live knobs: polling %s once a second\n", kFileName);
+		}
+		return on;
+	}();
+	return enabled;
+}
+
+int64_t NowNs() {
+	return std::chrono::duration_cast<std::chrono::nanoseconds>(
+	           std::chrono::steady_clock::now().time_since_epoch())
+	    .count();
+}
+
+std::string_view Trim(std::string_view text) {
+	while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+		text.remove_prefix(1);
+	}
+	while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r')) {
+		text.remove_suffix(1);
+	}
+	return text;
+}
+
+std::string ReadFile() {
+	std::FILE* file = std::fopen(kFileName, "rb");
+	if (file == nullptr) {
+		return {};
+	}
+	std::string text(kMaxFileBytes, '\0');
+	const auto  size = std::fread(text.data(), 1, text.size(), file);
+	std::fclose(file);
+	text.resize(size);
+	return text;
+}
+
+// Snapshots are immutable and published by pointer; the few replaced ones (one per manual edit
+// of the file) are kept alive so readers never see a freed snapshot.
+std::atomic<const Snapshot*> g_current {nullptr};
+std::atomic<int64_t>         g_next_poll_ns {0};
+std::mutex                   g_poll_mutex;
+int64_t                      g_last_mtime_ns = -1;
+
+const Snapshot& Empty() {
+	static const Snapshot empty {};
+	return empty;
+}
+
+int64_t ModifiedNs() {
+	struct stat info {};
+	if (stat(kFileName, &info) != 0) {
+		return 0;
+	}
+#if defined(__APPLE__)
+	return static_cast<int64_t>(info.st_mtimespec.tv_sec) * 1'000'000'000 +
+	       info.st_mtimespec.tv_nsec;
+#else
+	return static_cast<int64_t>(info.st_mtim.tv_sec) * 1'000'000'000 + info.st_mtim.tv_nsec;
+#endif
+}
+
+void Poll() {
+	const auto now  = NowNs();
+	auto       next = g_next_poll_ns.load(std::memory_order_relaxed);
+	if (now < next ||
+	    !g_next_poll_ns.compare_exchange_strong(next, now + kPollInterval,
+	                                            std::memory_order_relaxed)) {
+		return;
+	}
+	std::scoped_lock lock(g_poll_mutex);
+	const auto       mtime = ModifiedNs();
+	if (mtime == g_last_mtime_ns) {
+		return;
+	}
+	g_last_mtime_ns = mtime;
+	const auto* snapshot = new Snapshot(mtime == 0 ? Snapshot {} : Parse(ReadFile()));
+	std::string skip;
+	for (const auto& prefix: snapshot->skip) {
+		skip += skip.empty() ? prefix : "," + prefix;
+	}
+	LOGF("Live knobs: skip=[%s] marks=%d\n", skip.c_str(), snapshot->draw_marks ? 1 : 0);
+	std::fprintf(stderr, "[live-knobs] skip=[%s] marks=%d\n", skip.c_str(),
+	             snapshot->draw_marks ? 1 : 0);
+	g_current.store(snapshot, std::memory_order_release);
+}
+
+} // namespace
+
+Snapshot Parse(std::string_view text) {
+	Snapshot snapshot;
+	while (!text.empty()) {
+		const auto end  = std::min(text.find('\n'), text.size());
+		const auto line = Trim(text.substr(0, end));
+		text.remove_prefix(std::min(end + 1, text.size()));
+		const auto equals = line.find('=');
+		if (line.empty() || line.front() == '#' || equals == std::string_view::npos) {
+			continue;
+		}
+		const auto key   = Trim(line.substr(0, equals));
+		const auto value = Trim(line.substr(equals + 1));
+		if (key == "skip") {
+			auto prefixes = PipelineStats::ParseSpec(value);
+			// "all" would drop every draw; an empty prefix is never a useful skip.
+			std::erase_if(prefixes, [](const std::string& prefix) { return prefix.empty(); });
+			snapshot.skip = std::move(prefixes);
+		} else if (key == "marks") {
+			snapshot.draw_marks = value == "1";
+		}
+	}
+	return snapshot;
+}
+
+const Snapshot& Current() {
+	if (!Enabled()) {
+		return Empty();
+	}
+	Poll();
+	const auto* snapshot = g_current.load(std::memory_order_acquire);
+	return snapshot != nullptr ? *snapshot : Empty();
+}
+
+bool SkipShader(uint64_t guest_hash) {
+	const auto& skip = Current().skip;
+	return !skip.empty() && PipelineStats::Matches(skip, guest_hash);
+}
+
+bool DrawMarks() {
+	return Current().draw_marks;
+}
+
+} // namespace Libs::Graphics::LiveKnobs

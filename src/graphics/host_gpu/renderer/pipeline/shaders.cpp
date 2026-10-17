@@ -765,7 +765,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	const bool capture_stats =
 	    PipelineStats::Wants(graphics, std::span(guest_hashes).first(guest_hash_count));
 	if (capture_stats) {
-		pipeline_info.flags |= PipelineStats::CaptureFlags();
+		pipeline_info.flags |=
+		    PipelineStats::CaptureFlags(std::span(guest_hashes).first(guest_hash_count));
 	}
 	const auto dump_record = ShaderDump::RecordGraphicsPipeline(
 	    graphics, pipeline_info,
@@ -788,7 +789,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		for (uint32_t i = 0; i < guest_hash_count; i++) {
 			label += fmt::format("_{:016x}", guest_hashes[i]);
 		}
-		PipelineStats::Write(graphics, pipeline.pipeline, label);
+		PipelineStats::Write(graphics, pipeline.pipeline, label,
+		                     std::span(guest_hashes).first(guest_hash_count));
 	}
 	if (result != vk::Result::eSuccess) {
 		std::string stages;
@@ -889,7 +891,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	const auto guest_hash  = program.shader_hash;
 	const bool capture_stats = PipelineStats::Wants(graphics, std::span(&guest_hash, 1));
 	if (capture_stats) {
-		info.flags |= PipelineStats::CaptureFlags();
+		info.flags |= PipelineStats::CaptureFlags(std::span(&guest_hash, 1));
 	}
 	const auto dump_record = ShaderDump::RecordComputePipeline(
 	    graphics, info,
@@ -910,7 +912,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	ShaderDump::RecordResult(dump_record, result);
 	if (capture_stats && result == vk::Result::eSuccess) {
-		PipelineStats::Write(graphics, pipeline.pipeline, fmt::format("cs_{:016x}", guest_hash));
+		PipelineStats::Write(graphics, pipeline.pipeline, fmt::format("cs_{:016x}", guest_hash),
+		                     std::span(&guest_hash, 1));
 	}
 	if (result != vk::Result::eSuccess) {
 		EXIT("vkCreateComputePipelines failed: %s, guest shader 0x%016" PRIx64 "%s%s\n",

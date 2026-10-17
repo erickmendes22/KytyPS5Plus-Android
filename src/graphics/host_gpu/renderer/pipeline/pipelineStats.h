@@ -33,12 +33,13 @@ namespace PipelineStats {
 [[nodiscard]] bool Requested();
 // The device enabled pipelineExecutableInfo and one of `guest_hashes` was asked for.
 [[nodiscard]] bool Wants(const GraphicContext& graphics, std::span<const uint64_t> guest_hashes);
-[[nodiscard]] constexpr vk::PipelineCreateFlags CaptureFlags() {
-	return vk::PipelineCreateFlagBits::eCaptureStatisticsKHR |
-	       vk::PipelineCreateFlagBits::eCaptureInternalRepresentationsKHR;
-}
-// Appends the pipeline's statistics and representations under `label`.
-void Write(const GraphicContext& graphics, vk::Pipeline pipeline, const std::string& label);
+// Statistics always; internal representations only for KYTY_PIPELINE_STATS_IR matches (every
+// match when it is unset).
+[[nodiscard]] vk::PipelineCreateFlags CaptureFlags(std::span<const uint64_t> guest_hashes);
+// Appends the pipeline's statistics and representations under `label`
+// (KYTY_PIPELINE_STATS_IR=<hex prefixes> limits representations to matching guest hashes).
+void Write(const GraphicContext& graphics, vk::Pipeline pipeline, const std::string& label,
+           std::span<const uint64_t> guest_hashes);
 
 } // namespace PipelineStats
 } // namespace Libs::Graphics

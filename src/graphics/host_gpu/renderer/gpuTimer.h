@@ -23,6 +23,8 @@ struct GpuPassInfo {
 	bool     depth   = false;
 	uint32_t draws   = 0;
 	uint64_t indices = 0;
+	// A second shader hash shown after the label's (per-draw marks: the vertex shader).
+	uint64_t aux = 0;
 };
 
 // GPU execution time from Vulkan timestamps (--perf-stats only; inert otherwise). Every command

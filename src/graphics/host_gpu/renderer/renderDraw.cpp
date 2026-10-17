@@ -19,6 +19,8 @@
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/image/renderScale.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
+#include "graphics/host_gpu/renderer/gpuTimer.h"
+#include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -1230,6 +1232,44 @@ static void LogDrawStateIfNeeded(const CommandBuffer& buffer, const DrawCallInfo
 	                  draw.index_count, index_addr);
 }
 
+// KYTY_LIVE_KNOBS skip=: a vertex-stage or pixel shader hash matches.
+static bool SkipDrawForLiveKnobs(const DrawRenderState&                state,
+                                 std::span<const ShaderVertexInputInfo> vertex_stages) {
+	for (const auto& stage: vertex_stages) {
+		if (stage.stage.program != nullptr && LiveKnobs::SkipShader(stage.stage.program->shader_hash)) {
+			return true;
+		}
+	}
+	return state.ps_active && state.ps_input_info.stage.program != nullptr &&
+	       LiveKnobs::SkipShader(state.ps_input_info.stage.program->shader_hash);
+}
+
+// KYTY_LIVE_KNOBS marks=1: times one draw, labelled by its emulation path and pixel shader (the
+// vertex shader when there is none), with the first vertex-stage shader as the second hash.
+static void MarkDrawForLiveKnobs(const CommandBuffer& buffer, const DrawRenderState& state,
+                                 std::span<const ShaderVertexInputInfo> vertex_stages,
+                                 const RenderState& rendering, bool mesh_emulated,
+                                 uint64_t indices) {
+	const auto* ps = state.ps_active ? state.ps_input_info.stage.program : nullptr;
+	const auto* vs = vertex_stages.empty() ? nullptr : vertex_stages.front().stage.program;
+	const bool  gs = ps != nullptr && ps->info.barycentric_emulation.enabled;
+	const bool  rect = Prospero::IsRectList(buffer.GetUserConfig().GetPrimType());
+	const char* kind = mesh_emulated            ? (gs ? "draw-mesh-gs" : "draw-mesh")
+	                   : vertex_stages.size() > 1 ? (gs ? "draw-tess-gs" : "draw-tess")
+	                   : rect                    ? (gs ? "draw-rect-gs" : "draw-rect")
+	                   : gs                      ? "draw-gs"
+	                                             : "draw";
+	const uint64_t named = ps != nullptr ? ps->shader_hash : (vs != nullptr ? vs->shader_hash : 0);
+	buffer.MarkGpu(kind, named,
+	               {.width   = rendering.width,
+	                .height  = rendering.height,
+	                .colors  = rendering.num_color_attachments,
+	                .depth   = rendering.depth_stencil_attachment.image_view != nullptr,
+	                .draws   = 1,
+	                .indices = indices,
+	                .aux     = ps != nullptr && vs != nullptr ? vs->shader_hash : 0});
+}
+
 static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_buffer,
                                const DrawCallInfo& draw, const DrawEmitInfo& emit) {
 	switch (ucfg.GetPrimType()) {
@@ -1442,6 +1482,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		Common::PerfStats::CountSkippedDraw();
 		return;
 	}
+	if (SkipDrawForLiveKnobs(state, vertex_stages)) {
+		// KYTY_LIVE_KNOBS skip=: dropped at the same point as a pipeline that is not ready.
+		return;
+	}
 	auto& pipeline = *pipeline_ptr;
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering =
@@ -1540,6 +1584,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		                                       : uint64_t {draw.index_count} * draw.instance_count;
 		buffer.NotePassDraw(named.program != nullptr ? named.program->shader_hash : 0, indices);
 	}
+	const bool draw_marks = Common::PerfStats::Enabled() && LiveKnobs::DrawMarks();
+	if (draw_marks) {
+		// Closes the time since the previous mark (the pass begin or the previous draw's mark)
+		// so the next mark times this draw alone.
+		buffer.MarkGpu("misc");
+	}
 	if (mesh_emulated && indirect != nullptr) {
 		vk_buffer.drawIndexedIndirect(emulated_mesh.draw_buffer, emulated_mesh.draw_offset, 1,
 		                              5 * sizeof(uint32_t));
@@ -1553,6 +1603,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
 	}
 
+	if (draw_marks) {
+		MarkDrawForLiveKnobs(buffer, state, vertex_stages, rendering, mesh_emulated,
+		                     mesh_emulated ? uint64_t {emulated_mesh.index_count}
+		                                   : uint64_t {draw.index_count} * draw.instance_count);
+	}
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x600u);
 	}

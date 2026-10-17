@@ -136,6 +136,26 @@ bool Matches(std::span<const std::string> prefixes, uint64_t guest_hash) {
 	return false;
 }
 
+// KYTY_PIPELINE_STATS_IR=<hex prefixes>: internal representations (NIR, ir3 assembly) only for
+// pipelines with a matching guest stage; statistics still cover every KYTY_PIPELINE_STATS match.
+// Unset: representations for every match.
+const std::vector<std::string>& RepresentationPrefixes() {
+	static const std::vector<std::string> prefixes = [] {
+		const char* spec = std::getenv("KYTY_PIPELINE_STATS_IR");
+		return spec != nullptr ? ParseSpec(spec) : std::vector<std::string> {};
+	}();
+	return prefixes;
+}
+
+bool WantsRepresentations(std::span<const uint64_t> guest_hashes) {
+	if (RepresentationPrefixes().empty()) {
+		return true;
+	}
+	return std::ranges::any_of(guest_hashes, [](uint64_t hash) {
+		return Matches(RepresentationPrefixes(), hash);
+	});
+}
+
 bool Requested() {
 	return !Prefixes().empty();
 }
@@ -152,7 +172,17 @@ bool Wants(const GraphicContext& graphics, std::span<const uint64_t> guest_hashe
 	return false;
 }
 
-void Write(const GraphicContext& graphics, vk::Pipeline pipeline, const std::string& label) {
+vk::PipelineCreateFlags CaptureFlags(std::span<const uint64_t> guest_hashes) {
+	vk::PipelineCreateFlags flags = vk::PipelineCreateFlagBits::eCaptureStatisticsKHR;
+	if (WantsRepresentations(guest_hashes)) {
+		flags |= vk::PipelineCreateFlagBits::eCaptureInternalRepresentationsKHR;
+	}
+	return flags;
+}
+
+void Write(const GraphicContext& graphics, vk::Pipeline pipeline, const std::string& label,
+           std::span<const uint64_t> guest_hashes) {
+	const bool representations = WantsRepresentations(guest_hashes);
 	if (pipeline == nullptr) {
 		return;
 	}
@@ -186,7 +216,9 @@ void Write(const GraphicContext& graphics, vk::Pipeline pipeline, const std::str
 		executable.pipeline        = pipeline;
 		executable.executableIndex = i;
 		WriteStatistics(out, graphics, executable);
-		WriteRepresentations(out, graphics, executable);
+		if (representations) {
+			WriteRepresentations(out, graphics, executable);
+		}
 	}
 	std::fflush(out);
 }

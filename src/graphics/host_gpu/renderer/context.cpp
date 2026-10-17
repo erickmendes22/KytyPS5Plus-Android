@@ -48,6 +48,13 @@ void CommandBuffer::MarkGpu(const char* kind, uint64_t hash) const {
 	}
 }
 
+void CommandBuffer::MarkGpu(const char* kind, uint64_t hash, const GpuPassInfo& info) const {
+	// Inside a deferred pass the primary buffer runs before the pass's draws; no marks there.
+	if (m_timer.Enabled() && m_pass_buffer == nullptr) {
+		m_timer.Mark(Handle(), kind, hash, info);
+	}
+}
+
 bool CommandBuffer::IsInvalid() const {
 	return m_buffer == nullptr;
 }
