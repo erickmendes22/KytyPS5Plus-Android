@@ -591,16 +591,18 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 			info.subgroup_vote |=
 			    inst.Flags<CFG::BranchCondition>() != CFG::BranchCondition::ScalarInstruction;
 			break;
-		case ValueOpcode::Ballot: info.subgroup_ballot = true; break;
+		case ValueOpcode::Ballot:
+			// A wave narrower than the host subgroup picks its own ballot words (WaveSliced).
+			info.subgroup_ballot              = true;
+			info.subgroup_local_invocation_id = true;
+			break;
 		case ValueOpcode::SubgroupUMinU32: info.subgroup_arithmetic = true; break;
 		case ValueOpcode::DppMoveU32:
 		case ValueOpcode::ReadFirstLane:
 		case ValueOpcode::ReadLane: {
-			info.subgroup_ballot  = true;
-			info.subgroup_shuffle = true;
-			if (inst.GetOpcode() == ValueOpcode::DppMoveU32) {
-				info.subgroup_local_invocation_id = true;
-			}
+			info.subgroup_ballot              = true;
+			info.subgroup_shuffle             = true;
+			info.subgroup_local_invocation_id = true;
 			break;
 		}
 		case ValueOpcode::DppUpdateU32:

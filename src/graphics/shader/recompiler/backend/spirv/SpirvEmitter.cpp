@@ -6,6 +6,8 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -214,6 +216,19 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 
 } // namespace
 
+namespace {
+
+// KYTY_LANE_BRANCHES_HAZARDS=<hex>: LaneBranchHazard bits to convert anyway (bisecting aid).
+uint32_t LaneBranchAllowedHazards() {
+	static const uint32_t allowed = [] {
+		const char* spec = std::getenv("KYTY_LANE_BRANCHES_HAZARDS");
+		return spec != nullptr ? static_cast<uint32_t>(std::strtoul(spec, nullptr, 16)) : 0u;
+	}();
+	return allowed;
+}
+
+} // namespace
+
 std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo input_info,
                                   uint32_t push_data_start_dword, bool maintenance8_enabled,
                                   const ShaderDeviceFeatures& device_features,
@@ -256,8 +271,12 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	        ? 2u
 	        : 1u;
 	if (device_features.lane_exec_branches && state.lane_count == 1u && !state.subgroup_isolated) {
-		if (const auto converted = ConvertExecVoteBranches(program); converted != 0u) {
-			LOGF("SPIR-V hash=0x%016" PRIx64 " lane branches: %u\n", program.shader_hash, converted);
+		const auto stats = ConvertExecVoteBranches(program, LaneBranchAllowedHazards());
+		const auto& hazard = stats.hazard_regions;
+		if (stats.converted != 0u || hazard[0] + hazard[1] + hazard[2] + hazard[3] != 0u) {
+			LOGF("SPIR-V hash=0x%016" PRIx64
+			     " lane branches: %u (hazard regions: vm=%u ret=%u mask=%u lod=%u)\n",
+			     program.shader_hash, stats.converted, hazard[0], hazard[1], hazard[2], hazard[3]);
 		}
 	}
 	DefineModule(state);

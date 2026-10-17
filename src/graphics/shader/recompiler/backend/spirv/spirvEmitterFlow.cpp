@@ -120,7 +120,9 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 uint32_t EmitDppWriteCondition(ValueEmitContext& ctx, const IR::DppMoveFlags& flags,
                                uint32_t exec) {
 	auto&      state      = ctx.state;
-	const auto lane       = EmitSubgroupLocalInvocationId(state);
+	// Bank and row masks number the lanes of the guest wave.
+	const auto lane       = WaveSliced(state) ? EmitWaveLocalLane(state)
+	                                          : EmitSubgroupLocalInvocationId(state);
 	const auto bank_shift = state.builder.AllocateId();
 	const auto row_shift  = state.builder.AllocateId();
 	const auto bank       = state.builder.AllocateId();
@@ -712,9 +714,10 @@ void EmitBarrier(EmitterState& state) {
 }
 
 uint32_t EmitLaneId(EmitterState& state) {
-	return state.program.stage == ShaderType::TessellationControl
-	           ? EmitBuiltinU32(state, IR::StageInputKind::InvocationId, 0)
-	           : EmitSubgroupLocalInvocationId(state);
+	if (state.program.stage == ShaderType::TessellationControl) {
+		return EmitBuiltinU32(state, IR::StageInputKind::InvocationId, 0);
+	}
+	return WaveSliced(state) ? EmitWaveLocalLane(state) : EmitSubgroupLocalInvocationId(state);
 }
 
 uint32_t EmitMeshDrawParameter(ValueEmitContext& ctx, const IR::Inst& inst) {
@@ -844,11 +847,17 @@ uint32_t EmitConditionRef(ValueEmitContext& ctx, const IR::Inst& inst) {
 }
 
 uint32_t EmitBallot(ValueEmitContext& ctx, IR::Value predicate) {
-	return ctx.Ballot(predicate);
+	// The IR reads EXEC-style masks of its own wave (words 0 and 1).
+	const auto ballot = ctx.Ballot(predicate);
+	return WaveSliced(ctx.state) ? EmitWaveBallot(ctx.state, ballot) : ballot;
 }
 
 uint32_t EmitReadFirstLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto ballot = ctx.Ballot(inst.Arg(1));
+	if (WaveSliced(ctx.state)) {
+		const auto first = ctx.FirstLane(EmitWaveBallot(ctx.state, ballot));
+		return ctx.Shuffle(inst, 0, EmitWaveLaneToSubgroupLane(ctx.state, first));
+	}
 	const auto lane   = ctx.FirstLane(ballot);
 	return ctx.Shuffle(inst, 0, lane);
 }
@@ -858,6 +867,10 @@ uint32_t EmitReadLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto  lane  = ctx.Arg(inst, 1);
 	if (ctx.other_half != nullptr) {
 		return ctx.Shuffle(inst, 0, lane);
+	}
+	if (WaveSliced(state)) {
+		// Guest lane numbers address the caller's wave.
+		lane = EmitWaveLaneToSubgroupLane(state, lane);
 	}
 	if (state.program.wave_size == 64u && !state.subgroup_isolated) {
 		// A wave64 program on a narrower host subgroup can name lanes the subgroup does not
@@ -872,9 +885,11 @@ uint32_t EmitReadLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 		// of a row or half reduction.
 		const auto active  = ctx.Ballot(IR::Value(true));
 		const auto present = EmitBallotLaneActiveBool(state, active, lane);
-		const auto highest = state.builder.AllocateId();
+		auto       highest = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpGroupNonUniformBallotFindMSB, TypeU32(state), highest,
-		                          ConstantU32(state, spv::ScopeSubgroup), active);
+		                          ConstantU32(state, spv::ScopeSubgroup),
+		                          WaveSliced(state) ? EmitWaveBallot(state, active) : active);
+		if (WaveSliced(state)) highest = EmitWaveLaneToSubgroupLane(state, highest);
 		lane = EmitNative<spv::OpSelect, IR::Type::U32>(state, present, lane, highest);
 	}
 	return ctx.Shuffle(inst, 0, lane);
@@ -903,7 +918,9 @@ uint32_t EmitWriteLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&      state = ctx.state;
 	const auto hit   = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpIEqual, TypeBool(state), hit,
-	                          EmitSubgroupLocalInvocationId(state), ctx.Arg(inst, 2));
+	                          WaveSliced(state) ? EmitWaveLocalLane(state)
+	                                            : EmitSubgroupLocalInvocationId(state),
+	                          ctx.Arg(inst, 2));
 	return EmitNative<spv::OpSelect, IR::Type::U32>(ctx.state, hit, ctx.Arg(inst, 1),
 	                                                ctx.Arg(inst, 0));
 }

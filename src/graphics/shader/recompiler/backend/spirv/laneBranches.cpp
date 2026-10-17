@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/backend/spirv/laneBranches.h"
 
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
+#include "graphics/shader/recompiler/frontend/cfg/ShaderCFG.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <unordered_set>
@@ -49,14 +50,13 @@ bool CrossesLanes(const IR::Program& program, const Inst& inst) {
 
 class Converter {
 public:
-	explicit Converter(IR::Program& program): m_program(program) {}
+	Converter(IR::Program& program, uint32_t allowed_hazards)
+	    : m_program(program), m_allowed_hazards(allowed_hazards) {}
 
-	uint32_t Run() {
-		uint32_t converted = 0;
+	void Run() {
 		for (auto* block: m_program.blocks) {
-			converted += TryConvert(*block) ? 1u : 0u;
+			m_stats.converted += TryConvert(*block) ? 1u : 0u;
 		}
-		return converted;
 	}
 
 private:
@@ -134,19 +134,53 @@ private:
 		return true;
 	}
 
-	static bool Implies(Value condition, Value predicate, int depth = 0) {
+	// Whether `condition` is false wherever `predicate` is: a chain of ANDs containing P, ORs and
+	// selects whose every leaf implies P, or a region Phi whose incoming values all do (a Phi
+	// already being proved is assumed: region Phis only carry values of this region visit, so
+	// induction over the iterations holds; a Phi outside the region may carry an older P).
+	bool Implies(Value condition, Value predicate) const {
+		std::unordered_set<const Inst*> proving;
+		return Implies(condition, predicate, proving, 0);
+	}
+
+	bool Implies(Value condition, Value predicate, std::unordered_set<const Inst*>& proving,
+	             int depth) const {
 		condition = condition.Resolve();
 		if (condition == predicate) return true;
-		if (depth > 16) return false;
-		const auto* inst = InstOf(condition);
-		if (inst == nullptr || inst->GetOpcode() != ValueOpcode::LogicalAnd) return false;
-		return Implies(inst->Arg(0), predicate, depth + 1) ||
-		       Implies(inst->Arg(1), predicate, depth + 1);
+		if (condition.IsImmediate()) {
+			return condition.GetType() == IR::Type::U1 && !condition.U1();
+		}
+		if (depth > 32) return false;
+		auto* inst = InstOf(condition);
+		if (inst == nullptr) return false;
+		switch (inst->GetOpcode()) {
+			case ValueOpcode::LogicalAnd:
+				return Implies(inst->Arg(0), predicate, proving, depth + 1) ||
+				       Implies(inst->Arg(1), predicate, proving, depth + 1);
+			case ValueOpcode::LogicalOr:
+				return Implies(inst->Arg(0), predicate, proving, depth + 1) &&
+				       Implies(inst->Arg(1), predicate, proving, depth + 1);
+			case ValueOpcode::SelectU1:
+				return Implies(inst->Arg(1), predicate, proving, depth + 1) &&
+				       Implies(inst->Arg(2), predicate, proving, depth + 1);
+			case ValueOpcode::Phi: {
+				if (m_region == nullptr || !m_region->contains(inst->Parent())) return false;
+				if (proving.contains(inst)) return true;
+				proving.insert(inst);
+				bool all = inst->NumArgs() != 0;
+				for (size_t i = 0; all && i < inst->NumArgs(); i++) {
+					all = Implies(inst->Arg(i), predicate, proving, depth + 1);
+				}
+				proving.erase(inst);
+				return all;
+			}
+			default: return false;
+		}
 	}
 
 	// A store, atomic or export in the region must be gated (last operand) by EXEC within P: a
 	// write under a wider EXEC restored inside the region would lose its inactive lanes.
-	static bool SideEffectGuarded(const Inst& inst, Value predicate) {
+	bool SideEffectGuarded(const Inst& inst, Value predicate) const {
 		const auto op = inst.GetOpcode();
 		if (!inst.MayHaveSideEffects() || op == ValueOpcode::Reference ||
 		    op == ValueOpcode::ReferenceU32) {
@@ -187,32 +221,66 @@ private:
 		return false;
 	}
 
+	// Whether a lane-mask operand (vote, ballot, READFIRSTLANE) only counts lanes within P. A
+	// vote on a zero kind receives the inverted mask.
+	bool MaskWithin(const Inst& inst, Value predicate) const {
+		switch (inst.GetOpcode()) {
+			case ValueOpcode::Ballot: return Implies(inst.Arg(0), predicate);
+			case ValueOpcode::ReadFirstLane: return Implies(inst.Arg(1), predicate);
+			case ValueOpcode::ConditionRef: {
+				const auto kind = inst.Flags<CFG::BranchCondition>();
+				if (kind == CFG::BranchCondition::ExecNonZero ||
+				    kind == CFG::BranchCondition::VccNonZero) {
+					return Implies(inst.Arg(0), predicate);
+				}
+				if (kind == CFG::BranchCondition::ExecZero || kind == CFG::BranchCondition::VccZero) {
+					const auto* not_inst = InstOf(inst.Arg(0));
+					return not_inst != nullptr && not_inst->GetOpcode() == ValueOpcode::LogicalNot &&
+					       Implies(not_inst->Arg(0), predicate);
+				}
+				// SCC and scalar-instruction conditions are wave-uniform values; masks they
+				// derive from ballots inside the region are checked at the ballot.
+				return true;
+			}
+			default: return true;
+		}
+	}
+
+	// Hazard bits of one region instruction (0 when lane-local), or UINT32_MAX for a construct
+	// that can never become a per-lane branch.
+	uint32_t InstHazards(const Inst& inst, Value predicate) const {
+		if (CrossesLanes(m_program, inst) || !SideEffectGuarded(inst, predicate)) return UINT32_MAX;
+		const bool pixel = m_program.stage == ShaderType::Pixel;
+		uint32_t   hazards = 0;
+		switch (inst.GetOpcode()) {
+			case ValueOpcode::SetAttribute:
+				if (pixel && m_program.export_info.at(inst.Flags<IR::ExportFlags>().index).vm) {
+					hazards |= LaneBranchHazardValidMask;
+				}
+				break;
+			case ValueOpcode::ImageQueryLod:
+				if (pixel) hazards |= LaneBranchHazardDerivative;
+				break;
+			case ValueOpcode::Ballot:
+			case ValueOpcode::ReadFirstLane:
+			case ValueOpcode::ConditionRef:
+				if (!MaskWithin(inst, predicate)) hazards |= LaneBranchHazardWideMask;
+				break;
+			default: break;
+		}
+		return hazards;
+	}
+
 	bool TryConvert(Block& branch) {
 		VoteBranch vote;
 		if (!ResolveVote(branch, vote)) return false;
 		auto* merge = branch.terminator.merge_block;
 		std::unordered_set<const Block*> region;
 		if (!CollectRegion(branch, vote.region, merge, region)) return false;
-		for (const auto* block: region) {
-			for (const auto& inst: *block) {
-				if (CrossesLanes(m_program, inst) || !SideEffectGuarded(inst, vote.predicate)) {
-					return false;
-				}
-			}
-		}
-		for (const auto& inst: *merge) {
-			if (inst.GetOpcode() != ValueOpcode::Phi) continue;
-			Value skip;
-			for (size_t i = 0; i < inst.NumArgs(); i++) {
-				if (inst.PhiBlock(i) == &branch) skip = inst.Arg(i);
-			}
-			if (skip.IsEmpty()) return false;
-			for (size_t i = 0; i < inst.NumArgs(); i++) {
-				if (inst.PhiBlock(i) == &branch) continue;
-				std::unordered_set<const Inst*> visiting;
-				if (!Guarded(inst.Arg(i), skip, vote.predicate, region, visiting)) return false;
-			}
-		}
+		m_region = &region;
+		const bool convertible = Convertible(branch, *merge, vote, region);
+		m_region = nullptr;
+		if (!convertible) return false;
 		const bool region_is_true = branch.terminator.true_block == vote.region;
 		if (region_is_true) {
 			branch.condition = vote.predicate;
@@ -226,14 +294,59 @@ private:
 		return true;
 	}
 
-	IR::Program& m_program;
+	bool Convertible(const Block& branch, const Block& merge, const VoteBranch& vote,
+	                 const std::unordered_set<const Block*>& region) {
+		uint32_t hazards = 0;
+		for (const auto* block: region) {
+			const auto kind = block->terminator.kind;
+			if (kind == CFG::TerminatorKind::Return) {
+				hazards |= LaneBranchHazardReturn;
+			} else if (kind != CFG::TerminatorKind::Branch &&
+			           kind != CFG::TerminatorKind::ConditionalBranch) {
+				return false;
+			}
+			for (const auto& inst: *block) {
+				const auto inst_hazards = InstHazards(inst, vote.predicate);
+				if (inst_hazards == UINT32_MAX) return false;
+				hazards |= inst_hazards;
+			}
+		}
+		for (const auto& inst: merge) {
+			if (inst.GetOpcode() != ValueOpcode::Phi) continue;
+			Value skip;
+			for (size_t i = 0; i < inst.NumArgs(); i++) {
+				if (inst.PhiBlock(i) == &branch) skip = inst.Arg(i);
+			}
+			if (skip.IsEmpty()) return false;
+			for (size_t i = 0; i < inst.NumArgs(); i++) {
+				if (inst.PhiBlock(i) == &branch) continue;
+				std::unordered_set<const Inst*> visiting;
+				if (!Guarded(inst.Arg(i), skip, vote.predicate, region, visiting)) return false;
+			}
+		}
+		for (uint32_t bit = 0; bit < LaneBranchHazardCount; bit++) {
+			if ((hazards & (1u << bit)) != 0u) m_stats.hazard_regions[bit]++;
+		}
+		return (hazards & ~m_allowed_hazards) == 0u;
+	}
+
+public:
+	[[nodiscard]] const LaneBranchStats& Stats() const { return m_stats; }
+
+private:
+	IR::Program&                            m_program;
+	uint32_t                                m_allowed_hazards = 0;
+	const std::unordered_set<const Block*>* m_region          = nullptr;
+	LaneBranchStats                         m_stats;
 };
 
 } // namespace
 
-uint32_t ConvertExecVoteBranches(IR::Program& program) {
-	if (program.dispatcher_fallback) return 0;
-	return Converter(program).Run();
+LaneBranchStats ConvertExecVoteBranches(IR::Program& program, uint32_t allowed_hazards) {
+	if (program.dispatcher_fallback) return {};
+	Converter converter(program, allowed_hazards);
+	converter.Run();
+	return converter.Stats();
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv
