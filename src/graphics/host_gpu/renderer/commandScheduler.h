@@ -18,7 +18,11 @@ namespace Libs::Graphics {
 
 class CommandScheduler {
 public:
-	CommandScheduler(RenderContext& context, GraphicContext& graphics);
+	// threaded_submit (--submit-thread): vkQueueSubmit runs on a submit thread so the recording
+	// thread keeps translating while the driver queues the previous command buffer. Submissions
+	// that wait on or signal other semaphores (presentation) stay synchronous and ordered.
+	CommandScheduler(RenderContext& context, GraphicContext& graphics,
+	                 bool threaded_submit = false);
 	~CommandScheduler();
 	KYTY_CLASS_NO_COPY(CommandScheduler);
 
@@ -92,7 +96,22 @@ private:
 		uint64_t                     tick = 0;
 	};
 
+	// One ended command buffer waiting for vkQueueSubmit (debug fields for a failure report).
+	struct PendingSubmit {
+		SubmitInfo        info;
+		vk::CommandBuffer buffer = nullptr;
+		uint64_t          tick   = 0;
+		uint32_t          debug_op {0};
+		uint64_t          debug_submit_id {0};
+		uint32_t          debug_arg0 {0}, debug_arg1 {0}, debug_arg2 {0}, debug_arg3 {0};
+		uint64_t          debug_arg4 {0};
+	};
+
 	void BeginNext();
+	void QueueSubmit(const PendingSubmit& pending);
+	void SubmitThread(const std::stop_token& stop);
+	void DrainSubmitThread();
+	void StopSubmitThread();
 	void PriorityOperationsThread(std::stop_token stop);
 	void QueueOperation(Common::UniqueFunction<void>&& operation, bool priority);
 	void RunOperation(Common::UniqueFunction<void>&& operation);
@@ -110,6 +129,12 @@ private:
 	std::mutex                   m_operation_mutex;
 	std::condition_variable      m_operation_available;
 	std::jthread                 m_priority_thread;
+	std::queue<PendingSubmit>    m_submit_queue;
+	std::mutex                   m_submit_mutex;
+	std::condition_variable      m_submit_available;
+	std::condition_variable      m_submit_drained;
+	bool                         m_submit_active        = false;
+	std::jthread                 m_submit_thread;
 	bool                         m_priority_active      = false;
 	uint64_t                     m_priority_active_tick = 0;
 	OperationState               m_operation_state      = OperationState::Open;

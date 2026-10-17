@@ -170,6 +170,14 @@ static void PrintUsage() {
 	         "                                       threads; a draw whose pipeline is not ready is\n"
 	         "                                       skipped (default 1 on Android, 0 elsewhere).\n");
 	::printf("  --shader-threads <n>                 Shader worker threads (0 = automatic).\n");
+	::printf("  --submit-thread <0|1>                Call vkQueueSubmit on a submit thread instead of\n"
+	         "                                       the GPU thread. Default: 0.\n");
+	::printf("  --timeline-tracker <0|1>             Track GPU progress on one wait thread instead of\n"
+	         "                                       polling the timeline semaphore. Default: 0.\n");
+	::printf("  --gpu-frames-in-flight <0-4>         Frames the guest may run ahead of GPU completion\n"
+	         "                                       at AgcSuspendPoint (0 = never wait). Default: 1.\n");
+	::printf("  --submit-coalesce <0|1>              Share one vkQueueSubmit between consecutive guest\n"
+	         "                                       graphics submissions. Default: 0.\n");
 	::printf("  --render-scale <0.25-2.0>            Internal resolution of frame-sized render\n"
 	         "                                       targets (0.5 = quarter the pixels). Default: 1.0.\n");
 	::printf("  --env <NAME=VALUE>                   Set an environment variable (e.g. FEX_* options).\n");
@@ -553,6 +561,34 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--shader-threads") {
 			if (!ParseUint32(value, options.config.shader_threads)) {
 				::printf("invalid shader thread count: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--submit-thread") {
+			uint32_t mode = 0;
+			if (!ParseUint32(value, mode) || mode > 1) {
+				::printf("invalid submit thread mode (0 or 1): %s\n", value.c_str());
+				return false;
+			}
+			options.config.submit_thread = mode != 0;
+		} else if (arg == "--timeline-tracker") {
+			uint32_t mode = 0;
+			if (!ParseUint32(value, mode) || mode > 1) {
+				::printf("invalid timeline tracker mode (0 or 1): %s\n", value.c_str());
+				return false;
+			}
+			options.config.timeline_tracker = mode != 0;
+		} else if (arg == "--submit-coalesce") {
+			uint32_t mode = 0;
+			if (!ParseUint32(value, mode) || mode > 1) {
+				::printf("invalid submit coalesce mode (0 or 1): %s\n", value.c_str());
+				return false;
+			}
+			options.config.submit_coalesce = mode != 0;
+		} else if (arg == "--gpu-frames-in-flight") {
+			if (!ParseUint32(value, options.config.gpu_frames_in_flight) ||
+			    options.config.gpu_frames_in_flight > Config::MAX_GPU_FRAMES_IN_FLIGHT) {
+				::printf("invalid GPU frames in flight (0-%u): %s\n", Config::MAX_GPU_FRAMES_IN_FLIGHT,
+				         value.c_str());
 				return false;
 			}
 		} else if (arg == "--video-decoder-threads") {

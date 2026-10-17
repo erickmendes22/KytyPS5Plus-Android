@@ -62,6 +62,9 @@ static bool GraphicsRunDebugDumpEnabled() {
 
 GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+	if (const auto frames = Config::GetGpuFramesInFlight(); frames != 0) {
+		m_suspend_point_ready = std::make_shared<SuspendSemaphore>(frames);
+	}
 	GraphicsInitJmpTables();
 	m_gfx_cp = std::make_unique<CommandProcessor>(renderer, 0);
 	m_gfx_cp->Reset();
@@ -175,8 +178,8 @@ void GuestGpu::SubmitFlipPreparation(uint64_t request_id) {
 void GuestGpu::SuspendPoint() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
 	// Do not hold a queue lock while waiting: asynchronous work may be needed to
-	// finish the preceding graphics frame. The first point returns immediately.
-	{
+	// finish the preceding graphics frame. The first point(s) return immediately.
+	if (m_suspend_point_ready != nullptr) {
 		const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GuestSuspendPoint);
 		m_suspend_point_ready->acquire();
 	}
@@ -257,9 +260,11 @@ void CommandProcessor::FlushForInterrupt() {
 	const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
 	                     std::chrono::steady_clock::now().time_since_epoch())
 	                     .count();
+	const auto flush_ns =
+	    Config::SubmitCoalesceEnabled() ? kInterruptFlushCoalesceNs : kInterruptFlushNs;
 	if (m_interrupt_pending_ns == 0) {
 		m_interrupt_pending_ns = now;
-	} else if (now - m_interrupt_pending_ns >= kInterruptFlushNs) {
+	} else if (now - m_interrupt_pending_ns >= flush_ns) {
 		BufferFlush();
 	}
 }
@@ -450,6 +455,56 @@ void GuestGpu::Enqueue(Submission submission) {
 	m_work_available.Signal();
 }
 
+bool GuestGpu::TryDeferFlush() {
+	if (!Config::SubmitCoalesceEnabled()) {
+		return false;
+	}
+	const auto tick = m_renderer.GetCommandScheduler().CurrentTick();
+	if (m_deferred_tick != tick) {
+		// Something else (a flip, a download) ended the command buffer since: a new batch.
+		m_deferred_count = 0;
+	}
+	if (m_deferred_count >= kMaxDeferredFlushes) {
+		return false;
+	}
+	{
+		Common::LockGuard lock(m_queue_mutex);
+		if (m_queues[0].empty() || m_queues[0].front().blocked) {
+			return false;
+		}
+	}
+	m_flush_deferred = true;
+	m_deferred_tick  = tick;
+	m_deferred_count++;
+	return true;
+}
+
+void GuestGpu::FlushDeferred() {
+	if (!m_flush_deferred) {
+		return;
+	}
+	m_flush_deferred = false;
+	m_deferred_count = 0;
+	if (m_renderer.GetCommandScheduler().CurrentTick() != m_deferred_tick) {
+		return;
+	}
+	m_gfx_cp->BufferInit();
+	m_gfx_cp->BufferFlush();
+}
+
+bool GuestGpu::HasRunnableWork() {
+	Common::LockGuard lock(m_queue_mutex);
+	if (!m_commands.empty()) {
+		return true;
+	}
+	for (const auto& queue: m_queues) {
+		if (!queue.empty() && !queue.front().blocked) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void GuestGpu::WaitForIdle() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
 	const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GuestIdle);
@@ -473,6 +528,11 @@ void GuestGpu::ThreadRun(void* data) {
 		Common::UniqueFunction<void> command;
 		bool                         has_submission = false;
 		bool                         should_stop    = false;
+		// --submit-coalesce: a deferred command-buffer end is submitted before the thread would
+		// idle or wait for blocked submissions, so no guest wait depends on it.
+		if (gpu->m_flush_deferred && !gpu->HasRunnableWork()) {
+			gpu->FlushDeferred();
+		}
 		{
 			Common::LockGuard lock(gpu->m_queue_mutex);
 			while (gpu->m_commands.empty() && gpu->m_submission_count == 0 && !gpu->m_stopping) {
@@ -608,8 +668,10 @@ bool GuestGpu::Process(Submission& submission) {
 					break;
 				}
 			}
-			if (progressed) {
+			if (progressed && !TryDeferFlush()) {
 				cp.BufferFlush();
+				m_flush_deferred = false;
+				m_deferred_count = 0;
 			}
 			break;
 		}
@@ -641,8 +703,10 @@ bool GuestGpu::Process(Submission& submission) {
 			// Age caches at the frame boundary, not once per command list.
 			m_renderer.RunGarbageCollector();
 			cp.EmitGlobalBarrier();
-			m_renderer.GetCommandScheduler().DeferPriorityOperation(
-			    [ready = m_suspend_point_ready] { ready->release(); });
+			if (m_suspend_point_ready != nullptr) {
+				m_renderer.GetCommandScheduler().DeferPriorityOperation(
+				    [ready = m_suspend_point_ready] { ready->release(); });
+			}
 			cp.BufferFlush();
 			cp.Reset();
 			break;

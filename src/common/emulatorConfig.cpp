@@ -117,6 +117,22 @@ uint32_t GetShaderThreads() {
 	return std::min(g_config->shader_threads, 8u);
 }
 
+bool SubmitThreadEnabled() {
+	return g_config->submit_thread;
+}
+
+bool TimelineTrackerEnabled() {
+	return g_config->timeline_tracker;
+}
+
+uint32_t GetGpuFramesInFlight() {
+	return std::min(g_config->gpu_frames_in_flight, MAX_GPU_FRAMES_IN_FLIGHT);
+}
+
+bool SubmitCoalesceEnabled() {
+	return g_config->submit_coalesce;
+}
+
 uint32_t GetVideoDecoderThreads() {
 	return std::min(g_config->video_decoder_threads, 16u);
 }

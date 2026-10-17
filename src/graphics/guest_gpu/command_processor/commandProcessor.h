@@ -183,6 +183,7 @@ private:
 	bool     m_ce_complete = false;
 
 	static constexpr int64_t kInterruptFlushNs       = 1'000'000;
+	static constexpr int64_t kInterruptFlushCoalesceNs = 8'000'000; // --submit-coalesce
 	int64_t                  m_interrupt_pending_ns = 0; // first unflushed interrupt, 0 if none
 
 	uint32_t m_const_ram[0x3000] = {0};

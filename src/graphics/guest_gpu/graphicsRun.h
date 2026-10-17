@@ -69,6 +69,11 @@ private:
 	};
 
 	void              Enqueue(Submission submission);
+	// --submit-coalesce: keep the host command buffer open after a graphics submission while
+	// more are queued; FlushDeferred submits it once nothing else can run.
+	bool              TryDeferFlush();
+	void              FlushDeferred();
+	bool              HasRunnableWork();
 	void              ProcessCommands();
 	bool              Process(Submission& submission);
 	static void       ThreadRun(void* data);
@@ -88,12 +93,19 @@ private:
 	bool                                           m_accepting         = true;
 	bool                                           m_stopping          = false;
 	bool                                           m_shutdown_complete = false;
-	// Completion callbacks can outlive GuestGpu during renderer shutdown.
-	std::shared_ptr<std::binary_semaphore> m_suspend_point_ready =
-	    std::make_shared<std::binary_semaphore>(1);
+	// Completion callbacks can outlive GuestGpu during renderer shutdown. Holds one permit per
+	// frame the guest may run ahead of GPU completion (--gpu-frames-in-flight); null when the
+	// suspend point never waits.
+	using SuspendSemaphore = std::counting_semaphore<8>;
+	std::shared_ptr<SuspendSemaphore> m_suspend_point_ready;
 
 	std::unique_ptr<CommandProcessor>                                m_gfx_cp;
 	std::array<std::unique_ptr<CommandProcessor>, ComputeQueueCount> m_compute_cp;
+
+	static constexpr uint32_t kMaxDeferredFlushes = 8;
+	bool                      m_flush_deferred    = false;
+	uint32_t                  m_deferred_count    = 0;
+	uint64_t                  m_deferred_tick     = 0;
 
 	uint64_t        m_submit_id = 0;
 	std::atomic_int m_done_num  = 0;

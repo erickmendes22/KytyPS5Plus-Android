@@ -1,8 +1,10 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 
 #include "common/assert.h"
+#include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/perfWaits.h"
+#include "common/profiler.h"
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <algorithm>
@@ -95,11 +97,19 @@ bool CommandScheduler::InDeferredOperation() noexcept {
 	return g_deferred_callback_scheduler != nullptr;
 }
 
-CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graphics)
+CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graphics,
+                                   bool threaded_submit)
     : m_master(graphics), m_context(context), m_graphics(graphics), m_gpu_timer(graphics, m_master),
       m_command_pool(graphics, m_master),
       m_pass_pool(graphics, m_master, vk::CommandBufferLevel::eSecondary, 64), m_command(*this),
-      m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }) {}
+      m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }) {
+	if (threaded_submit) {
+		m_submit_thread = std::jthread([this](const std::stop_token& stop) { SubmitThread(stop); });
+	}
+	if (Config::TimelineTrackerEnabled()) {
+		m_master.StartTracker();
+	}
+}
 
 CommandScheduler::~CommandScheduler() {
 	Shutdown();
@@ -129,6 +139,8 @@ void CommandScheduler::Shutdown() {
 		Submit();
 	}
 	m_master.Wait(CurrentTick() - 1);
+	StopSubmitThread();
+	m_master.StopTracker();
 	PopPendingOperations();
 	DrainPriorityOperations();
 	m_priority_thread.request_stop();
@@ -380,49 +392,121 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	m_command.EndRendering(PassEnd::Submit);
 	m_gpu_timer.End(m_command.m_buffer);
 	m_command.End();
-	const auto buffer   = m_command.m_buffer;
-	auto&      graphics = m_graphics;
-	EXIT_IF(graphics.queue == nullptr);
+	EXIT_IF(m_graphics.queue == nullptr);
+
+	// Ticks are allocated here, in recording order; the submit thread hands them to the driver
+	// in the same order.
+	const bool    external_semaphores = submit.num_wait_semaphores != 0 || submit.num_signal_semaphores != 0;
+	PendingSubmit pending;
+	pending.tick = m_master.NextTick();
+	submit.AddSignal(m_master.Handle(), pending.tick);
+	pending.info            = submit;
+	pending.buffer          = m_command.m_buffer;
+	pending.debug_op        = m_command.m_debug_op;
+	pending.debug_submit_id = m_command.m_debug_submit_id;
+	pending.debug_arg0      = m_command.m_debug_arg0;
+	pending.debug_arg1      = m_command.m_debug_arg1;
+	pending.debug_arg2      = m_command.m_debug_arg2;
+	pending.debug_arg3      = m_command.m_debug_arg3;
+	pending.debug_arg4      = m_command.m_debug_arg4;
+
+	if (m_submit_thread.joinable() && !external_semaphores) {
+		{
+			const std::lock_guard lock(m_submit_mutex);
+			m_submit_queue.push(pending);
+		}
+		m_submit_available.notify_one();
+	} else {
+		// Binary semaphores must be signalled in submission order with their waits (present).
+		DrainSubmitThread();
+		QueueSubmit(pending);
+	}
+	m_gpu_timer.Submitted(pending.tick);
+
+	m_command.m_buffer = nullptr;
+	return pending.tick;
+}
+
+void CommandScheduler::QueueSubmit(const PendingSubmit& pending) {
+	const auto& submit = pending.info;
+	const auto  buffer = pending.buffer;
+	auto&       graphics = m_graphics;
+
+	vk::TimelineSemaphoreSubmitInfo timeline_info {};
+	timeline_info.waitSemaphoreValueCount   = submit.num_wait_semaphores;
+	timeline_info.pWaitSemaphoreValues      = submit.wait_ticks.data();
+	timeline_info.signalSemaphoreValueCount = submit.num_signal_semaphores;
+	timeline_info.pSignalSemaphoreValues    = submit.signal_ticks.data();
+
+	vk::SubmitInfo submit_info {};
+	submit_info.pNext                = &timeline_info;
+	submit_info.waitSemaphoreCount   = submit.num_wait_semaphores;
+	submit_info.pWaitSemaphores      = submit.wait_semaphores.data();
+	submit_info.pWaitDstStageMask    = submit.wait_stages.data();
+	submit_info.commandBufferCount   = 1;
+	submit_info.pCommandBuffers      = &buffer;
+	submit_info.signalSemaphoreCount = submit.num_signal_semaphores;
+	submit_info.pSignalSemaphores    = submit.signal_semaphores.data();
 
 	vk::Result result;
-	uint64_t   tick;
 	{
-		Common::LockGuard lock(graphics.queue_mutex);
-		tick = m_master.NextTick();
-		submit.AddSignal(m_master.Handle(), tick);
-
-		vk::TimelineSemaphoreSubmitInfo timeline_info {};
-		timeline_info.waitSemaphoreValueCount   = submit.num_wait_semaphores;
-		timeline_info.pWaitSemaphoreValues      = submit.wait_ticks.data();
-		timeline_info.signalSemaphoreValueCount = submit.num_signal_semaphores;
-		timeline_info.pSignalSemaphoreValues    = submit.signal_ticks.data();
-
-		vk::SubmitInfo submit_info {};
-		submit_info.pNext                = &timeline_info;
-		submit_info.waitSemaphoreCount   = submit.num_wait_semaphores;
-		submit_info.pWaitSemaphores      = submit.wait_semaphores.data();
-		submit_info.pWaitDstStageMask    = submit.wait_stages.data();
-		submit_info.commandBufferCount   = 1;
-		submit_info.pCommandBuffers      = &buffer;
-		submit_info.signalSemaphoreCount = submit.num_signal_semaphores;
-		submit_info.pSignalSemaphores    = submit.signal_semaphores.data();
-
+		Common::LockGuard                   lock(graphics.queue_mutex);
 		const Common::PerfStats::ScopedWait timing(Common::PerfStats::Wait::QueueSubmit);
 		result = graphics.queue.submit(1, &submit_info, nullptr);
 		Common::PerfStats::Count(Common::PerfStats::Counter::Submits);
 	}
 
 	if (result != vk::Result::eSuccess) {
-		ReportVulkanFatal("vkQueueSubmit", result, tick, m_command.m_debug_op,
-		                  m_command.m_debug_submit_id, m_command.m_debug_arg0,
-		                  m_command.m_debug_arg1, m_command.m_debug_arg2, m_command.m_debug_arg3,
-		                  m_command.m_debug_arg4);
+		ReportVulkanFatal("vkQueueSubmit", result, pending.tick, pending.debug_op,
+		                  pending.debug_submit_id, pending.debug_arg0, pending.debug_arg1,
+		                  pending.debug_arg2, pending.debug_arg3, pending.debug_arg4);
 	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
-	m_gpu_timer.Submitted(tick);
+	m_master.MarkSubmitted(pending.tick);
+}
 
-	m_command.m_buffer = nullptr;
-	return tick;
+void CommandScheduler::SubmitThread(const std::stop_token& stop) {
+	KYTY_PROFILER_THREAD("Thread_Submit");
+	for (;;) {
+		PendingSubmit pending;
+		{
+			std::unique_lock lock(m_submit_mutex);
+			m_submit_available.wait(lock, [this, &stop] {
+				return stop.stop_requested() || !m_submit_queue.empty();
+			});
+			if (m_submit_queue.empty()) {
+				// Stop only once everything queued has been submitted.
+				return;
+			}
+			pending = m_submit_queue.front();
+			m_submit_queue.pop();
+			m_submit_active = true;
+		}
+		QueueSubmit(pending);
+		{
+			const std::lock_guard lock(m_submit_mutex);
+			m_submit_active = false;
+		}
+		m_submit_drained.notify_all();
+	}
+}
+
+void CommandScheduler::DrainSubmitThread() {
+	if (!m_submit_thread.joinable()) {
+		return;
+	}
+	std::unique_lock lock(m_submit_mutex);
+	m_submit_drained.wait(lock, [this] { return m_submit_queue.empty() && !m_submit_active; });
+}
+
+void CommandScheduler::StopSubmitThread() {
+	if (!m_submit_thread.joinable()) {
+		return;
+	}
+	DrainSubmitThread();
+	m_submit_thread.request_stop();
+	m_submit_available.notify_all();
+	m_submit_thread.join();
 }
 
 void CommandScheduler::BeginNext() {

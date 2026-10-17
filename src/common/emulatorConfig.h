@@ -102,6 +102,23 @@ struct ConfigOptions {
 #endif
 	// Shader worker threads (0 = automatic: cores / 2 - 1, at most 3).
 	uint32_t               shader_threads              = 0;
+	// --submit-thread: vkQueueSubmit runs on its own thread so the GPU (command processor)
+	// thread keeps translating PM4 while the driver queues the previous command buffer. On
+	// Turnip/KGSL a submit costs 2-16 ms of the GPU thread (28-34 per frame in Astro Bot).
+	bool                   submit_thread               = false;
+	// --timeline-tracker: one thread waits for each timeline tick in turn and publishes the
+	// GPU's progress, replacing vkGetSemaphoreCounterValue polls on the working threads (40-55
+	// per frame, about 1 ms each on Turnip/KGSL, which walks its emulated timeline).
+	bool                   timeline_tracker            = false;
+	// --gpu-frames-in-flight: how many AgcSuspendPoint frames the guest may run ahead of the
+	// host GPU's completion; 1 waits at each suspend point for the previous frame's GPU work,
+	// 0 never waits there (the guest's own flip and label waits pace it).
+	uint32_t               gpu_frames_in_flight        = 1;
+	// --submit-coalesce: a guest graphics submission does not end a host command buffer while
+	// more graphics submissions are queued (flips, suspend points and downloads still do), so
+	// several guest submissions share one vkQueueSubmit. EOP interrupts wait up to 8 ms instead
+	// of 1 ms for a batch; nothing waits past the moment the GPU thread runs out of work.
+	bool                   submit_coalesce             = false;
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;
@@ -161,6 +178,11 @@ float    GetRenderScale();
 uint32_t GetRenderScaleFlags();
 bool     AsyncShadersEnabled();
 uint32_t GetShaderThreads();
+bool     SubmitThreadEnabled();
+bool     TimelineTrackerEnabled();
+uint32_t GetGpuFramesInFlight();
+bool     SubmitCoalesceEnabled();
+constexpr uint32_t MAX_GPU_FRAMES_IN_FLIGHT = 4;
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();
 
