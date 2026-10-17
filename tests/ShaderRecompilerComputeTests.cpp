@@ -26448,6 +26448,49 @@ TestCase CvtPkrtzF16F32SubnormalRoundsTowardZero() {
            O::S_ENDPGM}};
 }
 
+TestCase CvtPkrtzF16F32RuntimeEdges() {
+  using O = ShaderOpcode;
+  // Independent expected half encodings, including truncation boundaries and NaN payloads.
+  constexpr std::array<std::array<u32, 2>, 31> inputs{{
+      {0x00000000u, 0x0000u}, {0x80000000u, 0x8000u},
+      {0x00000001u, 0x0000u}, {0x007fffffu, 0x0000u},
+      {0x00800000u, 0x0000u}, {0x32ffffffu, 0x0000u},
+      {0x33000000u, 0x0000u}, {0x337fffffu, 0x0000u},
+      {0x33800000u, 0x0001u}, {0x33c00000u, 0x0001u},
+      {0x34000000u, 0x0002u}, {0x387fc000u, 0x03ffu},
+      {0x387fe000u, 0x03ffu}, {0x387fffffu, 0x03ffu},
+      {0x38800000u, 0x0400u}, {0x38802000u, 0x0401u},
+      {0x3e22f983u, 0x3117u}, {0x3f800000u, 0x3c00u},
+      {0x3f801000u, 0x3c00u}, {0x3f801001u, 0x3c00u},
+      {0x3f802000u, 0x3c01u}, {0x477fe000u, 0x7bffu},
+      {0x477ff000u, 0x7bffu}, {0x477fffffu, 0x7bffu},
+      {0x47800000u, 0x7bffu}, {0x7f7fffffu, 0x7bffu},
+      {0x7f800000u, 0x7c00u}, {0x7f800001u, 0x7e00u},
+      {0x7fa02000u, 0x7f01u}, {0x7fc12000u, 0x7e09u},
+      {0x7fffffffu, 0x7fffu},
+  }};
+  TestCase test;
+  test.name = "CvtPkrtzF16F32RuntimeEdges";
+  for (const auto &input : inputs)
+    test.initial.insert(test.initial.end(), {input[0], input[0] ^ 0x80000000u});
+  test.expected = test.initial;
+  for (u32 i = 0; i < inputs.size(); ++i) {
+    for (u32 reg = 0; reg < 2; ++reg) {
+      AppendVMovU32(&test.code, 30, (i * 2u + reg) * 4u);
+      AppendBufferLoadDword(&test.code, reg, 30);
+    }
+    test.code.push_back(EncodeVop2(0x2f, 2, Vgpr(0), 1));
+    AppendStoreVgpr(&test.code, 2, static_cast<u32>(test.expected.size()));
+    const auto half = inputs[i][1];
+    test.expected.push_back(half | ((half ^ 0x8000u) << 16));
+  }
+  AppendEnd(&test.code);
+  test.opcodes = {O::V_MOV_B32, O::BUFFER_LOAD_DWORD, O::V_CVT_PKRTZ_F16_F32,
+                  O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.forbidden_spirv = {"PackHalf2x16", "UnpackHalf2x16"};
+  return test;
+}
+
 TestCase CvtPkrtzF16F32SdwaAndOutputModifiers() {
   using O = ShaderOpcode;
 
@@ -42897,6 +42940,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(Vop3pInt16Ops);
   AddCase(CvtPkU8F32PacksSelectedByte);
   AddCase(CvtPkrtzF16F32SubnormalRoundsTowardZero);
+  AddCase(CvtPkrtzF16F32RuntimeEdges);
   AddCase(CvtPkrtzF16F32SdwaAndOutputModifiers);
   AddCase(PackedMinMaxF16NanAndSignedZeroEdges);
   AddCase(VectorMinMaxF16Ops);
@@ -48909,6 +48953,11 @@ int main(int argc, char **argv) {
   }
   if (argc == 2 && std::strcmp(argv[1], "--dead-lane-only") == 0) {
     CheckDeadLaneFold();
+  if (argc == 2 && std::strcmp(argv[1], "--cvt-pkrtz-only") == 0) {
+    VulkanHarness vulkan;
+    RunCase(&vulkan, CvtPkrtzF16F32SubnormalRoundsTowardZero());
+    RunCase(&vulkan, CvtPkrtzF16F32RuntimeEdges());
+    RunCase(&vulkan, CvtPkrtzF16F32SdwaAndOutputModifiers());
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--thread-dimensions-only") == 0) {
