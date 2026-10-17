@@ -1,0 +1,36 @@
+// --perf-stats GPU clock probe (GpuTimer): a fixed amount of dependent ALU work whose GPU time
+// tracks the shader clock (timestamps tick at a constant rate). Reads no memory; the result is
+// only stored when it equals `never`, which the host never makes true, so the compiler must
+// still run every iteration.
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Sink {
+    float value;
+};
+
+layout(push_constant, std430) uniform Params {
+    uint64_t sink;      // never written (see `never`)
+    uint     iterations;
+    float    never;
+};
+
+void main() {
+    float a = float(gl_GlobalInvocationID.x & 255u) * (1.0 / 256.0);
+    float b = a + 0.25;
+    float c = a + 0.5;
+    float d = a + 0.75;
+    for (uint i = 0u; i < iterations; i++) {
+        a = fma(a, 0.999, 0.001);
+        b = fma(b, 0.999, 0.001);
+        c = fma(c, 0.999, 0.001);
+        d = fma(d, 0.999, 0.001);
+    }
+    const float result = a + b + c + d;
+    if (result == never) {
+        Sink(sink).value = result;
+    }
+}
