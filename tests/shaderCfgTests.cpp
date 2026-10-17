@@ -12040,12 +12040,13 @@ void TestMergedShaderUserDataSnapshot() {
   ShaderMapUserData(regs.gs_regs.data_addr, mapped);
   HW::Context context;
   context.SetShaderStages(0x20);
-  context.SetMaxOutputPerSubgroup(252);
+  context.SetMaxOutputPerSubgroup(192);
   context.SetGsMaxVertOut(18);
+  context.SetNggSubgrpCntl(16);
   context.SetGsOutPrimType(2);
   HW::UserConfig user_config;
   user_config.SetPrimitiveType(Prospero::PrimitiveType::kTriList);
-  user_config.SetGeControl({14, 14});
+  user_config.SetGeControl({62, 192});
   ShaderVertexInputInfo first_input{};
   const auto first = PrepareProgram(regs, context, user_config, first_input);
   regs.gs_regs.user_data_addr = reinterpret_cast<uint64_t>(second_table.data());
@@ -12058,8 +12059,10 @@ void TestMergedShaderUserDataSnapshot() {
         "merged shader parameters did not snapshot ordinary user SGPRs at s8");
   Check(first.hash == second.hash &&
             MakeStageStaticKey(first_input) == MakeStageStaticKey(second_input) &&
-            first_input.mesh.scratch_size_dwords == 7,
-        "merged shader identity or maximum scratch size changed with dynamic user data");
+            first_input.mesh.scratch_size_dwords == 7 &&
+            first_input.mesh.primitives_per_group == 10 &&
+            first_input.mesh.max_primitives == 160 && first_input.mesh.threads_num[0] == 192,
+        "merged shader lost its identity, scratch size or amplified subgroup bounds");
   CompileOptions options{};
   options.stage = ShaderType::Mesh;
   options.user_data_base = 0;
@@ -12122,6 +12125,7 @@ void TestMergedShaderUserDataSnapshot() {
   regs.gs_regs.rsrc2.lds_size = 64;
   regs.gs_regs.rsrc1.gs_vgpr_component_count = 1;
   context.SetGsMaxVertOut(0);
+  context.SetNggSubgrpCntl(1);
   for (const uint32_t wave_size : {32u, 64u}) {
     context.SetShaderStages(wave_size == 32 ? 0x00400000u : 0u);
     for (const uint16_t capacity : {64u, 128u, 256u}) {
@@ -12147,18 +12151,31 @@ void TestMergedShaderUserDataSnapshot() {
   context.SetShaderStages(0x20);
   context.SetMaxOutputPerSubgroup(256);
   context.SetGsMaxVertOut(8);
+  context.SetNggSubgrpCntl(6);
   user_config.SetPrimitiveType(Prospero::PrimitiveType::kTriFan);
   user_config.SetGeControl({32, 32});
   ShaderVertexInputInfo fan_input{};
   PrepareProgram(regs, context, user_config, fan_input);
   Check(fan_input.mesh.primitives_per_group == 30 && fan_input.mesh.vertices_per_group == 32 &&
-            fan_input.mesh.max_vertices == 256 && fan_input.mesh.max_primitives == 192,
+            fan_input.mesh.max_vertices == 256 && fan_input.mesh.max_primitives == 180,
         "captured triangle-fan GS configuration lost its subgroup assembly limits");
-  context.SetShaderStages(0x00482030u);
+  context.SetShaderStages(0x00402030u);
   context.SetMaxOutputPerSubgroup(32);
   context.SetGsMaxVertOut(32);
   user_config.SetPrimitiveType(Prospero::PrimitiveType::kPointList);
   user_config.SetGeControl({1, 1});
+  for (const uint32_t amplification : {32u, 48u}) {
+    context.SetNggSubgrpCntl(amplification);
+    ShaderVertexInputInfo input{};
+    PrepareProgram(regs, context, user_config, input);
+    Check(!input.mesh.fast_launch && input.mesh.primitives_per_group == 1 &&
+              input.mesh.vertices_per_group == 1 && input.mesh.max_vertices == 32 &&
+              input.mesh.max_primitives == amplification &&
+              input.mesh.threads_num[0] == (amplification == 32u ? 32u : 64u),
+          "native NGG output primitives were derived from a vertex strip or omitted from subgroup size");
+  }
+  context.SetShaderStages(0x00482030u);
+  context.SetNggSubgrpCntl(32);
   regs.gs_regs.rsrc1.gs_vgpr_component_count = 0;
   regs.gs_regs.rsrc2.es_vgpr_component_count = 1;
   ShaderVertexInputInfo fast_input{};
