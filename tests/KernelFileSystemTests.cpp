@@ -1937,6 +1937,11 @@ void CheckSocketWakeup() {
   namespace Net = Libs::Network::Net;
   Loader::SymbolDatabase symbols;
   Libs::LibNet::InitNet_1_Net(&symbols);
+  Libs::InitLibKernel_1(&symbols);
+  const auto *shutdown_symbol = symbols.Find(
+      {"TUuiYS2kE8s", "Posix", 1, "libkernel", 1, 1, Loader::SymbolType::Func});
+  Check(shutdown_symbol != nullptr, "POSIX shutdown export resolves");
+  const auto shutdown = reinterpret_cast<int (KYTY_SYSV_ABI *)(int, int)>(shutdown_symbol->vaddr);
   const auto *connect_symbol = symbols.Find(
       {"OXXX4mUk3uk", "Net", 1, "Net", 1, 1, Loader::SymbolType::Func});
   const auto *getsockopt_symbol = symbols.Find(
@@ -2191,6 +2196,29 @@ void CheckSocketWakeup() {
   CheckSocketReceiveBuffer(reader, writer);
   CheckSocketReceiveConcurrency();
 #endif
+  const auto [shutdown_reader, shutdown_writer] = CreateTcpPair();
+  const auto ready_to_read = [](int fd) {
+    std::array<uint64_t, 16> readable {};
+    readable[fd / 64] = uint64_t {1} << (fd % 64);
+    const std::array<int64_t, 2> timeout {2, 0};
+    return Net::Select(fd + 1, readable.data(), nullptr, nullptr, timeout.data()) == 1;
+  };
+  Check(shutdown(-1, 1) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EBADF &&
+            shutdown(shutdown_writer, 3) == -1 &&
+            *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EINVAL,
+        "shutdown rejects invalid descriptors and directions");
+  Check(Net::Send(shutdown_writer, "x", 1, 0) == 1 && shutdown(shutdown_writer, 1) == 0 &&
+            ready_to_read(shutdown_reader) &&
+            Net::Recv(shutdown_reader, received.data(), 1, 0) == 1 && received[0] == 'x' &&
+            ready_to_read(shutdown_reader) &&
+            Net::Recv(shutdown_reader, received.data(), 1, 0) == 0 &&
+            Net::Send(shutdown_reader, "y", 1, 0) == 1 &&
+            ready_to_read(shutdown_writer) &&
+            Net::Recv(shutdown_writer, received.data(), 1, 0) == 1 && received[0] == 'y',
+        "write shutdown drains queued bytes, signals EOF, and preserves reverse traffic");
+  Check(Net::SocketClose(shutdown_reader) == 0 && Net::SocketClose(shutdown_writer) == 0,
+        "close half-shutdown sockets");
   Check(Net::SocketClose(writer) == 0, "close wake writer");
   *net_errno = Libs::Posix::POSIX_EINVAL;
   Check(net_recv(reader, received.data(), received.size(), 0) == 0 &&
