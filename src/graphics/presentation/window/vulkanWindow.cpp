@@ -93,6 +93,9 @@ static bool HasExtension(const std::vector<const char*>& extensions, const char*
 // KYTY_VK_DISABLE=name[+name...] forces the fallback of an optional Vulkan capability, so the
 // paths other drivers take can be tested on hardware that has it. Names: nullDescriptor,
 // storageImageArrayNonUniformIndexing, subgroupVote, subgroupArithmetic.
+// KYTY_NATIVE_FP16 unset: native F16 arithmetic on Mesa Turnip only when this is true.
+constexpr bool kNativeFp16DefaultTurnip = false;
+
 static bool VulkanFeatureDisabled(std::string_view name) {
 	const char* spec = std::getenv("KYTY_VK_DISABLE");
 	if (spec == nullptr) {
@@ -548,6 +551,37 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	        : supported_features12.shaderStorageImageArrayNonUniformIndexing;
 	optional.storage_image_array_non_uniform_indexing =
 	    features12.shaderStorageImageArrayNonUniformIndexing == VK_TRUE;
+	{
+		// Native F16 arithmetic (ShaderDeviceFeatures::native_float16, KYTY_NATIVE_FP16): needs
+		// shaderFloat16 plus RTE rounding, denormal and signed-zero/inf/NaN preservation at
+		// width 16 that a shader can set independently of the other widths.
+		vk::PhysicalDeviceFloatControlsProperties half_controls {};
+		vk::PhysicalDeviceDriverProperties        half_driver {};
+		half_controls.pNext = &half_driver;
+		vk::PhysicalDeviceProperties2 half_query {};
+		half_query.pNext = &half_controls;
+		physical_device.getProperties2(&half_query);
+		const bool supported =
+		    supported_features12.shaderFloat16 == VK_TRUE &&
+		    half_controls.shaderDenormPreserveFloat16 == VK_TRUE &&
+		    half_controls.shaderRoundingModeRTEFloat16 == VK_TRUE &&
+		    half_controls.shaderSignedZeroInfNanPreserveFloat16 == VK_TRUE &&
+		    half_controls.denormBehaviorIndependence == vk::ShaderFloatControlsIndependence::eAll &&
+		    half_controls.roundingModeIndependence == vk::ShaderFloatControlsIndependence::eAll;
+		const char* env = std::getenv("KYTY_NATIVE_FP16");
+		const bool  requested = env != nullptr && *env != '\0'
+		                            ? !(env[0] == '0' && env[1] == '\0')
+		                            : kNativeFp16DefaultTurnip && half_driver.driverID == vk::DriverId::eMesaTurnip;
+		optional.native_float16 = supported && requested;
+		if (optional.native_float16) features12.shaderFloat16 = VK_TRUE;
+		LOGF("Vulkan native fp16: supported=%d requested=%d (shaderFloat16=%d denormPreserve16=%d "
+		     "rte16=%d szinp16=%d independence=%d/%d)\n", supported, requested,
+		     supported_features12.shaderFloat16 == VK_TRUE, half_controls.shaderDenormPreserveFloat16 == VK_TRUE,
+		     half_controls.shaderRoundingModeRTEFloat16 == VK_TRUE,
+		     half_controls.shaderSignedZeroInfNanPreserveFloat16 == VK_TRUE,
+		     static_cast<int>(half_controls.denormBehaviorIndependence),
+		     static_cast<int>(half_controls.roundingModeIndependence));
+	}
 	vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR workgroup_layout {};
 	workgroup_layout.workgroupMemoryExplicitLayout =
 	    supported_workgroup_layout.workgroupMemoryExplicitLayout;

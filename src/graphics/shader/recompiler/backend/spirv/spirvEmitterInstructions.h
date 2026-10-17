@@ -175,6 +175,10 @@ inline constexpr auto EmitFPCmpClass16 = EmitClassMaskF16;
 EMIT_NATIVE(FPAdd32, OpFAdd, F32, uint32_t, uint32_t)
 EMIT_NATIVE(FPSub32, OpFSub, F32, uint32_t, uint32_t)
 EMIT_NATIVE(FPMul32, OpFMul, F32, uint32_t, uint32_t)
+// Native F16 (IR F16 values are 32-bit words holding the half in the low 16 bits).
+uint32_t EmitFPAdd16(EmitterState& state, uint32_t arg0, uint32_t arg1);
+uint32_t EmitFPSub16(EmitterState& state, uint32_t arg0, uint32_t arg1);
+uint32_t EmitFPMul16(EmitterState& state, uint32_t arg0, uint32_t arg1);
 EMIT_NATIVE(FPAdd64, OpFAdd, F64, uint32_t, uint32_t)
 EMIT_NATIVE(FPMul64, OpFMul, F64, uint32_t, uint32_t)
 inline constexpr auto EmitFPFma64 =

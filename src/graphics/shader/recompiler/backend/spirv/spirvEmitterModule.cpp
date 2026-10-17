@@ -1059,6 +1059,28 @@ void DefineModule(EmitterState& state) {
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve,
 		                               32u);
 	}
+	// Native F16 arithmetic (IR::LowerNativeFloat16): RDNA2 half math rounds to nearest even and
+	// keeps denormals, signed zero, infinities and NaNs.
+	const bool native_half = std::ranges::any_of(state.program.blocks, [](const IR::Block* block) {
+		return std::ranges::any_of(*block, [](const IR::Inst& inst) {
+			const auto op = inst.GetOpcode();
+			return op == IR::ValueOpcode::FPAdd16 || op == IR::ValueOpcode::FPSub16 ||
+			       op == IR::ValueOpcode::FPMul16;
+		});
+	});
+	if (native_half) {
+		if (!state.device_features.native_float16) {
+			EXIT("native F16 arithmetic without device support: hash=0x%016" PRIx64 "\n",
+			     state.program.shader_hash);
+		}
+		state.builder.RequireCapability(spv::CapabilityFloat16);
+		state.builder.RequireCapability(spv::CapabilitySignedZeroInfNanPreserve);
+		state.builder.RequireCapability(spv::CapabilityDenormPreserve);
+		state.builder.RequireCapability(spv::CapabilityRoundingModeRTE);
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve, 16u);
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeDenormPreserve, 16u);
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeRoundingModeRTE, 16u);
+	}
 	if (state.program.info.float64) {
 		EXIT_NOT_IMPLEMENTED(state.program.stage == ShaderType::Compute &&
 		                     state.input_info.compute->float_mode != 0xc0);

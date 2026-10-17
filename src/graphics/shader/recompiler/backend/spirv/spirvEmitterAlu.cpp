@@ -101,6 +101,59 @@ uint32_t EmitF32ToU32(EmitterState& state, uint32_t src, bool signed_value) {
 
 } // namespace
 
+namespace {
+
+uint32_t TypeF16(EmitterState& state) {
+	if (state.f16_type == 0) {
+		state.builder.RequireCapability(spv::CapabilityFloat16);
+		state.f16_type = state.builder.Type(spv::OpTypeFloat, 16);
+	}
+	return state.f16_type;
+}
+
+uint32_t TypeF16x2(EmitterState& state) {
+	if (state.f16x2_type == 0) {
+		state.f16x2_type = state.builder.Type(spv::OpTypeVector, TypeF16(state), 2);
+	}
+	return state.f16x2_type;
+}
+
+// The half in the low 16 bits of a 32-bit word (Float16 without Int16: bitcast through f16vec2).
+uint32_t HalfFromBits(EmitterState& state, uint32_t bits) {
+	const auto pair = Unary(state, spv::OpBitcast, TypeF16x2(state), bits);
+	const auto half = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpCompositeExtract, TypeF16(state), half, pair, 0u);
+	return half;
+}
+
+uint32_t HalfToBits(EmitterState& state, uint32_t half) {
+	const auto pair = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpCompositeConstruct, TypeF16x2(state), pair, half,
+	                          state.builder.Constant(spv::OpConstant, TypeF16(state), 0u));
+	return Unary(state, spv::OpBitcast, TypeU32(state), pair);
+}
+
+uint32_t EmitHalfBinary(EmitterState& state, spv::Op opcode, uint32_t lhs, uint32_t rhs) {
+	const auto result = Binary(state, opcode, TypeF16(state), HalfFromBits(state, lhs),
+	                           HalfFromBits(state, rhs));
+	state.builder.AddAnnotation(spv::OpDecorate, result, spv::DecorationNoContraction);
+	return HalfToBits(state, result);
+}
+
+} // namespace
+
+uint32_t EmitFPAdd16(EmitterState& state, uint32_t arg0, uint32_t arg1) {
+	return EmitHalfBinary(state, spv::OpFAdd, arg0, arg1);
+}
+
+uint32_t EmitFPSub16(EmitterState& state, uint32_t arg0, uint32_t arg1) {
+	return EmitHalfBinary(state, spv::OpFSub, arg0, arg1);
+}
+
+uint32_t EmitFPMul16(EmitterState& state, uint32_t arg0, uint32_t arg1) {
+	return EmitHalfBinary(state, spv::OpFMul, arg0, arg1);
+}
+
 uint32_t EmitFPFma32(EmitterState& state, uint32_t a, uint32_t b, uint32_t c) {
 	const auto result = EmitGlsl<GLSLstd450Fma, IR::Type::F32>(state, a, b, c);
 	state.builder.AddAnnotation(spv::OpDecorate, result, spv::DecorationNoContraction);

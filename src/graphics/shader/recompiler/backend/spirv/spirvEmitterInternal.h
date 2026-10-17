@@ -109,6 +109,8 @@ struct EmitterState {
 	uint32_t                                        u64_type = 0;
 	uint32_t                                        i32_type = 0;
 	uint32_t                                        f32_type = 0;
+	uint32_t                                        f16_type = 0;
+	uint32_t                                        f16x2_type = 0;
 	uint32_t                                        f64_type = 0;
 	uint32_t                                        u32_pair_type = 0;
 	uint32_t                                        i32_pair_type = 0;

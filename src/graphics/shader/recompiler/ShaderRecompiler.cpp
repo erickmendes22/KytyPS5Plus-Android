@@ -11,6 +11,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
+#include "graphics/shader/recompiler/ir/passes/NativeFloat16.h"
 #include "graphics/shader/recompiler/ir/passes/ReadLaneElimination.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
@@ -788,6 +789,21 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	     " elapsed_ms=%" PRIu64 "\n",
 	     GetDumpLabel(options), StageName(options.stage), options.shader_hash,
 	     static_cast<uint64_t>(ir.blocks.size()), phase_ms());
+	{
+		// Half-float usage census (native fp16 candidates): F16 <-> F32 conversions and packs.
+		uint32_t half_ops = 0;
+		for (const auto* block: ir.blocks) {
+			for (const auto& inst: *block) {
+				const auto op = inst.GetOpcode();
+				half_ops += op == IR::ValueOpcode::ConvertF16F32 || op == IR::ValueOpcode::ConvertF32F16 ||
+				            op == IR::ValueOpcode::PackHalf2x16;
+			}
+		}
+		if (half_ops != 0u) {
+			LOGF("%s fp16 census: stage=%s hash=0x%016" PRIx64 " half_ops=%u\n", GetDumpLabel(options),
+			     StageName(options.stage), options.shader_hash, half_ops);
+		}
+	}
 	IR::RewriteToSsa(ir.blocks);
 	const bool wqm_entry_lane_fold = options.device_features.wqm_entry_lane_fold;
 	const auto simplify = [&ir, wqm_entry_lane_fold] {
@@ -807,6 +823,15 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	}
 	// Cleanup also exposes profitable folds by removing dead predicate consumers.
 	simplify();
+	if (options.device_features.native_float16) {
+		const auto half = IR::LowerNativeFloat16(ir.blocks);
+		if (half.scalar != 0u || half.packed != 0u) {
+			IR::EliminateDeadCode(ir.blocks);
+			LOGF("%s native fp16: stage=%s hash=0x%016" PRIx64 " scalar=%u packed_lanes=%u\n",
+			     GetDumpLabel(options), StageName(options.stage), options.shader_hash, half.scalar,
+			     half.packed);
+		}
+	}
 	if (decoded.has_swap_pc) {
 		// Leaf returns are resolved CFG edges; native PC values must not escape into GPU data.
 		for (const auto* block: ir.blocks)

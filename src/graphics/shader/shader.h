@@ -283,6 +283,11 @@ struct ShaderDeviceFeatures {
 	uint32_t uniform_constant_buffer_bytes = 0;
 	// At most this many uniform buffers per shader (maxPerStageDescriptorUniformBuffers margin).
 	uint32_t uniform_buffers_per_stage = 0;
+	// V_ADD/SUB/SUBREV/MUL_F16 and the V_PK_ADD/MUL_F16 lanes become native 16-bit float SPIR-V
+	// (Float16, RTE, denormals and signed zero/inf/NaN preserved at width 16) instead of F32 math
+	// rounded to F16; identical results except NaN payloads (KYTY_NATIVE_FP16; needs
+	// shaderFloat16 and the matching float controls).
+	bool native_float16 = false;
 	// S_CBRANCH_EXECZ-style vote branches around lane-local regions become per-lane branches
 	// on the EXEC predicate (Spirv::ConvertExecVoteBranches; KYTY_LANE_BRANCHES=1). Experimental,
 	// off: the Astro Bot intro's particle swarm is not confirmed to render with it.
