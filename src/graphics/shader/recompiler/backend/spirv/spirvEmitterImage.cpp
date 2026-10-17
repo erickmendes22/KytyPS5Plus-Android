@@ -309,6 +309,10 @@ uint32_t QueryDimensions(ValueEmitContext& ctx, const IR::MemoryInfo& mem,
 			                              result[index], size, index);
 		}
 	}
+	// --render-scale: a scaled image reports its guest size.
+	for (uint32_t index = 0; index < std::min(components, info.spatial_components); index++) {
+		result[index] = EmitRescaleQuerySize(ctx.state, mem.resource, result[index]);
+	}
 	if (info.multisampled == 0u) {
 		result[3] = ctx.state.builder.AllocateId();
 		ctx.state.builder.AddFunction(spv::OpImageQueryLevels, TypeU32(ctx.state), result[3],
@@ -909,7 +913,8 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				        const auto& dimension_info = ImageDimensionInfoFor(dimension);
 				        const auto descriptor = LoadImageDescriptor(state, resource, 0u, array_index);
 				        const auto fetched = state.builder.AllocateId();
-				        const auto coord = CoordU32(ctx, mem, *address, dimension);
+				        const auto coord = EmitRescaleTexelCoord(
+				            state, resource, CoordU32(ctx, mem, *address, dimension), dimension);
 				        if (dimension_info.multisampled != 0u) {
 					        state.builder.AddFunction(
 					            spv::OpImageFetch, result_type, fetched,
@@ -934,7 +939,9 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				selected.resource = resource;
 				const auto mip_lod = candidate.mip_mode == IR::ImageMipMode::Dynamic
 				    ? LodU32(ctx, mem, *address, mem.image_dimension) : 0u;
-				const auto coord = CoordU32(ctx, mem, *address, candidate.dimension);
+				const auto coord = EmitRescaleTexelCoord(
+				    state, resource, CoordU32(ctx, mem, *address, candidate.dimension),
+				    candidate.dimension);
 				const auto texel = StoreTexel(ctx, selected, ctx.Arg(inst, 2),
 				    candidate.numeric_class == Prospero::TextureNumericClass::Uint);
 				EmitStorageImageWrite(state, resource, mip_lod, coord, texel, array_index);
@@ -1100,10 +1107,12 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			           const auto pointer_type =
 			               state.builder.Type(spv::OpTypePointer, spv::StorageClassImage,
 			                                  image.atomic64 ? TypeU64(state) : TypeU32(state));
-			           state.builder.AddFunction(spv::OpImageTexelPointer, pointer_type, pointer,
-			                                     ImageDescriptorPointer(state, mem.resource),
-			                                     CoordU32(ctx, mem, *address, dimension),
-			                                     ConstantU32(state, 0));
+			           state.builder.AddFunction(
+			               spv::OpImageTexelPointer, pointer_type, pointer,
+			               ImageDescriptorPointer(state, mem.resource),
+			               EmitRescaleTexelCoord(state, mem.resource,
+			                                     CoordU32(ctx, mem, *address, dimension), dimension),
+			               ConstantU32(state, 0));
 			           if (op == IR::ValueOpcode::ImageAtomicFMin32 ||
 			               op == IR::ValueOpcode::ImageAtomicFMax32) {
 				           return AtomicUpdate(state, pointer, IR::ResourceKind::Image,

@@ -20,6 +20,7 @@
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/renderScale.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -731,6 +732,7 @@ void RenderExecutor::ResetBindings() {
 		}
 	}
 	m_bound_images.clear();
+	m_pass_scaled = false;
 }
 
 void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
@@ -876,6 +878,16 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 		auto& binding = images[i];
 		binding.mip_views.clear();
 		const auto& resource = program.info.images[i];
+		{
+			// --render-scale: only pixel and compute stages rescale texel coordinates and size
+			// queries (ShaderIR PushData::Rescale*). A scaled image fetched by texel from another
+			// stage returns to guest size for good.
+			auto& image = texture_cache.GetImage(binding.image_id);
+			if (image.scaled && resource.texel_access &&
+			    !ShaderRecompiler::IR::PushData::RescaleStage(program.stage)) {
+				image.BlockScaling();
+			}
+		}
 		if (resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::Dynamic) {
 			EXIT_IF(resource.mip_count == 0u ||
 			        resource.mip_count != binding.desc.view_info.level_count);
@@ -1165,9 +1177,43 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			has_push_data = true;
 		}
 	}
+	if (const float render_scale = Config::GetRenderScale(); RenderScale::Active(render_scale)) {
+		has_push_data = true;
+		WriteRescalePushData(prepared_bindings, render_scale);
+	}
 
 	m_pending_push        = has_push_data;
 	m_pending_push_stages = push_stages;
+}
+
+// --render-scale: the flags, scale and per-image "scaled" bits the pixel or compute stage of
+// this pipeline reads (ShaderIR PushData::Rescale*). Only one of those stages binds images
+// with texel access per pipeline, so they share the mask dwords.
+void RenderExecutor::WriteRescalePushData(std::span<PreparedBindings* const> prepared_bindings,
+                                          float                              render_scale) {
+	using ShaderRecompiler::IR::PushData;
+	auto&    dwords = m_pending_push_data.dwords;
+	uint64_t mask   = 0;
+	for (const auto* prepared: prepared_bindings) {
+		const auto& program = *prepared->runtime->program;
+		if (!PushData::RescaleStage(program.stage)) {
+			continue;
+		}
+		for (uint32_t i = 0; i < prepared->images.size() && i < 64u; i++) {
+			const auto& binding = prepared->images[i];
+			if (!binding.image_id) {
+				continue;
+			}
+			const auto* image = m_context.GetTextureCache().m_slot_images.try_get(binding.image_id);
+			if (image != nullptr && image->scaled) {
+				mask |= uint64_t {1} << i;
+			}
+		}
+	}
+	dwords[PushData::RescaleFlagsDword] = m_pass_scaled ? PushData::RescaleFlagAttachmentsScaled : 0u;
+	dwords[PushData::RescaleScaleDword] = std::bit_cast<uint32_t>(render_scale);
+	dwords[PushData::RescaleImageMaskDword]      = static_cast<uint32_t>(mask);
+	dwords[PushData::RescaleImageMaskDword + 1u] = static_cast<uint32_t>(mask >> 32u);
 }
 
 void RenderExecutor::RecordBindings(vk::CommandBuffer              target,

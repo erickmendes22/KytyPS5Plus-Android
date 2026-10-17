@@ -202,8 +202,8 @@ TextureCache::BindingType TextureCache::UploadBinding(const Image& image) {
 	return image.usage.storage ? BindingType::Storage : BindingType::Texture;
 }
 
-ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep) {
-	auto id = m_slot_images.insert(m_graphics, m_scheduler, info);
+ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scaled) {
+	auto id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
 	for (int attempt = 0; m_slot_images[id].allocation_failed; attempt++) {
 		m_slot_images.erase(id);
 		if (attempt == 3 || !EvictForAllocation(keep)) {
@@ -212,7 +212,7 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep) {
 			     static_cast<uint32_t>(info.pixel_format), info.resources.layers,
 			     info.resources.levels);
 		}
-		id = m_slot_images.insert(m_graphics, m_scheduler, info);
+		id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
 	}
 	if (!info.data.Empty()) {
 		RegisterImage(id);
@@ -517,6 +517,19 @@ void TextureCache::PrepareImageCopy(Image& image) {
 	}
 }
 
+void TextureCache::MatchScale(Image& first, Image& second) {
+	if (first.scaled == second.scaled) {
+		return;
+	}
+	auto& scaled   = first.scaled ? first : second;
+	auto& unscaled = first.scaled ? second : first;
+	if (unscaled.CanScale()) {
+		unscaled.SetScaled(true);
+	} else {
+		scaled.SetScaled(false);
+	}
+}
+
 void TextureCache::RefreshCopySource(ImageId id) {
 	auto& image = m_slot_images[id];
 	RefreshImage(id);
@@ -626,13 +639,19 @@ void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
 	     (!source_depth && !dest_depth &&
 	      vk::blockSize(source.backing.format) == vk::blockSize(destination.backing.format)));
 	if (direct_copy) {
+		MatchScale(source, destination);
 		destination.CopyImage(source);
-	} else if (!CopyD16(destination, source)) {
-		if (source.backing.samples != 1 || destination.backing.samples != 1) {
-			EXIT("TextureCache: cross-format multisample image copy is unsupported\n");
+	} else {
+		// Conversion copies address guest texels of both images.
+		source.SetScaled(false);
+		destination.SetScaled(false);
+		if (!CopyD16(destination, source)) {
+			if (source.backing.samples != 1 || destination.backing.samples != 1) {
+				EXIT("TextureCache: cross-format multisample image copy is unsupported\n");
+			}
+			auto& copy_buffer = m_buffer_cache.GetUtilityBuffer(MemoryUsage::DeviceLocal);
+			destination.CopyImageWithBuffer(source, copy_buffer, m_tiler);
 		}
-		auto& copy_buffer = m_buffer_cache.GetUtilityBuffer(MemoryUsage::DeviceLocal);
-		destination.CopyImageWithBuffer(source, copy_buffer, m_tiler);
 	}
 	if (source.IsGpuModified()) {
 		destination.MarkGpuModified();
@@ -652,6 +671,9 @@ void TextureCache::CopyImageMip(ImageId destination_id, ImageId source_id, uint3
 	if (source.IsBufferModified() || source.backing.samples != destination.backing.samples) {
 		EXIT("TextureCache: invalid mip-copy ownership or sample count\n");
 	}
+	// Mip copies address guest texels of both images.
+	source.SetScaled(false);
+	destination.SetScaled(false);
 	destination.CopyMip(source, mip, layer);
 	if (source.IsGpuModified()) {
 		destination.MarkGpuModified();
@@ -755,6 +777,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 			EXIT("TextureCache: multisample depth conversion source is not native-current\n");
 		}
 		PrepareImageCopy(replacement);
+		cached.SetScaled(false);
 		m_blit_helper.ReinterpretColorAsMsDepth(cached, replacement);
 		CommitGpuWrite(replacement);
 	} else {
@@ -942,7 +965,7 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId source_id) {
 	RefreshCopySource(source_id);
-	const auto expanded_id = InsertImage(info, source_id);
+	const auto expanded_id = InsertImage(info, source_id, m_slot_images[source_id].scaled);
 	auto&      source      = m_slot_images[source_id];
 	if (source.binding.is_bound || source.binding.is_target) {
 		source.binding.needs_rebind = true;
@@ -1020,6 +1043,15 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 	auto& destination = image.depth_id ? m_slot_images[image.depth_id] : image;
 	const auto& info        = image.info;
 	const auto  binding     = image.depth_id ? BindingType::DepthTarget : UploadBinding(image);
+	// Buffer copies address guest texels and overwrite the whole image; a scaled target takes
+	// the uploaded contents back up so an attachment bind that refreshes it keeps its pass size.
+	const bool was_scaled = destination.scaled;
+	destination.SetScaled(false, /*preserve=*/false);
+	const auto restore_scale = [&destination, was_scaled] {
+		if (was_scaled) {
+			destination.SetScaled(true);
+		}
+	};
 	if (binding != BindingType::DepthTarget) {
 		if ((binding == BindingType::RenderTarget || binding == BindingType::VideoOut) &&
 		    (info.resources.layers == 0 || info.data.size % info.resources.layers != 0 ||
@@ -1033,6 +1065,7 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 		const auto linear = m_tiler.Detile(source.Handle(), source_offset, info);
 		const auto copies = info.BufferCopies(linear.offset);
 		destination.Upload(copies, linear.buffer, linear.offset, linear.size);
+		restore_scale();
 		return;
 	}
 
@@ -1078,6 +1111,7 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 		copies[0].imageExtent       = info.extent;
 	}
 	destination.Upload(copies, linear.buffer, linear.offset, linear.size);
+	restore_scale();
 }
 
 void TextureCache::InitializeImage(ImageId id) {
@@ -1347,7 +1381,9 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			}
 		}
 		if (!result) {
-			result         = InsertImage(desc.info);
+			const bool target = desc.type == BindingType::RenderTarget ||
+			                    desc.type == BindingType::DepthTarget;
+			result         = InsertImage(desc.info, {}, target);
 			auto& inserted = m_slot_images[result];
 			if (m_buffer_cache.HasGpuDirtyBytes(inserted.info.data.address,
 			                                    inserted.info.data.size)) {
@@ -1683,8 +1719,8 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 		attachment.clearValue  = clear;
 		vk::RenderingInfo rendering {};
 		rendering.renderArea.extent = {
-		    std::max(image.info.extent.width >> range.baseMipLevel, 1u),
-		    std::max(image.info.extent.height >> range.baseMipLevel, 1u)};
+		    std::max(image.backing.extent.width >> range.baseMipLevel, 1u),
+		    std::max(image.backing.extent.height >> range.baseMipLevel, 1u)};
 		rendering.layerCount           = range.layerCount;
 		rendering.colorAttachmentCount = 1;
 		rendering.pColorAttachments    = &attachment;
@@ -1779,6 +1815,8 @@ void TextureCache::DownloadImage(Image& image, Buffer& destination, uint64_t des
 		EXIT("TextureCache: invalid image download\n");
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::ImageDownloadBytes, destination_size);
+	// Buffer copies address guest texels.
+	image.SetScaled(false);
 	if (UploadBinding(image) == BindingType::DepthTarget) {
 		EXIT_IF(destination_size != image.info.data.size || levels != image.info.resources.levels);
 		DownloadDepth(image, destination, destination_offset);

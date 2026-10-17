@@ -123,7 +123,12 @@ private:
 	}
 
 	// keep: an image the caller still uses after the insert; eviction leaves it alone.
-	[[nodiscard]] ImageId            InsertImage(const ImageInfo& info, ImageId keep = {});
+	// scaled: allocate at the render scale when the image qualifies (Image::scalable).
+	[[nodiscard]] ImageId InsertImage(const ImageInfo& info, ImageId keep = {},
+	                                  bool scaled = false);
+	// --render-scale: brings two images that are about to be copied between to the same
+	// backing size (both scaled when both can be, else both at guest size).
+	void MatchScale(Image& first, Image& second);
 	[[nodiscard]] ImageId     GetNullImage(const ImageDesc& desc);
 	void                      RegisterImage(ImageId id);
 	void                      UnregisterImage(ImageId id);

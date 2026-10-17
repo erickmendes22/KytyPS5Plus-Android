@@ -71,12 +71,15 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 	}
 	if (kind == IR::StageInputKind::FragCoord || kind == IR::StageInputKind::TessCoord) {
 		const auto pointer = state.builder.AllocateId();
-		const auto value   = state.builder.AllocateId();
+		auto       value   = state.builder.AllocateId();
 		const auto bits    = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpAccessChain,
 		                          TypePointer(state, spv::StorageClassInput, TypeF32(state)),
 		                          pointer, variable, ConstantU32(state, component));
 		state.builder.AddFunction(spv::OpLoad, TypeF32(state), value, pointer);
+		if (kind == IR::StageInputKind::FragCoord && component < 2u) {
+			value = EmitRescaleFragCoord(state, value);
+		}
 		state.builder.AddFunction(spv::OpBitcast, TypeU32(state), bits, value);
 		return bits;
 	}

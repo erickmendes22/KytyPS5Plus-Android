@@ -374,6 +374,19 @@ uint32_t MakeSampledImage(EmitterState& state, uint32_t resource, uint32_t sampl
 void EmitStorageImageWrite(EmitterState& state, uint32_t resource, uint32_t mip_lod, uint32_t coord,
                            uint32_t texel, uint32_t array_index);
 
+// --render-scale (spirvEmitterRescale.cpp). Active only with device_features.render_scale in a
+// pixel or compute stage; every helper is the identity otherwise.
+// Whether this stage reads the rescale push dwords (defines the push-constant block).
+[[nodiscard]] bool NeedsRescaleData(const EmitterState& state);
+// gl_FragCoord.x/.y (f32) divided by the scale when the pass's attachments are scaled.
+uint32_t EmitRescaleFragCoord(EmitterState& state, uint32_t value);
+// Texel coordinate (u32 scalar or vector of `dimension`) of image `resource` scaled to its
+// backing when that image is scaled.
+uint32_t EmitRescaleTexelCoord(EmitterState& state, uint32_t resource, uint32_t coord,
+                               ImageDimension dimension);
+// One u32 size component of image `resource` returned at guest size when the image is scaled.
+uint32_t EmitRescaleQuerySize(EmitterState& state, uint32_t resource, uint32_t size);
+
 spv::ExecutionModel ExecutionModelForStage(ShaderType stage);
 
 uint32_t ConstantU32(EmitterState& state, uint32_t value);

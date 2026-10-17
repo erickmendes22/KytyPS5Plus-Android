@@ -44,6 +44,7 @@ class MainActivity : Activity() {
     private lateinit var grantButton: Button
     private lateinit var folderPath: TextView
     private lateinit var resolutionGroup: RadioGroup
+    private lateinit var renderScaleGroup: RadioGroup
     private lateinit var message: TextView
     private lateinit var covers: CoverLoader
     private lateinit var grid: GameGridAdapter
@@ -119,6 +120,7 @@ class MainActivity : Activity() {
         }
         folderPath = label(settings.gamesRoot, sizeSp = 16f)
         resolutionGroup = buildResolutionGroup()
+        renderScaleGroup = buildRenderScaleGroup()
         message = label("", secondary = true)
 
         val content = LinearLayout(this).apply {
@@ -150,6 +152,8 @@ class MainActivity : Activity() {
                     gravity = Gravity.CENTER_VERTICAL
                     addView(label("Resolution  ", bold = true))
                     addView(resolutionGroup)
+                    addView(label("  Render scale  ", bold = true))
+                    addView(renderScaleGroup)
                     addView(toggle("Performance HUD", settings.hudEnabled) { settings.hudEnabled = it })
                     addView(toggle("Touch controls", settings.touchControlsEnabled) { settings.touchControlsEnabled = it })
                 },
@@ -191,6 +195,24 @@ class MainActivity : Activity() {
         }
         group.setOnCheckedChangeListener { _, checkedId ->
             (group.findViewById<View>(checkedId)?.tag as? Resolution)?.let { settings.resolution = it }
+        }
+        return group
+    }
+
+    private fun buildRenderScaleGroup(): RadioGroup {
+        val group = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        RenderScale.entries.forEach { scale ->
+            group.addView(
+                RadioButton(this).apply {
+                    id = View.generateViewId()
+                    text = scale.label
+                    tag = scale
+                    isChecked = scale == settings.renderScale
+                },
+            )
+        }
+        group.setOnCheckedChangeListener { _, checkedId ->
+            (group.findViewById<View>(checkedId)?.tag as? RenderScale)?.let { settings.renderScale = it }
         }
         return group
     }
@@ -273,8 +295,9 @@ class MainActivity : Activity() {
             globalHud = settings.hudEnabled,
             globalTouch = settings.touchControlsEnabled,
             game = settings.gameSettings(game.path),
+            globalRenderScale = settings.renderScale,
         )
-        val args = LaunchArgs.forGame(game.path, options.resolution, drivers.driverDirFor(game.path))
+        val args = LaunchArgs.forGame(game.path, options.resolution, drivers.driverDirFor(game.path), options.renderScale)
         startActivity(
             Intent(this, GameActivity::class.java)
                 .putExtra(LaunchArgs.EXTRA_GAME_ARGS, args)

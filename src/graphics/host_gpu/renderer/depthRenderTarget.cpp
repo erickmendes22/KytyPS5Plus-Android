@@ -387,6 +387,9 @@ bool RenderExecutor::DepthStencilCopy(CommandBuffer& buffer) {
 	auto& source      = cache.GetImage(read_id);
 	auto& destination = cache.GetImage(write_id);
 	EXIT_IF(read_id == write_id || source.backing.format != destination.backing.format);
+	// --render-scale: copy at a common backing size (both scaled when both can be).
+	cache.MatchScale(source, destination);
+	EXIT_IF(source.scaled != destination.scaled);
 
 	auto& scheduler = m_context.GetCommandScheduler();
 	scheduler.EndRendering(PassEnd::ImageCopy);
@@ -409,7 +412,8 @@ bool RenderExecutor::DepthStencilCopy(CommandBuffer& buffer) {
 		region.srcSubresource = {aspect, range.base_level, range.base_layer,
 		                         range.layer_count};
 		region.dstSubresource = region.srcSubresource;
-		region.extent = write_desc.info.extent;
+		region.extent         = destination.scaled ? destination.backing.extent
+		                                           : write_desc.info.extent;
 	}
 	command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal,
 	                  destination.backing.image, vk::ImageLayout::eTransferDstOptimal,

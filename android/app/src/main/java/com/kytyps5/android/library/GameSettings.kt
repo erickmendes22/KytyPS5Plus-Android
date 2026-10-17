@@ -1,5 +1,6 @@
 package com.kytyps5.android.library
 
+import com.kytyps5.android.RenderScale
 import com.kytyps5.android.Resolution
 import com.kytyps5.android.stringAt
 import com.kytyps5.android.stringOr
@@ -21,9 +22,11 @@ data class GameSettings(
     val envVars: List<EnvVar> = emptyList(),
     val hud: Boolean? = null,
     val touchControls: Boolean? = null,
+    val renderScale: RenderScale? = null,
 ) {
     fun toJson(): String = JSONObject()
         .put("resolution", resolution?.storageValue ?: JSONObject.NULL)
+        .put("renderScale", renderScale?.storageValue ?: JSONObject.NULL)
         .put("env", JSONArray(envVars.map { it.toString() }))
         .put("hud", hud ?: JSONObject.NULL)
         .put("touchControls", touchControls ?: JSONObject.NULL)
@@ -42,6 +45,7 @@ data class GameSettings(
                     envVars = EnvVars.parse((0 until env.length()).joinToString("\n") { env.stringAt(it) }).vars,
                     hud = if (obj.isNull("hud") || !obj.has("hud")) null else obj.optBoolean("hud"),
                     touchControls = if (obj.isNull("touchControls") || !obj.has("touchControls")) null else obj.optBoolean("touchControls"),
+                    renderScale = RenderScale.entries.firstOrNull { it.storageValue == obj.stringOr("renderScale") },
                 )
             } catch (e: JSONException) {
                 DEFAULT

@@ -17,6 +17,7 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
+#include "graphics/host_gpu/renderer/image/renderScale.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -315,6 +316,20 @@ static void LogDrawInputState(const CommandBuffer& buffer, const RenderColorInfo
 	}
 }
 
+// The guest scissor of viewport `index` in host pixels of the pass (--render-scale shrinks it
+// with the attachments).
+static ScissorRect HostScissor(const HW::Context& ctx, const RenderState& rendering,
+                               uint32_t index) {
+	const auto guest = calc_final_scissor(ctx.GetScreenViewport(), ctx.GetScanModeControl(),
+	                                      {rendering.guest_width, rendering.guest_height}, index);
+	if (!RenderScale::Active(rendering.scale)) {
+		return guest;
+	}
+	const auto host = RenderScale::ScaleRect({guest.left, guest.top, guest.right, guest.bottom},
+	                                         rendering.scale, rendering.width, rendering.height);
+	return {host.left, host.top, host.right, host.bottom};
+}
+
 static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState& dynamic_state,
                                        const ShaderVertexInputInfo& vs_input_info,
                                        const RenderDepthInfo& depth, const RenderState& rendering) {
@@ -322,7 +337,6 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 
 	const auto& ctx = buffer.GetRegisters();
 	const auto&        vp  = ctx.GetScreenViewport();
-	const vk::Extent2D framebuffer_extent {rendering.width, rendering.height};
 	const auto& outputs = vs_input_info.stage.program->info.outputs;
 	const bool  indexed_viewports =
 	    std::any_of(outputs.begin(), outputs.end(), [](const auto& output) {
@@ -344,13 +358,15 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 			viewport.y      = guest.yoffset - guest.yscale;
 			viewport.width  = guest.xscale * 2.0f;
 			viewport.height = guest.yscale * 2.0f;
+			if (RenderScale::Active(rendering.scale)) {
+				viewport = RenderScale::ScaleViewport(viewport, rendering.scale);
+			}
 		}
 		viewport.minDepth =
 		    guest.zoffset - (ctx.GetClipControl().dx_clip_space ? 0.0f : guest.zscale);
 		viewport.maxDepth = guest.zscale + guest.zoffset;
 
-		const auto final_scissor =
-		    calc_final_scissor(vp, ctx.GetScanModeControl(), framebuffer_extent, i);
+		const auto final_scissor = HostScissor(ctx, rendering, i);
 		auto& scissor  = scissors[i];
 		scissor.offset = {final_scissor.left, final_scissor.top};
 		scissor.extent = {static_cast<uint32_t>(final_scissor.right - final_scissor.left),
@@ -568,12 +584,71 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	RenderState state {};
 	state.width                 = std::numeric_limits<uint32_t>::max();
 	state.height                = std::numeric_limits<uint32_t>::max();
+	state.guest_width           = std::numeric_limits<uint32_t>::max();
+	state.guest_height          = std::numeric_limits<uint32_t>::max();
 	state.num_layers            = std::numeric_limits<uint32_t>::max();
 	state.num_color_attachments = 0;
 	// --perf-stats: attachment transitions below may end a pass with draws; note why.
 	const bool pass_open = Common::PerfStats::Enabled() && buffer.IsRendering() &&
 	                       buffer.PassDraws() != 0;
 	std::array<VulkanImageState, RENDER_COLOR_ATTACHMENTS_MAX + 1> old_states {};
+	// --render-scale: every attachment of a pass shares one size. The pass is scaled when all
+	// of them can be; otherwise the scalable ones return to guest size for good (a partner that
+	// cannot scale means this is not a plain frame-sized pass).
+	const float render_scale = Config::GetRenderScale();
+	bool        pass_scaled  = RenderScale::Active(render_scale) &&
+	                   (color_count != 0 || static_cast<bool>(depth.image_id));
+	for (uint32_t i = 0; i < color_count && pass_scaled; i++) {
+		const auto owner = cache.m_slot_images.try_get(colors[i].image_id);
+		pass_scaled      = owner != nullptr && owner->CanScale();
+	}
+	if (pass_scaled && depth.image_id) {
+		const auto owner = cache.m_slot_images.try_get(depth.image_id);
+		pass_scaled      = owner != nullptr && owner->CanScale();
+	}
+	const auto apply_scale = [&](ImageId id) {
+		auto& image = cache.GetImage(id);
+		if (pass_scaled) {
+			image.SetScaled(true);
+		} else if (image.scalable) {
+			image.BlockScaling();
+		}
+	};
+	if (RenderScale::Active(render_scale)) {
+		// Guest refreshes (uploads) run at guest size; do them before the pass size is applied
+		// so the attachment views below are made on the final backing.
+		for (uint32_t i = 0; i < color_count; i++) {
+			cache.UpdateImage(colors[i].image_id);
+		}
+		if (depth.image_id) {
+			cache.UpdateImage(depth.image_id);
+		}
+		for (uint32_t i = 0; i < color_count; i++) {
+			apply_scale(colors[i].image_id);
+		}
+		if (depth.image_id) {
+			apply_scale(depth.image_id);
+		}
+	}
+	// An acquisition below that still moved the image (a refresh or download of an alias) is
+	// undone here, with a view on the final backing.
+	const auto ensure_pass_scale = [&](Image& image, const ImageViewInfo& view,
+	                                   vk::ImageView& image_view) {
+		if (image.scaled == pass_scaled) {
+			return;
+		}
+		static std::atomic_uint32_t s_logged = 0;
+		if (s_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF("render scale: attachment 0x%016" PRIx64 " changed size during acquisition "
+			     "(scaled=%d blocked=%d pass=%d)\n",
+			     image.info.data.address, image.scaled, image.scale_blocked, pass_scaled);
+		}
+		image.SetScaled(pass_scaled);
+		EXIT_IF(image.scaled != pass_scaled);
+		image_view = image.FindView(view);
+	};
+	m_pass_scaled = pass_scaled;
+	state.scale   = pass_scaled ? render_scale : 1.0f;
 	for (uint32_t i = 0; i < color_count; i++) {
 		auto& target = colors[i];
 		EXIT_IF(!target.image_id);
@@ -582,8 +657,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		    owner->binding.needs_rebind) {
 			EXIT("color target changed after render-state discovery\n");
 		}
-		const auto image_view = cache.FindRenderTarget(target.image_id, target.desc);
-		auto&      image      = cache.GetImage(target.image_id);
+		auto  image_view = cache.FindRenderTarget(target.image_id, target.desc);
+		auto& image      = cache.GetImage(target.image_id);
+		ensure_pass_scale(image, target.desc.view_info, image_view);
 		EXIT_IF(image.backing.samples != target.desc.info.samples || image_view == nullptr);
 		const auto& view   = target.desc.view_info;
 		const auto  layout = image.binding.is_bound ? vk::ImageLayout::eGeneral
@@ -598,8 +674,10 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		              buffer.Handle(), PassEnd::Attach);
 		const auto extent       = target.Extent();
 		const auto view_extent  = AttachmentViewExtent(image, view);
-		state.width             = std::min({state.width, extent.width, view_extent.width});
-		state.height            = std::min({state.height, extent.height, view_extent.height});
+		state.width             = std::min(state.width, view_extent.width);
+		state.height            = std::min(state.height, view_extent.height);
+		state.guest_width       = std::min(state.guest_width, extent.width);
+		state.guest_height      = std::min(state.guest_height, extent.height);
 		state.num_layers        = std::min(state.num_layers, view.layer_count);
 		state.num_color_attachments = std::max(state.num_color_attachments, target.target_slot + 1);
 		auto& attachment            = state.color_attachments[target.target_slot];
@@ -613,7 +691,7 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		if (owner == nullptr || !owner->registered || owner->binding.needs_rebind) {
 			EXIT("depth target changed after render-state discovery\n");
 		}
-		const auto  image_view = cache.FindDepthTarget(depth.image_id, depth.desc);
+		auto        image_view = cache.FindDepthTarget(depth.image_id, depth.desc);
 		const auto& metadata   = depth.desc.info.metadata;
 		if (metadata.kind == ImageMetadataKind::Htile && depth.depth_clear_enable &&
 		    !cache.ClearMeta(metadata.range.address)) {
@@ -628,6 +706,7 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			EXIT("failed to consume HTile clear state\n");
 		}
 		auto& image = cache.GetImage(depth.image_id);
+		ensure_pass_scale(image, depth.desc.view_info, image_view);
 		EXIT_IF(image_view == nullptr || image.backing.samples != depth.desc.info.samples);
 		const auto draw_writes = depth.AttachmentWriteAspects();
 		vk::ImageAspectFlags sampled_aspects;
@@ -681,8 +760,10 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		                                     view.layer_count},
 		              buffer.Handle(), PassEnd::Attach);
 		const auto view_extent    = AttachmentViewExtent(image, view);
-		state.width = std::min({state.width, depth.desc.info.extent.width, view_extent.width});
-		state.height = std::min({state.height, depth.desc.info.extent.height, view_extent.height});
+		state.width               = std::min(state.width, view_extent.width);
+		state.height              = std::min(state.height, view_extent.height);
+		state.guest_width         = std::min(state.guest_width, depth.desc.info.extent.width);
+		state.guest_height        = std::min(state.guest_height, depth.desc.info.extent.height);
 		state.num_layers          = std::min(state.num_layers, view.layer_count);
 		const auto aspects        = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
 		auto&      attachment     = state.depth_stencil_attachment;
@@ -706,6 +787,8 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		const auto& limits = buffer.GetGraphics().GetPhysicalDeviceProperties().limits;
 		state.width        = limits.maxFramebufferWidth;
 		state.height       = limits.maxFramebufferHeight;
+		state.guest_width  = state.width;
+		state.guest_height = state.height;
 		// Matches the pipeline's rasterization sample count for attachment-less draws.
 		state.samples =
 		    render_sample_count(buffer.GetRegisters().GetAaConfig().msaa_num_samples);
@@ -718,7 +801,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	}
 	EXIT_IF(state.width == 0 || state.height == 0 || state.num_layers == 0 ||
 	        state.width == std::numeric_limits<uint32_t>::max() ||
-	        state.height == std::numeric_limits<uint32_t>::max());
+	        state.height == std::numeric_limits<uint32_t>::max() ||
+	        state.guest_width == std::numeric_limits<uint32_t>::max() ||
+	        state.guest_height == std::numeric_limits<uint32_t>::max());
 	return state;
 }
 
@@ -1212,8 +1297,7 @@ bool RenderExecutor::CopyDepthToColor(CommandBuffer& buffer, const DrawCallInfo&
 	EXIT_NOT_IMPLEMENTED((source.backing.format != vk::Format::eD32Sfloat &&
 	                      source.backing.format != vk::Format::eD32SfloatS8Uint) ||
 	                     destination.backing.format != vk::Format::eR32Sfloat);
-	const auto rect = calc_final_scissor(hw.GetScreenViewport(), hw.GetScanModeControl(),
-	                                    {rendering.width, rendering.height}, 0);
+	const auto rect = HostScissor(hw, rendering, 0);
 	if (rect.right > rect.left && rect.bottom > rect.top) {
 		const vk::ImageCopy region {
 		    {vk::ImageAspectFlagBits::eDepth, depth.desc.view_info.base_level,
@@ -1689,6 +1773,9 @@ bool RenderExecutor::ResolveColorTargets(CommandBuffer& buffer, uint32_t render_
 	cache.MarkGpuWritten(dst.image_id);
 	auto& source      = cache.GetImage(src.image_id);
 	auto& destination = cache.GetImage(dst.image_id);
+	// The resolve addresses guest texels of both images.
+	source.SetScaled(false);
+	destination.SetScaled(false);
 	// A target can live inside a larger image: GTA V resolves each face of its reflection cube by
 	// pointing CB_COLOR1 at that face's slice. FindImage() then moved the view to the matching
 	// level and layer of that image, which is where the resolve has to read and write.

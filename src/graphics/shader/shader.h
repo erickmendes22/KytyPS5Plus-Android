@@ -255,6 +255,13 @@ struct ShaderDeviceFeatures {
 	// VK_EXT_mesh_shader. Without it a Mesh stage is emitted as a compute shader that writes its
 	// vertices and triangles to buffers a generated vertex shader reads back (mesh emulation).
 	bool mesh_shader = true;
+	// --render-scale is active: pixel and compute shaders read the rescale push dwords
+	// (IR::PushData::Rescale*) to unscale gl_FragCoord and scale texel coordinates. Off, the
+	// emitted SPIR-V is unchanged.
+	bool render_scale = false;
+	// Diagnostics (--render-scale-flags): leave gl_FragCoord / texel coordinates untouched.
+	bool render_scale_keep_fragcoord = false;
+	bool render_scale_keep_texels    = false;
 };
 
 // True when a shader of this stage may emit native subgroup operations on the device.

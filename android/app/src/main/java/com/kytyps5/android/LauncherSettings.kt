@@ -20,6 +20,13 @@ class LauncherSettings(context: Context) {
             prefs.edit().putString(KEY_RESOLUTION, value.storageValue).apply()
         }
 
+    /** Internal render scale unless a game overrides it (see [RenderScale]). */
+    var renderScale: RenderScale
+        get() = RenderScale.fromStorage(prefs.getString(KEY_RENDER_SCALE, null))
+        set(value) {
+            prefs.edit().putString(KEY_RENDER_SCALE, value.storageValue).apply()
+        }
+
     /** Global GPU driver: an imported driver id from [GpuDriverStore], or "" for the system driver. */
     var gpuDriverId: String
         get() = prefs.getString(KEY_GPU_DRIVER, SYSTEM_DRIVER) ?: SYSTEM_DRIVER
@@ -72,6 +79,7 @@ class LauncherSettings(context: Context) {
         private const val PREFS_NAME = "kytyps5_launcher"
         private const val KEY_GAMES_ROOT = "games_root"
         private const val KEY_RESOLUTION = "resolution"
+        private const val KEY_RENDER_SCALE = "render_scale"
         private const val KEY_GPU_DRIVER = "gpu_driver"
         private const val KEY_GPU_DRIVER_GAME_PREFIX = "gpu_driver_game:"
         private const val KEY_BUNDLED_DRIVER_VERSION = "bundled_driver_version"

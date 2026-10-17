@@ -47,9 +47,27 @@ struct ImageBinding {
 
 class Image final {
 public:
-	Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& info);
+	// scaled_hint: allocate the backing at the render scale when the image qualifies (an image
+	// first seen as a color or depth target). See renderScale.h.
+	Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& info,
+	      bool scaled_hint = false);
 	~Image();
 	KYTY_CLASS_NO_COPY(Image);
+
+	// --render-scale. `scalable`: the image qualifies for a scaled backing (frame-sized 2D
+	// color/depth target whose format blits). `scaled`: the current backing is at the scaled
+	// size. `scale_blocked`: a use that cannot be scaled was seen (texel access from a stage
+	// without rescale data, a pass with unscalable attachments); the image stays at guest size.
+	[[nodiscard]] bool CanScale() const noexcept { return scalable && !scale_blocked; }
+	// Switches between the guest-size and scaled backings (both stay allocated once used, so
+	// Vulkan handles and the driver's per-image state survive the switch), blitting the contents
+	// across unless `preserve` is false (the caller overwrites the whole image next). Ends the
+	// open render pass; views made before the call stay valid until the GPU is done with them.
+	void SetScaled(bool want_scaled, bool preserve = true);
+	void BlockScaling() {
+		SetScaled(false);
+		scale_blocked = true;
+	}
 
 	[[nodiscard]] vk::ImageView FindView(const ImageViewInfo& view_info);
 	using Barriers = std::vector<vk::ImageMemoryBarrier2>;
@@ -128,6 +146,10 @@ public:
 
 	ImageInfo        info;
 	VulkanImage      backing;
+	bool             scalable      = false;
+	bool             scaled        = false;
+	bool             scale_blocked = false;
+	vk::Filter       scale_filter  = vk::Filter::eNearest;
 	std::vector<CachedImageView> views;
 	ImageUsage       usage;
 	ImageBinding     binding;
@@ -150,6 +172,8 @@ private:
 	friend struct ImageTestAccess;
 
 	[[nodiscard]] static vk::ImageAspectFlags FullAspectMask(vk::Format format) noexcept;
+	[[nodiscard]] bool                        CreateBacking(vk::Extent3D extent, VulkanImage& out);
+	void                                      SwapBackings();
 	[[nodiscard]] static uint32_t             CopyRows(uint64_t row_size, uint32_t rows,
 	                                                   uint64_t capacity) noexcept;
 	[[nodiscard]] static uint32_t             CopyExtent(uint32_t source, uint32_t destination,
@@ -160,6 +184,9 @@ private:
 
 	GraphicContext&   m_graphics;
 	CommandScheduler& m_scheduler;
+	// --render-scale: the backing of the other size (and its views) while `backing` is active.
+	VulkanImage                  m_alternate_backing;
+	std::vector<CachedImageView> m_alternate_views;
 	uint64_t          m_maybe_cpu_hash  = 0;
 	bool              m_cpu_dirty       = false;
 	bool              m_maybe_cpu_dirty = false;

@@ -130,7 +130,7 @@ std::string TakeWaitSummary(double seconds, uint64_t flips) {
 	    "down=%.0fKB (%.0f sync) img_down=%.0fKB video: req=%.0f got=%.0f starved=%.0f "
 	    "up=%.0f black=%.0f races=%.0f vo_refresh=%.0f blank=%.0f pass_end: state=%.0f "
 	    "transit=%.0f attach=%.0f (same=%.0f) image=%.0f buffer=%.0f compute=%.0f write=%.0f submit=%.0f "
-	    "other=%.0f hoisted=%.0f | "
+	    "other=%.0f hoisted=%.0f rescale: up=%.0f down=%.0f | "
 	    "ms(count):",
 	    flips == 0 ? "second" : "frame", static_cast<double>(gpu_ns) / 1e6 * per_frame,
 	    static_cast<double>(gpu_ns) / 1e7 / seconds, static_cast<double>(timed) * per_frame,
@@ -163,7 +163,9 @@ std::string TakeWaitSummary(double seconds, uint64_t flips) {
 	    static_cast<double>(TakeCounter(Counter::PassEndShaderWrite)) * per_frame,
 	    static_cast<double>(TakeCounter(Counter::PassEndSubmit)) * per_frame,
 	    static_cast<double>(TakeCounter(Counter::PassEndOther)) * per_frame,
-	    static_cast<double>(TakeCounter(Counter::HoistedBarriers)) * per_frame);
+	    static_cast<double>(TakeCounter(Counter::HoistedBarriers)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::RenderScaleUpBlits)) * per_frame,
+	    static_cast<double>(TakeCounter(Counter::RenderScaleDownBlits)) * per_frame);
 	std::string line = head;
 	AppendWaits(line, "gpu-thread", Wait::GpuIdle, Wait::TimelineQuery, per_frame);
 	AppendWaits(line, "sem", Wait::SemFinish, Wait::SemOther, per_frame);

@@ -6,7 +6,9 @@
 #include "common/profiler.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "common/emulatorConfig.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/renderScale.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "kernel/memory.h"
@@ -744,7 +746,61 @@ Prospero::BufferFormat RenderTargetTransferFormat(uint32_t bytes_per_element) {
 
 } // namespace ImageOps
 
-Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& image_info)
+// Whether the host can blit `format` between the guest and scaled sizes, and with which filter
+// (depth/stencil and non-filterable formats blit nearest).
+[[nodiscard]] static bool ScaleBlitSupported(const GraphicContext& graphics, vk::Format format,
+                                             vk::Filter& filter) {
+	const auto features = graphics.GetFormatProperties(format).optimalTilingFeatures;
+	if (!(features & vk::FormatFeatureFlagBits::eBlitSrc) ||
+	    !(features & vk::FormatFeatureFlagBits::eBlitDst)) {
+		return false;
+	}
+	const bool depth = DepthAspectTransferFormat(format) != vk::Format::eUndefined;
+	filter = !depth && (features & vk::FormatFeatureFlagBits::eSampledImageFilterLinear)
+	             ? vk::Filter::eLinear
+	             : vk::Filter::eNearest;
+	return true;
+}
+
+bool Image::CreateBacking(vk::Extent3D extent, VulkanImage& out) {
+	vk::ImageCreateInfo create {};
+	create.flags         = ImageCreateFlags(m_graphics, info);
+	create.imageType     = HostImageType(info.type);
+	create.extent        = extent;
+	create.mipLevels     = info.resources.levels;
+	create.arrayLayers   = info.IsVolume() ? 1u : info.resources.layers;
+	create.format        = info.pixel_format;
+	create.tiling        = vk::ImageTiling::eOptimal;
+	create.initialLayout = vk::ImageLayout::eUndefined;
+	create.usage         = ImageUsageFlags(m_graphics, info);
+	create.samples       = vulkan_sample_count(info.samples);
+
+	vk::ImageFormatProperties properties {};
+	if (m_graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
+	                                        create.usage, create.flags,
+	                                        &properties) != vk::Result::eSuccess ||
+	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
+		EXIT("image format does not support required usage: format=%d type=%d usage=0x%x "
+		     "flags=0x%x samples=%u\n",
+		     static_cast<int>(create.format), static_cast<int>(create.imageType),
+		     static_cast<vk::ImageUsageFlags::MaskType>(create.usage),
+		     static_cast<vk::ImageCreateFlags::MaskType>(create.flags), info.samples);
+	}
+	if (!m_graphics.CreateImage(create, out)) {
+		return false;
+	}
+	SetVulkanObjectNameF(
+	    m_graphics.device, out.image,
+	    "Kyty.Image[guest=0x{:016x} size=0x{:x} extent={}x{}x{} host={}x{} format={} mips={} "
+	    "layers={} samples={}]",
+	    info.data.address, info.data.size, info.extent.width, info.extent.height,
+	    info.extent.depth, extent.width, extent.height, static_cast<uint32_t>(info.pixel_format),
+	    info.resources.levels, info.resources.layers, info.samples);
+	return true;
+}
+
+Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& image_info,
+             bool scaled_hint)
     : info(image_info),
       stencil_subresources {0, image_info.resources.levels, 0, image_info.resources.layers},
       m_graphics(graphics), m_scheduler(scheduler) {
@@ -755,42 +811,137 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	if (info.pixel_format == vk::Format::eUndefined) {
 		return;
 	}
-
-	vk::ImageCreateInfo create {};
-	create.flags         = ImageCreateFlags(graphics, info);
-	create.imageType     = HostImageType(info.type);
-	create.extent        = info.extent;
-	create.mipLevels     = info.resources.levels;
-	create.arrayLayers   = info.IsVolume() ? 1u : info.resources.layers;
-	create.format        = info.pixel_format;
-	create.tiling        = vk::ImageTiling::eOptimal;
-	create.initialLayout = vk::ImageLayout::eUndefined;
-	create.usage         = ImageUsageFlags(graphics, info);
-	create.samples       = vulkan_sample_count(info.samples);
-
-	vk::ImageFormatProperties properties {};
-	if (graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
-	                                      create.usage, create.flags,
-	                                      &properties) != vk::Result::eSuccess ||
-	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
-		EXIT("image format does not support required usage: format=%d type=%d usage=0x%x "
-		     "flags=0x%x samples=%u\n",
-		     static_cast<int>(create.format), static_cast<int>(create.imageType),
-		     static_cast<vk::ImageUsageFlags::MaskType>(create.usage),
-		     static_cast<vk::ImageCreateFlags::MaskType>(create.flags), info.samples);
+	const float scale = Config::GetRenderScale();
+	scalable          = RenderScale::Active(scale) &&
+	           RenderScale::GeometryEligible(info.type, info.extent, info.resources.levels,
+	                                         info.samples, info.IsBlock()) &&
+	           ScaleBlitSupported(graphics, info.pixel_format, scale_filter) &&
+	           (!info.IsDepth() ||
+	            (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_NO_DEPTH) == 0);
+	const bool want_scaled = scaled_hint && scalable;
+	const auto extent = want_scaled ? RenderScale::ScaleExtent(info.extent, scale) : info.extent;
+	if (RenderScale::Active(scale) && RenderScale::FrameSized(info.extent.width, info.extent.height)) {
+		static std::atomic_uint32_t s_logged = 0;
+		if (s_logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+			LOGF("render scale: image 0x%016" PRIx64 " %ux%u fmt=%u levels=%u layers=%u samples=%u "
+			     "type=%u scalable=%d scaled=%d filter=%s\n",
+			     info.data.address, info.extent.width, info.extent.height,
+			     static_cast<uint32_t>(info.pixel_format), info.resources.levels,
+			     info.resources.layers, info.samples, static_cast<uint32_t>(info.type), scalable,
+			     want_scaled, scale_filter == vk::Filter::eLinear ? "linear" : "nearest");
+		}
 	}
-
-	if (!graphics.CreateImage(create, backing)) {
+	if (!CreateBacking(extent, backing)) {
 		// Out of device memory: the texture cache evicts and retries (TextureCache::InsertImage).
 		allocation_failed = true;
 		return;
 	}
-	SetVulkanObjectNameF(
-	    graphics.device, backing.image,
-	    "Kyty.Image[guest=0x{:016x} size=0x{:x} extent={}x{}x{} format={} mips={} layers={} samples={}]",
-	    info.data.address, info.data.size, info.extent.width, info.extent.height, info.extent.depth,
-	    static_cast<uint32_t>(info.pixel_format), info.resources.levels, info.resources.layers,
-	    info.samples);
+	scaled = want_scaled;
+}
+
+static void MoveVulkanImage(VulkanImage& into, VulkanImage& from) {
+	into.format             = from.format;
+	into.image_type         = from.image_type;
+	into.extent             = from.extent;
+	into.layers             = from.layers;
+	into.mip_levels         = from.mip_levels;
+	into.samples            = from.samples;
+	into.usage              = from.usage;
+	into.flags              = from.flags;
+	into.image              = from.image;
+	into.state              = from.state;
+	into.subresource_states = std::move(from.subresource_states);
+	into.allocation         = from.allocation;
+	from.image              = nullptr;
+	from.allocation         = nullptr;
+	from.subresource_states.clear();
+}
+
+// Exchanges the active backing (and its views) with the alternate one.
+void Image::SwapBackings() {
+	VulkanImage held;
+	MoveVulkanImage(held, backing);
+	MoveVulkanImage(backing, m_alternate_backing);
+	MoveVulkanImage(m_alternate_backing, held);
+	views.swap(m_alternate_views);
+}
+
+void Image::SetScaled(bool want_scaled, bool preserve) {
+	if (!scalable || scaled == want_scaled || backing.image == nullptr ||
+	    (want_scaled && scale_blocked)) {
+		return;
+	}
+	KYTY_PROFILER_FUNCTION();
+	const auto extent =
+	    want_scaled ? RenderScale::ScaleExtent(info.extent, Config::GetRenderScale()) : info.extent;
+	if (m_alternate_backing.image == nullptr && !CreateBacking(extent, m_alternate_backing)) {
+		EXIT("render scale: failed to allocate a %ux%u backing for image 0x%016" PRIx64 "\n",
+		     extent.width, extent.height, info.data.address);
+	}
+	EXIT_IF(m_alternate_backing.extent != extent);
+
+	if (preserve) {
+		m_scheduler.EndRendering(PassEnd::ImageCopy);
+		auto command = m_scheduler.Current().Handle();
+		Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+		        command);
+		auto&                   target = m_alternate_backing;
+		vk::ImageMemoryBarrier2 acquire {};
+		acquire.srcStageMask        = target.state.pl_stage;
+		acquire.srcAccessMask       = target.state.access_mask;
+		acquire.dstStageMask        = vk::PipelineStageFlagBits2::eBlit;
+		acquire.dstAccessMask       = vk::AccessFlagBits2::eTransferWrite;
+		// The old contents are overwritten in full.
+		acquire.oldLayout           = vk::ImageLayout::eUndefined;
+		acquire.newLayout           = vk::ImageLayout::eTransferDstOptimal;
+		acquire.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		acquire.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		acquire.image               = target.image;
+		acquire.subresourceRange    = {FullAspectMask(target.format), 0, VK_REMAINING_MIP_LEVELS, 0,
+		                               VK_REMAINING_ARRAY_LAYERS};
+		vk::DependencyInfo dependency {};
+		dependency.imageMemoryBarrierCount = 1;
+		dependency.pImageMemoryBarriers    = &acquire;
+		command.pipelineBarrier2(dependency);
+
+		// Depth and stencil blit as separate regions; both use the nearest filter.
+		std::array<vk::ImageBlit, 2> regions {};
+		uint32_t                     region_count = 0;
+		for (const auto aspect: {vk::ImageAspectFlagBits::eColor, vk::ImageAspectFlagBits::eDepth,
+		                         vk::ImageAspectFlagBits::eStencil}) {
+			if (!(FullAspectMask(backing.format) & aspect)) {
+				continue;
+			}
+			auto& region          = regions[region_count++];
+			region.srcSubresource = {aspect, 0, 0, backing.layers};
+			region.dstSubresource = {aspect, 0, 0, target.layers};
+			region.srcOffsets[1]  = {static_cast<int32_t>(backing.extent.width),
+			                         static_cast<int32_t>(backing.extent.height), 1};
+			region.dstOffsets[1]  = {static_cast<int32_t>(extent.width),
+			                         static_cast<int32_t>(extent.height), 1};
+		}
+		command.blitImage(backing.image, vk::ImageLayout::eTransferSrcOptimal, target.image,
+		                  vk::ImageLayout::eTransferDstOptimal, region_count, regions.data(),
+		                  scale_filter);
+		target.state = {vk::PipelineStageFlagBits2::eBlit, vk::AccessFlagBits2::eTransferWrite,
+		                vk::ImageLayout::eTransferDstOptimal};
+		target.subresource_states.clear();
+		Common::PerfStats::Count(want_scaled ? Common::PerfStats::Counter::RenderScaleUpBlits
+		                                     : Common::PerfStats::Counter::RenderScaleDownBlits);
+	}
+	if ((Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_LOG) != 0) {
+		static std::atomic_uint32_t s_logged = 0;
+		if (s_logged.fetch_add(1, std::memory_order_relaxed) < 256) {
+			LOGF("render scale: %s 0x%016" PRIx64 " %ux%u fmt=%u -> %ux%u%s (usage rt=%d "
+			     "storage=%d vo=%d, gpu_modified=%d cpu_dirty=%d buffer_modified=%d)\n",
+			     want_scaled ? "scale up" : "scale down", info.data.address, info.extent.width,
+			     info.extent.height, static_cast<uint32_t>(info.pixel_format), extent.width,
+			     extent.height, preserve ? "" : " (discard)", usage.render_target, usage.storage,
+			     usage.video_out, m_gpu_modified, m_cpu_dirty, m_buffer_modified);
+		}
+	}
+	SwapBackings();
+	scaled = want_scaled;
 }
 
 uint64_t Image::HashGuestEdges() const {
@@ -814,13 +965,18 @@ uint64_t Image::HashGuestEdges() const {
 
 Image::~Image() {
 	KYTY_PROFILER_FUNCTION();
-	for (const auto& cached: views) {
-		if (cached.view != nullptr) {
-			m_graphics.device.destroyImageView(cached.view, nullptr);
+	for (const auto* cached_views: {&views, &m_alternate_views}) {
+		for (const auto& cached: *cached_views) {
+			if (cached.view != nullptr) {
+				m_graphics.device.destroyImageView(cached.view, nullptr);
+			}
 		}
 	}
 	if (backing.image != nullptr) {
 		m_graphics.DeleteImage(backing);
+	}
+	if (m_alternate_backing.image != nullptr) {
+		m_graphics.DeleteImage(m_alternate_backing);
 	}
 }
 

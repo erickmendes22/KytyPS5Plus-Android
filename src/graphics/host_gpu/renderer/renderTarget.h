@@ -27,8 +27,13 @@ struct RenderAttachment {
 struct RenderState {
 	std::array<RenderAttachment, RENDER_COLOR_ATTACHMENTS_MAX> color_attachments;
 	RenderAttachment                                           depth_stencil_attachment;
+	// Host render area; with --render-scale the attachments are smaller than the guest's.
 	uint32_t                                                   width                 = 0;
 	uint32_t                                                   height                = 0;
+	// Guest render area and the host/guest ratio (1.0 when the pass is not scaled).
+	uint32_t                                                   guest_width           = 0;
+	uint32_t                                                   guest_height          = 0;
+	float                                                      scale                 = 1.0f;
 	uint32_t                                                   num_layers            = 1;
 	uint32_t                                                   num_color_attachments = 0;
 	// Secondary command buffers recording the pass inherit these (see CommandBuffer).

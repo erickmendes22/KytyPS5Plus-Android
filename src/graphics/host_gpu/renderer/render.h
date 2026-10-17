@@ -207,6 +207,7 @@ public:
 	void PrepareBindingWrites(CommandBuffer& buffer, vk::PipelineBindPoint pipeline_bind_point,
 	                          const PipelineCache::Pipeline&     pipeline,
 	                          std::span<PreparedBindings* const> bindings);
+	void WriteRescalePushData(std::span<PreparedBindings* const> bindings, float render_scale);
 	void RecordBindings(vk::CommandBuffer target, vk::PipelineBindPoint pipeline_bind_point,
 	                    const PipelineCache::Pipeline& pipeline);
 	void CommitBindings(CommandBuffer& buffer, vk::PipelineBindPoint pipeline_bind_point,
@@ -296,6 +297,9 @@ private:
 	ShaderRecompiler::IR::PushData        m_pending_push_data {};
 	vk::ShaderStageFlags                  m_pending_push_stages {};
 	bool                                  m_pending_push = false;
+	// --render-scale: the attachments acquired for the current draw are at the scaled size
+	// (AcquireRenderTargets); pixel shaders then unscale gl_FragCoord. Reset with the bindings.
+	bool                                  m_pass_scaled = false;
 
 	friend class CommandProcessor;
 	friend struct RenderExecutorTestAccess;

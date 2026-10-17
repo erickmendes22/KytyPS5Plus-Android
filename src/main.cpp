@@ -12,6 +12,7 @@
 #include "kytyGitVersion.h"
 
 #include <charconv>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -169,6 +170,8 @@ static void PrintUsage() {
 	         "                                       threads; a draw whose pipeline is not ready is\n"
 	         "                                       skipped (default 1 on Android, 0 elsewhere).\n");
 	::printf("  --shader-threads <n>                 Shader worker threads (0 = automatic).\n");
+	::printf("  --render-scale <0.25-2.0>            Internal resolution of frame-sized render\n"
+	         "                                       targets (0.5 = quarter the pixels). Default: 1.0.\n");
 	::printf("  --env <NAME=VALUE>                   Set an environment variable (e.g. FEX_* options).\n");
 	::printf("  --spirv-debug-printf <true|false>    Enable SPIR-V debug printf.\n");
 	::printf(
@@ -242,6 +245,21 @@ static bool ParseUint32(const std::string& value, uint32_t& out) {
 	uint32_t number   = 0;
 	auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
 	if (error != std::errc {} || end != value.data() + value.size()) {
+		return false;
+	}
+	out = number;
+	return true;
+}
+
+// std::from_chars for floating point is missing from the NDK's libc++; strtof with a full-match
+// check gives the same strictness.
+static bool ParseFloat(const std::string& value, float& out) {
+	if (value.empty()) {
+		return false;
+	}
+	char*       end    = nullptr;
+	const float number = std::strtof(value.c_str(), &end);
+	if (end != value.c_str() + value.size() || !std::isfinite(number)) {
 		return false;
 	}
 	out = number;
@@ -510,6 +528,19 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--layout-mode") {
 			if (!ParseUint32(value, options.config.layout_mode)) {
 				::printf("invalid layout mode: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--render-scale") {
+			if (!ParseFloat(value, options.config.render_scale) ||
+			    options.config.render_scale < Config::MIN_RENDER_SCALE ||
+			    options.config.render_scale > Config::MAX_RENDER_SCALE) {
+				::printf("invalid render scale (%.2f-%.2f): %s\n", Config::MIN_RENDER_SCALE,
+				         Config::MAX_RENDER_SCALE, value.c_str());
+				return false;
+			}
+		} else if (arg == "--render-scale-flags") {
+			if (!ParseUint32(value, options.config.render_scale_flags)) {
+				::printf("invalid render scale flags: %s\n", value.c_str());
 				return false;
 			}
 		} else if (arg == "--async-shaders") {

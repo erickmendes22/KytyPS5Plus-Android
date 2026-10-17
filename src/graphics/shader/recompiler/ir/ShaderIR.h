@@ -161,6 +161,9 @@ struct ImageResource {
 	bool                          atomic            = false;
 	bool                          atomic64          = false;
 	bool                          unfiltered_access_only = true;
+	// Addressed by texel at least once (fetch, store, atomic or size query), as opposed to
+	// normalized sampling only; --render-scale needs to adjust those coordinates.
+	bool                          texel_access      = false;
 	bool                          depth_compare     = false;
 	bool                          cube              = false;
 	bool                          r128              = false;
@@ -421,14 +424,31 @@ struct PushData {
 	static constexpr uint32_t MeshEmulationGroupCountDword    = MeshDrawDwordCount + 4u;
 	static constexpr uint32_t MeshEmulationDrawDwordCount     = MeshDrawDwordCount + 5u;
 	static constexpr uint32_t NoStart    = UINT32_MAX;
+	// --render-scale (renderer/image/renderScale.h): the last dwords carry, for the pixel or
+	// compute stage of the pipeline, whether the pass's attachments are scaled (gl_FragCoord is
+	// then divided by the scale), the scale as float bits, and one bit per image resource of
+	// that stage whose backing is scaled (texel fetches/stores scale their coordinates, size
+	// queries unscale their result). Shader data never extends into these dwords.
+	static constexpr uint32_t RescaleDwordCount          = 4;
+	static constexpr uint32_t RescaleFlagsDword          = DwordCount - RescaleDwordCount;
+	static constexpr uint32_t RescaleScaleDword          = RescaleFlagsDword + 1u;
+	static constexpr uint32_t RescaleImageMaskDword      = RescaleFlagsDword + 2u; // 64 bits
+	static constexpr uint32_t RescaleFlagAttachmentsScaled = 1u << 0u;
+	static constexpr uint32_t ShaderDataDwordLimit       = DwordCount - RescaleDwordCount;
 	std::array<uint32_t, DwordCount> dwords {};
+
+	// Stages whose shaders read the rescale dwords; other stages keep scaled images at guest
+	// size when they address them by texel.
+	[[nodiscard]] static constexpr bool RescaleStage(ShaderType stage) {
+		return stage == ShaderType::Pixel || stage == ShaderType::Compute;
+	}
 
 	[[nodiscard]] static constexpr uint32_t GraphicsDrawDwords(bool mesh, bool object_id) {
 		return mesh ? MeshDrawDwordCount : static_cast<uint32_t>(object_id);
 	}
 
 	[[nodiscard]] static constexpr bool CanFit(uint32_t start, uint32_t size) {
-		return size != 0 && start <= DwordCount && size <= DwordCount - start;
+		return size != 0 && start <= ShaderDataDwordLimit && size <= ShaderDataDwordLimit - start;
 	}
 	[[nodiscard]] static constexpr uint32_t StartFor(uint32_t cursor, uint32_t size) {
 		return CanFit(cursor, size) ? cursor : NoStart;

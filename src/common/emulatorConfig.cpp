@@ -101,6 +101,14 @@ uint32_t GetLayoutMode() {
 	return std::min(g_config->layout_mode, 2u);
 }
 
+float GetRenderScale() {
+	return std::clamp(g_config->render_scale, MIN_RENDER_SCALE, MAX_RENDER_SCALE);
+}
+
+uint32_t GetRenderScaleFlags() {
+	return g_config->render_scale_flags;
+}
+
 bool AsyncShadersEnabled() {
 	return g_config->async_shaders;
 }

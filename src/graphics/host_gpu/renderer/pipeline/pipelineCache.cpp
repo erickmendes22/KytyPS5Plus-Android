@@ -1,5 +1,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 
+#include "graphics/host_gpu/renderer/image/renderScale.h"
+
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 #include "common/perfStats.h"
@@ -556,6 +558,11 @@ struct PipelineCache::ProgramCache {
 		         .storage_image_array_non_uniform_indexing =
 		             graphics.optional_features.storage_image_array_non_uniform_indexing,
 		         .mesh_shader       = graphics.mesh_shader_enabled,
+		         .render_scale      = RenderScale::Active(Config::GetRenderScale()),
+		         .render_scale_keep_fragcoord =
+		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_FRAGCOORD) != 0,
+		         .render_scale_keep_texels =
+		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_TEXELS) != 0,
 		};
 		options.device_quirks = device_quirks;
 		options.shader_hash = params.hash;

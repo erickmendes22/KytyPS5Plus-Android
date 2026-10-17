@@ -15,6 +15,7 @@ import android.widget.Spinner
 import android.widget.TextView
 import com.kytyps5.android.GameEntry
 import com.kytyps5.android.LauncherSettings
+import com.kytyps5.android.RenderScale
 import com.kytyps5.android.Resolution
 import com.kytyps5.android.input.OverlayProfileStore
 
@@ -37,6 +38,8 @@ class GameSettingsDialog(
         val current = settings.gameSettings(game.path)
         val resolution = spinner(listOf("Global (${settings.resolution.label})") + Resolution.entries.map { it.label })
         resolution.setSelection(current.resolution?.let { Resolution.entries.indexOf(it) + 1 } ?: 0)
+        val renderScale = spinner(listOf("Global (${settings.renderScale.label})") + RenderScale.entries.map { it.label })
+        renderScale.setSelection(current.renderScale?.let { RenderScale.entries.indexOf(it) + 1 } ?: 0)
         val hud = triState("Performance HUD", current.hud, settings.hudEnabled)
         val touch = triState("Touch controls", current.touchControls, settings.touchControlsEnabled)
         val env = EditText(activity).apply {
@@ -58,6 +61,8 @@ class GameSettingsDialog(
             addView(label(listOfNotNull(game.titleId, game.path).joinToString("\n"), secondary = true))
             addView(label("Resolution", bold = true))
             addView(resolution)
+            addView(label("Render scale (internal resolution of frame-sized render targets)", bold = true))
+            addView(renderScale)
             addView(label("GPU driver", bold = true))
             addView(driverButton)
             addView(hud.first)
@@ -98,6 +103,7 @@ class GameSettingsDialog(
                         envVars = parsed.vars,
                         hud = hud.second(),
                         touchControls = touch.second(),
+                        renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                     ),
                 )
                 dialog.dismiss()

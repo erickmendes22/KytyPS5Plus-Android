@@ -42,6 +42,14 @@ constexpr bool IsConfiguredUserIdValid(int32_t user_id) {
 }
 
 constexpr uint32_t RENDER_PASS_MODE_AUTO = UINT32_MAX;
+// --render-scale bounds: below 1/4 the scaled targets lose too much; above 2x gains nothing.
+constexpr float MIN_RENDER_SCALE = 0.25f;
+constexpr float MAX_RENDER_SCALE = 2.0f;
+// --render-scale-flags bits (diagnostics; each disables one part of the scaling).
+constexpr uint32_t RENDER_SCALE_FLAG_KEEP_FRAGCOORD = 1u << 0u; // no gl_FragCoord unscale
+constexpr uint32_t RENDER_SCALE_FLAG_KEEP_TEXELS    = 1u << 1u; // no texel coordinate scaling
+constexpr uint32_t RENDER_SCALE_FLAG_NO_DEPTH       = 1u << 2u; // depth images stay 1:1
+constexpr uint32_t RENDER_SCALE_FLAG_LOG            = 1u << 3u; // log every backing resize
 
 struct ConfigOptions {
 	uint32_t               screen_width                = 1280;
@@ -78,6 +86,12 @@ struct ConfigOptions {
 	// Default 0: on Turnip v32 the merged passes ran slower (Astro Bot intro 5.9 -> 5.5 fps,
 	// the hot volumetric draw 3.3 -> 6.5 ms each) although passes fell from 133 to 96 per frame.
 	uint32_t               layout_mode                 = 0;
+	// Internal render scale: frame-sized render targets and depth buffers are allocated at this
+	// fraction of their guest size (viewport, scissor, gl_FragCoord and texel fetches follow);
+	// 1.0 renders at the guest's native size. See renderer/image/renderScale.h.
+	float                  render_scale                = 1.0f;
+	// --render-scale-flags: diagnostics for the render scale (bits of RenderScaleFlag*).
+	uint32_t               render_scale_flags          = 0;
 	// Translate guest shaders and build host pipelines on worker threads; a graphics draw whose
 	// pipeline is not ready yet is skipped for that frame (compute dispatches always wait).
 	// Default on for Android, where a translation stalls the GPU thread for 0.3-4.6 s.
@@ -143,6 +157,8 @@ uint32_t GetVideoRetireDepth();
 uint32_t GetVideoDecoderThreads();
 uint32_t GetRenderPassMode();
 uint32_t GetLayoutMode();
+float    GetRenderScale();
+uint32_t GetRenderScaleFlags();
 bool     AsyncShadersEnabled();
 uint32_t GetShaderThreads();
 uint32_t GetConsoleLanguage();
