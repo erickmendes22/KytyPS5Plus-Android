@@ -930,6 +930,47 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	}
 }
 
+void RenderExecutor::RefreshBindingViews(std::span<PreparedBindings* const> stages) {
+	if (!RenderScale::Active(Config::GetRenderScale())) {
+		return;
+	}
+	auto& cache = m_context.GetTextureCache();
+	const auto refresh = [&](const TextureBinding& binding, Image& image, vk::ImageView& view) {
+		const auto current = image.CurrentBackingView(view);
+		if (current == nullptr) {
+			EXIT("render scale: a bound view of image 0x%016" PRIx64 " belongs to neither of its "
+			     "backings\n",
+			     image.info.data.address);
+		}
+		if (current == view) {
+			return;
+		}
+		static std::atomic_uint32_t s_logged = 0;
+		if (s_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+			LOGF("render scale: binding of image 0x%016" PRIx64 " moved to the %s backing "
+			     "(type=%u)\n",
+			     image.info.data.address, image.scaled ? "scaled" : "guest-size",
+			     static_cast<uint32_t>(binding.desc.type));
+		}
+		view = current;
+	};
+	for (auto* stage: stages) {
+		for (auto& binding: stage->images) {
+			if (!binding.image_id) {
+				continue;
+			}
+			auto& image = cache.GetImage(binding.image_id);
+			if (!image.scalable) {
+				continue; // one backing only
+			}
+			refresh(binding, image, binding.image_view);
+			for (auto& mip_view: binding.mip_views) {
+				refresh(binding, image, mip_view);
+			}
+		}
+	}
+}
+
 void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
                                              std::span<RenderColorInfo> colors) {
 	bool uses_dma = false;
@@ -1042,6 +1083,7 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			}
 		}
 	}
+	RefreshBindingViews(prepared_bindings);
 	m_descriptor_images.resize(image_descriptor_count);
 	m_descriptor_writes.clear();
 	m_descriptor_writes.reserve(write_count);

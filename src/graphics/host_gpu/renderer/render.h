@@ -256,6 +256,10 @@ private:
 	                                            const ShaderRecompiler::IR::DescriptorValue& value);
 	void PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
 	                             std::span<RenderColorInfo> colors);
+	// --render-scale: moves image views that a later SetScaled left on the other-size backing
+	// (attachment scaling in AcquireRenderTargets, BlockScaling by another binding) to the
+	// current backing, so descriptors, layout transitions and rescale data agree.
+	void RefreshBindingViews(std::span<PreparedBindings* const> stages);
 	void ResolveRenderColorTarget(CommandBuffer& buffer, RenderColorInfo& target,
 	                              uint32_t render_target_slice_offset, uint32_t render_target_slot,
 	                              bool ignore_target_mask = false, bool exact_format = false);
