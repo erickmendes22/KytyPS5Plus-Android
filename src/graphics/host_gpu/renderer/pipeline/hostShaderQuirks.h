@@ -15,11 +15,15 @@ namespace Libs::Graphics {
 struct GraphicContext;
 
 // Emitter fast paths that depend on the host driver (ShaderDeviceFeatures::native_float_min_max,
-// robust_buffer_loads). Each defaults to on for Mesa Turnip only. Environment overrides:
-// KYTY_FAST_FMINMAX, KYTY_ROBUST_LOADS (1 on, 0 off). Logs the result.
+// robust_buffer_loads, lane_exec_branches, wqm_entry_lane_fold). The first two default to on for
+// Mesa Turnip only, the experimental others to off. Environment overrides:
+// KYTY_FAST_FMINMAX, KYTY_ROBUST_LOADS, KYTY_LANE_BRANCHES, KYTY_WQM_LANE_FOLD (1 on, 0 off).
+// Logs the result.
 struct ShaderFastPaths {
 	bool native_float_min_max = false;
 	bool robust_buffer_loads  = false;
+	bool lane_exec_branches   = false;
+	bool wqm_entry_lane_fold  = false;
 };
 [[nodiscard]] ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics);
 

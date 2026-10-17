@@ -263,6 +263,14 @@ struct ShaderDeviceFeatures {
 	// per-load bounds branch produces: 32-bit buffer loads skip it (KYTY_ROBUST_LOADS; default
 	// Mesa Turnip, needs robustBufferAccess2 with a 4-byte access alignment).
 	bool robust_buffer_loads = false;
+	// S_CBRANCH_EXECZ-style vote branches around lane-local regions become per-lane branches
+	// on the EXEC predicate (Spirv::ConvertExecVoteBranches; KYTY_LANE_BRANCHES=1). Experimental,
+	// off: with it and wqm_entry_lane_fold on, Astro Bot's intro loses its particle swarm.
+	bool lane_exec_branches = false;
+	// Pixel-shader prologues save EXEC, apply S_WQM and restore it as a lane mask; the lane's own
+	// bit of WQM(ballot(true)) is always set, so its predicate folds to true instead of a select
+	// per VALU write (KYTY_WQM_LANE_FOLD=1). Experimental, off (see lane_exec_branches).
+	bool wqm_entry_lane_fold = false;
 	// --render-scale is active: pixel and compute shaders read the rescale push dwords
 	// (IR::PushData::Rescale*) to unscale gl_FragCoord and scale texel coordinates. Off, the
 	// emitted SPIR-V is unchanged.

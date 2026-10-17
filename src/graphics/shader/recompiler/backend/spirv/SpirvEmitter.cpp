@@ -1,6 +1,8 @@
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 
 #include "common/assert.h"
+#include "common/logging/log.h"
+#include "graphics/shader/recompiler/backend/spirv/laneBranches.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
@@ -253,6 +255,11 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	    workgroup != nullptr && program.wave_size == 64u && workgroup->host_subgroup_size == 32u
 	        ? 2u
 	        : 1u;
+	if (device_features.lane_exec_branches && state.lane_count == 1u && !state.subgroup_isolated) {
+		if (const auto converted = ConvertExecVoteBranches(program); converted != 0u) {
+			LOGF("SPIR-V hash=0x%016" PRIx64 " lane branches: %u\n", program.shader_hash, converted);
+		}
+	}
 	DefineModule(state);
 	ValidateNativeProgram(program, program.stage == ShaderType::Compute &&
 	                                   input_info.compute != nullptr && input_info.compute->lds_storage);

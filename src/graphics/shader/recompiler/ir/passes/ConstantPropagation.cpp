@@ -1113,7 +1113,8 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 // ballot projection also survives scalar EXEC operations and loop-carried mask Phis.
 class LaneMaskProjection {
 public:
-	explicit LaneMaskProjection(FoldWorklist& worklist): m_worklist(worklist) {}
+	LaneMaskProjection(FoldWorklist& worklist, bool wqm_entry_lane_fold)
+	    : m_worklist(worklist), m_wqm_entry_lane_fold(wqm_entry_lane_fold) {}
 
 	void Fold(Inst& inst, uint32_t wave_size) {
 		if (inst.GetOpcode() != ValueOpcode::INotEqual32 || !Immediate(Arg(inst, 1), 0u)) return;
@@ -1143,12 +1144,33 @@ private:
 		return IsImmediate(value, Type::U32) && value.U32() == expected;
 	}
 
-	static Value BallotPredicate(const Inst& inst) {
+	Value BallotPredicate(const Inst& inst) const {
+		if (IsWqmOfFullBallot(inst)) return Value(true);
 		if (inst.GetOpcode() != ValueOpcode::CompositeExtractU32x4 ||
 		    !Immediate(Arg(inst, 1), 0u)) return {};
 		const auto* source = Arg(inst, 0).TryInstruction();
 		return source != nullptr && source->GetOpcode() == ValueOpcode::Ballot
 		           ? Arg(*source, 0) : Value {};
+	}
+
+	// Low word of WQM(ballot(true)): every running lane is in the ballot, and WQM only adds
+	// lanes, so the lane's own bit is set (the S_MOV s, exec / S_WQM exec / S_MOV exec, s
+	// prologue of pixel shaders).
+	bool IsWqmOfFullBallot(const Inst& inst) const {
+		if (!m_wqm_entry_lane_fold) return false;
+		if (inst.GetOpcode() != ValueOpcode::CompositeExtractU64 || !Immediate(Arg(inst, 1), 0u))
+			return false;
+		const auto* wqm = Arg(inst, 0).TryInstruction();
+		if (wqm == nullptr || wqm->GetOpcode() != ValueOpcode::WqmU64) return false;
+		const auto* pair = Arg(*wqm, 0).TryInstruction();
+		if (pair == nullptr || pair->GetOpcode() != ValueOpcode::CompositeConstructU64) return false;
+		const auto* low = Arg(*pair, 0).TryInstruction();
+		if (low == nullptr || low->GetOpcode() != ValueOpcode::CompositeExtractU32x4 ||
+		    !Immediate(Arg(*low, 1), 0u)) return false;
+		const auto* ballot = Arg(*low, 0).TryInstruction();
+		if (ballot == nullptr || ballot->GetOpcode() != ValueOpcode::Ballot) return false;
+		const auto predicate = Arg(*ballot, 0);
+		return IsImmediate(predicate, Type::U1) && predicate.U1();
 	}
 
 	bool CanProject(Value value) {
@@ -1207,13 +1229,14 @@ private:
 	std::unordered_set<const Inst*> m_visited;
 	std::unordered_map<const Inst*, Value> m_values;
 	bool m_grounded = false;
+	bool m_wqm_entry_lane_fold = false;
 };
 
 } // namespace
 
-void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size) {
+void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size, bool wqm_entry_lane_fold) {
 	FoldWorklist worklist;
-	LaneMaskProjection mask_projection(worklist);
+	LaneMaskProjection mask_projection(worklist, wqm_entry_lane_fold);
 	for (auto* block: blocks)
 		for (auto inst = block->begin(); inst != block->end(); ++inst) worklist.Register(inst);
 	std::vector<Use> users;

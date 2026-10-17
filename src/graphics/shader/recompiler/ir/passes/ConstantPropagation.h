@@ -4,6 +4,8 @@
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
-void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size = 64);
+// wqm_entry_lane_fold: ShaderDeviceFeatures::wqm_entry_lane_fold.
+void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size = 64,
+                             bool wqm_entry_lane_fold = false);
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

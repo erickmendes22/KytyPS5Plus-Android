@@ -789,8 +789,10 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	     GetDumpLabel(options), StageName(options.stage), options.shader_hash,
 	     static_cast<uint64_t>(ir.blocks.size()), phase_ms());
 	IR::RewriteToSsa(ir.blocks);
-	const auto simplify = [&ir] {
-		IR::ConstantPropagationPass(ir.blocks, ir.wave_size);
+	const bool wqm_entry_lane_fold = options.device_features.wqm_entry_lane_fold;
+	const auto simplify = [&ir, wqm_entry_lane_fold] {
+		IR::ConstantPropagationPass(ir.blocks, ir.wave_size,
+		                            wqm_entry_lane_fold);
 		IR::RemoveIdentities(ir);
 		IR::EliminateDeadCode(ir.blocks);
 	};

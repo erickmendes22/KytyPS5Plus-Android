@@ -49,10 +49,14 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	    .native_float_min_max = EnvToggle("KYTY_FAST_FMINMAX", turnip),
 	    .robust_buffer_loads  = EnvToggle("KYTY_ROBUST_LOADS", turnip) &&
 	                           graphics.optional_features.robust_buffer_access2_dword,
+	    .lane_exec_branches   = EnvToggle("KYTY_LANE_BRANCHES", false),
+	    .wqm_entry_lane_fold  = EnvToggle("KYTY_WQM_LANE_FOLD", false),
 	};
 	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: native_float_min_max={} "
-	                                      "robust_buffer_loads={}\n",
-	                                      paths.native_float_min_max, paths.robust_buffer_loads));
+	                                      "robust_buffer_loads={} lane_exec_branches={} "
+	                                      "wqm_entry_lane_fold={}\n",
+	                                      paths.native_float_min_max, paths.robust_buffer_loads,
+	                                      paths.lane_exec_branches, paths.wqm_entry_lane_fold));
 	return paths;
 }
 
