@@ -783,48 +783,45 @@ static std::optional<std::array<uint32_t, 4>> DppQuadSourceXors(const IR::DppMov
 	return std::nullopt;
 }
 
-// The value DPP reads from lane (lane & ~3) | source, built from native quad operations:
-// a broadcast when the whole quad reads one position, otherwise up to three quad swaps
-// (horizontal = xor 1, vertical = xor 2, diagonal = xor 3) selected per quad position. Mesa
-// ir3 maps these to its quad shuffle instructions; a generic indexed shuffle becomes a loop.
-static std::optional<uint32_t> EmitDppQuadRead(ValueEmitContext& ctx, const IR::Inst& inst,
-                                               const IR::DppMoveFlags& flags) {
-	auto& state = ctx.state;
-	if (!state.device_features.subgroup_quad_dpp || ctx.other_half != nullptr ||
-	    state.lane_half != 0 || state.subgroup_isolated ||
-	    (state.program.stage != ShaderType::Pixel && state.program.stage != ShaderType::Compute)) {
-		return std::nullopt;
-	}
-	const auto xors = DppQuadSourceXors(flags);
-	if (!xors) {
-		return std::nullopt;
-	}
+// Whether DPP reads of this shader may use native quad operations (KYTY_QUAD_DPP).
+static bool QuadDppAvailable(const ValueEmitContext& ctx) {
+	const auto& state = ctx.state;
+	return state.device_features.subgroup_quad_dpp && ctx.other_half == nullptr &&
+	       state.lane_half == 0 && !state.subgroup_isolated &&
+	       (state.program.stage == ShaderType::Pixel || state.program.stage == ShaderType::Compute);
+}
+
+// `value` (of `type`) as read from lane (lane & ~3) | (position ^ xors[position]), built from
+// native quad operations: a broadcast when the whole quad reads one position, otherwise up to
+// three quad swaps (horizontal = xor 1, vertical = xor 2, diagonal = xor 3) selected per quad
+// position. Mesa ir3 maps these to its quad shuffle instructions; a generic indexed shuffle
+// becomes a loop.
+static uint32_t EmitQuadRead(EmitterState& state, uint32_t type, uint32_t value,
+                             const std::array<uint32_t, 4>& xors) {
 	state.builder.RequireCapability(spv::CapabilityGroupNonUniformQuad);
-	const auto type  = TypeId(state, inst.Arg(0).GetType());
-	const auto value = ctx.Arg(inst, 0);
-	const auto scope = ConstantU32(state, spv::ScopeSubgroup);
-	const auto source0 = (*xors)[0];
+	const auto scope   = ConstantU32(state, spv::ScopeSubgroup);
+	const auto source0 = xors[0];
 	if (std::ranges::all_of(std::array {1u, 2u, 3u},
-	                        [&](uint32_t position) { return ((*xors)[position] ^ position) == source0; })) {
+	                        [&](uint32_t position) { return (xors[position] ^ position) == source0; })) {
 		const auto result = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpGroupNonUniformQuadBroadcast, type, result, scope, value,
 		                          ConstantU32(state, source0));
 		return result;
 	}
 	std::array<uint32_t, 4> swapped {value, 0, 0, 0};
-	for (const auto x: *xors) {
+	for (const auto x: xors) {
 		if (x != 0 && swapped[x] == 0) {
 			swapped[x] = state.builder.AllocateId();
 			state.builder.AddFunction(spv::OpGroupNonUniformQuadSwap, type, swapped[x], scope, value,
 			                          ConstantU32(state, x - 1u));
 		}
 	}
-	if (std::ranges::all_of(*xors, [&](uint32_t x) { return x == (*xors)[0]; })) {
-		return swapped[(*xors)[0]];
+	if (std::ranges::all_of(xors, [&](uint32_t x) { return x == xors[0]; })) {
+		return swapped[xors[0]];
 	}
 	uint32_t table = 0;
 	for (uint32_t position = 0; position < 4u; position++) {
-		table |= (*xors)[position] << (position * 2u);
+		table |= xors[position] << (position * 2u);
 	}
 	const auto position = EmitBinaryU32(state, spv::OpBitwiseAnd,
 	                                    EmitSubgroupLocalInvocationId(state), ConstantU32(state, 3));
@@ -848,8 +845,25 @@ uint32_t EmitDppMoveU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&      state    = ctx.state;
 	const auto flags    = inst.Flags<IR::DppMoveFlags>();
 	const auto target   = EmitDppTargetLane(state, flags);
-	const auto quad     = EmitDppQuadRead(ctx, inst, flags);
-	const auto shuffled = quad ? *quad : ctx.Shuffle(inst, 0, target.lane);
+	const auto xors     = QuadDppAvailable(ctx) ? DppQuadSourceXors(flags) : std::nullopt;
+	if (xors) {
+		// The source lane's guest EXEC travels with the value through the same quad operation,
+		// so a lane the host leaves out of ballots (a helper invocation) still reads its quad
+		// neighbour the way WQM hardware does.
+		const auto value = EmitQuadRead(state, TypeId(state, inst.Arg(0).GetType()),
+		                                ctx.Arg(inst, 0), *xors);
+		if (flags.fetch_inactive) {
+			return value;
+		}
+		const auto exec_bits = Select(state, TypeU32(state), ctx.Arg(inst, 1),
+		                              ConstantU32(state, 1), ConstantU32(state, 0));
+		const auto source_exec = EmitQuadRead(state, TypeU32(state), exec_bits, *xors);
+		const auto active = Binary(state, spv::OpINotEqual, TypeBool(state), source_exec,
+		                           ConstantU32(state, 0));
+		return EmitNative<spv::OpSelect, IR::Type::U32>(state, active, value,
+		                                                ConstantU32(state, 0));
+	}
+	const auto shuffled = ctx.Shuffle(inst, 0, target.lane);
 	if (flags.fetch_inactive) {
 		return shuffled;
 	}
@@ -879,7 +893,9 @@ uint32_t EmitDppUpdateU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&      state = ctx.state;
 	const auto flags = inst.Flags<IR::DppMoveFlags>();
 	const auto write = EmitDppWriteCondition(ctx, flags, ctx.Arg(inst, 2));
-	if (!MayLackLanes(state)) {
+	// KYTY_QUAD_DPP: a quad read never lacks its source lane (pixel quads are complete, helper
+	// invocations included; EmitDppMoveU32 reads it with a quad operation).
+	if (!MayLackLanes(state) || (QuadDppAvailable(ctx) && DppQuadSourceXors(flags))) {
 		return EmitNative<spv::OpSelect, IR::Type::U32>(state, write, ctx.Arg(inst, 0),
 		                                                ctx.Arg(inst, 1));
 	}
