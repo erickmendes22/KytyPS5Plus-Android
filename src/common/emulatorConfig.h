@@ -170,6 +170,13 @@ struct ConfigOptions {
 #else
 	uint32_t               vma_block_size_mb           = 0;
 #endif
+	// --gpu-fatal-dialog: on VK_ERROR_DEVICE_LOST / out of device memory show a message box with
+	// the reason (for up to 30 s) before exiting.
+#if defined(__ANDROID__)
+	bool                   gpu_fatal_dialog            = true;
+#else
+	bool                   gpu_fatal_dialog            = false;
+#endif
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;
@@ -238,6 +245,7 @@ bool     IdleSubmitEnabled();
 int32_t  GetGpuMemoryBudgetMb();
 bool     GpuEvictWrittenEnabled();
 uint32_t GetVmaBlockSizeMb();
+bool     GpuFatalDialogEnabled();
 constexpr uint32_t MAX_GPU_FRAMES_IN_FLIGHT = 4;
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();

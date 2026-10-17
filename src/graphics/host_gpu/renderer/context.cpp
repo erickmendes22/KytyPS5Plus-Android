@@ -4,6 +4,7 @@
 #include "common/logging/log.h"
 #include "common/perfWaits.h"
 #include "common/profiler.h"
+#include "graphics/host_gpu/gpuFatal.h"
 #include "common/threads.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
@@ -77,7 +78,7 @@ void CommandBuffer::Begin() {
 
 	auto result = buffer.begin(&begin_info);
 
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	CheckGpuResult("vkBeginCommandBuffer", result);
 }
 
 void CommandBuffer::End() const {
@@ -86,7 +87,7 @@ void CommandBuffer::End() const {
 
 	auto result = buffer.end();
 
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	CheckGpuResult("vkEndCommandBuffer", result);
 }
 
 void CommandBuffer::SetDebugInfo(uint32_t op, uint64_t submit_id, uint32_t arg0, uint32_t arg1,

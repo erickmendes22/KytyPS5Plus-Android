@@ -8,6 +8,7 @@
 #include "common/profiler.h"
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/tile.h"
+#include "graphics/host_gpu/gpuFatal.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
@@ -211,10 +212,13 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 	for (int attempt = 0; m_slot_images[id].allocation_failed; attempt++) {
 		m_slot_images.erase(id);
 		if (attempt == 3 || !EvictForAllocation(keep)) {
-			EXIT("failed to create image: extent=%ux%ux%u format=%u layers=%u levels=%u\n",
-			     info.extent.width, info.extent.height, info.extent.depth,
+			LOGF("failed to create image after %d eviction passes: extent=%ux%ux%u format=%u "
+			     "layers=%u levels=%u\n",
+			     attempt, info.extent.width, info.extent.height, info.extent.depth,
 			     static_cast<uint32_t>(info.pixel_format), info.resources.layers,
 			     info.resources.levels);
+			m_graphics.LogMemoryBudget();
+			GpuFatal("vmaCreateImage", vk::Result::eErrorOutOfDeviceMemory);
 		}
 		id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
 	}

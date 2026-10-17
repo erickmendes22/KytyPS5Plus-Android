@@ -6,6 +6,7 @@
 #include "common/perfWaits.h"
 #include "common/profiler.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/gpuFatal.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -476,7 +477,10 @@ void CommandScheduler::QueueSubmit(const PendingSubmit& pending) {
 		                  pending.debug_submit_id, pending.debug_arg0, pending.debug_arg1,
 		                  pending.debug_arg2, pending.debug_arg3, pending.debug_arg4);
 	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	if (GpuFatalTestDue()) {
+		result = vk::Result::eErrorDeviceLost;
+	}
+	CheckGpuResult("vkQueueSubmit", result);
 	m_master.MarkSubmitted(pending.tick);
 }
 

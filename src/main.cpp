@@ -195,6 +195,9 @@ static void PrintUsage() {
 	         "                                       Default: 0.\n");
 	::printf("  --vma-block-size <0-1024>            VMA block size in MiB (0 = VMA default 256).\n"
 	         "                                       Default: 64 on Android, 0 elsewhere.\n");
+	::printf("  --gpu-fatal-dialog <0|1>             Show the reason in a message box before exiting on\n"
+	         "                                       GPU device loss or out of device memory. Default: 1\n"
+	         "                                       on Android, 0 elsewhere.\n");
 	::printf("  --render-scale <0.25-2.0>            Internal resolution of frame-sized render\n"
 	         "                                       targets (0.5 = quarter the pixels). Default: 1.0.\n");
 	::printf("  --env <NAME=VALUE>                   Set an environment variable (e.g. FEX_* options).\n");
@@ -631,6 +634,13 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 				::printf("invalid VMA block size (0-1024 MiB): %s\n", value.c_str());
 				return false;
 			}
+		} else if (arg == "--gpu-fatal-dialog") {
+			uint32_t mode = 0;
+			if (!ParseUint32(value, mode) || mode > 1) {
+				::printf("invalid GPU fatal dialog mode (0 or 1): %s\n", value.c_str());
+				return false;
+			}
+			options.config.gpu_fatal_dialog = mode != 0;
 		} else if (arg == "--idle-submit") {
 			uint32_t mode = 0;
 			if (!ParseUint32(value, mode) || mode > 1) {

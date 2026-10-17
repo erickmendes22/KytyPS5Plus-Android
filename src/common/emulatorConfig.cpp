@@ -153,6 +153,10 @@ uint32_t GetVmaBlockSizeMb() {
 	return std::min(g_config->vma_block_size_mb, 1024u);
 }
 
+bool GpuFatalDialogEnabled() {
+	return g_config->gpu_fatal_dialog;
+}
+
 uint32_t GetVideoDecoderThreads() {
 	return std::min(g_config->video_decoder_threads, 16u);
 }

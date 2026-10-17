@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/perfWaits.h"
+#include "graphics/host_gpu/gpuFatal.h"
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <chrono>
@@ -22,7 +23,8 @@ MasterSemaphore::MasterSemaphore(GraphicContext& graphics): m_graphics(graphics)
 	create_info.pNext = &type_info;
 
 	const auto result = m_graphics.device.createSemaphore(&create_info, nullptr, &m_semaphore);
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess || m_semaphore == nullptr);
+	CheckGpuResult("vkCreateSemaphore (timeline)", result);
+	EXIT_IF(m_semaphore == nullptr);
 }
 
 MasterSemaphore::~MasterSemaphore() {
@@ -50,7 +52,7 @@ void MasterSemaphore::Refresh() {
 		const Common::PerfStats::ScopedWait timing(Common::PerfStats::Wait::TimelineQuery);
 		result = m_graphics.device.getSemaphoreCounterValue(m_semaphore, &counter);
 	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	CheckGpuResult("vkGetSemaphoreCounterValue", result);
 	Advance(counter);
 }
 
@@ -91,7 +93,7 @@ void MasterSemaphore::Wait(uint64_t tick) {
 
 	const Common::PerfStats::ScopedWait timing(Common::PerfStats::CurrentWaitSite());
 	const auto result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+	CheckGpuResult("vkWaitSemaphores", result);
 	Advance(tick);
 	Refresh();
 }
@@ -134,7 +136,7 @@ void MasterSemaphore::TrackerThread(const std::stop_token& stop) {
 		if (result == vk::Result::eSuccess) {
 			Advance(next);
 		} else if (result != vk::Result::eTimeout) {
-			EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
+			GpuFatal("vkWaitSemaphores (tracker)", result);
 		}
 	}
 }

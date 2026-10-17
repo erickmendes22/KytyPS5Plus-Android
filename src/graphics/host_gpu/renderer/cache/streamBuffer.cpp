@@ -2,11 +2,14 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "common/perfWaits.h"
 #include "common/profiler.h"
+#include "graphics/host_gpu/gpuFatal.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 
+#include <cinttypes>
 #include <cstring>
 #include <numeric>
 #include <vk_mem_alloc.h>
@@ -78,13 +81,25 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 
 	VmaAllocationInfo allocation_result {};
 	VkBuffer          native_buffer = VK_NULL_HANDLE;
-	const auto        result        = static_cast<vk::Result>(vmaCreateBuffer(
-	    graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &allocation_info,
-	    &native_buffer, &m_allocation, &allocation_result));
+	const auto        create        = [&] {
+        return static_cast<vk::Result>(vmaCreateBuffer(
+            graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info),
+            &allocation_info, &native_buffer, &m_allocation, &allocation_result));
+	};
+	auto result = create();
+	if (result == vk::Result::eErrorOutOfDeviceMemory) {
+		// Over VMA's budget (driver usage + 90 % of free system memory). Exceeding it is better
+		// than exiting: retry once without the budget check before giving up.
+		LOGF("Buffer: %" PRIu64 " byte allocation over the memory budget, retrying without it\n",
+		     size);
+		graphics.LogMemoryBudget();
+		allocation_info.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+		result = create();
+	}
 	if (result != vk::Result::eSuccess) {
 		graphics.LogMemoryBudget();
+		GpuFatal("vmaCreateBuffer", result);
 	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
 	m_buffer = native_buffer;
 	if (with_bda) {
