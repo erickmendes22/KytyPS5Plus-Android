@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/image/imageFormatList.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 
 #include <cstdio>
@@ -40,11 +41,20 @@ void TestMatches() {
 	Check(PipelineStats::Matches(all, 1), "all");
 }
 
+void TestResolve() {
+	Check(ImageFormatList::Resolve(std::nullopt, vk::DriverId::eMesaTurnip), "Turnip default on");
+	Check(!ImageFormatList::Resolve(std::nullopt, vk::DriverId::eQualcommProprietary),
+	      "stock default off");
+	Check(ImageFormatList::Resolve(true, vk::DriverId::eQualcommProprietary), "forced on");
+	Check(!ImageFormatList::Resolve(false, vk::DriverId::eMesaTurnip), "forced off");
+}
+
 } // namespace
 
 int main() {
 	TestParseSpec();
 	TestMatches();
+	TestResolve();
 	std::puts("GpuDiagnosticsTests: ok");
 	return 0;
 }

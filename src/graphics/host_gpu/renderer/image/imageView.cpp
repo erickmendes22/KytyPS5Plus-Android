@@ -4,6 +4,7 @@
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/image.h"
+#include "graphics/host_gpu/renderer/image/imageFormatList.h"
 
 #include <atomic>
 
@@ -358,6 +359,16 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 		     normalized.level_count, normalized.base_layer, normalized.layer_count,
 		     static_cast<vk::ImageUsageFlags::MaskType>(normalized.usage), image.mip_levels,
 		     image.layers);
+	}
+
+	if ((image.flags & vk::ImageCreateFlagBits::eMutableFormat) &&
+	    ImageFormatList::Enabled(m_graphics) &&
+	    !ImageFormatList::Covers(image.format, normalized.format)) {
+		static std::atomic<bool> s_warned = false;
+		if (!s_warned.exchange(true)) {
+			LOGF("WARNING: image view format %d is outside the format list of a format %d image\n",
+			     static_cast<int>(normalized.format), static_cast<int>(image.format));
+		}
 	}
 
 	vk::ImageViewUsageCreateInfo usage {};

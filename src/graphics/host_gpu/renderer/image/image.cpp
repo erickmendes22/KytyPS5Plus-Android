@@ -7,6 +7,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "common/emulatorConfig.h"
+#include "graphics/host_gpu/renderer/image/imageFormatList.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/renderScale.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
@@ -776,6 +777,26 @@ bool Image::CreateBacking(vk::Extent3D extent, VulkanImage& out) {
 	create.usage         = ImageUsageFlags(m_graphics, info);
 	create.samples       = vulkan_sample_count(info.samples);
 
+	// Name the view formats of a mutable image so drivers can keep it compressed (UBWC).
+	vk::ImageFormatListCreateInfo format_list {};
+	std::vector<vk::Format>       view_formats;
+	if ((create.flags & vk::ImageCreateFlagBits::eMutableFormat) &&
+	    ImageFormatList::Enabled(m_graphics)) {
+		view_formats = ImageFormatList::CompatibleViewFormats(
+		    create.format, [this](vk::Format format) {
+			    constexpr auto kViewFeatures = vk::FormatFeatureFlagBits::eSampledImage |
+			                                   vk::FormatFeatureFlagBits::eColorAttachment |
+			                                   vk::FormatFeatureFlagBits::eStorageImage;
+			    return static_cast<bool>(m_graphics.GetFormatProperties(format).optimalTilingFeatures &
+			                             kViewFeatures);
+		    });
+		if (view_formats.size() > 1) {
+			format_list.viewFormatCount = static_cast<uint32_t>(view_formats.size());
+			format_list.pViewFormats    = view_formats.data();
+			create.pNext                = &format_list;
+		}
+	}
+
 	vk::ImageFormatProperties properties {};
 	if (m_graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
 	                                        create.usage, create.flags,
@@ -790,7 +811,7 @@ bool Image::CreateBacking(vk::Extent3D extent, VulkanImage& out) {
 	if (!m_graphics.CreateImage(create, out)) {
 		return false;
 	}
-	UbwcProbe::Record(m_graphics, out.image, create, 0u);
+	UbwcProbe::Record(m_graphics, out.image, create, format_list.viewFormatCount);
 	SetVulkanObjectNameF(
 	    m_graphics.device, out.image,
 	    "Kyty.Image[guest=0x{:016x} size=0x{:x} extent={}x{}x{} host={}x{} format={} mips={} "
