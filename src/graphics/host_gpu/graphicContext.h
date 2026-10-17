@@ -42,6 +42,9 @@ struct OptionalDeviceFeatures {
 	// VK_EXT_robustness2 robustBufferAccess2 with robustStorageBufferAccessSizeAlignment <= 4:
 	// every out-of-range 32-bit storage buffer read returns zero.
 	bool robust_buffer_access2_dword = false;
+	// VK_EXT_robustness2 robustBufferAccess2 with robustUniformBufferAccessSizeAlignment <= 16:
+	// out-of-range uniform buffer reads return zero past the 16-byte vector holding the end.
+	bool robust_uniform_buffer_access2 = false;
 	// --gpu-indirect: Vulkan 1.1 shaderDrawParameters plus core drawIndirectFirstInstance.
 	bool gpu_indirect_draws  = false;
 	bool multi_draw_indirect = false; // core multiDrawIndirect

@@ -162,11 +162,21 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 	using Kind = IR::DescriptorBindingKind;
 	std::array<uint32_t, static_cast<size_t>(Kind::Count)> expected {};
 	auto& buffer_count = expected[static_cast<size_t>(Kind::Buffers)];
+	auto& uniform_count = expected[static_cast<size_t>(Kind::UniformBuffers)];
 	for (uint32_t index = 0; index < program.info.buffers.size(); ++index) {
-		const auto slot = live_buffers[index] ? buffer_count++ : UINT32_MAX;
-		if (program.info.buffers[index].live != live_buffers[index] ||
-		    program.info.buffers[index].descriptor_index != slot) {
+		const auto& buffer = program.info.buffers[index];
+		if (buffer.uniform && !live_buffers[index]) {
+			Fail(program, "native uniform buffer is not live");
+		}
+		uniform_count += buffer.uniform;
+		const auto slot = live_buffers[index] && !buffer.uniform ? buffer_count++ : UINT32_MAX;
+		if (buffer.live != live_buffers[index] || (!buffer.uniform && buffer.descriptor_index != slot)) {
 			Fail(program, "native buffer descriptor index does not match shader topology");
+		}
+	}
+	for (uint32_t index = 0, slot = buffer_count; index < program.info.buffers.size(); ++index) {
+		if (program.info.buffers[index].uniform && program.info.buffers[index].descriptor_index != slot++) {
+			Fail(program, "native uniform buffer slot does not match shader topology");
 		}
 	}
 	for (const auto& image: program.info.images) {

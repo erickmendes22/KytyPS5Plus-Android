@@ -134,7 +134,7 @@ uint32_t SharedIndirectBufferResource(const EmitterState& state, uint32_t resour
 }
 
 void EmitMemoryOffsets(EmitterState& state) {
-	const auto count = state.program.bindings.descriptor_counts[static_cast<size_t>(IR::DescriptorBindingKind::Buffers)];
+	const auto count = state.program.bindings.BufferSlotCount();
 	state.memory_byte_offsets.resize(count);
 	std::vector<bool> dynamic_offsets(count);
 	for (uint32_t resource = 0; resource < state.program.info.buffers.size(); ++resource) {

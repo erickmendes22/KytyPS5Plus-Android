@@ -82,6 +82,7 @@ struct MemoryInfo {
 	bool                    offen                                                 = false;
 	bool                    coherent                                              = false;
 	bool                    planning_only                                         = false;
+	bool                    scalar_glc                                            = false;
 
 	[[nodiscard]] bool SupportsIndirectBufferLoad(ValueOpcode opcode) const {
 		if (typed) return false;
@@ -130,6 +131,15 @@ struct BufferResource {
 	bool                   atomic             = false;
 	bool                   formatted          = false;
 	bool                   scalar             = false;
+	// Accessed by something other than ReadConstBuffer (vector loads/stores, atomics).
+	bool                   vector_access      = false;
+	// An S_BUFFER_LOAD with GLC (bypasses the scalar cache; may observe same-dispatch writes).
+	bool                   scalar_glc         = false;
+	// An S_BUFFER_LOAD whose offset is not a constant: a uniform buffer would need a dynamic
+	// vec4 component select per load, so such buffers stay storage buffers.
+	bool                   scalar_dynamic_offset = false;
+	// Specialized: bound as a uniform buffer (slot >= the storage-buffer count).
+	bool                   uniform            = false;
 	bool                   live               = false;
 	uint32_t               indirect_root              = NoIndirectBuffer;
 	uint32_t               indirect_mapping_offset    = 0;
@@ -409,11 +419,17 @@ enum class DescriptorBindingKind : uint32_t {
 	FlattenedSrt,
 	ShaderData,
 	SharedMemory,
+	// Read-only scalar (S_BUFFER_LOAD) buffers bound as uniform buffers (BufferResource::uniform).
+	UniformBuffers,
 	Count,
 };
 
 static_assert(static_cast<uint32_t>(DescriptorBindingKind::Samplers) == 49u);
-static_assert(static_cast<uint32_t>(DescriptorBindingKind::Count) == 56u);
+static_assert(static_cast<uint32_t>(DescriptorBindingKind::Count) == 57u);
+
+// A uniform constant buffer is declared as this many 16-byte vectors (64 KiB, the Vulkan
+// maxUniformBufferRange most drivers report); larger guest buffers stay storage buffers.
+inline constexpr uint32_t UniformBufferVec4Count = 4096u;
 
 struct PushData {
 	static constexpr uint32_t DwordCount = 32;
@@ -571,9 +587,14 @@ struct Bindings {
 	uint32_t dispatch_thread_dword = PushData::NoStart;
 	uint32_t memory_offset_dword = 0;
 
+	// Buffer slots: storage buffers [0, Buffers), then uniform buffers. Each slot has one
+	// memory-offset byte in shader data.
+	[[nodiscard]] uint32_t BufferSlotCount() const {
+		return descriptor_counts[static_cast<size_t>(DescriptorBindingKind::Buffers)] +
+		       descriptor_counts[static_cast<size_t>(DescriptorBindingKind::UniformBuffers)];
+	}
 	[[nodiscard]] uint32_t ShaderDataDwords() const {
-		return memory_offset_dword +
-		       (descriptor_counts[static_cast<size_t>(DescriptorBindingKind::Buffers)] + 3u) / 4u;
+		return memory_offset_dword + (BufferSlotCount() + 3u) / 4u;
 	}
 	[[nodiscard]] bool UsesPushData() const {
 		return push_data_start_dword != PushData::NoStart;
@@ -797,6 +818,9 @@ struct ResourcePlan {
 	bool                                capture_specialization_reads = false;
 	bool                                srt_plan_complete          = false;
 	bool                                resource_tracking_complete = false;
+	// ShaderDeviceFeatures::uniform_constant_buffer_bytes: read-only scalar buffers up to this
+	// size are specialized as uniform buffers (0: never).
+	uint32_t                            uniform_buffer_limit       = 0;
 	ShaderInfo                          info;
 	UniformFillPlan                     uniform_fill;
 #if KYTY_HOST_X86

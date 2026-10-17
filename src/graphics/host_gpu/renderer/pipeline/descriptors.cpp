@@ -64,6 +64,7 @@ vk::DescriptorType NativeDescriptorType(BindingKind kind) {
 	}
 	switch (kind) {
 		case BindingKind::Samplers: return vk::DescriptorType::eSampler;
+		case BindingKind::UniformBuffers: return vk::DescriptorType::eUniformBuffer;
 		case BindingKind::Buffers:
 		case BindingKind::Gds:
 		case BindingKind::BdaPagetable:
@@ -125,20 +126,39 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 		return {context.GetBufferCache().GetBuffer(NULL_BUFFER_ID).Handle(), 0, 16};
 	}
 	const auto& graphics  = context.GetGraphics();
-	const auto  alignment = graphics.StorageMinAlignment();
-	if (size > graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange) {
-		EXIT("storage buffer range is unsupported\n");
+	const auto& limits    = graphics.GetPhysicalDeviceProperties().limits;
+	// Uniform constant buffers (BufferResource::uniform) were specialized for a descriptor size
+	// that fits maxUniformBufferRange after the alignment adjustment.
+	const auto  alignment = resource.uniform
+	                            ? std::max<vk::DeviceSize>(limits.minUniformBufferOffsetAlignment, 1)
+	                            : graphics.StorageMinAlignment();
+	const auto  max_range = resource.uniform ? limits.maxUniformBufferRange : limits.maxStorageBufferRange;
+	if (size > max_range) {
+		EXIT("%s buffer range is unsupported\n", resource.uniform ? "uniform" : "storage");
 	}
 	auto [buffer, offset] = context.GetBufferCache().ObtainBuffer(
 	    address, size, resource.written,
 	    resource.formatted || (resource.read && Config::SyncRawImageBuffersEnabled()), id);
 	const auto aligned_offset = Common::AlignDown(offset, alignment);
 	const auto adjustment     = offset - aligned_offset;
-	const auto max_range      = graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange;
 	if (adjustment >= 256 || size > max_range - adjustment) {
-		EXIT("storage buffer offset adjustment is unsupported\n");
+		EXIT("%s buffer offset adjustment is unsupported\n", resource.uniform ? "uniform" : "storage");
 	}
 	buffer_offset = static_cast<uint32_t>(adjustment);
+	if (resource.uniform && (adjustment % 16u) != 0u) {
+		// The shader adds the offset byte in whole vec4s (16-byte aligned guest base).
+		EXIT("uniform buffer offset adjustment %u is not a multiple of 16\n",
+		     static_cast<uint32_t>(adjustment));
+	}
+	if (resource.uniform && (size % 16u) != 0u) {
+		// robustBufferAccess2 zeroes uniform reads only past the 16-byte vector holding the end.
+		static std::atomic<bool> warned {false};
+		if (!warned.exchange(true)) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "WARNING: uniform constant buffer of {} bytes is not a multiple of 16; reads past "
+			    "its end within the last 16 bytes return buffer memory instead of zero\n", size));
+		}
+	}
 	const vk::DescriptorBufferInfo result {buffer->Handle(), aligned_offset, size + adjustment};
 	if (resource.written) {
 		context.GetTextureCache().InvalidateMemoryFromGPU(address, size);
@@ -780,8 +800,8 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 		const auto& program  = *prepared.runtime->program;
 		const auto& snapshot = *prepared.runtime->resources;
 		const auto& layout = program.bindings;
-		prepared.buffer_sources.resize(layout.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)]);
-		if (layout.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)] == 0) {
+		prepared.buffer_sources.resize(layout.BufferSlotCount());
+		if (layout.BufferSlotCount() == 0) {
 			continue;
 		}
 		for (uint32_t resource = 0; resource < program.info.buffers.size(); ++resource) {
@@ -827,9 +847,9 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	const auto& program   = *prepared.runtime->program;
 	const auto& snapshot  = *prepared.runtime->resources;
 	const auto& layout    = program.bindings;
-	EXIT_IF(prepared.buffer_sources.size() != layout.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)]);
+	EXIT_IF(prepared.buffer_sources.size() != layout.BufferSlotCount());
 
-	prepared.buffers.resize(layout.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)]);
+	prepared.buffers.resize(layout.BufferSlotCount());
 	EXIT_IF(prepared.shader_data.size() != layout.ShaderDataDwords());
 	std::fill(prepared.shader_data.begin() + layout.memory_offset_dword,
 	          prepared.shader_data.end(), 0);
@@ -1109,12 +1129,18 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			} else {
 				switch (kind) {
 					case BindingKind::Buffers:
-						EXIT_IF(descriptors.buffers.size() != write.descriptorCount);
-						for (const auto& view: descriptors.buffers) {
-							EXIT_IF(view.buffer == nullptr);
+					case BindingKind::UniformBuffers: {
+						// Storage-buffer slots come first, then uniform buffers.
+						EXIT_IF(descriptors.buffers.size() != program.bindings.BufferSlotCount());
+						const auto first = kind == BindingKind::Buffers
+						                       ? 0u
+						                       : program.bindings.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)];
+						for (uint32_t i = 0; i < write.descriptorCount; ++i) {
+							EXIT_IF(descriptors.buffers[first + i].buffer == nullptr);
 						}
-						write.pBufferInfo = descriptors.buffers.data();
+						write.pBufferInfo = descriptors.buffers.data() + first;
 						break;
+					}
 					case BindingKind::BdaPagetable:
 					case BindingKind::FaultBuffer: {
 						auto& cache = m_context.GetBufferCache();

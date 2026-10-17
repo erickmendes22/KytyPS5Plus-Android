@@ -214,8 +214,26 @@ void DefineDescriptors(EmitterState& state) {
 	auto& bindings = state.program.bindings;
 	auto& counts = bindings.descriptor_counts;
 	auto& buffer_count = counts[static_cast<size_t>(Kind::Buffers)];
+	auto& uniform_count = counts[static_cast<size_t>(Kind::UniformBuffers)];
+	// Storage-buffer slots first, then uniform buffers (IR::Bindings::BufferSlotCount).
 	for (auto& buffer: info.buffers) {
-		buffer.descriptor_index = buffer.live ? buffer_count++ : UINT32_MAX;
+		if (buffer.uniform && (!buffer.live ||
+		                       uniform_count >= state.device_features.uniform_buffers_per_stage)) {
+			buffer.uniform = false;
+		} else if (buffer.uniform) {
+			++uniform_count;
+		}
+		buffer.descriptor_index = buffer.live && !buffer.uniform ? buffer_count++ : UINT32_MAX;
+	}
+	for (uint32_t i = 0, uniform_slot = buffer_count; i < info.buffers.size(); ++i) {
+		if (info.buffers[i].uniform) info.buffers[i].descriptor_index = uniform_slot++;
+	}
+	if (state.device_features.uniform_constant_buffer_bytes != 0u) {
+		const auto scalar = std::ranges::count_if(info.buffers, [](const IR::BufferResource& b) {
+			return b.live && b.scalar && !b.vector_access;
+		});
+		LOGF("uniform constant buffers: hash=0x%016" PRIx64 " uniform=%u scalar_only=%u storage=%u\n",
+		     state.program.shader_hash, uniform_count, static_cast<uint32_t>(scalar), buffer_count);
 	}
 	std::array<const IR::ImageResource*, IR::ImageBindingCount> image_types {};
 	for (auto& image: info.images) {
@@ -290,6 +308,21 @@ void DefineDescriptors(EmitterState& state) {
 						state.builder.AddAnnotation(spv::OpDecorate, buffer.variable, spv::DecorationCoherent);
 					}
 				}
+				break;
+			}
+			case IR::DescriptorBindingKind::UniformBuffers: {
+				auto&      buffer = state.uniform_buffers;
+				const auto vec4   = TypeU32Vector(state, 4);
+				const auto array  = state.builder.DecoratedType(
+				     spv::OpTypeArray, {{spv::OpDecorate, {spv::DecorationArrayStride, 16u}}}, vec4,
+				     ConstantU32(state, IR::UniformBufferVec4Count));
+				buffer.element_type = TypeU32(state);
+				buffer.type         = state.builder.DecoratedType(
+				            spv::OpTypeStruct, {{spv::OpMemberDecorate, {0, spv::DecorationOffset, 0}},
+				                                {spv::OpDecorate, {spv::DecorationBlock}}}, array);
+				buffer.pointer_type = TypePointer(state, spv::StorageClassUniform, buffer.type);
+				buffer.element_pointer_type = TypePointer(state, spv::StorageClassUniform, buffer.element_type);
+				buffer.variable = Define(ArrayType(buffer.type), "constant_buffers", spv::StorageClassUniform);
 				break;
 			}
 			case IR::DescriptorBindingKind::BdaPagetable:

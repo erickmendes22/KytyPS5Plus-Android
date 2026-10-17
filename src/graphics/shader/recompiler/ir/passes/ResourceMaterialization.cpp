@@ -1289,6 +1289,31 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 	return result;
 }
 
+namespace {
+
+// Read-only S_BUFFER_LOAD-only buffers with constant offsets whose descriptor size fits a uniform
+// buffer binding. GLC loads, writes, vector access, dynamic offsets and GPU-selected (indirect)
+// descriptors stay storage buffers.
+// The base must be 16-byte aligned: the binding then starts a multiple of 16 bytes before it, so
+// every constant offset keeps a constant vec4 component. (Requiring minUniformBufferOffsetAlignment
+// instead, for offsets ir3 could push into its constant file, multiplied the shader permutations:
+// constant buffer bases change alignment from draw to draw.)
+bool UniformConstantBuffer(const ResourcePlan& program, const BufferResource& base,
+                           const ShaderBufferResource& descriptor) {
+	const auto size = descriptor.GetSize();
+	if (program.uniform_buffer_limit == 0u || !base.scalar || base.vector_access || base.written ||
+	    base.atomic || base.scalar_glc || base.scalar_dynamic_offset ||
+	    base.indirect_root != BufferResource::NoIndirectBuffer || size == 0u ||
+	    size > program.uniform_buffer_limit || (descriptor.Base48() & 15u) != 0u) {
+		return false;
+	}
+	const auto* source = base.source < program.descriptor_sources.size()
+	                         ? &program.descriptor_sources[base.source] : nullptr;
+	return source != nullptr && !source->indirect_descriptor.has_value();
+}
+
+} // namespace
+
 ResourcePlan ExtractResourcePlan(const Program& program) {
 	ResourcePlan plan;
 	plan.stage                      = program.stage;
@@ -1300,6 +1325,7 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 	plan.source_reads               = program.source_reads;
 	plan.srt_plan_complete          = program.srt_plan_complete;
 	plan.resource_tracking_complete = program.resource_tracking_complete;
+	plan.uniform_buffer_limit       = program.uniform_buffer_limit;
 
 	std::unordered_map<const Inst*, Inst*> cloned;
 	std::function<Value(Value)>            Clone = [&](Value value) -> Value {
@@ -1629,6 +1655,8 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		buffer.descriptor_swizzle = base.formatted ? descriptor.DstSelXYZW() : DstSel(4, 5, 6, 7);
 		buffer.zero_stride_oob    = descriptor.OutOfBounds() == 0u && stride == 0u;
 		buffer.scalar_empty       = base.scalar && descriptor.GetSize() == 0u;
+		buffer.uniform            = i < program.info.buffers.size() &&
+		                            UniformConstantBuffer(program, base, descriptor);
 	}
 	snapshot.images.resize(program.info.images.size());
 	specialization.images.resize(program.info.images.size());
@@ -1737,6 +1765,7 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 		buffer.packed_stride              = source.packed_stride;
 		buffer.descriptor_format          = source.descriptor_format;
 		buffer.descriptor_swizzle         = source.descriptor_swizzle;
+		buffer.uniform                    = source.uniform;
 		buffer.indirect_root              = source.indirect_root;
 		buffer.indirect_mapping_offset    = source.indirect_mapping_offset;
 		buffer.indirect_search_iterations = source.indirect_search_iterations;

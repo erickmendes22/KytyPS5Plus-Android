@@ -3,7 +3,9 @@
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
+#include "graphics/shader/recompiler/ir/ShaderIR.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fmt/format.h>
 #include <string>
@@ -56,12 +58,26 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	    .wqm_entry_lane_fold  = EnvToggle("KYTY_WQM_LANE_FOLD", false),
 	    .wave_slices          = EnvToggle("KYTY_WAVE_SLICES", false),
 	};
+	if (EnvToggle("KYTY_UBO_CONSTANTS", false) && graphics.optional_features.robust_uniform_buffer_access2) {
+		const auto& limits = graphics.GetPhysicalDeviceProperties().limits;
+		const auto  range  = std::min<uint64_t>(limits.maxUniformBufferRange,
+		                                        uint64_t {ShaderRecompiler::IR::UniformBufferVec4Count} * 16u);
+		const auto  align  = std::max<uint64_t>(limits.minUniformBufferOffsetAlignment, 1u);
+		// The binding starts up to align - 16 bytes before a 16-byte aligned guest base.
+		if (align <= 256u && range > align) {
+			paths.uniform_constant_buffer_bytes = static_cast<uint32_t>(range - (align - 1u));
+			paths.uniform_buffers_per_stage =
+			    std::min<uint32_t>(limits.maxPerStageDescriptorUniformBuffers / 4u, 8u);
+		}
+	}
 	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: native_float_min_max={} "
 	                                      "robust_buffer_loads={} lane_exec_branches={} "
-	                                      "wqm_entry_lane_fold={} wave_slices={}\n",
+	                                      "wqm_entry_lane_fold={} wave_slices={} "
+	                                      "ubo_constants={}B x{}\n",
 	                                      paths.native_float_min_max, paths.robust_buffer_loads,
 	                                      paths.lane_exec_branches, paths.wqm_entry_lane_fold,
-	                                      paths.wave_slices));
+	                                      paths.wave_slices, paths.uniform_constant_buffer_bytes,
+	                                      paths.uniform_buffers_per_stage));
 	return paths;
 }
 

@@ -3803,6 +3803,8 @@ private:
 		resource.formatted       = resource.formatted || memory.formatted;
 		resource.scalar          = resource.scalar || op == ValueOpcode::ReadConstBuffer ||
 		                           memory.kind == ResourceKind::ScalarBuffer;
+		resource.vector_access   = resource.vector_access || op != ValueOpcode::ReadConstBuffer;
+		resource.scalar_glc      = resource.scalar_glc || memory.scalar_glc;
 	}
 
 	uint32_t AddImage(uint32_t source, const MemoryInfo& memory, ValueOpcode op, uint32_t pc) {
@@ -3975,6 +3977,9 @@ private:
 			resource = AddBuffer(source, memory, op, flags.pc);
 			if (resource == UINT32_MAX) {
 				Fail(flags.pc, "buffer resource limit exceeded");
+			}
+			if (op == ValueOpcode::ReadConstBuffer && !inst.Arg(1).Resolve().IsImmediate()) {
+				m_info.buffers[resource].scalar_dynamic_offset = true;
 			}
 			AddHandlePatch(handle, resource, flags.pc);
 			AddMemoryPatch(flags.index, resource, 0, false, flags.pc);

@@ -1590,11 +1590,67 @@ uint32_t EmitReadConst(ValueEmitContext& ctx, const IR::Inst& inst) {
 	return EmitNative<spv::OpLoad, IR::Type::U32>(state, pointer);
 }
 
+namespace {
+
+// S_BUFFER_LOAD from a uniform constant buffer (BufferResource::uniform: constant offsets, 16-byte
+// aligned base). The binding starts at the guest address aligned down to
+// minUniformBufferOffsetAlignment, so the shader-data offset byte is a multiple of 16 and only
+// moves the vec4 index: the component stays a constant, which ir3 needs to read the constant
+// buffer without a per-load component select. Reads past the bound range return zero through
+// robustBufferAccess2; offsets near the end of the declared 64 KiB array keep an explicit guard.
+uint32_t LoadUniformConstant(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem) {
+	auto&       state  = ctx.state;
+	const auto& buffer = state.program.info.buffers.at(mem.resource);
+	const auto& counts = state.program.bindings.descriptor_counts;
+	const auto  first_uniform_slot = counts[static_cast<size_t>(IR::DescriptorBindingKind::Buffers)];
+	const auto  offset_arg         = inst.Arg(1).Resolve();
+	if (state.uniform_buffers.variable == 0 || buffer.descriptor_index < first_uniform_slot ||
+	    counts[static_cast<size_t>(IR::DescriptorBindingKind::UniformBuffers)] == 0u) {
+		ExitDescriptorBindingFailure(state, IR::DescriptorBindingKind::UniformBuffers, mem.resource,
+		                             "uniform buffer descriptor array was not emitted");
+	}
+	if (!offset_arg.IsImmediate()) {
+		ctx.Fail(inst, "uniform constant buffer load needs a constant offset");
+	}
+	const auto u32 = TypeU32(state);
+	// Scalar buffer addressing aligns the base and each offset independently.
+	const uint64_t dword = (offset_arg.U32() >> 2u) + (mem.offset >> 2u);
+	if ((dword >> 2u) >= IR::UniformBufferVec4Count) {
+		return ConstantU32(state, 0); // past every uniform-eligible guest buffer
+	}
+	auto vec4 = Binary(state, spv::OpIAdd, u32, ConstantU32(state, static_cast<uint32_t>(dword >> 2u)),
+	                   Binary(state, spv::OpShiftRightLogical, u32,
+	                          state.memory_byte_offsets[buffer.descriptor_index], ConstantU32(state, 4)));
+	// The offset byte adds at most 15 vectors; only offsets that may reach past the array need
+	// the guard.
+	const bool needs_guard = (dword >> 2u) + 16u > IR::UniformBufferVec4Count;
+	uint32_t   in_range    = 0;
+	if (needs_guard) {
+		in_range = Binary(state, spv::OpULessThan, TypeBool(state), vec4,
+		                  ConstantU32(state, IR::UniformBufferVec4Count));
+		vec4     = Select(state, u32, in_range, vec4, ConstantU32(state, 0));
+	}
+	const auto pointer = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAccessChain, state.uniform_buffers.element_pointer_type, pointer,
+	                          state.uniform_buffers.variable,
+	                          ConstantU32(state, buffer.descriptor_index - first_uniform_slot),
+	                          ConstantU32(state, 0), vec4, ConstantU32(state, static_cast<uint32_t>(dword & 3u)));
+	const auto value = EmitNative<spv::OpLoad, IR::Type::U32>(state, pointer);
+	return needs_guard ? Select(state, u32, in_range, value, ConstantU32(state, 0)) : value;
+}
+
+} // namespace
+
 void EmitReadConstBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto mem = ctx.Memory(inst);
 	if (mem.planning_only) return;
 	if (mem.kind == IR::ResourceKind::IndirectBuffer) {
 		ctx.Define(inst, LoadIndirectScalarBuffer(ctx, inst));
+		return;
+	}
+	if (mem.kind == IR::ResourceKind::ScalarBuffer &&
+	    ctx.state.program.info.buffers.at(mem.resource).uniform) {
+		ctx.Define(inst, LoadUniformConstant(ctx, inst, mem));
 		return;
 	}
 	auto& state        = ctx.state;

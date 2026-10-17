@@ -274,6 +274,15 @@ struct ShaderDeviceFeatures {
 	// per-load bounds branch produces: 32-bit buffer loads skip it (KYTY_ROBUST_LOADS; default
 	// Mesa Turnip, needs robustBufferAccess2 with a 4-byte access alignment).
 	bool robust_buffer_loads = false;
+	// Read-only scalar buffers (S_BUFFER_LOAD only, never written or GLC-loaded by the shader)
+	// whose descriptor size is at most this many bytes are bound as uniform buffers and read
+	// with UBO loads, which Mesa ir3 can hoist into its preamble / constant file
+	// (KYTY_UBO_CONSTANTS=1; off by default: mixed per-shader timings on Turnip v32 and ~28 % more
+	// shader permutations, since the 16-byte base alignment it specializes on varies per draw).
+	// Out-of-range reads rely on robustBufferAccess2 for uniform buffers. 0: storage buffers only.
+	uint32_t uniform_constant_buffer_bytes = 0;
+	// At most this many uniform buffers per shader (maxPerStageDescriptorUniformBuffers margin).
+	uint32_t uniform_buffers_per_stage = 0;
 	// S_CBRANCH_EXECZ-style vote branches around lane-local regions become per-lane branches
 	// on the EXEC predicate (Spirv::ConvertExecVoteBranches; KYTY_LANE_BRANCHES=1). Experimental,
 	// off: the Astro Bot intro's particle swarm is not confirmed to render with it.

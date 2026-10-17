@@ -135,7 +135,8 @@ IR::MemoryInfo MemoryInfoFromDecoded(const Decoder::Instruction& decoded) {
 	memory.resource      = ResourceIndexFromOperand(decoded.src1);
 	memory.sampler       = ResourceIndexFromOperand(decoded.src2);
 	if (memory.kind == ResourceKind::ScalarBuffer) {
-		memory.resource = ResourceIndexFromOperand(decoded.src0);
+		memory.resource   = ResourceIndexFromOperand(decoded.src0);
+		memory.scalar_glc = decoded.glc;
 	} else if (IsAddressResourceKind(memory.kind) || memory.kind == ResourceKind::Lds ||
 	           memory.kind == ResourceKind::Gds) {
 		memory.resource = 0;

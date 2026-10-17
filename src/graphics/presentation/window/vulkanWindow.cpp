@@ -721,8 +721,11 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		graphics.physical_device.getProperties2(&robustness2_query);
 		optional.robust_buffer_access2_dword =
 		    robustness2_properties.robustStorageBufferAccessSizeAlignment <= 4;
-		LOGF("Vulkan robustBufferAccess2: storage alignment=%" PRIu64 "\n",
-		     static_cast<uint64_t>(robustness2_properties.robustStorageBufferAccessSizeAlignment));
+		optional.robust_uniform_buffer_access2 =
+		    robustness2_properties.robustUniformBufferAccessSizeAlignment <= 16;
+		LOGF("Vulkan robustBufferAccess2: storage alignment=%" PRIu64 " uniform alignment=%" PRIu64 "\n",
+		     static_cast<uint64_t>(robustness2_properties.robustStorageBufferAccessSizeAlignment),
+		     static_cast<uint64_t>(robustness2_properties.robustUniformBufferAccessSizeAlignment));
 	}
 
 	auto features13 = WindowContext::RequiredVulkan13Features();

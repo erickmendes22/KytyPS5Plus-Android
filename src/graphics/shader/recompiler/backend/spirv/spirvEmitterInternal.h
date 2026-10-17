@@ -124,6 +124,9 @@ struct EmitterState {
 	uint32_t                                         lane_count              = 1;
 	uint32_t                                         lane_half               = 0;
 	std::array<BufferDefinition, 4>                  storage_buffers {};
+	// Uniform constant buffers (IR::DescriptorBindingKind::UniformBuffers): an array of
+	// Block { uvec4 data[UniformBufferVec4Count]; } in the Uniform storage class.
+	BufferDefinition                                 uniform_buffers {};
 	std::vector<uint32_t>                           memory_byte_offsets;
 	uint32_t                                         bda_pagetable_variable  = 0;
 	uint32_t                                         fault_buffer_variable   = 0;
