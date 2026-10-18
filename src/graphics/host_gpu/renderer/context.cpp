@@ -202,12 +202,30 @@ void CommandBuffer::RecordBeginRendering(const RenderState& state, bool secondar
 // copies), like the fenced pass breadcrumbs of round 5 without the fill. Not proven to cure the
 // crash-landing device loss: the narrower graphics -> compute variant still lost it (r6_c2_fix),
 // and the one run of this form was cut by the thermal guard.
+// KYTY_PASS_BARRIER=2: the barrier of a fenced pass breadcrumb instead (all earlier work, any
+// write, made visible to everything including the host: on Turnip a full wait for idle plus a
+// cache flush and invalidate), again without the fill.
 void CommandBuffer::OrderPassBeforeLaterWork() const {
-	static const bool enabled = [] {
+	static const int mode = [] {
 		const char* value = std::getenv("KYTY_PASS_BARRIER");
-		return value != nullptr && value[0] != '\0' && value[0] != '0';
+		if (value == nullptr || value[0] == '\0' || value[0] == '0') {
+			return 0;
+		}
+		return value[0] == '2' ? 2 : 1;
 	}();
-	if (!enabled) {
+	if (mode == 0) {
+		return;
+	}
+	if (mode == 2) {
+		vk::MemoryBarrier full {};
+		full.srcAccessMask = vk::AccessFlagBits::eMemoryWrite;
+		full.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite |
+		                     vk::AccessFlagBits::eHostRead;
+		Handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+		                         vk::PipelineStageFlagBits::eAllCommands |
+		                             vk::PipelineStageFlagBits::eHost,
+		                         {}, 1, &full, 0, nullptr, 0, nullptr);
+		Common::PerfStats::Count(Common::PerfStats::Counter::GraphicsComputeBarriers);
 		return;
 	}
 	vk::MemoryBarrier barrier {};
