@@ -339,6 +339,13 @@ private:
 	GraphicsBindings                     m_graphics_bindings;
 	PreparedBindings                     m_compute_bindings;
 	std::vector<ImageId>                  m_bound_images;
+	// PrepareBindingWrites scratch: ranges the current draw writes (images, attachments, buffers).
+	struct WrittenRange {
+		uint64_t address;
+		uint64_t size;
+		bool     buffer;
+	};
+	std::vector<WrittenRange>             m_written_ranges;
 	std::vector<vk::DescriptorImageInfo>  m_descriptor_images;
 	std::vector<vk::WriteDescriptorSet>   m_descriptor_writes;
 	std::array<vk::DescriptorBufferInfo, 2> m_address_buffers {};
