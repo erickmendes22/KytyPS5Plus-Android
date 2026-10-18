@@ -18,12 +18,16 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
+#include <fmt/format.h>
 
 namespace Libs::Graphics {
 
@@ -554,6 +558,22 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	                                  [this, vaddr, size] { ReadMemory(vaddr, size, true); });
 }
 
+namespace {
+
+// KYTY_READBACK_DIFF=1 (diagnostics): for read-fault downloads (the first 4 and then every 32nd
+// per reader and 4 KiB page, 3000 lines at most), log whether the faulting bytes were inside a
+// GPU-written range and whether the download changed them ("[perf-trace] rbdiff ..."), i.e.
+// whether the CPU reader waited for bytes the GPU never wrote.
+bool ReadbackDiffEnabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_READBACK_DIFF");
+		return value != nullptr && value[0] == '1';
+	}();
+	return enabled;
+}
+
+} // namespace
+
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
@@ -575,7 +595,45 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		m_readback_reader = reader;
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
 
-		if (DownloadBufferMemory<false>(buffer, vaddr, size)) {
+		static uint32_t diff_logged = 0;
+		static std::unordered_map<uint64_t, uint32_t> diff_seen;
+		bool diff = false;
+		if (!is_write && ReadbackDiffEnabled() && diff_logged < 3000u) {
+			const auto n = diff_seen[(static_cast<uint64_t>(reader) << 48u) ^ (vaddr >> 12u)]++;
+			diff = n < 4u || n % 32u == 0u;
+		}
+		const uint64_t diff_base = vaddr & ~uint64_t {63};
+		std::array<uint8_t, 64> diff_before {};
+		uint64_t diff_range_begin = 0, diff_range_end = 0, diff_page_gpu_bytes = 0;
+		if (diff) {
+			(void)LibKernel::Memory::TryReadSparseBacking(diff_base, diff_before.data(), diff_before.size());
+			m_gpu_modified_ranges.ForEach([&](uint64_t begin, uint64_t end) {
+				if (begin <= vaddr && vaddr < end) {
+					diff_range_begin = begin;
+					diff_range_end   = end;
+				}
+			});
+			const uint64_t page = vaddr & ~uint64_t {4095};
+			m_gpu_modified_ranges.ForEachInRange(page, 4096, [&](uint64_t begin, uint64_t end) {
+				diff_page_gpu_bytes += end - begin;
+			});
+		}
+
+		const bool downloaded = DownloadBufferMemory<false>(buffer, vaddr, size);
+		if (diff) {
+			std::array<uint8_t, 64> after {};
+			(void)LibKernel::Memory::TryReadSparseBacking(diff_base, after.data(), after.size());
+			const auto at16 = (vaddr - diff_base) & ~uint64_t {15};
+			const bool changed16 = std::memcmp(diff_before.data() + at16, after.data() + at16, 16) != 0;
+			const bool changed64 = diff_before != after;
+			Common::PerfStats::EmitLine(fmt::format(
+			    "[perf-trace] rbdiff reader=0x{:x} addr=0x{:x} downloaded={} in_range={} range=0x{:x}+0x{:x} "
+			    "page_gpu_bytes={} changed16={} changed64={}",
+			    reader, vaddr, downloaded ? 1 : 0, diff_range_end != 0 ? 1 : 0, diff_range_begin,
+			    diff_range_end - diff_range_begin, diff_page_gpu_bytes, changed16 ? 1 : 0, changed64 ? 1 : 0));
+			diff_logged++;
+		}
+		if (downloaded) {
 			// A write releases the same range below, in the same critical section as its CPU
 			// claim: releasing it here as well would be a second lock acquisition on it, which is
 			// the window this change closes.

@@ -595,13 +595,20 @@ void DumpProfile(const Profile& profile, Symbolizer& symbolizer, int seconds) {
 		dump("hle-calls", by_thunk);
 	}
 	dump("innermost-kyty-frame", profile.kyty);
+	// KYTY_PERF_STACKS=<n>: stacks per stack section (default 80; the long tail of a busy
+	// thread's CPU time is spread over hundreds of stacks).
+	static const size_t stack_entries = [] {
+		const char* value = std::getenv("KYTY_PERF_STACKS");
+		const auto  n     = value != nullptr ? std::strtoull(value, nullptr, 10) : 0ull;
+		return n >= 1 && n <= 100000 ? static_cast<size_t>(n) : kTopEntries;
+	}();
 	std::fprintf(out, "## cpu-stacks (leaf <- kyty callers)\n");
-	for (const auto& [stack, n]: Top(profile.stacks, kTopEntries)) {
+	for (const auto& [stack, n]: Top(profile.stacks, stack_entries)) {
 		std::fprintf(out, "%llu %s\n", static_cast<unsigned long long>(n), stack.c_str());
 	}
 	std::fprintf(out, "## wall-stacks (%llu wall-clock samples of 1 ms: leaf <- kyty callers)\n",
 	             static_cast<unsigned long long>(profile.wall_total));
-	for (const auto& [stack, n]: Top(profile.wall, kTopEntries)) {
+	for (const auto& [stack, n]: Top(profile.wall, stack_entries)) {
 		std::fprintf(out, "%llu %s\n", static_cast<unsigned long long>(n), stack.c_str());
 	}
 	std::fclose(out);
