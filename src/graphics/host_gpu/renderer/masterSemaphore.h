@@ -32,6 +32,10 @@ public:
 	[[nodiscard]] uint64_t SubmittedTick() const noexcept {
 		return m_submitted_tick.load(std::memory_order_acquire);
 	}
+	// When KnownGpuTick() last advanced (Common::PerfStats::Detail::MonotonicNs), 0 before.
+	[[nodiscard]] int64_t LastProgressNs() const noexcept {
+		return m_gpu_tick_ns.load(std::memory_order_acquire);
+	}
 	[[nodiscard]] bool     IsFree(uint64_t tick) const noexcept { return KnownGpuTick() >= tick; }
 	[[nodiscard]] uint64_t NextTick() noexcept {
 		return m_current_tick.fetch_add(1, std::memory_order_release);
@@ -62,6 +66,7 @@ private:
 	GraphicContext&         m_graphics;
 	vk::Semaphore           m_semaphore = nullptr;
 	std::atomic<uint64_t>   m_gpu_tick {0};
+	std::atomic<int64_t>    m_gpu_tick_ns {0};
 	std::atomic<uint64_t>   m_current_tick {1};
 	std::atomic<uint64_t>   m_submitted_tick {0};
 	std::mutex              m_submitted_mutex;

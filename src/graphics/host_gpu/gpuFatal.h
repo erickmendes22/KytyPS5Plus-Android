@@ -20,6 +20,11 @@ inline constexpr int kExitGpuOutOfMemory = 67;
 // message box, exit status) can be checked on a device. False when the variable is unset.
 [[nodiscard]] bool GpuFatalTestDue();
 
+// Diagnostics run by GpuFatal after the fatal line is logged and before the exit (e.g. the GPU
+// timer's in-flight regions on a device loss). At most a few hooks; each runs once.
+using GpuFatalHook = void (*)(vk::Result result);
+void AddGpuFatalHook(GpuFatalHook hook);
+
 inline void CheckGpuResult(const char* what, vk::Result result) {
 	if (result != vk::Result::eSuccess) {
 		GpuFatal(what, result);
