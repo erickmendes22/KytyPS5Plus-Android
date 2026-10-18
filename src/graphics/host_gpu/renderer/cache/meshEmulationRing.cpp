@@ -38,17 +38,17 @@ constexpr uint32_t kLoggedReservations    = 4000;
 
 } // namespace
 
-// KYTY_MESH_RING_MIB=<n>: initial size of the mesh emulation ring (default InitialSize).
+// KYTY_MESH_RING_MIB=<n>: initial size of the mesh emulation ring (default DefaultInitialSize).
 uint64_t MeshEmulationRing::ConfiguredInitialSize() {
 	const char* value = std::getenv("KYTY_MESH_RING_MIB");
 	if (value == nullptr || *value == '\0') {
-		return InitialSize;
+		return DefaultInitialSize;
 	}
 	char*      end = nullptr;
 	const auto mib = std::strtoull(value, &end, 10);
 	if (end == nullptr || *end != '\0' || mib < 16 || mib > 2048) {
 		LOGF("KYTY_MESH_RING_MIB=%s ignored (16..2048)\n", value);
-		return InitialSize;
+		return DefaultInitialSize;
 	}
 	return mib << 20u;
 }
