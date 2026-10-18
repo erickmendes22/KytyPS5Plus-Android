@@ -51,6 +51,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -13894,6 +13895,54 @@ void TestLateConstantPropagation() {
         "an ungrounded Phi cycle acquired a constant");
 }
 
+void TestRepeatedBitcastPropagation() {
+  using namespace ShaderRecompiler::IR;
+  Block entry, left, right;
+  IREmitter e(&entry), l(&left), r(&right);
+  const auto raw = e.GetUserData(static_cast<ScalarReg>(0));
+  const auto other = e.GetUserData(static_cast<ScalarReg>(1));
+  const auto fp = e.Emit(ValueOpcode::ConvertF32U32, {raw});
+  for (const auto [opcode, source, distinct] : {
+       std::tuple{ValueOpcode::BitCastF32U32, Value(raw), Value(other)},
+       std::tuple{ValueOpcode::BitCastU32F32, fp,
+                  e.Emit(ValueOpcode::ConvertF32U32, {other})}}) {
+    const auto first = e.Emit(opcode, {source});
+    const auto duplicate = e.Emit(opcode, {source});
+    const auto separate = e.Emit(opcode, {distinct});
+    const auto left_cast = l.Emit(opcode, {source});
+    const auto left_duplicate = l.Emit(opcode, {source});
+    const auto right_cast = r.Emit(opcode, {source});
+    const auto use = opcode == ValueOpcode::BitCastF32U32
+        ? e.Emit(ValueOpcode::FPIsNan32, {duplicate})
+        : e.Emit(ValueOpcode::IEqual32, {duplicate, Value(0u)});
+    ConstantPropagationPass({&entry, &left, &right});
+    Check(duplicate.Resolve() == first && left_duplicate.Resolve() == left_cast &&
+              use.Instruction()->Arg(0).Resolve() == first,
+          "repeated same-block casts were not shared with their earlier definition");
+    Check(separate.Resolve() == separate && left_cast.Resolve() == left_cast &&
+              right_cast.Resolve() == right_cast && left_cast != first && right_cast != left_cast,
+          "cast reuse merged distinct values or crossed block boundaries");
+  }
+  const auto as_float = e.Emit(ValueOpcode::BitCastF32U32, {raw});
+  const auto raw_roundtrip = e.Emit(ValueOpcode::BitCastU32F32, {as_float});
+  const auto as_bits = e.Emit(ValueOpcode::BitCastU32F32, {fp});
+  const auto float_roundtrip = e.Emit(ValueOpcode::BitCastF32U32, {as_bits});
+  ConstantPropagationPass({&entry});
+  Check(raw_roundtrip.Resolve() == raw && float_roundtrip.Resolve() == fp,
+        "sharing casts prevented inverse casts from folding");
+  for (const uint32_t bits : {0u, 0x80000000u, 1u, 0x80000001u, 0x7f800000u,
+                             0xff800000u, 0x7fc12345u, 0x7f812345u}) {
+    const auto constant_float = e.Emit(ValueOpcode::BitCastF32U32, {Value(bits)});
+    const auto constant_bits = e.Emit(ValueOpcode::BitCastU32F32,
+                                      {Value::F32(std::bit_cast<float>(bits))});
+    ConstantPropagationPass({&entry});
+    Check(constant_float.Resolve().IsImmediate() &&
+              std::bit_cast<uint32_t>(constant_float.Resolve().F32Value()) == bits &&
+              constant_bits.Resolve() == Value(bits),
+          "constant bitcast folding changed signed zero, subnormal, infinity or NaN bits");
+  }
+}
+
 void TestMaskedShiftConstantPropagation() {
   using namespace ShaderRecompiler::IR;
   for (const uint32_t count : {0u, 1u, 8u, 31u, 32u, 33u, 40u, 63u, 64u, UINT32_MAX}) {
@@ -17704,6 +17753,7 @@ int main() {
   TestValuePhiValidation();
   TestLaneMaskProjection();
   TestLateConstantPropagation();
+  TestRepeatedBitcastPropagation();
   TestMaskedShiftConstantPropagation();
   TestU64ShiftConstantPropagation();
   TestUnreachableEqualityPropagation();

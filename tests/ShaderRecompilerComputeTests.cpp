@@ -1390,6 +1390,7 @@ struct TestCase {
   std::vector<std::pair<std::string, size_t>> ir_counts;
   u32 expected_mip_descriptors = 0;
   std::optional<std::vector<u32>> expected_buffer_resources;
+  size_t max_spirv_words = 0;
 };
 
 struct GraphicsCase {
@@ -1790,6 +1791,13 @@ CompiledShader CompileCase(const TestCase &test, u32 host_subgroup_size = 64) {
           "recompiler returned empty SPIR-V");
   ValidateSpirv(test.name, result.spirv);
   CheckSpirvEmission(test, result.spirv);
+  if (test.max_spirv_words != 0u) {
+    Require(test.name, "emitted shader size", result.spirv.size() <= test.max_spirv_words,
+            "SPIR-V words=" + std::to_string(result.spirv.size()) +
+                ", limit=" + std::to_string(test.max_spirv_words));
+    std::printf("[compute] %s wave=%u SPIR-V words=%zu\n", test.name,
+                result.program.wave_size, result.spirv.size());
+  }
   if (test.expected_buffer_resources) {
     std::vector<u32> resources;
     for (u32 i = 0; i < result.program.info.buffers.size(); ++i) {
@@ -29541,7 +29549,7 @@ TestCase VectorCompareClassF32() {
            O::BUFFER_STORE_DWORD, O::S_ENDPGM}};
 }
 
-TestCase VectorCompareClassF32ImmediateAndDynamicMasks() {
+TestCase VectorCompareClassF32ImmediateAndDynamicMasks(u32 wave) {
   using O = ShaderOpcode;
   // One input for each architectural class bit, in bit order.
   constexpr std::array<u32, 10> values{
@@ -29551,6 +29559,9 @@ TestCase VectorCompareClassF32ImmediateAndDynamicMasks() {
       0u, 0x3ffu, 3u, 7u, 0xfffffc00u, 0xffffffffu, 0xfffffc03u, 0xfffffc07u};
   TestCase test;
   test.name = "VectorCompareClassF32ImmediateAndDynamicMasks";
+  test.has_compute_info = true;
+  test.compute_info.wave_size = wave;
+  test.compute_info.threads_num[0] = test.compute_info.threads_num[1] = test.compute_info.threads_num[2] = 1u;
   test.initial.assign(values.begin(), values.end());
   test.initial.insert(test.initial.end(), masks.begin(), masks.end());
   test.expected = test.initial;
@@ -29574,12 +29585,17 @@ TestCase VectorCompareClassF32ImmediateAndDynamicMasks() {
         test.expected.push_back((masks[mask_index] & (1u << index)) != 0u);
       }
     }
+    AppendStoreVgpr(&code, 0, static_cast<u32>(test.expected.size()));
+    test.expected.push_back(values[index]);
   }
   AppendEnd(&code);
   test.initial.resize(test.expected.size());
   test.opcodes = {O::V_MOV_B32, O::BUFFER_LOAD_DWORD, O::V_CMP_CLASS_F32,
                   O::V_CNDMASK_B32, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
   test.required_spirv = {"OpIsNan"};
+  test.ir_counts = {{"BitCastF32U32", values.size()}};
+  // Measured 56,287/117,071 words; allow only a small fixed emission margin.
+  test.max_spirv_words = wave == 32u ? 56400u : 117200u;
   return test;
 }
 
@@ -42860,7 +42876,8 @@ std::vector<TestCase> MakeCases() {
   AddCase(VectorVopcCmpxNeU64CapturedExecMask);
   AddCase(VectorVop3CmpxNeI64CapturedExecMask);
   AddCase(VectorCompareClassF32);
-  AddCase(VectorCompareClassF32ImmediateAndDynamicMasks);
+  cases.push_back(VectorCompareClassF32ImmediateAndDynamicMasks(32));
+  cases.push_back(VectorCompareClassF32ImmediateAndDynamicMasks(64));
   AddCase(VectorVopcSdwaCmpxClassF32CapturedExecMask);
   cases.push_back(VectorCmpClassF16(32));
   cases.push_back(VectorCmpClassF16(64));
@@ -48894,7 +48911,8 @@ int main(int argc, char **argv) {
       RunCase(&vulkan, VectorCompareF32DenormalModes(mode));
     }
     RunCase(&vulkan, VectorCompareClassF32());
-    RunCase(&vulkan, VectorCompareClassF32ImmediateAndDynamicMasks());
+    for (const u32 wave : {32u, 64u})
+      RunCase(&vulkan, VectorCompareClassF32ImmediateAndDynamicMasks(wave));
     RunCase(&vulkan, VectorCompareF16Ops());
     return 0;
   }
