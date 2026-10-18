@@ -649,6 +649,9 @@ void DefineInputs(EmitterState& state) {
 		// The emulated stores address the workgroup's record slot and the invocation's records.
 		add_builtin(IR::StageInputKind::WorkgroupId, 3, "gl_WorkGroupID");
 		add_builtin(IR::StageInputKind::LocalInvocationIndex, 1, "gl_LocalInvocationIndex");
+		if (MeshBoundsChecked(state)) {
+			add_builtin(IR::StageInputKind::NumWorkgroups, 3, "gl_NumWorkGroups");
+		}
 	}
 	if (state.lane_count == 2) {
 		add_builtin(IR::StageInputKind::LocalInvocationIndex, 1, "gl_LocalInvocationIndex");

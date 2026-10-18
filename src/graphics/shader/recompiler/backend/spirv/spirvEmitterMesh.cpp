@@ -1,4 +1,5 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
+#include "graphics/shader/meshBoundsCheck.h"
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 namespace {
@@ -45,8 +46,8 @@ uint32_t MeshPushDword(EmitterState& state, uint32_t dword) {
 	return value;
 }
 
-// A uint32 array at a buffer device address from two push-data dwords.
-uint32_t MeshEmulationBuffer(EmitterState& state, uint32_t low_dword) {
+// A uint32 array at a buffer device address (a u64 id).
+uint32_t PhysicalWords(EmitterState& state, uint32_t address) {
 	const auto words = state.builder.DecoratedType(
 	    spv::OpTypeRuntimeArray, {{spv::OpDecorate, {spv::DecorationArrayStride, sizeof(uint32_t)}}},
 	    TypeU32(state));
@@ -55,13 +56,17 @@ uint32_t MeshEmulationBuffer(EmitterState& state, uint32_t low_dword) {
 	    {{spv::OpMemberDecorate, {0, spv::DecorationOffset, 0}},
 	     {spv::OpDecorate, {spv::DecorationBlock}}},
 	    words);
-	const auto address =
-	    PackU64(state, MeshPushDword(state, low_dword), MeshPushDword(state, low_dword + 1u));
 	return Unary(state, spv::OpConvertUToPtr,
 	             TypePointer(state, spv::StorageClassPhysicalStorageBuffer, block), address);
 }
 
-void MeshEmulationStore(EmitterState& state, uint32_t buffer, uint32_t index, uint32_t value) {
+// A uint32 array at a buffer device address from two push-data dwords.
+uint32_t MeshEmulationBuffer(EmitterState& state, uint32_t low_dword) {
+	return PhysicalWords(state, PackU64(state, MeshPushDword(state, low_dword),
+	                                    MeshPushDword(state, low_dword + 1u)));
+}
+
+void StorePhysicalWord(EmitterState& state, uint32_t buffer, uint32_t index, uint32_t value) {
 	const auto pointer = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpAccessChain, TypePhysicalU32Pointer(state), pointer, buffer,
 	                          ConstantU32(state, 0), index);
@@ -69,19 +74,41 @@ void MeshEmulationStore(EmitterState& state, uint32_t buffer, uint32_t index, ui
 	                          static_cast<uint32_t>(sizeof(uint32_t)));
 }
 
+// Where the ring stores of one dispatch may go (KYTY_MESH_BOUNDS): the dwords it reserved.
+struct MeshStoreLimits {
+	uint32_t vertex_dwords = 0; // 0: unchecked
+	uint32_t index_dwords  = 0;
+	uint32_t group         = 0;
+};
+
+void MeshEmulationStore(EmitterState& state, uint32_t buffer, uint32_t index, uint32_t value,
+                        uint32_t limit = 0, MeshBoundsCheck::Kind kind = {}, uint32_t group = 0) {
+	if (limit == 0) {
+		StorePhysicalWord(state, buffer, index, value);
+		return;
+	}
+	const auto inside = Binary(state, spv::OpULessThan, TypeBool(state), index, limit);
+	EmitIfCondition(state, inside, [&] { StorePhysicalWord(state, buffer, index, value); });
+	EmitIfCondition(state, Unary(state, spv::OpLogicalNot, TypeBool(state), inside), [&] {
+		EmitMeshBoundsViolation(state, static_cast<uint32_t>(kind), index, limit, group);
+	});
+}
+
 void MeshEmulationStoreTriangle(EmitterState& state, uint32_t buffer, uint32_t slot,
-                                const std::array<uint32_t, 3>& vertices) {
+                                const std::array<uint32_t, 3>& vertices,
+                                const MeshStoreLimits& limits = {}) {
 	const auto base =
 	    EmitBinaryU32(state, spv::OpIMul, slot, ConstantU32(state, IR::MeshEmulationIndexDwords));
 	for (uint32_t corner = 0; corner < 3; corner++) {
 		MeshEmulationStore(state, buffer, EmitAddU32(state, base, ConstantU32(state, corner)),
-		                   vertices[corner]);
+		                   vertices[corner], limits.index_dwords, MeshBoundsCheck::Kind::IndexStore,
+		                   limits.group);
 	}
 }
 
 // One vertex record: every export of the invocation's logical lane, as raw dwords.
 void MeshEmulationStoreVertex(EmitterState& state, uint32_t buffer, uint32_t record,
-                              uint32_t index, uint32_t half) {
+                              uint32_t index, uint32_t half, const MeshStoreLimits& limits = {}) {
 	const auto& layout = state.mesh_emulation_layout;
 	const auto  base   = EmitBinaryU32(state, spv::OpIMul, record,
 	                                   ConstantU32(state, layout.stride_dwords));
@@ -107,7 +134,8 @@ void MeshEmulationStoreVertex(EmitterState& state, uint32_t buffer, uint32_t rec
 			}
 			MeshEmulationStore(state, buffer,
 			                   EmitAddU32(state, base, ConstantU32(state, field->offset + component)),
-			                   word);
+			                   word, limits.vertex_dwords, MeshBoundsCheck::Kind::VertexStore,
+			                   limits.group);
 		}
 	}
 }
@@ -138,6 +166,20 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 	    state, vertices, ConstantU32(state, mesh.max_vertices));
 	const auto primitive_count = EmitGlsl<GLSLstd450UMin, IR::Type::U32>(
 	    state, primitives, ConstantU32(state, mesh.max_primitives));
+	MeshStoreLimits limits;
+	if (MeshBoundsChecked(state)) {
+		// The reservation holds groups_x * gl_NumWorkGroups.y workgroup slots.
+		const auto slots = EmitBinaryU32(
+		    state, spv::OpIMul, groups_x,
+		    EmitInputComponentU32(state, IR::StageInputKind::NumWorkgroups, 1));
+		limits.vertex_dwords = EmitBinaryU32(
+		    state, spv::OpIMul, slots,
+		    ConstantU32(state, mesh.max_vertices * state.mesh_emulation_layout.stride_dwords));
+		limits.index_dwords = EmitBinaryU32(
+		    state, spv::OpIMul, slots,
+		    ConstantU32(state, mesh.max_primitives * IR::MeshEmulationIndexDwords));
+		limits.group = group_x;
+	}
 	const std::array<uint32_t, 3> degenerate {first_vertex, first_vertex, first_vertex};
 	const auto rounds = (mesh.max_primitives + threads - 1u) / threads;
 	for (uint32_t half = 0; half < state.lane_count; half++) {
@@ -147,7 +189,7 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 		                [&] {
 			                MeshEmulationStoreVertex(state, vertex_buffer,
 			                                         EmitAddU32(state, first_vertex, index), index,
-			                                         half);
+			                                         half, limits);
 		                });
 		const auto primitive_slot = Binary(state, spv::OpULessThan, TypeBool(state), index,
 		                                   ConstantU32(state, mesh.max_primitives));
@@ -176,7 +218,7 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 				                        first_vertex);
 			}
 			MeshEmulationStoreTriangle(state, index_buffer, EmitAddU32(state, first_primitive, index),
-			                           vertex);
+			                           vertex, limits);
 		});
 		// Triangle slots past the workgroup's invocations are always unused.
 		for (uint32_t round = 1; round < rounds; round++) {
@@ -187,13 +229,48 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 			                [&] {
 				                MeshEmulationStoreTriangle(
 				                    state, index_buffer, EmitAddU32(state, first_primitive, primitive),
-				                    degenerate);
+				                    degenerate, limits);
 			                });
 		}
 	}
 }
 
 } // namespace
+
+bool MeshBoundsChecked(const EmitterState& state) {
+	return MeshEmulated(state) && MeshBoundsCheck::Enabled();
+}
+
+void EmitMeshBoundsViolation(EmitterState& state, uint32_t kind, uint32_t value, uint32_t limit,
+                             uint32_t group) {
+	const auto address = MeshBoundsCheck::LogAddress();
+	if (address == 0) {
+		return; // The access is still skipped.
+	}
+	const auto log   = PhysicalWords(state, ConstantU64(state, address));
+	const auto count = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAccessChain, TypePhysicalU32Pointer(state), count, log,
+	                          ConstantU32(state, 0), ConstantU32(state, 0));
+	const auto slot = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAtomicIAdd, TypeU32(state), slot, count,
+	                          ConstantU32(state, spv::ScopeDevice),
+	                          ConstantU32(state, spv::MemorySemanticsMaskNone), ConstantU32(state, 1));
+	const auto room = Binary(state, spv::OpULessThan, TypeBool(state), slot,
+	                         ConstantU32(state, MeshBoundsCheck::kMaxEntries));
+	EmitIfCondition(state, room, [&] {
+		const auto base = EmitAddU32(
+		    state, ConstantU32(state, MeshBoundsCheck::kHeaderDwords),
+		    EmitBinaryU32(state, spv::OpIMul, slot, ConstantU32(state, MeshBoundsCheck::kEntryDwords)));
+		const std::array<uint32_t, MeshBoundsCheck::kEntryDwords> words {
+		    ConstantU32(state, static_cast<uint32_t>(state.program.shader_hash)),
+		    ConstantU32(state, static_cast<uint32_t>(state.program.shader_hash >> 32u)),
+		    ConstantU32(state, kind), value, limit, group};
+		for (uint32_t word = 0; word < words.size(); word++) {
+			StorePhysicalWord(state, log, EmitAddU32(state, base, ConstantU32(state, word)),
+			                  words[word]);
+		}
+	});
+}
 
 uint32_t EmitMeshIndirectRecordLoad(EmitterState& state, uint32_t dword) {
 	const auto record  = MeshEmulationBuffer(state, 0);

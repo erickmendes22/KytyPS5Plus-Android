@@ -338,6 +338,13 @@ inline bool MeshIndirectRecord(const EmitterState& state) {
 // Loads a dword of that record.
 uint32_t EmitMeshIndirectRecordLoad(EmitterState& state, uint32_t dword);
 
+// KYTY_MESH_BOUNDS=1 (graphics/shader/meshBoundsCheck.h): the emulated mesh compute stage checks
+// its ring stores and guest-memory pages.
+bool MeshBoundsChecked(const EmitterState& state);
+// Appends a violation (kind: MeshBoundsCheck::Kind) to the log; value/limit/group are u32 ids.
+void EmitMeshBoundsViolation(EmitterState& state, uint32_t kind, uint32_t value, uint32_t limit,
+                             uint32_t group);
+
 // The pixel shader reads barycentrics and per-vertex parameters from a generated geometry stage.
 inline bool BarycentricsEmulated(const EmitterState& state) {
 	return state.program.stage == ShaderType::Pixel &&

@@ -189,6 +189,7 @@ RenderExecutor::EmulatedMeshDraw RenderExecutor::RecordEmulatedMesh(
 	const uint64_t vertex_count = uint64_t {groups} * instances * mesh_input.mesh.max_vertices;
 	EXIT_IF(vertex_count > UINT32_MAX);
 	ring.PollOutOfRangeCounter();
+	ring.PollBoundsLog();
 	return {.vertex_address       = vertex_address,
 	        .index_buffer         = output.buffer,
 	        .index_offset         = output.offset + index_offset,
