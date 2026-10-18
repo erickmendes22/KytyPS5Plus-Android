@@ -18,6 +18,8 @@
 //   shake=<seconds>       shake the pad (synthetic accelerometer + gyroscope) for 1-60 s, starting
 //                         when the file changes; for motion-only prompts (Astro Bot's intro "shake
 //                         to fix Astro") on a tablet with on-screen controls
+//   pad=<script>          timed left stick + buttons (libs/padScript.h), starting when the file
+//                         changes, e.g. pad=3000:128,0;400:128,0,cross;2000:128,0
 //
 // A missing file means no skips and no draw marks.
 namespace Libs::Graphics::LiveKnobs {
@@ -26,6 +28,7 @@ struct Snapshot {
 	std::vector<std::string> skip;
 	bool                     draw_marks = false;
 	int                      shake_seconds = 0;
+	std::string              pad_script;
 };
 
 // Parses the file contents. Unknown keys and bad hash prefixes are ignored. Exposed for tests.

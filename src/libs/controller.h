@@ -3,6 +3,9 @@
 
 #include "common/abi.h"
 #include "common/common.h"
+
+#include <string_view>
+
 namespace Libs::Controller {
 
 void Initialize();
@@ -78,6 +81,9 @@ void ToggleGyroEmulation(int id);
 // (at most 60) on a background thread, for motion-only prompts without a motion-capable pad.
 // Returns false when a shake is already running or no controller exists.
 bool StartSyntheticShake(int seconds);
+// Runs a timed left-stick + button script (libs/padScript.h syntax) on the active pad on a
+// background thread. Returns false for a malformed script or while another script runs.
+bool StartPadScript(std::string_view script);
 void ResetInputState();
 int  GetActiveControllerId();
 

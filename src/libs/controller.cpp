@@ -13,6 +13,7 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/padData.h"
+#include "libs/padScript.h"
 
 #include <algorithm>
 #include <array>
@@ -1085,6 +1086,59 @@ void RunSyntheticShake(int seconds) {
 }
 
 } // namespace
+
+namespace {
+
+std::atomic<bool> g_script_running {false};
+
+void ApplyScriptButtons(int id, uint32_t from, uint32_t to) {
+	for (uint32_t bit = 1; bit != 0; bit <<= 1) {
+		if (((from ^ to) & bit) != 0) {
+			SetButton(id, bit, (to & bit) != 0);
+		}
+	}
+}
+
+void RunPadScript(std::vector<PadScript::Step> steps) {
+	uint32_t held = 0;
+	int      id   = GetActiveControllerId();
+	for (const auto& step: steps) {
+		id = GetActiveControllerId();
+		if (id < 0) {
+			break;
+		}
+		SetAxis(id, Axis::LeftX, step.left_x);
+		SetAxis(id, Axis::LeftY, step.left_y);
+		ApplyScriptButtons(id, held, step.buttons);
+		held = step.buttons;
+		std::this_thread::sleep_for(std::chrono::milliseconds(step.ms));
+	}
+	// Release everything the script pressed and centre the stick.
+	if (id >= 0) {
+		ApplyScriptButtons(id, held, 0);
+		SetAxis(id, Axis::LeftX, 128);
+		SetAxis(id, Axis::LeftY, 128);
+	}
+	g_script_running = false;
+}
+
+} // namespace
+
+bool StartPadScript(std::string_view script) {
+	auto steps = PadScript::Parse(script);
+	if (g_controller == nullptr || !steps) {
+		LOGF("Pad: script rejected (%s)\n", g_controller == nullptr ? "no controller" : "malformed");
+		return false;
+	}
+	bool expected = false;
+	if (!g_script_running.compare_exchange_strong(expected, true)) {
+		LOGF("Pad: script ignored, another one is running\n");
+		return false;
+	}
+	LOGF("Pad: script with %zu steps\n", steps->size());
+	std::thread(RunPadScript, std::move(*steps)).detach();
+	return true;
+}
 
 bool StartSyntheticShake(int seconds) {
 	if (g_controller == nullptr || seconds <= 0) {

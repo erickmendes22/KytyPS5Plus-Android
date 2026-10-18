@@ -114,6 +114,9 @@ void Poll() {
 	if (snapshot->shake_seconds > 0 && !Libs::Controller::StartSyntheticShake(snapshot->shake_seconds)) {
 		LOGF("Live knobs: shake ignored (already shaking or no pad)\n");
 	}
+	if (!snapshot->pad_script.empty()) {
+		(void)Libs::Controller::StartPadScript(snapshot->pad_script);
+	}
 	g_current.store(snapshot, std::memory_order_release);
 }
 
@@ -138,6 +141,8 @@ Snapshot Parse(std::string_view text) {
 			snapshot.skip = std::move(prefixes);
 		} else if (key == "marks") {
 			snapshot.draw_marks = value == "1";
+		} else if (key == "pad") {
+			snapshot.pad_script = std::string(value);
 		} else if (key == "shake") {
 			int seconds = 0;
 			const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), seconds);
