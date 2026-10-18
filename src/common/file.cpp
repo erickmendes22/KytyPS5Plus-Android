@@ -6,6 +6,7 @@
 #include "common/platform/sysFileIO.h"
 #include "common/platform/sysTimer.h"
 #include "common/stringUtils.h"
+#include "kernel/addressFold.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -250,6 +251,8 @@ uint64_t File::Tell() const {
 
 void File::Read(void* data, uint32_t size, uint32_t* bytes_read) {
 	EXIT_IF(IsInvalid());
+	// Guest buffers from the fold domain reach read() here; the kernel needs the host address.
+	data = Kernel::AddressFold::FoldPointer(data);
 
 	if (m_p->archive != nullptr) {
 		m_p->archive->Read(data, size, bytes_read);
@@ -263,6 +266,7 @@ void File::Read(void* data, uint32_t size, uint32_t* bytes_read) {
 
 void File::Write(const void* data, uint32_t size, uint32_t* bytes_written) {
 	EXIT_IF(IsInvalid());
+	data = Kernel::AddressFold::FoldPointer(data);
 
 	if (m_p->archive != nullptr) {
 		if (bytes_written != nullptr) {

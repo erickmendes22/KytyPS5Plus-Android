@@ -9,7 +9,9 @@
 #include "common/virtualMemory.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "cpu/guestCpu.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
+#include "kernel/addressFold.h"
 #include "kernel/lazyReservation.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -92,11 +94,19 @@ static bool IsGpuAddressRange(uint64_t vaddr, uint64_t size) {
 	return Graphics::GuestRange {vaddr, size}.Valid();
 }
 
+// The GPU side works on host addresses: CPU write tracking faults on them, and it reads the
+// memory through them (kernel/addressFold.h). A span straddling the fold boundary has no host
+// image and is skipped.
+static bool GpuHostSpan(uint64_t* vaddr, uint64_t size) {
+	return Kernel::AddressFold::FoldSpan(*vaddr, size, vaddr);
+}
+
 static void MapGpuRange(uint64_t vaddr, uint64_t size) {
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 	if (g_test_gpu_range != nullptr) g_test_gpu_range(true, vaddr, size);
 #endif
-	if (g_gpu_resources == nullptr || !IsGpuAddressRange(vaddr, size)) {
+	if (g_gpu_resources == nullptr || !GpuHostSpan(&vaddr, size) ||
+	    !IsGpuAddressRange(vaddr, size)) {
 		return;
 	}
 	GetGpuResources().MapMemory(vaddr, size);
@@ -106,7 +116,8 @@ static void UnmapGpuRange(uint64_t vaddr, uint64_t size) {
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 	if (g_test_gpu_range != nullptr) g_test_gpu_range(false, vaddr, size);
 #endif
-	if (g_gpu_resources == nullptr || !IsGpuAddressRange(vaddr, size)) {
+	if (g_gpu_resources == nullptr || !GpuHostSpan(&vaddr, size) ||
+	    !IsGpuAddressRange(vaddr, size)) {
 		return;
 	}
 	GetGpuResources().UnmapMemory(vaddr, size);
@@ -816,6 +827,20 @@ static void                               MemoryPoolSubtractCommitted(uint64_t l
 // Keep host mappings, physical blocks, placeholders, and virtual ranges in step.
 static std::recursive_mutex g_memory_operation_mutex;
 
+static std::atomic<bool> g_address_fold_enabled {false};
+
+} // namespace Libs::LibKernel::Memory
+
+bool Kernel::AddressFold::IsEnabled() noexcept {
+	return Libs::LibKernel::Memory::g_address_fold_enabled.load(std::memory_order_relaxed);
+}
+
+void Kernel::AddressFold::SetEnabled() noexcept {
+	Libs::LibKernel::Memory::g_address_fold_enabled.store(true, std::memory_order_relaxed);
+}
+
+namespace Libs::LibKernel::Memory {
+
 // The base address the PS5 kernel hands out for hint-less user mappings. Guest code can
 // assume mappings it did not place explicitly are at or above this (Sony's libc rejects a
 // heap below it), so hint-less searches must not fall back to the low system-managed range.
@@ -878,6 +903,7 @@ bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 }
 
 bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
+	vaddr      = Kernel::AddressFold::Fold(vaddr);
 	bool dirty = false;
 	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
 		if (!Graphics::GuestGpu::IsGpuThread()) {
@@ -927,6 +953,7 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 }
 
 bool TryReadCleanBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
+	vaddr = Kernel::AddressFold::Fold(vaddr);
 	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
 		if (!Graphics::GuestGpu::IsGpuThread() ||
 		    GetGpuResources().GetBufferCache().HasGpuDirtyBytes(vaddr, size)) {
@@ -967,6 +994,7 @@ void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
 }
 
 void InvalidateMemory(uint64_t vaddr, uint64_t size) {
+	vaddr = Kernel::AddressFold::Fold(vaddr);
 	if (size == 0) {
 		return;
 	}
@@ -3666,11 +3694,62 @@ static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size) {
 // A non-fixed reservation larger than the host user window can back (kernel/lazyReservation.h):
 // granted as bookkeeping. Above the window only addresses the host owns (the AMM window) can be
 // committed; everything else there fails like any commit outside guest memory.
+// A reservation that would reach above 2^39 from its hint is placed by the fold plan
+// (kernel/addressFold.h): its top end folds onto [kHostUserMin, plan.start), which is kept from the
+// guest as a reserved "fold-alias" range, and folding is switched on.
+static uint64_t FindFoldedReservation(uint64_t hint, uint64_t size, uint64_t alignment) {
+#if KYTY_HOST_ARM64
+	namespace Fold = Kernel::AddressFold;
+	const uint64_t from = std::max<uint64_t>(hint, Common::AddressLayout::kHostUserMin);
+	if (size > UINT64_MAX - from || from + size <= Fold::kFoldSize) {
+		return 0;
+	}
+	Fold::FoldPlan plan {};
+	if (!Fold::PlanHostFold(size, alignment, &plan) ||
+	    g_virtual_ranges->HasOverlap(plan.alias_end, plan.start + size - plan.alias_end)) {
+		return 0;
+	}
+	// The alias stays reserved once created, so a later reservation with the same plan (after the
+	// first one was released) reuses it.
+	const auto     alias_size = plan.alias_end - plan.alias_start;
+	VirtualRanges::Range alias {};
+	const bool     alias_present =
+	    g_virtual_ranges->Query(plan.alias_start, 0, &alias) && alias.start == plan.alias_start &&
+	    alias.size == alias_size && std::strncmp(alias.name, "fold-alias", sizeof(alias.name)) == 0;
+	if (!alias_present &&
+	    (g_virtual_ranges->HasOverlap(plan.alias_start, alias_size) ||
+	     !g_virtual_ranges->Add(plan.alias_start, alias_size, 0, 0, 0, VirtualRangeType::Reserved,
+	                            "fold-alias", true))) {
+		return 0;
+	}
+	if (!Fold::IsEnabled()) {
+		Fold::SetEnabled();
+		Cpu::GuestCpu::EnableAddressFold(Fold::kFoldMask);
+	}
+	LOGF_COLOR(Log::Color::Yellow,
+	           "\t folded reservation: 0x%016" PRIx64 "..0x%016" PRIx64
+	           "; its top 0x%016" PRIx64 "..0x%016" PRIx64 " is backed at 0x%016" PRIx64
+	           "..0x%016" PRIx64 ", its bottom up to 0x%016" PRIx64 "; address folding on\n",
+	           plan.start, plan.start + size, plan.start + size - (plan.alias_end - plan.alias_start),
+	           plan.start + size, plan.alias_start, plan.alias_end,
+	           Common::AddressLayout::kHostUserEnd);
+	return plan.start;
+#else
+	(void)hint;
+	(void)size;
+	(void)alignment;
+	return 0;
+#endif
+}
+
 static uint64_t FindLazyReservation(uint64_t hint, uint64_t size, uint64_t alignment) {
 	namespace Lazy        = Kernel::LazyReservation;
 	constexpr auto window = Lazy::HostWindow();
 	if (!Lazy::IsOversized(window, hint, size)) {
 		return 0;
+	}
+	if (const auto folded = FindFoldedReservation(hint, size, alignment); folded != 0) {
+		return folded;
 	}
 	const auto start = Lazy::Place(window, hint, size, alignment, [](uint64_t at, uint64_t span) {
 		VirtualRanges::Range overlap {};
