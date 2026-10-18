@@ -5351,19 +5351,24 @@ void TestGatherLodSamplerValidation() {
           Libs::Graphics::Prospero::BufferFormat::k32Float) << 20u;
       user_data[3] = Libs::Graphics::DstSel(4, 5, 6, 7) |
           (static_cast<uint32_t>(Libs::Graphics::Prospero::ImageType::kColor2D) << 28u);
-      user_data[9] = 0xfff000u;
       constexpr std::array sampler_controls{
           0u, 0x4001u, 1u << 26u, (1u << 26u) | 256u,
-          (1u << 26u) | (1u << 14u), 2u << 26u, 3u << 26u};
+          (1u << 26u) | (1u << 14u), 2u << 26u, (2u << 26u) | 256u,
+          (2u << 26u) | (1u << 14u), 0x0a500000u, 0x1a500000u, 3u << 26u};
       for (const auto control : sampler_controls) {
-        user_data[10] = control;
-        ResourceSnapshot snapshot;
-        ResourceSpecialization specialization;
-        const bool supported = !explicit_lod || (control >> 26u) == 0 ||
-                               control == (1u << 26u);
-        Check(MaterializeResources(plan, {.user_data = user_data}, snapshot,
-                                   specialization) == supported,
-              "explicit gather accepted an unsupported sampler or rejected a valid one");
+        for (const uint32_t perf_mip : {0u, 1u}) {
+          user_data[9] = 0xfff000u | (perf_mip << 24u);
+          user_data[10] = control;
+          ResourceSnapshot snapshot;
+          ResourceSpecialization specialization;
+          const auto filter = (control >> 26u) & 3u;
+          const bool supported = !explicit_lod || filter == 0 ||
+              (filter <= 2 && (control & 0xfffffu) == 0 &&
+               (filter != 2 || perf_mip == 0));
+          Check(MaterializeResources(plan, {.user_data = user_data}, snapshot,
+                                     specialization) == supported,
+                "explicit gather accepted an unsupported sampler or rejected a valid one");
+        }
       }
     }
   }
