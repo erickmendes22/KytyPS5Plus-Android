@@ -34,14 +34,6 @@ public:
 	};
 
 	static constexpr uint64_t InitialSize = 64ull * 1024 * 1024;
-#if defined(__ANDROID__)
-	// Stopgap for the crash-landing device loss on Adreno 830 / Turnip: a mid-game growth of the
-	// mesh ring (64 -> 128 MiB) was followed by VK_ERROR_DEVICE_LOST in 3/3 runs, a ring sized
-	// at startup never grew and passed 2/2. Astro Bot's largest emulated mesh draw is 97 MB.
-	static constexpr uint64_t DefaultInitialSize = 256ull * 1024 * 1024;
-#else
-	static constexpr uint64_t DefaultInitialSize = InitialSize;
-#endif
 	static constexpr uint64_t Alignment   = 256;
 
 	MeshEmulationRing(GraphicContext& graphics, CommandScheduler& scheduler,
@@ -49,7 +41,7 @@ public:
 	~MeshEmulationRing();
 	KYTY_CLASS_NO_COPY(MeshEmulationRing);
 
-	// KYTY_MESH_RING_MIB, else DefaultInitialSize.
+	// KYTY_MESH_RING_MIB, else InitialSize.
 	[[nodiscard]] static uint64_t ConfiguredInitialSize();
 	// KYTY_MESH_RING_GROW_MIB (diagnostic), else 0.
 	[[nodiscard]] static uint64_t ConfiguredForcedGrowth();
