@@ -381,6 +381,9 @@ struct ShaderDeviceFeatures {
 	// (KYTY_FIRSTLANE_SETS). A waterfall loop over a per-lane register index (readfirstlane, M0,
 	// V_MOVRELS) then compares M0 only with the few indices that lane can hold instead of every
 	// register after the base: Astro Bot's VS 7d308cde had 24 such chains of ~110 selects each.
+	// Off by default: with the round-9 defaults its pass 32d3ce28 costs 1.4 ms/frame without the
+	// knob and 1.0 with it (VS 10247 -> 7722 ir3 instructions), screenshots match, but only one
+	// device run with it completed and fps did not rise (the frame is CPU-bound).
 	bool first_lane_value_sets = false;
 	// Smallest host subgroup size of any stage (minSubgroupSize, or subgroupSize without
 	// subgroup size control); 0: unknown. A guest lane below it never wraps.
