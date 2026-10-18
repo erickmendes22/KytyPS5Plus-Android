@@ -16317,6 +16317,58 @@ void TestScalarMemoryLoadCrossesIntoVcc() {
   }
 }
 
+void TestEmptyBranchScalarReadDce() {
+  using namespace ShaderRecompiler::IR;
+  using ShaderRecompiler::CFG::TerminatorKind;
+  for (const bool reverse : {false, true}) {
+    for (uint32_t mode = 0; mode < 4; ++mode) {
+      Block entry, detour, merge;
+      const BlockList blocks{&entry, &detour, &merge};
+      entry.AddBranch(&detour);
+      entry.AddBranch(&merge);
+      detour.AddBranch(&merge);
+      entry.terminator.kind = TerminatorKind::ConditionalBranch;
+      entry.terminator.true_block = reverse ? &merge : &detour;
+      entry.terminator.false_block = reverse ? &detour : &merge;
+      entry.terminator.merge_block = &merge;
+      detour.terminator.kind = TerminatorKind::Branch;
+      detour.terminator.true_block = &merge;
+      IREmitter ir(&entry);
+      const auto address = ir.Emit(ValueOpcode::GetAddressResource,
+                                   {Value(0x1000u), Value(0u)});
+      const auto read = ir.Emit(ValueOpcode::LoadAddressU32,
+                                {address, Value(24u), Value(0u), Value(true)});
+      const auto predicate = ir.INotEqual(U32(read), U32(Value(0u)));
+      entry.condition = ir.Emit(ValueOpcode::ConditionRef, {predicate});
+      ir.Emit(ValueOpcode::Reference, {entry.condition});
+      ir.Emit(ValueOpcode::Barrier);
+      detour.AppendNewInst(ValueOpcode::ControlNop, {});
+      if (mode == 1) detour.AppendNewInst(ValueOpcode::Barrier, {});
+      if (mode == 2) {
+        auto& phi = merge.AppendNewInst(ValueOpcode::Phi, {});
+        phi.SetFlags(Type::U32);
+        phi.AddPhiOperand(&entry, Value(1u));
+        phi.AddPhiOperand(&detour, Value(2u));
+        merge.AppendNewInst(ValueOpcode::ReferenceU32, {Value(&phi)});
+      }
+      if (mode == 3) merge.AppendNewInst(ValueOpcode::ReferenceU32, {read});
+      EliminateDeadCode(blocks);
+      Check(entry.condition.IsImmediate() == (mode == 0 || mode == 3),
+            "empty branch cleanup changed side effects or a live Phi");
+      const auto contains = [&](ValueOpcode op) {
+        return std::ranges::any_of(entry, [=](const Inst& inst) {
+          return inst.GetOpcode() == op;
+        });
+      };
+      Check(contains(ValueOpcode::LoadAddressU32) == (mode != 0),
+            "empty branch cleanup lost a shared read or retained a dead read");
+      Check(contains(ValueOpcode::Barrier) && entry.ImmSuccessors().size() == 2 &&
+                merge.ImmPredecessors().size() == 2,
+            "empty branch cleanup changed earlier side effects or CFG edges");
+    }
+  }
+}
+
 void TestScalarMemoryUnusedTailDce() {
   const uint32_t shader[] = {
       EncodeSmem0(0x0c, 16, 0),
@@ -17684,6 +17736,7 @@ int main() {
   TestSrtWalkerRealSBufferTranslation();
   TestScalarMemorySourcesCapturedBeforeWrites();
   TestScalarMemoryLoadCrossesIntoVcc();
+  TestEmptyBranchScalarReadDce();
   TestScalarMemoryUnusedTailDce();
   TestResourceTrackingRealDensePatching();
   TestDirectTranslationResetsAnalysisState();
