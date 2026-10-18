@@ -195,6 +195,12 @@ constexpr uint32_t kReaderOther      = 0x1002;
 // open one wrote them).
 void RecordReadback(Wait site, uint32_t reader, uint64_t address, uint64_t bytes, uint64_t wait_ns,
                     uint64_t lag, ReadbackMode mode);
+// KYTY_FAULT_TRACE=1 (with --perf-stats): "[perf-trace]" lines naming the host frames (module +
+// offset, walked along the x29 frame-pointer chain from `fp`) behind GPU-thread readbacks and
+// faults, at most a few dozen per tag. `fp` = 0 traces the caller's own frames.
+[[nodiscard]] bool TraceEnabled();
+void TraceHostStack(const char* tag, uint64_t address, uint64_t pc, uint64_t lr, uint64_t fp);
+
 // The "[perf-readback]" line of the last period (empty when nothing was read back); resets it.
 std::string TakeReadbackSummary(double seconds, uint64_t flips);
 

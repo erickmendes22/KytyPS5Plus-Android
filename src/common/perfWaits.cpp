@@ -12,6 +12,12 @@
 #if defined(__ANDROID__)
 #include <android/log.h>
 #endif
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#endif
+#include <cinttypes>
+#include <cstdlib>
+#include <cstring>
 
 namespace Common::PerfStats {
 
@@ -159,6 +165,72 @@ void RecordReadback(Wait site, uint32_t reader, uint64_t address, uint64_t bytes
 	stats.lag_sum += lag;
 	stats.lag_max = std::max(stats.lag_max, lag);
 	stats.modes[static_cast<size_t>(mode)]++;
+}
+
+bool TraceEnabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_FAULT_TRACE");
+		return Enabled() && value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	return enabled;
+}
+
+void TraceHostStack(const char* tag, uint64_t address, uint64_t pc, uint64_t lr, uint64_t fp) {
+	if (!TraceEnabled()) {
+		return;
+	}
+	// The first 24 of each tag, then every 64th, 64 lines per tag in all.
+	static std::mutex                      mutex;
+	static std::map<std::string, uint64_t> seen;
+	{
+		std::lock_guard lock(mutex);
+		const auto      n = seen[tag]++;
+		if (!(n < 24 || (n % 64 == 0 && n < 24 + 40 * 64))) {
+			return;
+		}
+	}
+	std::string line = "[perf-trace] ";
+	line += tag;
+	char part[160];
+	std::snprintf(part, sizeof(part), " addr=0x%010" PRIx64 " pm4=0x%03x", address,
+	              CurrentPm4Opcode());
+	line += part;
+	const auto append = [&](uint64_t frame) {
+#if !defined(_WIN32)
+		if (Dl_info dl {}; frame != 0 && dladdr(reinterpret_cast<void*>(frame), &dl) != 0 &&
+		                   dl.dli_fname != nullptr) {
+			const char* base = std::strrchr(dl.dli_fname, '/');
+			std::snprintf(part, sizeof(part), " %s+0x%" PRIx64, base != nullptr ? base + 1 : dl.dli_fname,
+			              frame - reinterpret_cast<uint64_t>(dl.dli_fbase));
+			line += part;
+			return;
+		}
+#endif
+		std::snprintf(part, sizeof(part), " 0x%" PRIx64, frame);
+		line += part;
+	};
+	if (pc != 0) {
+		append(pc);
+	}
+	if (lr != 0) {
+		append(lr);
+	}
+#if defined(__aarch64__)
+	if (fp == 0) {
+		fp = reinterpret_cast<uint64_t>(__builtin_frame_address(0));
+	}
+	for (int depth = 0; depth < 12 && fp != 0 && (fp & 0xf) == 0; depth++) {
+		const auto* record = reinterpret_cast<const uint64_t*>(fp);
+		append(record[1]);
+		if (record[0] <= fp || record[0] - fp > (uint64_t {1} << 24)) {
+			break;
+		}
+		fp = record[0];
+	}
+#else
+	(void)fp;
+#endif
+	EmitLine(line);
 }
 
 std::string TakeReadbackSummary(double seconds, uint64_t flips) {

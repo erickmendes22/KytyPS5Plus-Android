@@ -16,7 +16,9 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cinttypes>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <magic_enum.hpp>
@@ -24,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <vector>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -861,16 +864,45 @@ bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 }
 
 bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
+	bool dirty = false;
 	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
 		if (!Graphics::GuestGpu::IsGpuThread()) {
 			return false;
 		}
 		auto& buffers = GetGpuResources().GetBufferCache();
 		if (buffers.HasGpuDirtyBytes(vaddr, size)) {
+			dirty = true;
+			Common::PerfStats::TraceHostStack("spec-read", vaddr, 0, 0, 0);
 			buffers.ReadMemory(vaddr, size);
 		}
 	}
-	return TryReadBacking(vaddr, data, size);
+	const bool read = TryReadBacking(vaddr, data, size);
+	if (read && dirty && Common::PerfStats::TraceEnabled()) {
+		// Values of scalar reads that needed a readback, to see which ones change between frames.
+		// Logged when the first 16 bytes differ from the previous read of the address, and every
+		// 100th read; 3000 lines at most.
+		static std::map<uint64_t, std::pair<std::array<uint32_t, 4>, uint64_t>> last;
+		static uint32_t                                                          logged = 0;
+		std::array<uint32_t, 4> head {};
+		std::memcpy(head.data(), data, std::min<uint64_t>(size, sizeof(head)));
+		auto& [previous, reads] = last[vaddr];
+		const bool changed      = reads == 0 || previous != head;
+		previous                = head;
+		const bool periodic     = reads++ % 100 == 0;
+		if ((changed || periodic) && logged++ < 3000) {
+			const auto* words = static_cast<const uint32_t*>(data);
+			char        line[192];
+			std::snprintf(line, sizeof(line),
+			              "[perf-trace] spec-val addr=0x%010" PRIx64 " size=%" PRIu64
+			              " pm4=0x%03x n=%" PRIu64 " %s v=%08x %08x %08x %08x",
+			              vaddr, size, Common::PerfStats::CurrentPm4Opcode(), reads,
+			              changed ? "changed" : "same", words[0],
+			              size >= 8 ? words[1] : 0u, size >= 12 ? words[2] : 0u,
+			              size >= 16 ? words[3] : 0u);
+			Common::PerfStats::EmitLine(line);
+		}
+	}
+	return read;
 }
 
 bool IsMappedRange(uint64_t vaddr, uint64_t size) {
@@ -915,11 +947,53 @@ void InstallGpuResources(Graphics::RenderContext* resources) noexcept {
 	g_gpu_resources = resources;
 }
 
+// KYTY_FAULT_TRACE: every 4096 handled faults, the 64 KiB blocks that took the most of them
+// ("[perf-trace] fault-blocks"), with how many distinct 4 KiB pages of each faulted.
+static void TraceFaultBlock(bool write, uint64_t vaddr) {
+	struct Block {
+		uint32_t writes = 0;
+		uint32_t reads  = 0;
+		uint32_t gpu    = 0;
+		uint16_t pages  = 0;
+	};
+	static std::mutex                mutex;
+	static std::map<uint64_t, Block> blocks;
+	static uint32_t                  total = 0;
+	std::lock_guard                  lock(mutex);
+	auto&                            block = blocks[vaddr >> 16u];
+	(write ? block.writes : block.reads)++;
+	block.gpu += Common::PerfStats::IsGpuThread() ? 1u : 0u;
+	block.pages |= static_cast<uint16_t>(1u << ((vaddr >> 12u) & 15u));
+	if (++total % 4096u != 0u) {
+		return;
+	}
+	std::vector<std::pair<uint64_t, Block>> sorted(blocks.begin(), blocks.end());
+	std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+		return a.second.writes + a.second.reads > b.second.writes + b.second.reads;
+	});
+	std::string line = "[perf-trace] fault-blocks (last 4096):";
+	for (size_t i = 0; i < std::min<size_t>(sorted.size(), 12); i++) {
+		const auto& [key, b] = sorted[i];
+		char part[96];
+		std::snprintf(part, sizeof(part), " 0x%010" PRIx64 ":w%u/r%u/gpu%u/p%d", key << 16u,
+		              b.writes, b.reads, b.gpu, std::popcount(b.pages));
+		line += part;
+	}
+	char tail[48];
+	std::snprintf(tail, sizeof(tail), " blocks=%zu", sorted.size());
+	line += tail;
+	Common::PerfStats::EmitLine(line);
+	blocks.clear();
+}
+
 bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept {
 	const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::IsGpuThread()
 	                                                    ? Common::PerfStats::Wait::GpuFault
 	                                                    : Common::PerfStats::Wait::GuestFault);
 	const bool handled = g_gpu_resources != nullptr && g_gpu_resources->HandleFault(access, fault_vaddr);
+	if (handled && Common::PerfStats::TraceEnabled()) {
+		TraceFaultBlock(access == Graphics::PageFaultAccess::Write, fault_vaddr);
+	}
 	if (handled) {
 		using Common::PerfStats::Counter;
 		Common::PerfStats::CountGpuFault();
