@@ -454,6 +454,17 @@ void BuildStageStaticKey(const ShaderVertexInputInfo& info, std::vector<uint32_t
 		key.push_back(0x1d000000u | (static_cast<uint32_t>(static_cast<uint8_t>(info.indirect.vertex_sgpr)) << 8u) |
 		              static_cast<uint8_t>(info.indirect.instance_sgpr));
 	}
+	if (info.packed_varyings.count != 0) {
+		EXIT_IF(info.packed_varyings.count > ShaderPackedVaryingRequest::MaxEntries);
+		key.push_back(0x9a000000u | info.packed_varyings.count);
+		for (uint32_t i = 0; i < info.packed_varyings.count; i++) {
+			const auto& e = info.packed_varyings.entries[i];
+			key.push_back(e.source_location | (uint32_t {e.source_component} << 8u) |
+			              (uint32_t {e.bit_offset} << 16u) | (uint32_t {e.bit_count} << 24u));
+			key.push_back(e.format | (uint32_t {e.location} << 8u) | (uint32_t {e.component} << 16u) |
+			              (uint32_t {e.flat} << 24u));
+		}
+	}
 }
 
 void BuildStageStaticKey(const ShaderPixelInputInfo& info, std::vector<uint32_t>& key) {
@@ -482,7 +493,8 @@ void BuildStageStaticKey(const ShaderPixelInputInfo& info, std::vector<uint32_t>
 	key.push_back(static_cast<uint32_t>(info.ps_early_z));
 	key.push_back(static_cast<uint32_t>(info.dual_source_blending));
 	key.push_back(static_cast<uint32_t>(info.object_primitive_id));
-	key.push_back(static_cast<uint32_t>(info.alpha_blend_source));
+	key.push_back(static_cast<uint32_t>(info.alpha_blend_source) |
+	              (static_cast<uint32_t>(info.packed_varyings_allowed) << 8u));
 	key.insert(key.end(), std::begin(info.target_output_mode), std::end(info.target_output_mode));
 	key.push_back(info.target_packed_unorm_mask | (uint32_t {info.target_round_mode} << 8u));
 	const auto mask = info.target_shader_mask;

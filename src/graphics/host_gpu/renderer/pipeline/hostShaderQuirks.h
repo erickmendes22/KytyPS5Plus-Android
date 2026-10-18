@@ -30,6 +30,10 @@ struct ShaderFastPaths {
 	bool quad_dpp             = false;
 	// ShaderDeviceFeatures::bvh_vector_loads (KYTY_BVH_VEC, default off).
 	bool bvh_vector_loads = false;
+	// ShaderDeviceFeatures::packed_varying_locations (KYTY_PACKED_INTERP; default Mesa Turnip).
+	bool packed_interp = false;
+	// ShaderDeviceFeatures::drop_carried_vertex_data (KYTY_DROP_CARRIED, default off).
+	bool drop_carried = false;
 	// ShaderDeviceFeatures::uniform_constant_buffer_bytes / uniform_buffers_per_stage
 	// (KYTY_UBO_CONSTANTS; needs robustBufferAccess2 for uniform buffers). 0: off.
 	uint32_t uniform_constant_buffer_bytes = 0;

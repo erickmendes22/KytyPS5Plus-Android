@@ -15,6 +15,7 @@
 #include "graphics/shader/recompiler/ir/passes/ReadLaneElimination.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
+#include "graphics/shader/recompiler/ir/passes/ManualInterpolation.h"
 #include "graphics/shader/recompiler/ir/passes/ShaderInfoCollection.h"
 #include "graphics/shader/recompiler/ir/passes/SsaRewrite.h"
 
@@ -908,12 +909,26 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	// can. One that needs barycentrics or per-vertex data instead gets them from a generated
 	// geometry stage (see BarycentricEmulation) when the device has one.
 	const bool native_barycentrics = options.device_features.fragment_shader_barycentric;
+	// Manual per-vertex interpolation becomes hardware interpolation of fields the vertex shader
+	// unpacks, when that is provably the same (passes/ManualInterpolation.h).
+	const bool drop_carried = options.device_features.drop_carried_vertex_data;
+	if (ir.stage == ShaderType::Pixel && !native_barycentrics &&
+	    options.device_features.packed_varying_locations != 0 &&
+	    options.input_info.pixel->packed_varyings_allowed &&
+	    IR::PixelShaderNeedsBarycentrics(ir, *options.input_info.pixel, drop_carried)) {
+		std::string reason;
+		const bool lowered = IR::LowerManualInterpolation(
+		    ir, *options.input_info.pixel, options.device_features.packed_varying_locations, drop_carried,
+		    &reason);
+		LOGF("%s manual interpolation %s: hash=0x%016" PRIx64 " %s\n", GetDumpLabel(options),
+		     lowered ? "lowered" : "kept", ir.shader_hash, reason.c_str());
+	}
 	const bool emulate_barycentrics =
 	    ir.stage == ShaderType::Pixel && !native_barycentrics &&
 	    options.device_features.geometry_varying_locations != 0 &&
-	    IR::PixelShaderNeedsBarycentrics(ir, *options.input_info.pixel);
+	    IR::PixelShaderNeedsBarycentrics(ir, *options.input_info.pixel, drop_carried);
 	if (ir.stage == ShaderType::Pixel && !native_barycentrics && !emulate_barycentrics &&
-	    IR::DropCarriedBarycentrics(ir) != 0) {
+	    IR::DropCarriedBarycentrics(ir, drop_carried) != 0) {
 		IR::EliminateDeadCode(ir.blocks);
 	}
 

@@ -146,6 +146,25 @@ struct ShaderIndirectDrawInfo {
 	int8_t instance_sgpr = -1; // absolute SGPR receiving the base instance, -1 if none
 };
 
+// Fields a vertex shader also writes, unpacked from its parameter exports, for a pixel shader
+// whose manual per-vertex interpolation became hardware interpolation (IR::PackedVarying, see
+// recompiler/ir/passes/ManualInterpolation.h). Filled per pipeline from the pixel shader.
+struct ShaderPackedVaryingRequest {
+	static constexpr uint32_t MaxEntries = 32;
+	struct Entry {
+		uint8_t source_location  = 0;
+		uint8_t source_component = 0;
+		uint8_t bit_offset       = 0;
+		uint8_t bit_count        = 32;
+		uint8_t format           = 0; // IR::PackedVaryingFormat
+		uint8_t location         = 0;
+		uint8_t component        = 0;
+		uint8_t flat             = 0; // 1: the raw dword, bit-exact, in a flat uvec4 location
+	};
+	uint32_t count = 0;
+	Entry    entries[MaxEntries] {};
+};
+
 struct ShaderVertexInputInfo {
 	static constexpr int RES_MAX = 32;
 
@@ -167,6 +186,7 @@ struct ShaderVertexInputInfo {
 	bool                    fetch_external      = false;
 	bool                    fetch_embedded      = false;
 	ShaderIndirectDrawInfo  indirect;
+	ShaderPackedVaryingRequest packed_varyings;
 };
 
 struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
@@ -222,6 +242,9 @@ struct ShaderPixelInputInfo {
 	ShaderAlphaBlendSource                         alpha_blend_source = ShaderAlphaBlendSource::None;
 	bool                                           ps_early_z                   = false;
 	bool                                           ps_execute_on_noop           = false;
+	// The previous stage is a plain vertex shader that can supply unpacked parameter fields
+	// (ShaderDeviceFeatures::packed_varying_locations).
+	bool                                           packed_varyings_allowed      = false;
 	ShaderStageRuntime                             stage;
 
 	bool HasPositionInput() const { return ps_pos_x || ps_pos_y || ps_pos_z || ps_pos_w; }
@@ -272,6 +295,16 @@ struct ShaderDeviceFeatures {
 	// ray-traced compute pass: 18940 -> 18180 instructions, 7318 -> 6915 NOPs; the gameplay gain
 	// is unmeasured and runs with it showed black streaks not yet ruled out as its doing.
 	bool bvh_vector_loads        = false;
+	// Without fragment_shader_barycentric, a pixel shader that interpolates packed parameters by
+	// hand from per-vertex reads may instead read hardware-interpolated fields that its vertex
+	// shader unpacks (KYTY_PACKED_INTERP; recompiler/ir/passes/ManualInterpolation.h). Locations
+	// [0, value) are usable between the vertex and fragment stages; 0 is off.
+	uint32_t packed_varying_locations = 0;
+	// Values a register only keeps in lanes a write skipped (the kept operand of an exec-merge
+	// select or a DPP update) are taken as dead: a raw I/J kept by a DPP update no longer needs
+	// the geometry stage, and packed-varying lowering zeroes such kept vertex data so the
+	// per-vertex reads behind it go away (KYTY_DROP_CARRIED, opt-in).
+	bool drop_carried_vertex_data = false;
 	// shaderStorageImageArrayNonUniformIndexing. Without it, GPU-selected storage images are
 	// indexed dynamically without the NonUniform decoration (shaderStorageImageArrayDynamicIndexing).
 	bool storage_image_array_non_uniform_indexing = true;
