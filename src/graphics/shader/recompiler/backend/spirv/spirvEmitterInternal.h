@@ -320,9 +320,12 @@ bool PixelParameterIsFlat(const EmitterState& state, uint32_t attr);
 
 bool PixelParameterIsCustom(const EmitterState& state, uint32_t attr);
 
-// A Mesh stage emitted as a compute shader writing vertex and index buffers (no mesh shaders).
+// A Mesh stage emitted as a compute shader writing vertex and index buffers (no mesh shaders,
+// or the pipeline chose the emulation, e.g. for a pixel shader with emulated barycentrics).
 inline bool MeshEmulated(const EmitterState& state) {
-	return state.program.stage == ShaderType::Mesh && !state.device_features.mesh_shader;
+	return state.program.stage == ShaderType::Mesh &&
+	       (!state.device_features.mesh_shader ||
+	        (state.input_info.vertex != nullptr && state.input_info.vertex->mesh.emulated));
 }
 
 // --gpu-indirect emulated mesh draw: draw parameters come from a GPU-written record
