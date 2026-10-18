@@ -1025,6 +1025,28 @@ uint32_t EmitBallot(ValueEmitContext& ctx, IR::Value predicate) {
 	return WaveSliced(ctx.state) ? EmitWaveBallot(ctx.state, ballot) : ballot;
 }
 
+// KYTY_LANE_BROADCAST: reads of one wave-uniform lane (READFIRSTLANE's first EXEC lane, READLANE's
+// SGPR or immediate lane after the wraps below) use OpGroupNonUniformBroadcast. Mesa ir3 on
+// a7xx/a8xx turns any shuffle into a rotate by (lane - invocation), a loop over the distinct
+// values; a broadcast is one movs (constant id) or an a0-indexed movs. Ids that are not
+// constants need SPIR-V 1.5 (the renderer requires Vulkan 1.3).
+static bool LaneBroadcastAvailable(const ValueEmitContext& ctx) {
+	const auto& state = ctx.state;
+	return state.device_features.constant_lane_broadcast && ctx.other_half == nullptr &&
+	       !state.subgroup_isolated && !WaveSliced(state);
+}
+
+static uint32_t EmitLaneBroadcast(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t lane,
+                                  bool constant_lane) {
+	auto& state = ctx.state;
+	state.builder.RequireCapability(spv::CapabilityGroupNonUniformBallot);
+	if (!constant_lane) state.builder.RequireVersion(0x00010500u);
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpGroupNonUniformBroadcast, TypeId(state, inst.Arg(0).GetType()),
+	                          result, ConstantU32(state, spv::ScopeSubgroup), ctx.Arg(inst, 0), lane);
+	return result;
+}
+
 uint32_t EmitReadFirstLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto ballot = ctx.Ballot(inst.Arg(1));
 	if (WaveSliced(ctx.state)) {
@@ -1032,7 +1054,29 @@ uint32_t EmitReadFirstLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 		return ctx.Shuffle(inst, 0, EmitWaveLaneToSubgroupLane(ctx.state, first));
 	}
 	const auto lane   = ctx.FirstLane(ballot);
+	if (LaneBroadcastAvailable(ctx)) return EmitLaneBroadcast(ctx, inst, lane, false);
 	return ctx.Shuffle(inst, 0, lane);
+}
+
+// KYTY_LANE_BROADCAST: the host lane an immediate V_READLANE_B32 lane reads, when it is known at
+// translation time (a constant id). The general path below wraps a wave64 lane with
+// gl_SubgroupSize - 1: a lane below every host subgroup size never wraps, a fixed subgroup size
+// folds the wrap. Pixel shaders keep the general path (their subgroups may lack the lane, see
+// MayLackLanes), as do sliced waves (the host lane depends on the invocation) and one-lane waves.
+static std::optional<uint32_t> ConstantHostLane(const EmitterState& state, IR::Value lane) {
+	if (!state.device_features.constant_lane_broadcast || !lane.IsImmediate() ||
+	    state.subgroup_isolated || WaveSliced(state) || MayLackLanes(state)) {
+		return std::nullopt;
+	}
+	auto value = lane.U32();
+	if (state.program.wave_size == 64u) {
+		if (const auto fixed = FixedSubgroupSize(state); fixed != 0) {
+			value &= fixed - 1u;
+		} else if (value >= state.device_features.subgroup_size_min) {
+			return std::nullopt;
+		}
+	}
+	return value;
 }
 
 uint32_t EmitReadLane(ValueEmitContext& ctx, const IR::Inst& inst) {
@@ -1040,6 +1084,10 @@ uint32_t EmitReadLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto  lane  = ctx.Arg(inst, 1);
 	if (ctx.other_half != nullptr) {
 		return ctx.Shuffle(inst, 0, lane);
+	}
+	if (const auto host_lane = ConstantHostLane(state, inst.Arg(1)); host_lane.has_value()) {
+		// Guest lane numbers address a constant host lane: a constant broadcast.
+		return EmitLaneBroadcast(ctx, inst, ConstantU32(state, *host_lane), true);
 	}
 	if (WaveSliced(state)) {
 		// Guest lane numbers address the caller's wave.
@@ -1065,6 +1113,8 @@ uint32_t EmitReadLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 		if (WaveSliced(state)) highest = EmitWaveLaneToSubgroupLane(state, highest);
 		lane = EmitNative<spv::OpSelect, IR::Type::U32>(state, present, lane, highest);
 	}
+	// The lane is an SGPR or immediate, wrapped and replaced by subgroup-uniform values.
+	if (LaneBroadcastAvailable(ctx)) return EmitLaneBroadcast(ctx, inst, lane, false);
 	return ctx.Shuffle(inst, 0, lane);
 }
 

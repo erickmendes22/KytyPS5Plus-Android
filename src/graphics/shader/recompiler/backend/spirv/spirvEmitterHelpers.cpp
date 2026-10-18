@@ -147,7 +147,24 @@ uint32_t EmitSubgroupLocalInvocationId(EmitterState& state) {
 	return state.lane_half == 0 ? value : EmitAddU32(state, value, ConstantU32(state, 32));
 }
 
+uint32_t FixedSubgroupSize(const EmitterState& state) {
+	const auto& features = state.device_features;
+	// Only a required subgroup size pins it: graphics stages report the device's subgroupSize
+	// (128 on Turnip) but their executables run 64-wide there.
+	if (!features.constant_lane_broadcast || state.program.stage != ShaderType::Compute) return 0;
+	// CreatePipelineInternal requires the program's wave size when it is in range.
+	const auto wave = state.program.wave_size;
+	return features.compute_required_subgroup_max != 0 &&
+	               wave >= features.compute_required_subgroup_min &&
+	               wave <= features.compute_required_subgroup_max
+	           ? wave
+	           : 0u;
+}
+
 uint32_t EmitSubgroupSize(EmitterState& state) {
+	if (const auto fixed = FixedSubgroupSize(state); fixed != 0) {
+		return ConstantU32(state, fixed);
+	}
 	if (state.subgroup_size_variable == 0) {
 		const auto variable = DefineInterfaceVariable(state, TypeU32(state), spv::StorageClassInput,
 		                                              "gl_SubgroupSize");

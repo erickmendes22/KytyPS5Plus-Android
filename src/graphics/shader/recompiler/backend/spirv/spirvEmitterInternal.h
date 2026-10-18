@@ -361,6 +361,8 @@ uint32_t OutputVariableForExport(const EmitterState& state, const IR::ExportInfo
 uint32_t ConstantU32(EmitterState& state, uint32_t value);
 
 uint32_t EmitSubgroupLocalInvocationId(EmitterState& state);
+// The stage's host subgroup size when it cannot vary and constant_lane_broadcast is on; else 0.
+uint32_t FixedSubgroupSize(const EmitterState& state);
 uint32_t EmitSubgroupSize(EmitterState& state);
 
 [[noreturn]] void ExitDescriptorBindingFailure(const EmitterState&       state,

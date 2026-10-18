@@ -48122,6 +48122,10 @@ namespace Libs::Graphics {
 // checks enabled.
 ShaderDeviceFeatures FastPathFeatures() {
   ShaderDeviceFeatures features;
+  features.constant_lane_broadcast = true;
+  features.subgroup_size_min = 64;
+  features.compute_required_subgroup_min = 64;
+  features.compute_required_subgroup_max = 128;
   features.first_lane_value_sets = true;
   return features;
 }
@@ -48166,6 +48170,40 @@ void CheckFirstLaneMoveRel() {
   g_features_override = saved;
 }
 
+// KYTY_LANE_BROADCAST: immediate V_READLANE_B32 lanes become constant broadcasts.
+void CheckConstantLaneBroadcast() {
+  const auto saved = g_features_override;
+  g_features_override = FastPathFeatures();
+  auto wave32 = VectorReadlaneSelectsTwoKeysWithinWave();
+  wave32.name = "ConstantLaneBroadcastWave32";
+  wave32.required_spirv = {"OpGroupNonUniformBroadcast %uint %uint_3 %", "OpCapability GroupNonUniformBallot"};
+  wave32.forbidden_spirv = {"OpGroupNonUniformShuffle"};
+  (void)CompileCase(wave32);
+  // A wave64 compute program runs with a required subgroup size of 64: no SubgroupSize builtin.
+  auto wave64 = VectorReadlaneSelectsTwoKeysWithinWave();
+  wave64.name = "ConstantLaneBroadcastWave64";
+  wave64.compute_info.wave_size = 64;
+  wave64.compute_info.threads_num[0] = 64;
+  wave64.required_spirv = {"OpGroupNonUniformBroadcast"};
+  wave64.forbidden_spirv = {"OpGroupNonUniformShuffle", "BuiltIn SubgroupSize"};
+  (void)CompileCase(wave64);
+  // Without size control, lanes below the smallest subgroup size still need no wrap; the
+  // builtin stays for the general path only.
+  auto features = FastPathFeatures();
+  features.compute_required_subgroup_min = features.compute_required_subgroup_max = 0;
+  g_features_override = features;
+  wave64.name = "ConstantLaneBroadcastWave64NoSizeControl";
+  (void)CompileCase(wave64);
+  // Off: the shuffle stays.
+  features.constant_lane_broadcast = false;
+  g_features_override = features;
+  wave64.name = "ConstantLaneBroadcastOff";
+  wave64.required_spirv = {"OpGroupNonUniformShuffle", "BuiltIn SubgroupSize"};
+  wave64.forbidden_spirv = {"OpGroupNonUniformBroadcast"};
+  (void)CompileCase(wave64);
+  g_features_override = saved;
+}
+
 void CompileAllCases(bool fast_paths) {
   const auto saved = g_features_override;
   const auto tests = MakeCases();
@@ -48198,6 +48236,7 @@ int main(int argc, char **argv) {
   CheckLeastRecentlyUsedCacheOrdering();
   if (argc == 2 && (std::strcmp(argv[1], "--compile-only") == 0 ||
                     std::strcmp(argv[1], "--compile-only-fast-paths") == 0)) {
+    CheckConstantLaneBroadcast();
     CheckFirstLaneMoveRel();
     CompileAllCases(std::strcmp(argv[1], "--compile-only-fast-paths") == 0);
     return 0;
