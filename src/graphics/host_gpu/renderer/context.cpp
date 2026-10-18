@@ -20,6 +20,7 @@
 #include <array>
 #include <bit>
 #include <cstring>
+#include <cstdlib>
 namespace Libs::Graphics {
 
 CommandBuffer::CommandBuffer(CommandScheduler& scheduler)
@@ -196,6 +197,30 @@ void CommandBuffer::RecordBeginRendering(const RenderState& state, bool secondar
 	Common::PerfStats::Count(Common::PerfStats::Counter::RenderPasses);
 }
 
+// KYTY_PASS_BARRIER=1 (opt-in): orders every finished render pass before everything recorded
+// after it (later passes, compute dispatches incl. emulated mesh stages and indirect fix-ups,
+// copies), like the fenced pass breadcrumbs of round 5 without the fill. Not proven to cure the
+// crash-landing device loss: the narrower graphics -> compute variant still lost it (r6_c2_fix),
+// and the one run of this form was cut by the thermal guard.
+void CommandBuffer::OrderPassBeforeLaterWork() const {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_PASS_BARRIER");
+		return value != nullptr && value[0] != '\0' && value[0] != '0';
+	}();
+	if (!enabled) {
+		return;
+	}
+	vk::MemoryBarrier barrier {};
+	barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite |
+	                        vk::AccessFlagBits::eColorAttachmentWrite |
+	                        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+	barrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+	Handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllGraphics,
+	                         vk::PipelineStageFlagBits::eAllCommands, {}, 1, &barrier, 0, nullptr,
+	                         0, nullptr);
+	Common::PerfStats::Count(Common::PerfStats::Counter::GraphicsComputeBarriers);
+}
+
 void CommandBuffer::EndRendering(PassEnd reason) const {
 	if (!m_rendering) {
 		return;
@@ -230,6 +255,7 @@ void CommandBuffer::EndRendering(PassEnd reason) const {
 	m_pass_indices = 0;
 	m_rendering    = false;
 	m_render_state = {};
+	OrderPassBeforeLaterWork();
 }
 
 } // namespace Libs::Graphics

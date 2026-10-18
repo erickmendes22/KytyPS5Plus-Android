@@ -178,6 +178,7 @@ private:
 
 	void BeginPassBuffer(const RenderState& state) const;
 	void RecordBeginRendering(const RenderState& state, bool secondary) const;
+	void OrderPassBeforeLaterWork() const;
 	[[nodiscard]] bool DefersRenderPasses() const;
 
 	RenderContext&      m_context;

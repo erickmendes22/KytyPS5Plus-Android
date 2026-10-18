@@ -84,6 +84,7 @@ enum class Counter : uint8_t {
 	PassEndSubmit,      // command buffer submitted
 	PassEndOther,
 	HoistedBarriers,    // image barriers recorded ahead of the open render pass instead of ending it
+	GraphicsComputeBarriers, // render passes ordered before all later work (KYTY_PASS_BARRIER)
 	PassEndAttachSame,  // ...of PassEndAttach: same attachment images, only their layout changed
 	RenderScaleUpBlits,   // --render-scale: images blitted from guest size to the scaled size
 	RenderScaleDownBlits, // --render-scale: images blitted back to guest size
