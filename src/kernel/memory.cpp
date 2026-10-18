@@ -913,6 +913,16 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return read;
 }
 
+bool TryReadCleanBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
+	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
+		if (!Graphics::GuestGpu::IsGpuThread() ||
+		    GetGpuResources().GetBufferCache().HasGpuDirtyBytes(vaddr, size)) {
+			return false;
+		}
+	}
+	return TryReadBacking(vaddr, data, size);
+}
+
 bool IsMappedRange(uint64_t vaddr, uint64_t size) {
 	return g_virtual_ranges != nullptr && size != 0 &&
 	       g_virtual_ranges->ClampRangeSize(vaddr, size) == size;

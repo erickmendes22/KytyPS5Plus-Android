@@ -142,6 +142,12 @@ bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) 
 	       Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes());
 }
 
+// Branch conditions of the SRT walk (SrtRuntime::read_branch_memory): never waits for the GPU.
+bool ReadShaderGuestMemoryNoSync(void*, uint64_t address, std::span<uint32_t> values) {
+	return !values.empty() && Libs::LibKernel::Memory::TryReadCleanBufferBacking(
+	                              address, values.data(), values.size_bytes());
+}
+
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
                      const std::vector<uint32_t>& spirv) {
 	if (!Config::GraphicsDebugDumpEnabled()) {
@@ -620,6 +626,7 @@ struct PipelineCache::ProgramCache {
 		    .shader_base                = params.Base(),
 		    .read_specialization_memory = ReadShaderGuestMemory,
 		    .mapped                     = Libs::LibKernel::Memory::IsMappedRange,
+		    .read_branch_memory         = ReadShaderGuestMemoryNoSync,
 		};
 		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
 			runtime.workgroup_counts = input_info.workgroup_counts;

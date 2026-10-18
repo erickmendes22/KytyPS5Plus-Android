@@ -41,6 +41,10 @@ struct SrtRuntime {
 	// a scalar address there can be unmapped (e.g. a null pointer the guest never follows).
 	// Such a read yields zero instead of a host fault, as an AMD GPU's unmapped-page read does.
 	SrtAddressProbe           mapped                     = nullptr;
+	// Optional. Reads for block (branch) conditions only: fails instead of waiting for GPU-written
+	// memory. Such a condition stays unknown and both successors count as reachable, which is
+	// safe because the shader still branches at run time; it only widens the collected resources.
+	SrtMemoryReader           read_branch_memory         = nullptr;
 	uint64_t                  indirect_args_address = 0;
 };
 
@@ -55,6 +59,7 @@ public:
 private:
 	static bool ReadStrict(void* userdata, uint64_t address, std::span<uint32_t> values);
 	static bool ReadOrdinary(void* userdata, uint64_t address, std::span<uint32_t> values);
+	static bool ReadBranch(void* userdata, uint64_t address, std::span<uint32_t> values);
 
 	SrtRuntime                                  m_source;
 	std::vector<std::pair<uint64_t, uint64_t>>& m_ranges;
@@ -77,6 +82,8 @@ bool ValidateWaveUniformValue(const ResourcePlan& program, Value value);
 void CompileSrtWalker(ResourcePlan& program);
 // Uses the strict reader for values that affect shader specialization.
 SrtRuntime CleanRuntime(SrtRuntime runtime);
+// Reads every value through read_branch_memory (requires it).
+SrtRuntime BranchRuntime(SrtRuntime runtime);
 
 // Nonnegative affine coefficients: element zero is constant, remaining elements are
 // caller-selected leaves. Runtime range proofs must additionally exclude U32 wrap.

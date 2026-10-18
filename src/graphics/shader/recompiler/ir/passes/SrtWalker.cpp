@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -39,12 +40,22 @@ SrtRuntime SrtReadCapture::ObservedRuntime() {
 	runtime.read_specialization_memory = m_source.read_specialization_memory != nullptr
 	                                         ? ReadStrict : nullptr;
 	runtime.read_memory = ReadOrdinary;
+	runtime.read_branch_memory = m_source.read_branch_memory != nullptr ? ReadBranch : nullptr;
 	return runtime;
 }
 
 bool SrtReadCapture::ReadStrict(void* userdata, uint64_t address, std::span<uint32_t> values) {
 	auto& capture = *static_cast<SrtReadCapture*>(userdata);
 	if (!capture.m_source.read_specialization_memory(capture.m_source.userdata, address, values)) {
+		return false;
+	}
+	capture.m_ranges.emplace_back(address, values.size_bytes());
+	return true;
+}
+
+bool SrtReadCapture::ReadBranch(void* userdata, uint64_t address, std::span<uint32_t> values) {
+	auto& capture = *static_cast<SrtReadCapture*>(userdata);
+	if (!capture.m_source.read_branch_memory(capture.m_source.userdata, address, values)) {
 		return false;
 	}
 	capture.m_ranges.emplace_back(address, values.size_bytes());
@@ -74,6 +85,13 @@ SrtRuntime CleanRuntime(SrtRuntime runtime) {
 	runtime.read_memory = runtime.read_specialization_memory != nullptr
 	                          ? runtime.read_specialization_memory
 	                          : +[](void*, uint64_t, std::span<uint32_t>) { return false; };
+	return runtime;
+}
+
+SrtRuntime BranchRuntime(SrtRuntime runtime) {
+	EXIT_IF(runtime.read_branch_memory == nullptr);
+	runtime.read_memory                = runtime.read_branch_memory;
+	runtime.read_specialization_memory = runtime.read_branch_memory;
 	return runtime;
 }
 
@@ -1310,6 +1328,19 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		m_clean_evaluator->ResetUnknowns();
 		m_clean_evaluator->m_reachable_blocks = &visited;
 	}
+	// Block conditions get their own walker (and memo context) that never waits for the GPU:
+	// a uniform branch on a GPU-written count (Astro Bot's indirect computes) otherwise submits
+	// the open command buffer and waits for it on every dispatch. A condition it cannot read
+	// stays unknown here only; the descriptor evaluation below still reads the same values
+	// through the strict reader.
+	std::optional<SrtWalker> branch;
+	if (m_runtime.read_branch_memory != nullptr) {
+		branch.emplace(m_program, BranchRuntime(m_runtime));
+		branch->m_reachable_blocks = &visited;
+	}
+	auto& predicate = branch.has_value()          ? *branch
+	                  : m_clean_evaluator != nullptr ? *m_clean_evaluator
+	                                               : *this;
 	for (;;) {
 		reachable.assign(m_program.control_flow.size(), 0u);
 		pending.clear();
@@ -1321,7 +1352,6 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 			reachable[index] = 1u;
 			const auto& block = m_program.control_flow[index];
 			uint32_t condition = 0;
-			auto& predicate = m_clean_evaluator != nullptr ? *m_clean_evaluator : *this;
 			const ScopedSpecializationSite site("branch");
 			if (!block.condition.IsEmpty() &&
 			    (m_runtime.read_specialization_memory != nullptr || !m_program.capture_specialization_reads) &&
@@ -1338,6 +1368,7 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		// true as their possible predecessors shrink. Keep uniform-read memos stable.
 		ResetUnknowns();
 		if (m_clean_evaluator != nullptr) m_clean_evaluator->ResetUnknowns();
+		if (branch.has_value()) branch->ResetUnknowns();
 	}
 	flat.assign(m_program.srt_reads.size(), 0u);
 	active.assign(m_program.descriptor_sources.size(), 1u);

@@ -119,6 +119,8 @@ bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size)
 // True when [vaddr, vaddr + size) lies in committed guest mappings.
 [[nodiscard]] bool     IsMappedRange(uint64_t vaddr, uint64_t size);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
+// Like TryReadBufferBacking, but fails instead of reading back GPU-written bytes (no GPU wait).
+bool                   TryReadCleanBufferBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   CopySparseMemory(uint64_t vaddr, void* data, uint64_t size);
 [[nodiscard]] uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size);
