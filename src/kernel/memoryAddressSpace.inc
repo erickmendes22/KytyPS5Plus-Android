@@ -957,6 +957,25 @@ public:
 		return FindContaining(vaddr, size) != m_free.end();
 	}
 
+	// Releasing a reservation changes nothing on the host, but the parts the host owns must still be
+	// free placeholders. Parts outside every owned region (the unbacked top of a lazy reservation,
+	// see kernel/lazyReservation.h) have nothing to release.
+	bool ReservedSpanReleasable(uint64_t vaddr, uint64_t size) {
+		if (vaddr == 0 || size == 0 || UINT64_MAX - vaddr < size) {
+			return false;
+		}
+		std::lock_guard lock(m_mutex);
+		const auto end = vaddr + size;
+		for (const auto& [owned_start, owned_size]: m_owned) {
+			const auto low  = std::max(vaddr, owned_start);
+			const auto high = std::min(end, owned_start + owned_size);
+			if (low < high && FindContaining(low, high - low) == m_free.end()) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	bool Commit(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
 		std::lock_guard lock(m_mutex);
 		if (!ConsumeUnlocked(vaddr, size)) {

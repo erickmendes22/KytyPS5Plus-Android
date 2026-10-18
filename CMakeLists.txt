@@ -518,6 +518,11 @@ add_executable(address_layout_tests EXCLUDE_FROM_ALL
 )
 target_include_directories(address_layout_tests PRIVATE ${inc_headers})
 
+add_executable(lazy_reservation_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/LazyReservationTests.cpp"
+)
+target_include_directories(lazy_reservation_tests PRIVATE ${inc_headers})
+
 add_executable(lru_cache_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/LruCacheTests.cpp"
 )
@@ -770,6 +775,7 @@ if(BUILD_TESTING)
 	add_test(NAME bit_array COMMAND $<TARGET_FILE:bit_array_tests>)
 	add_test(NAME shader_check COMMAND $<TARGET_FILE:shader_check_tests>)
 	add_test(NAME address_layout COMMAND $<TARGET_FILE:address_layout_tests>)
+	add_test(NAME lazy_reservation COMMAND $<TARGET_FILE:lazy_reservation_tests>)
 	add_test(NAME lru_cache COMMAND $<TARGET_FILE:lru_cache_tests>)
 	add_test(NAME shader_worker_pool COMMAND $<TARGET_FILE:shader_worker_pool_tests>)
 	add_test(NAME guest_abi COMMAND $<TARGET_FILE:guest_abi_tests>)
@@ -868,6 +874,7 @@ if(BUILD_TESTING)
 		shader_recompiler_compute_tests
 		virtual_memory_allocation_tests
 		address_layout_tests
+		lazy_reservation_tests
 		audio_out2_port_tests
 		audio_out_timing_tests
 		ngs2_sampler_tests

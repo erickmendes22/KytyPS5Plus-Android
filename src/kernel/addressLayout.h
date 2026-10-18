@@ -58,6 +58,12 @@ inline constexpr uint64_t kHostUserEnd           = 0xfc00000000ull;
 #endif
 inline constexpr uint64_t kHostUserMax = kHostUserEnd - 1;
 
+// End (exclusive) of the user address range the PS5 kernel hands out to games. Guest
+// reservations may extend up to here even where the host cannot back the addresses: on ARM64 the
+// user window ends at kHostUserEnd, so the part of a reservation above it is bookkeeping only and
+// commits there fail (see kernel/lazyReservation.h). On x86 hosts both ends coincide.
+inline constexpr uint64_t kGuestUserEnd = 0xfc00000000ull;
+
 // ---- Guest extended memory (AMM) ----------------------------------------------------------------
 
 #if KYTY_HOST_ARM64
@@ -138,6 +144,7 @@ inline constexpr uint64_t kAsanShadowOffset = 0x10000000000ull;
 static_assert(kHostSystemManagedMin < kHostSystemManagedMax);
 static_assert(kHostSystemReservedMax < kHostUserMin);
 static_assert(kHostUserMin < kHostUserEnd);
+static_assert(kHostUserEnd <= kGuestUserEnd, "the host user window must lie inside guest user VA");
 static_assert(kHostUserEnd <= kExtendedMemoryBase, "user window must not overlap extended memory");
 static_assert(kExtendedMemoryEnd <= kTrackerAddressSize,
               "extended memory must lie inside the GPU page tracker window");

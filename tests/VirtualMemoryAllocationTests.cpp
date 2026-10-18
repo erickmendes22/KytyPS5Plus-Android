@@ -5,6 +5,7 @@
 #include "common/subsystems.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
+#include "kernel/addressLayout.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
@@ -1698,6 +1699,72 @@ void TestDirectPartialProtectUnmapPreservesNeighbors() {
 	        "KernelReleaseDirectMemory");
 	ExpectUnmapped(test, base);
 	ExpectUnmapped(test, base + SceKernelPageSize * 2);
+
+	std::printf("[host]    %-48s ok\n", test);
+}
+
+// Unreal Engine 5 reserves 512 GiB at 0x1000000000 (flags 0, 2 MiB alignment). On ARM64 the host
+// user window is smaller than that, so the reservation is granted as bookkeeping: the backed low
+// part can be committed, the unbacked top cannot, and the whole range can still be released.
+void TestOversizedReservationIsLazy() {
+	using namespace Libs::LibKernel::Memory;
+	using namespace Common::AddressLayout;
+	const char*        test      = "OversizedReservationIsLazy";
+	constexpr uint64_t page      = SceKernelPageSize;
+	constexpr uint64_t alignment = 0x200000;
+	constexpr uint64_t size      = 512ull << 30u;
+	void*              base_ptr  = reinterpret_cast<void*>(0x1000000000ull);
+	const int          reserved  = KernelReserveVirtualRange(&base_ptr, size, 0, alignment);
+	if (kHostUserEnd - kHostUserMin >= size) {
+		// x86 hosts back the whole range; the ordinary path must handle it.
+		CheckOk(test, reserved, "KernelReserveVirtualRange(512 GiB)");
+		CheckOk(test, KernelMunmap(reinterpret_cast<uint64_t>(base_ptr), size), "KernelMunmap");
+		std::printf("[host]    %-48s ok (fully backed host)\n", test);
+		return;
+	}
+	CheckOk(test, reserved, "KernelReserveVirtualRange(512 GiB)");
+	const auto base = reinterpret_cast<uint64_t>(base_ptr);
+	Check(test, base >= kHostUserMin && base < kHostUserEnd && base % alignment == 0,
+	      "lazy reservation starts outside the host user window");
+	Check(test, size <= kGuestUserEnd - base, "lazy reservation ends above guest user VA");
+
+	int64_t physical = 0;
+	CheckOk(test,
+	        KernelAllocateDirectMemory(0, KernelGetDirectMemorySize(), page, page, SceKernelMtypeC,
+	                                   &physical),
+	        "KernelAllocateDirectMemory");
+	void* low = base_ptr;
+	CheckOk(test,
+	        KernelMapNamedDirectMemory(&low, page, SceKernelProtCpuRw, SceKernelMapFixed, physical,
+	                                   page, "lazy_low"),
+	        "KernelMapNamedDirectMemory(backed part)");
+	*static_cast<volatile uint32_t*>(low) = 0x5a5a5a5au;
+	Check(test, *static_cast<volatile uint32_t*>(low) == 0x5a5a5a5au, "backed page not writable");
+
+	// The top page lies above every host-owned window (0x8FFFFFC000 on the ARM64 layout).
+	void* high = reinterpret_cast<void*>(base + size - page);
+	CheckFailed(test,
+	            KernelMapNamedDirectMemory(&high, page, SceKernelProtCpuRw, SceKernelMapFixed,
+	                                       physical, page, "lazy_high"),
+	            "KernelMapNamedDirectMemory(unbacked part)");
+
+	// Another hint-less reservation must not land inside the lazy one.
+	void* other = nullptr;
+	CheckOk(test, KernelReserveVirtualRange(&other, page, 0, page), "KernelReserveVirtualRange(page)");
+	const auto other_addr = reinterpret_cast<uint64_t>(other);
+	Check(test, other_addr + page <= base || other_addr >= base + size,
+	      "a later reservation overlaps the lazy reservation");
+	CheckOk(test, KernelMunmap(other_addr, page), "KernelMunmap(page)");
+
+	CheckOk(test, KernelMunmap(base, size), "KernelMunmap(whole lazy reservation)");
+	ExpectUnmapped(test, base);
+	CheckOk(test, KernelReleaseDirectMemory(physical, page), "KernelReleaseDirectMemory");
+
+	void* again = reinterpret_cast<void*>(base);
+	CheckOk(test, KernelReserveVirtualRange(&again, size, 0, alignment),
+	        "KernelReserveVirtualRange(again after release)");
+	Check(test, reinterpret_cast<uint64_t>(again) == base, "released lazy range not reusable");
+	CheckOk(test, KernelMunmap(base, size), "KernelMunmap(again)");
 
 	std::printf("[host]    %-48s ok\n", test);
 }
@@ -4859,6 +4926,7 @@ int main(int argc, char** argv) {
 		RunTest(TestReserveMapFixedAndNoOverwrite);
 		RunTest(TestFixedNoOverwriteRejectsReservedRange);
 		RunTest(TestFixedArenaChurnKeepsRangesExact);
+		RunTest(TestOversizedReservationIsLazy);
 		RunTest(TestDirectMapQueryOffsetAndPartialMunmap);
 		RunTest(TestDirectPartialProtectUnmapPreservesNeighbors);
 #if defined(__linux__)
@@ -4957,6 +5025,7 @@ int main(int argc, char** argv) {
 	RunTest(TestDirectMapQueryOffsetAndPartialMunmap);
 	RunTest(TestDirectPartialProtectUnmapPreservesNeighbors);
 	RunTest(TestFixedArenaChurnKeepsRangesExact);
+	RunTest(TestOversizedReservationIsLazy);
 #if defined(__linux__)
 	RunTest(TestPartialUnmapPreservesHostPermissions);
 #endif
