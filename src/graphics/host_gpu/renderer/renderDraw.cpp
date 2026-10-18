@@ -1575,8 +1575,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		RecordBindings(vk_buffer, vk::PipelineBindPoint::eGraphics, pipeline);
 		vk_buffer.bindIndexBuffer(emulated_mesh.index_buffer, emulated_mesh.index_offset,
 		                          vk::IndexType::eUint32);
-		const uint32_t vertex_data[] {static_cast<uint32_t>(emulated_mesh.vertex_address),
-		                              static_cast<uint32_t>(emulated_mesh.vertex_address >> 32u)};
+		// MeshVertexPullData: record address, record count, out-of-range counter address.
+		const uint32_t vertex_data[] {
+		    static_cast<uint32_t>(emulated_mesh.vertex_address),
+		    static_cast<uint32_t>(emulated_mesh.vertex_address >> 32u), emulated_mesh.vertex_count,
+		    static_cast<uint32_t>(emulated_mesh.out_of_range_counter),
+		    static_cast<uint32_t>(emulated_mesh.out_of_range_counter >> 32u)};
+		static_assert(sizeof(vertex_data) <=
+		              ShaderRecompiler::IR::PushData::MeshEmulationDrawDwordCount * sizeof(uint32_t));
 		vk_buffer.pushConstants(pipeline.pipeline_layout, pipeline.push_constant_stages, 0,
 		                        sizeof(vertex_data), vertex_data);
 	} else {

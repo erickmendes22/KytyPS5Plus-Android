@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
+#include <chrono>
 #include <cstdlib>
+#include <cstring>
 
 namespace Libs::Graphics {
 
@@ -53,15 +55,65 @@ uint64_t MeshEmulationRing::ConfiguredInitialSize() {
 	return mib << 20u;
 }
 
+// KYTY_MESH_RING_GROW_MIB=<n> (diagnostic): grow the ring to n MiB at the first reservation of
+// at least kLoggedReservationSize, i.e. when the scene's large mesh draws appear.
+uint64_t MeshEmulationRing::ConfiguredForcedGrowth() {
+	const char* value = std::getenv("KYTY_MESH_RING_GROW_MIB");
+	if (value == nullptr || *value == '\0') {
+		return 0;
+	}
+	char*      end = nullptr;
+	const auto mib = std::strtoull(value, &end, 10);
+	if (end == nullptr || *end != '\0' || mib < 16 || mib > 2048) {
+		LOGF("KYTY_MESH_RING_GROW_MIB=%s ignored (16..2048)\n", value);
+		return 0;
+	}
+	return mib << 20u;
+}
+
 MeshEmulationRing::MeshEmulationRing(GraphicContext& graphics, CommandScheduler& scheduler,
                                      uint64_t size, const char* name)
     : m_graphics(graphics), m_scheduler(scheduler), m_name(name),
       m_buffer(CreateRingBuffer(graphics, scheduler, size, name)) {
 	LOGF("%s: ring buffer %" PRIu64 " KiB at 0x%016" PRIx64 "\n", name, size >> 10u,
 	     m_buffer->BufferDeviceAddress());
+	m_buffer->LogAllocation(name);
 }
 
 MeshEmulationRing::~MeshEmulationRing() = default;
+
+vk::DeviceAddress MeshEmulationRing::OutOfRangeCounterAddress() {
+	if (!m_out_of_range) {
+		m_out_of_range = std::make_unique<Buffer>(
+		    m_graphics, m_scheduler, MemoryUsage::Download, 0,
+		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+		    256);
+		EXIT_IF(m_out_of_range->Mapped().size() < sizeof(uint32_t));
+		std::memset(m_out_of_range->Mapped().data(), 0, sizeof(uint32_t));
+		m_out_of_range->Flush(0, sizeof(uint32_t));
+	}
+	return m_out_of_range->BufferDeviceAddress();
+}
+
+void MeshEmulationRing::PollOutOfRangeCounter(bool force) {
+	if (!m_out_of_range) {
+		return;
+	}
+	const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                        std::chrono::steady_clock::now().time_since_epoch())
+	                        .count();
+	if (!force && now_ms - m_out_of_range_polled_ms < 1000) {
+		return;
+	}
+	m_out_of_range_polled_ms = now_ms;
+	m_out_of_range->Invalidate(0, sizeof(uint32_t));
+	uint32_t count = 0;
+	std::memcpy(&count, m_out_of_range->Mapped().data(), sizeof(count));
+	if (count != m_out_of_range_logged || force) {
+		LOGF("%s: %u out-of-range vertex indices so far (clamped to record 0)\n", m_name, count);
+		m_out_of_range_logged = count;
+	}
+}
 
 void MeshEmulationRing::DescribeFaultAddresses(std::span<const uint64_t> addresses) const {
 	const auto describe = [&](const char* state, const Buffer& buffer, uint64_t tick) {
@@ -107,7 +159,9 @@ void MeshEmulationRing::Grow(uint64_t size, const char* reason) {
 	     m_name, Capacity() >> 20u, capacity >> 20u, size, reason);
 	m_retired.emplace_back(std::move(m_buffer), m_scheduler.CurrentTick());
 	m_buffer = CreateRingBuffer(m_graphics, m_scheduler, capacity, m_name);
-	LOGF("%s: new buffer at 0x%016" PRIx64 "\n", m_name, m_buffer->BufferDeviceAddress());
+	LOGF("%s: new buffer at 0x%016" PRIx64 " (old retired at tick %" PRIu64 ")\n", m_name,
+	     m_buffer->BufferDeviceAddress(), m_retired.back().second);
+	m_buffer->LogAllocation(m_name);
 	m_offset = 0;
 	m_ranges.clear();
 }
@@ -116,6 +170,12 @@ MeshEmulationRing::Reservation MeshEmulationRing::Reserve(uint64_t size) {
 	EXIT_IF(size == 0);
 	ReleaseRetired();
 	size = Common::AlignUp(size, Alignment);
+	if (m_forced_growth != 0 && size >= kLoggedReservationSize) {
+		if (m_forced_growth > Capacity()) {
+			Grow(m_forced_growth, "forced by KYTY_MESH_RING_GROW_MIB");
+		}
+		m_forced_growth = 0;
+	}
 	if (size > Capacity()) {
 		Grow(size, "for a larger draw");
 	}

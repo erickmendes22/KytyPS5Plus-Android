@@ -37,6 +37,7 @@ public:
 		float_type = builder.Type(spv::OpTypeFloat, 32u);
 		vec4_type  = builder.Type(spv::OpTypeVector, float_type, 4u);
 		uvec2_type = builder.Type(spv::OpTypeVector, uint_type, 2u);
+		bool_type  = builder.Type(spv::OpTypeBool);
 	}
 
 	std::vector<uint32_t> Emit() {
@@ -73,13 +74,17 @@ private:
 		vertex_index = Interface(spv::StorageClassInput, int_type, "gl_VertexIndex");
 		BuiltIn(vertex_index, spv::BuiltInVertexIndex);
 
-		// Push data dwords 0..1 hold the vertex record buffer address.
+		// Push data dwords 0..1 hold the vertex record buffer address, dword 2 the record count
+		// and dwords 3..4 the address of a counter of out-of-range vertex indices (0: none).
 		const auto push_type = builder.DecoratedType(
 		    spv::OpTypeStruct,
 		    {{spv::OpMemberDecorate, {0, spv::DecorationOffset, 0}},
 		     {spv::OpMemberDecorate, {1, spv::DecorationOffset, 4}},
+		     {spv::OpMemberDecorate, {2, spv::DecorationOffset, 8}},
+		     {spv::OpMemberDecorate, {3, spv::DecorationOffset, 12}},
+		     {spv::OpMemberDecorate, {4, spv::DecorationOffset, 16}},
 		     {spv::OpDecorate, {spv::DecorationBlock}}},
-		    uint_type, uint_type);
+		    uint_type, uint_type, uint_type, uint_type, uint_type);
 		builder.AddName(push_type, "MeshVertexPullData");
 		push_data = builder.DefineGlobalVariable(Pointer(spv::StorageClassPushConstant, push_type),
 		                                         spv::StorageClassPushConstant);
@@ -141,16 +146,39 @@ private:
 		}
 	}
 
+	uint32_t PushWord(uint32_t dword) {
+		return Load(uint_type, Access(Pointer(spv::StorageClassPushConstant, uint_type), push_data,
+		                              Int(dword)));
+	}
+
+	uint32_t PushAddress(uint32_t dword) {
+		return Result(spv::OpBitcast, u64_type,
+		              Result(spv::OpCompositeConstruct, uvec2_type, PushWord(dword),
+		                     PushWord(dword + 1u)));
+	}
+
+	// A vertex index past the records the compute stage wrote (stale or corrupt index data)
+	// reads record 0 instead of memory outside the ring range, and is counted.
 	void LoadRecordBase() {
-		const auto low  = Load(uint_type, Access(Pointer(spv::StorageClassPushConstant, uint_type),
-		                                         push_data, Int(0)));
-		const auto high = Load(uint_type, Access(Pointer(spv::StorageClassPushConstant, uint_type),
-		                                         push_data, Int(1)));
-		const auto address = Result(spv::OpBitcast, u64_type,
-		                            Result(spv::OpCompositeConstruct, uvec2_type, low, high));
-		records     = Result(spv::OpConvertUToPtr, records_pointer_type, address);
+		records          = Result(spv::OpConvertUToPtr, records_pointer_type, PushAddress(0));
 		const auto index = Result(spv::OpBitcast, uint_type, Load(int_type, vertex_index));
-		record_base = Result(spv::OpIMul, uint_type, index, Uint(layout.stride_dwords));
+		const auto bad   = Result(spv::OpUGreaterThanEqual, bool_type, index, PushWord(2));
+		const auto counter_address = PushAddress(3);
+		const auto count_it = Result(spv::OpLogicalAnd, bool_type, bad,
+		                             Result(spv::OpINotEqual, bool_type, counter_address,
+		                                    builder.Constant(spv::OpConstant, u64_type, 0u, 0u)));
+		const auto then_label  = builder.AllocateId();
+		const auto merge_label = builder.AllocateId();
+		builder.AddFunction(spv::OpSelectionMerge, merge_label, spv::SelectionControlMaskNone);
+		builder.AddFunction(spv::OpBranchConditional, count_it, then_label, merge_label);
+		builder.AddFunction(spv::OpLabel, then_label);
+		const auto counter = Result(spv::OpConvertUToPtr, word_pointer_type, counter_address);
+		Result(spv::OpAtomicIIncrement, uint_type, counter, Uint(spv::ScopeDevice),
+		       Uint(spv::MemorySemanticsMaskNone));
+		builder.AddFunction(spv::OpBranch, merge_label);
+		builder.AddFunction(spv::OpLabel, merge_label);
+		const auto safe = Result(spv::OpSelect, uint_type, bad, Uint(0), index);
+		record_base     = Result(spv::OpIMul, uint_type, safe, Uint(layout.stride_dwords));
 	}
 
 	uint32_t LoadWord(uint32_t offset) {
@@ -249,6 +277,7 @@ private:
 	uint32_t float_type           = 0;
 	uint32_t vec4_type            = 0;
 	uint32_t uvec2_type           = 0;
+	uint32_t bool_type            = 0;
 	uint32_t records_pointer_type = 0;
 	uint32_t word_pointer_type    = 0;
 	uint32_t vertex_index         = 0;
