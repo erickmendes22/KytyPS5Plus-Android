@@ -14,6 +14,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.kytyps5.android.GameEntry
+import com.kytyps5.android.GameLibrary
 
 /**
  * Cover-grid cells (icon0.png + title + title id), the layout of Vita3K's AppsListScreen and RPCSX's
@@ -47,7 +48,7 @@ class GameGridAdapter(
         val holder = view.tag as Holder
         val game = games[position]
         holder.title.text = game.title
-        holder.subtitle.text = game.titleId ?: if (game.folder.isFile) "ZArchive" else ""
+        holder.subtitle.text = game.titleId ?: if (game.folder.isFile) GameLibrary.imageLabel(game.folder) else ""
         holder.placeholder.text = initials(game.title)
         holder.placeholder.visibility = View.GONE
         covers.load(game.icon, holder.cover) { holder.placeholder.visibility = View.VISIBLE }

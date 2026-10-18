@@ -77,6 +77,27 @@ class GameLibraryTest {
     }
 
     @Test
+    fun scanListsExfatImagesAlongsideZArchivesByFileName() {
+        makeGame("CUSA00001", """{"titleName":"Middle"}""")
+        File(root, "Beta Game.exfat").writeText("exfat")
+        File(root, "ALPHA.EXFAT").writeText("exfat")
+        File(root, "Gamma.zar").writeText("zar")
+        File(root, "raw-disk.img").writeText("img") // only *.exfat is listed; .img is opened by path
+
+        val result = GameLibrary.scan(root) as ScanResult.Found
+
+        assertEquals(listOf("ALPHA", "Beta Game", "Gamma", "Middle"), result.games.map { it.title })
+        assertEquals(File(root, "Beta Game.exfat").absolutePath, result.games[1].path)
+    }
+
+    @Test
+    fun imageLabelNamesEachImageFormat() {
+        assertEquals("ZArchive", GameLibrary.imageLabel(File("a.zar")))
+        assertEquals("exFAT image", GameLibrary.imageLabel(File("a.EXFAT")))
+        assertEquals("", GameLibrary.imageLabel(File("a.img")))
+    }
+
+    @Test
     fun scanFindsNestedDumpsAndTreatsAGameRootAsOneGame() {
         val outer = File(root, "PPSA21567 ASTRO BOT (01.019.000)")
         File(outer, "PPSA21567 ASTRO BOT (01.019.000)/sce_sys").mkdirs()

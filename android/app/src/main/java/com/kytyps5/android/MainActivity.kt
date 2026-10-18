@@ -284,7 +284,7 @@ class MainActivity : Activity() {
             is ScanResult.Failure -> showMessage(result.message)
             is ScanResult.Found -> when {
                 result.games.isEmpty() ->
-                    showMessage("No games found here. Choose a folder containing game dumps (a folder with sce_sys/param.json, or a .zar file).")
+                    showMessage("No games found here. Choose a folder containing game dumps (a folder with sce_sys/param.json, or a .zar or .exfat file).")
                 else -> showMessage("${result.games.size} game(s) found. Tap to play, ⚙ or long-press for game settings.")
             }
         }

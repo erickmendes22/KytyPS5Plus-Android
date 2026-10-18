@@ -9,7 +9,8 @@ import org.json.JSONObject
 
 /**
  * A game the emulator can load: an extracted dump folder (contains sce_sys/param.json) or a
- * ZArchive dump file (*.zar), which the emulator mounts read-only without extracting.
+ * dump image the emulator mounts read-only without extracting: a ZArchive file (*.zar) or an
+ * exFAT disk image (*.exfat).
  * [titleId] and [icon] (sce_sys/icon0.png) are known for extracted folders only.
  */
 data class GameEntry(
@@ -34,6 +35,15 @@ object GameLibrary {
     private const val MAX_SFO_BYTES = 64 * 1024
     private const val MAX_PARAM_JSON_BYTES = 1024 * 1024
     const val ZARCHIVE_EXTENSION = "zar"
+    const val EXFAT_EXTENSION = "exfat"
+    private val IMAGE_EXTENSIONS = setOf(ZARCHIVE_EXTENSION, EXFAT_EXTENSION)
+
+    /** Subtitle for a dump image in the grid; empty for anything else. */
+    fun imageLabel(file: File): String = when (file.extension.lowercase()) {
+        ZARCHIVE_EXTENSION -> "ZArchive"
+        EXFAT_EXTENSION -> "exFAT image"
+        else -> ""
+    }
 
     /** How deep below the chosen folder to look; dumps are often nested one or two levels. */
     const val MAX_SCAN_DEPTH = 3
@@ -57,7 +67,7 @@ object GameLibrary {
         }
         val children = folder.listFiles() ?: return
         children
-            .filter { it.isFile && it.extension.equals(ZARCHIVE_EXTENSION, ignoreCase = true) }
+            .filter { it.isFile && it.extension.lowercase() in IMAGE_EXTENSIONS }
             .mapTo(into) { GameEntry(folder = it, title = it.nameWithoutExtension) }
         if (depth >= MAX_SCAN_DEPTH) return
         children.filter { it.isDirectory && !it.name.startsWith(".") }
