@@ -10,6 +10,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
+#include "kernel/lazyReservation.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 
@@ -845,7 +846,19 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 	};
 
 	if (search_addr != 0) {
-		return find_in(search_addr, HOST_USER_MAX + 1u);
+		const auto addr = find_in(search_addr, HOST_USER_MAX + 1u);
+		if (addr != 0 || search_addr <= GUEST_DEFAULT_MAP_BASE) {
+			return addr;
+		}
+		// A hint only says where the search starts. On the PS5 there is always user VA above a
+		// hint up to 0xFC00000000; here the window can end first (for example when a lazy
+		// reservation, kernel/lazyReservation.h, covers it), so fall back to the free space below.
+		const auto below = find_in(GUEST_DEFAULT_MAP_BASE,
+		                           std::min<uint64_t>(search_addr, HOST_SYSTEM_MANAGED_MAX + 1u));
+		if (below != 0 || search_addr <= HOST_USER_MIN) {
+			return below;
+		}
+		return find_in(HOST_USER_MIN, std::min<uint64_t>(search_addr, HOST_USER_MAX + 1u));
 	}
 	auto addr = find_in(GUEST_DEFAULT_MAP_BASE, HOST_SYSTEM_MANAGED_MAX + 1u);
 	if (addr == 0) {
@@ -2625,7 +2638,7 @@ static bool FreeGuestMemoryOwner(uint64_t vaddr, uint64_t size) {
 
 static int UnmapMemoryOwner(const VirtualRanges::Range& range, uint64_t vaddr, size_t len) {
 	if (IsReservedRangeType(range.type)) {
-		if (!g_guest_address_space->ReleaseFree(vaddr, len)) {
+		if (!g_guest_address_space->ReservedSpanReleasable(vaddr, len)) {
 			return KERNEL_ERROR_EACCES;
 		}
 		g_virtual_ranges->Remove(vaddr, len);
@@ -3578,7 +3591,8 @@ static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size) {
 			chunk.host_unmapped    = unmapped;
 			chunk.backend_unmapped = unmapped;
 		} else if (IsReservedRangeType(chunk.range.type)) {
-			unmapped = g_guest_address_space->ReleaseFree(chunk.range.start, chunk.range.size);
+			unmapped =
+			    g_guest_address_space->ReservedSpanReleasable(chunk.range.start, chunk.range.size);
 		} else {
 			unmapped = false;
 		}
@@ -3649,6 +3663,31 @@ static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size) {
 	return true;
 }
 
+// A non-fixed reservation larger than the host user window can back (kernel/lazyReservation.h):
+// granted as bookkeeping. Above the window only addresses the host owns (the AMM window) can be
+// committed; everything else there fails like any commit outside guest memory.
+static uint64_t FindLazyReservation(uint64_t hint, uint64_t size, uint64_t alignment) {
+	namespace Lazy        = Kernel::LazyReservation;
+	constexpr auto window = Lazy::HostWindow();
+	if (!Lazy::IsOversized(window, hint, size)) {
+		return 0;
+	}
+	const auto start = Lazy::Place(window, hint, size, alignment, [](uint64_t at, uint64_t span) {
+		VirtualRanges::Range overlap {};
+		return g_virtual_ranges->QueryOverlap(at, span, &overlap) ? overlap.start + overlap.size
+		                                                         : uint64_t {0};
+	});
+	if (start != 0) {
+		const auto backed = Lazy::BackedBytes(window, start, size);
+		LOGF_COLOR(Log::Color::Yellow,
+		           "\t lazy reservation: 0x%016" PRIx64 "..0x%016" PRIx64
+		           ", host user window covers it up to 0x%016" PRIx64 " (%" PRIu64 " of %" PRIu64
+		           " MiB); above that only the AMM window is mappable\n",
+		           start, start + size, start + backed, backed >> 20u, size >> 20u);
+	}
+	return start;
+}
+
 int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, size_t alignment) {
 	PRINT_NAME();
 
@@ -3690,6 +3729,9 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 	} else {
 		alignment = (alignment != 0 ? alignment : PAGE_SIZE);
 		out_addr  = FindGuestFreeRange(in_addr, len, alignment);
+		if (out_addr == 0) {
+			out_addr = FindLazyReservation(in_addr, len, alignment);
+		}
 		if (out_addr != 0) {
 			UnmapGpuRange(out_addr, len);
 		}

@@ -84,6 +84,12 @@ struct GuestRegisters {
 // the caller's stack pointer after the call returns. Returns false outside a thunk.
 bool CaptureTrappedGuestRegisters(GuestRegisters* out);
 
+// From a host signal handler running on the faulting thread: when the faulting host PC lies in this
+// thread's translated guest code, fills out with the guest state at the faulting x86 instruction
+// (RIP reconstructed from the host PC, integer registers read from the signal context) and returns
+// true. Returns false for a fault in host code or on a thread the translator does not run.
+bool CaptureFaultingGuestRegisters(void* host_signal_context, GuestRegisters* out);
+
 // Finishes the trapped import in another guest context: when the thunk returns, guest execution
 // continues at regs.rip with RSP = regs.rsp and the other integer registers taken from regs, except
 // RAX, which still receives the thunk's return value. fs_base is ignored. The host stack is not
