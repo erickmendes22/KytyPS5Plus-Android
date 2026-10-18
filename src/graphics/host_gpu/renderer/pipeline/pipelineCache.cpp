@@ -33,10 +33,12 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <fmt/format.h>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <spirv-tools/libspirv.hpp>
@@ -1211,6 +1213,40 @@ bool PipelineCache::WriteDriverCacheFile() const {
 	return true;
 }
 
+// KYTY_MESH_PATH=auto|native|emulated picks how mesh pipelines run when the host has
+// VK_EXT_mesh_shader. auto (default): native, except pipelines whose pixel shader needs emulated
+// fragment barycentrics (a geometry stage, which a mesh pipeline cannot have) take the compute
+// emulation. native: always native (such pipelines then fail). emulated: always the emulation.
+enum class MeshPathPolicy { Auto, Native, Emulated };
+
+static MeshPathPolicy GetMeshPathPolicy() {
+	static const MeshPathPolicy policy = [] {
+		const char* value  = std::getenv("KYTY_MESH_PATH");
+		const auto  parsed = value == nullptr                       ? MeshPathPolicy::Auto
+		                     : std::strcmp(value, "native") == 0   ? MeshPathPolicy::Native
+		                     : std::strcmp(value, "emulated") == 0 ? MeshPathPolicy::Emulated
+		                                                           : MeshPathPolicy::Auto;
+		if (value != nullptr && parsed == MeshPathPolicy::Auto && std::strcmp(value, "auto") != 0) {
+			PipelineCacheLog("KYTY_MESH_PATH={}: unknown value, using auto", value);
+		}
+		return parsed;
+	}();
+	return policy;
+}
+
+// Logs the mesh path of each mesh/pixel shader pair once.
+static void LogMeshPathChoice(uint64_t mesh_hash, uint64_t pixel_hash, bool emulated,
+                              const char* reason) {
+	static std::mutex                                       mutex;
+	static std::unordered_set<uint64_t>                     logged;
+	const uint64_t key = mesh_hash * 0x9e3779b97f4a7c15ull ^ pixel_hash;
+	std::lock_guard lock(mutex);
+	if (logged.insert(key).second) {
+		PipelineCacheLog("Mesh path: MS 0x{:016x} PS 0x{:016x} -> {} ({})", mesh_hash, pixel_hash,
+		                 emulated ? "emulated" : "native", reason);
+	}
+}
+
 // Mesh emulation runs the mesh workgroup as a compute workgroup, so it is bound by the compute
 // limits instead of the mesh ones. The host subgroup size follows the compute stage.
 static void CheckMeshEmulationLimits(const GraphicContext& graphics, ShaderMeshInputInfo& mesh) {
@@ -1240,6 +1276,7 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
     const ShaderIndirectDrawInfo& indirect) {
 	const bool tess_active = user_config.GetPrimType() == Prospero::PrimitiveType::kPatch;
 	std::array<ShaderParams, 3> vertex_params;
+	vertex_info[0].mesh.emulated = false;
 	if (tess_active) {
 		vertex_params = PrepareTessellationPrograms(vertex_regs, context, vertex_info);
 	} else {
@@ -1247,8 +1284,11 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		// --gpu-indirect is translated for the plain vertex stage and for emulated mesh stages
 		// (not fast launch); the caller falls back to CPU-read arguments for the others.
 		const auto& stage_info = vertex_info[0];
+		vertex_info[0].mesh.emulated =
+		    stage_info.logical_stage == ShaderType::Mesh &&
+		    (!m_graphics.mesh_shader_enabled || GetMeshPathPolicy() == MeshPathPolicy::Emulated);
 		if (stage_info.logical_stage == ShaderType::Vertex ||
-		    (stage_info.logical_stage == ShaderType::Mesh && !m_graphics.mesh_shader_enabled &&
+		    (stage_info.logical_stage == ShaderType::Mesh && stage_info.mesh.emulated &&
 		     !stage_info.mesh.fast_launch)) {
 			vertex_info[0].indirect = indirect;
 		}
@@ -1265,7 +1305,7 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		                                                       target.info.channel_type)
 		                         .buffer_format != Prospero::BufferFormat::k32UInt);
 	}
-	const bool mesh_emulated = mesh_active && !m_graphics.mesh_shader_enabled;
+	bool mesh_emulated = mesh_active && vertex_info[0].mesh.emulated;
 	if (mesh_emulated) {
 		CheckMeshEmulationLimits(m_graphics, vertex_info[0].mesh);
 	} else if (mesh_active) {
@@ -1371,12 +1411,14 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		    static_cast<float>(std::min(limits.maxViewportDimensions[1], 16384u)) * 0.5f;
 		clip.enabled = true;
 	}
-	uint32_t push_data_cursor =
-	    mesh_emulated ? ShaderRecompiler::IR::PushData::MeshEmulationDrawDwordCount
-	                  : ShaderRecompiler::IR::PushData::GraphicsDrawDwords(mesh_active,
-	                                                                       object_primitive_id);
+	const auto first_cursor = [&] {
+		return mesh_emulated ? ShaderRecompiler::IR::PushData::MeshEmulationDrawDwordCount
+		                     : ShaderRecompiler::IR::PushData::GraphicsDrawDwords(
+		                           mesh_active, object_primitive_id);
+	};
+	uint32_t          push_data_cursor = first_cursor();
 	GraphicsPrograms  result;
-	const auto        first_push_data_cursor = push_data_cursor;
+	auto              first_push_data_cursor = push_data_cursor;
 	const auto        request = [&] {
 		result = {};
 		push_data_cursor = first_push_data_cursor;
@@ -1393,6 +1435,30 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		}
 	};
 	request();
+	// auto: a pixel shader with emulated barycentrics needs a geometry stage, which only the
+	// emulated mesh path has, so such a pipeline switches to it once the pixel shader is known.
+	if (mesh_active && !mesh_emulated && pixel_active && result.pixel &&
+	    pixel_info.stage.program != nullptr && vertex_info[0].stage.program != nullptr) {
+		const auto mesh_hash  = vertex_info[0].stage.program->shader_hash;
+		const auto pixel_hash = pixel_info.stage.program->shader_hash;
+		if (pixel_info.stage.program->info.barycentric_emulation.enabled &&
+		    GetMeshPathPolicy() == MeshPathPolicy::Auto) {
+			LogMeshPathChoice(mesh_hash, pixel_hash, true, "pixel shader needs emulated barycentrics");
+			auto& mesh_input         = vertex_info[0];
+			mesh_input.mesh.emulated = true;
+			if (!mesh_input.mesh.fast_launch) {
+				mesh_input.indirect = indirect;
+			}
+			CheckMeshEmulationLimits(m_graphics, mesh_input.mesh);
+			mesh_emulated          = true;
+			first_push_data_cursor = first_cursor();
+			request();
+		} else {
+			LogMeshPathChoice(mesh_hash, pixel_hash, false,
+			                  GetMeshPathPolicy() == MeshPathPolicy::Native ? "KYTY_MESH_PATH=native"
+			                                                               : "auto");
+		}
+	}
 	// A pixel shader whose manual interpolation became packed varyings needs a vertex shader that
 	// writes them: once both are known, the vertex shader is requested again with that request.
 	if (pixel_active && pixel_info.packed_varyings_allowed && result.pixel && result.vertex[0] &&

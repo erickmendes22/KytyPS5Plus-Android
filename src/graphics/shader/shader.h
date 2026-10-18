@@ -102,6 +102,9 @@ struct ShaderMeshInputInfo: ShaderWorkgroupInputInfo {
 	uint32_t max_primitives       = 0;
 	uint32_t provoking_vertex     = 0;
 	bool     fast_launch          = false;
+	// Run this mesh stage through the compute emulation even when the host has
+	// VK_EXT_mesh_shader (per-pipeline choice, see PipelineCache::GetGraphicsPrograms).
+	bool     emulated             = false;
 
 	[[nodiscard]] constexpr uint32_t InputPrimitiveSize() const {
 		switch (static_cast<Prospero::PrimitiveType>(input_primitive)) {
