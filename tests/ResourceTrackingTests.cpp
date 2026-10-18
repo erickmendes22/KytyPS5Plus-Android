@@ -2,11 +2,13 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
+#include "graphics/shader/recompiler/ir/passes/ManualInterpolation.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
 #include "graphics/shader/recompiler/ir/passes/ShaderInfoCollection.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstring>
@@ -8138,6 +8140,84 @@ void TestConditionalIndirectImageMaterialization() {
         "taken indirect image branch did not require its descriptor table");
 }
 
+// FoldSameConditionSelects: a select's operand that is a select on the same condition value takes
+// that select's operand on its own side; other conditions are left alone.
+void TestFoldSameConditionSelects() {
+  Fixture fixture(ShaderType::Pixel);
+  const auto bits = [&](uint32_t index) { return fixture.UserData(index); };
+  const auto condition = fixture.Emit(
+      ValueOpcode::FPOrdLessThan32,
+      {Value::F32(0.0f), fixture.Emit(ValueOpcode::BitCastF32U32, {bits(0)})});
+  const auto other = fixture.Emit(
+      ValueOpcode::FPOrdLessThan32,
+      {Value::F32(1.0f), fixture.Emit(ValueOpcode::BitCastF32U32, {bits(1)})});
+  const auto a = bits(2), b = bits(3), d = bits(4);
+  const auto inner = fixture.Emit(ValueOpcode::SelectU32, {condition, b, d}, SelectOrigin::ExecMerge);
+  const auto deeper = fixture.Emit(ValueOpcode::SelectU32, {condition, a, inner}, SelectOrigin::ExecMerge);
+  const auto kept = fixture.Emit(ValueOpcode::SelectU32, {condition, a, deeper}, SelectOrigin::ExecMerge);
+  const auto taken = fixture.Emit(ValueOpcode::SelectU32, {condition, inner, a});
+  const auto foreign = fixture.Emit(ValueOpcode::SelectU32, {other, a, inner}, SelectOrigin::ExecMerge);
+  for (const auto value : {kept, taken, foreign}) fixture.Emit(ValueOpcode::ReferenceU32, {value});
+  Check(FoldSameConditionSelects(fixture.program) == 3u, "three operands folded");
+  Check(kept.TryInstruction()->Arg(2) == d, "kept operand folds through a folded select");
+  Check(deeper.TryInstruction()->Arg(2) == d, "inner kept operand folds");
+  Check(taken.TryInstruction()->Arg(1) == b, "taken operand folds");
+  Check(foreign.TryInstruction()->Arg(2) == inner, "another condition is not folded");
+  Check(FoldSameConditionSelects(fixture.program) == 0u, "fold reaches a fixed point");
+}
+
+// The exec-masked register reuse KYTY_SELECT_FOLD targets (Astro Bot G-buffer pixel shaders): a
+// block under EXEC = c copies the three raw vertex dwords of a custom float parameter into
+// registers, interpolates them, and writes the result back over the first of those registers. The
+// last write's kept operand is the earlier masked copy, which keeps the raw read live: the shader
+// keeps its geometry stage. Folded, the kept operand is the register's value before the block and
+// the packed-varying lowering removes every per-vertex read.
+void TestManualInterpolationNestedExecMerge(bool fold) {
+  Fixture fixture(ShaderType::Pixel);
+  Libs::Graphics::ShaderPixelInputInfo pixel;
+  pixel.input_num = 1;
+  pixel.custom_interpolation_mask = 1u;
+  pixel.packed_varyings_allowed = true;
+  const auto f32 = [&](Value value) { return fixture.Emit(ValueOpcode::BitCastF32U32, {value}); };
+  const auto u32 = [&](Value value) { return fixture.Emit(ValueOpcode::BitCastU32F32, {value}); };
+  const auto bary = [&](uint32_t index) {
+    return f32(fixture.Emit(ValueOpcode::GetBuiltin,
+                            {Value(static_cast<uint32_t>(StageInputKind::BaryCoordSmooth)), Value(index)}));
+  };
+  const auto i = bary(0), j = bary(1);
+  const auto condition =
+      fixture.Emit(ValueOpcode::FPOrdLessThan32, {Value::F32(0.0f), f32(fixture.UserData(0))});
+  std::array<Value, 3> registers;
+  for (uint32_t vertex = 0; vertex < 3; vertex++) {
+    // v_interp_mov mode m reads vertex (m + 1) % 3.
+    const auto raw = fixture.Emit(ValueOpcode::GetInterpolationParameter,
+                                  {Value(0u), Value(0u), Value((vertex + 2u) % 3u)});
+    registers[vertex] = fixture.Emit(ValueOpcode::SelectU32, {condition, raw, fixture.UserData(1 + vertex)},
+                                     SelectOrigin::ExecMerge);
+  }
+  const auto x0 = f32(registers[0]), x1 = f32(registers[1]), x2 = f32(registers[2]);
+  const auto partial = fixture.Emit(ValueOpcode::FPMad32,
+                                    {i, fixture.Emit(ValueOpcode::FPSub32, {x1, x0}), x0});
+  const auto value = fixture.Emit(ValueOpcode::FPMad32,
+                                  {j, fixture.Emit(ValueOpcode::FPSub32, {x2, x0}), partial});
+  const auto result =
+      fixture.Emit(ValueOpcode::SelectU32, {condition, u32(value), registers[0]}, SelectOrigin::ExecMerge);
+  fixture.Emit(ValueOpcode::ReferenceU32, {result});
+  if (fold) Check(FoldSameConditionSelects(fixture.program) == 1u, "the kept register folds");
+  std::string reason;
+  const bool lowered = LowerManualInterpolation(fixture.program, pixel, 8u, false, &reason);
+  if (!fold) {
+    Check(!lowered && reason == "parameter 0 still read per vertex", "unfolded shader keeps its reads");
+    return;
+  }
+  Check(lowered, "folded shader lowers");
+  Check(fixture.program.info.packed_varyings.size() == 1u, "one interpolated field");
+  for (const auto *block : fixture.program.blocks)
+    for (const auto &inst : *block)
+      Check(inst.GetOpcode() != ValueOpcode::GetInterpolationParameter, "no per-vertex read left");
+  Check(!PixelShaderNeedsBarycentrics(fixture.program, pixel), "lowered shader runs natively");
+}
+
 void TestShaderInfoCollection() {
   Fixture fixture;
   const auto handle = fixture.Buffer(
@@ -8422,6 +8502,11 @@ int main() {
         throw std::runtime_error(std::string(name) + ": " + exception.what());
       }
     };
+    Run("same-condition select fold", TestFoldSameConditionSelects);
+    Run("nested exec merge interpolation", [] {
+      TestManualInterpolationNestedExecMerge(false);
+      TestManualInterpolationNestedExecMerge(true);
+    });
     Run("dense buffers", TestDenseBufferTracking);
     Run("compute buffer fill", TestComputeBufferFill);
     Run("scalar/vector alias", TestScalarAndVectorBufferAlias);

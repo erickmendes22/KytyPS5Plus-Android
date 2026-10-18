@@ -34,6 +34,15 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 bool LowerManualInterpolation(Program& program, const ShaderPixelInputInfo& pixel,
                               uint32_t location_limit, bool drop_carried, std::string* reason);
 
+// Select(c, a, Select(c, b, d)) is Select(c, a, d), and Select(c, Select(c, a, b), d) is
+// Select(c, a, d): the inner select is evaluated with the same condition value, so only its
+// operand on the outer one's side can reach the result. Exec-masked code lowers every VGPR write
+// to Select(exec, new, old); when a block reuses a register that held a raw vertex dword, the
+// next masked write keeps that read alive only through such a nested select. Rewrites both
+// operands of every SelectU32 / SelectF32 (same opcode, same resolved condition value) and
+// returns the number of rewritten operands. Same results in every lane (KYTY_SELECT_FOLD).
+uint32_t FoldSameConditionSelects(Program& program);
+
 } // namespace Libs::Graphics::ShaderRecompiler::IR
 
 #endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_RECOMPILER_MANUALINTERPOLATION_H_ */

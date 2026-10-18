@@ -923,6 +923,17 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	// unpacks, when that is provably the same (passes/ManualInterpolation.h).
 	const bool drop_carried = options.device_features.drop_carried_vertex_data;
 	if (ir.stage == ShaderType::Pixel && !native_barycentrics &&
+	    options.device_features.fold_same_condition_selects &&
+	    options.device_features.packed_varying_locations != 0 &&
+	    options.input_info.pixel->packed_varyings_allowed &&
+	    IR::PixelShaderNeedsBarycentrics(ir, *options.input_info.pixel, drop_carried)) {
+		if (const auto folded = IR::FoldSameConditionSelects(ir); folded != 0) {
+			IR::EliminateDeadCode(ir.blocks);
+			LOGF("%s same-condition selects folded: hash=0x%016" PRIx64 " operands=%u\n",
+			     GetDumpLabel(options), ir.shader_hash, folded);
+		}
+	}
+	if (ir.stage == ShaderType::Pixel && !native_barycentrics &&
 	    options.device_features.packed_varying_locations != 0 &&
 	    options.input_info.pixel->packed_varyings_allowed &&
 	    IR::PixelShaderNeedsBarycentrics(ir, *options.input_info.pixel, drop_carried)) {

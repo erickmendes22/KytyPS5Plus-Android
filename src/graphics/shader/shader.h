@@ -312,6 +312,12 @@ struct ShaderDeviceFeatures {
 	// the geometry stage, and packed-varying lowering zeroes such kept vertex data so the
 	// per-vertex reads behind it go away (KYTY_DROP_CARRIED, opt-in).
 	bool drop_carried_vertex_data = false;
+	// Before packed-varying lowering, a select whose operand is a select on the same condition
+	// takes that select's operand on its own side (passes/ManualInterpolation.h,
+	// FoldSameConditionSelects; same results). Exec-masked blocks that reuse a register holding a
+	// raw vertex dword otherwise keep the per-vertex read alive through the nested select of the
+	// next masked write, and the pixel shader keeps its geometry stage (KYTY_SELECT_FOLD).
+	bool fold_same_condition_selects = false;
 	// shaderStorageImageArrayNonUniformIndexing. Without it, GPU-selected storage images are
 	// indexed dynamically without the NonUniform decoration (shaderStorageImageArrayDynamicIndexing).
 	bool storage_image_array_non_uniform_indexing = true;

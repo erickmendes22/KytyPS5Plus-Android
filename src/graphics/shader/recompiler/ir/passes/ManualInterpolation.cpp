@@ -746,7 +746,33 @@ std::unordered_set<const Inst*> LiveAfterLowering(const Program& program, const 
 	return live;
 }
 
+bool IsSelect(ValueOpcode op) { return op == ValueOpcode::SelectU32 || op == ValueOpcode::SelectF32; }
+
 } // namespace
+
+uint32_t FoldSameConditionSelects(Program& program) {
+	uint32_t folded = 0;
+	for (auto* block: program.blocks) {
+		for (auto& inst: *block) {
+			if (!IsSelect(inst.GetOpcode())) continue;
+			const auto condition = inst.Arg(0).Resolve();
+			for (size_t operand = 1; operand <= 2; operand++) {
+				// Each step replaces the operand by one of the inner select's operands, which SSA
+				// defines earlier, so the chain ends.
+				for (;;) {
+					const auto* inner = inst.Arg(operand).Resolve().TryInstruction();
+					if (inner == nullptr || inner->GetOpcode() != inst.GetOpcode() ||
+					    !(inner->Arg(0).Resolve() == condition)) {
+						break;
+					}
+					inst.SetArg(operand, inner->Arg(operand));
+					folded++;
+				}
+			}
+		}
+	}
+	return folded;
+}
 
 bool LowerManualInterpolation(Program& program, const ShaderPixelInputInfo& pixel,
                               uint32_t location_limit, bool drop_carried, std::string* reason) {
