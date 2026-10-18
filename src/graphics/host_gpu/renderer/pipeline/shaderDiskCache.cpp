@@ -5,6 +5,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
+#include <vector>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <system_error>
 #include <type_traits>
@@ -240,12 +243,58 @@ std::optional<ShaderDiskCache::Record> ShaderDiskCache::Deserialize(std::span<co
 	return record;
 }
 
-std::unique_ptr<ShaderDiskCache> ShaderDiskCache::Open(const std::filesystem::path& path,
+namespace {
+
+// KYTY_SHADER_CACHE_PER_BUILD (default on): one cache file per signature (build + shader options),
+// <title>-<signature>.bin, so switching between builds or option sets (A/B benchmarks, several
+// test builds sharing a device) reloads that build's file instead of retranslating every shader
+// at startup. The files of the 3 most recently used other signatures are kept.
+bool PerBuildFiles() {
+	const char* value = std::getenv("KYTY_SHADER_CACHE_PER_BUILD");
+	return value == nullptr || value[0] != '0';
+}
+
+std::filesystem::path PerBuildPath(const std::filesystem::path& path, uint64_t signature) {
+	return path.parent_path() /
+	       fmt::format("{}-{:016x}{}", path.stem().string(), signature, path.extension().string());
+}
+
+void PruneOtherBuilds(const std::filesystem::path& path, const std::filesystem::path& current) {
+	constexpr size_t kKeepOthers = 3;
+	std::error_code  error;
+	const auto       prefix = path.stem().string() + "-";
+	std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> others;
+	for (const auto& entry: std::filesystem::directory_iterator(path.parent_path(), error)) {
+		const auto name = entry.path().filename().string();
+		if (entry.path() != current && name.rfind(prefix, 0) == 0 &&
+		    entry.path().extension() == path.extension()) {
+			std::error_code time_error;
+			others.emplace_back(entry.last_write_time(time_error), entry.path());
+		}
+	}
+	if (others.size() <= kKeepOthers) {
+		return;
+	}
+	std::sort(others.begin(), others.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+	for (size_t i = kKeepOthers; i < others.size(); i++) {
+		std::error_code remove_error;
+		std::filesystem::remove(others[i].second, remove_error);
+		CacheLog(fmt::format("removed {} (older build)", others[i].second.string()));
+	}
+}
+
+} // namespace
+
+std::unique_ptr<ShaderDiskCache> ShaderDiskCache::Open(const std::filesystem::path& base_path,
                                                        uint64_t                     options_signature) {
 	std::error_code error;
-	std::filesystem::create_directories(path.parent_path(), error);
+	std::filesystem::create_directories(base_path.parent_path(), error);
 	const auto signature = Signature(options_signature);
-	const auto name      = path.string();
+	const auto path      = PerBuildFiles() ? PerBuildPath(base_path, signature) : base_path;
+	if (PerBuildFiles()) {
+		PruneOtherBuilds(base_path, path);
+	}
+	const auto name = path.string();
 
 	std::vector<Record> loaded;
 	uint64_t            keep   = 0;
