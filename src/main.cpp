@@ -113,9 +113,9 @@ static void RedirectStdioToLogcat() {
 
 static void PrintUsage() {
 	::printf("%s\n", GetBuildString().c_str());
-	::printf("kyty_emulator --game <dir|elf|zar> [options]\n\n");
+	::printf("kyty_emulator --game <dir|elf|zar|exfat> [options]\n\n");
 	::printf("Options:\n");
-	::printf("  --game <dir|elf|zar>                 Game directory, ELF, or ZArchive to load.\n");
+	::printf("  --game <dir|elf|zar|exfat>           Game directory, ELF, ZArchive, or exFAT image to load.\n");
 	::printf("  --data-dir <path>                    Working directory for logs, shader dumps,\n"
 	         "                                       and caches. Default: the process directory.\n");
 	::printf("  --game-patch <json>                  ETAHen cheat file.\n");

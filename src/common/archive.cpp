@@ -1,5 +1,7 @@
 #include "common/archive.h"
 
+#include "common/archiveReader.h"
+#include "common/exfatImage.h"
 #include "common/stringUtils.h"
 
 #include <algorithm>
@@ -23,22 +25,6 @@
 
 namespace Common {
 
-// Backends expose immutable metadata and offset-based reads. Cursor management, path routing,
-// reader lifetime and the host-stack worker are shared by every archive format.
-class ArchiveReader {
-public:
-	struct Entry {
-		uint64_t id;
-		uint64_t size;
-		bool     is_file;
-	};
-
-	virtual ~ArchiveReader()                                                       = default;
-	virtual std::optional<Entry>        Find(std::string_view member)              = 0;
-	virtual std::vector<File::DirEntry> List(std::string_view member)              = 0;
-	virtual uint64_t Read(uint64_t id, uint64_t offset, uint32_t size, void* data) = 0;
-};
-
 namespace {
 
 class ZArchiveReaderBackend final: public ArchiveReader {
@@ -54,7 +40,7 @@ public:
 		return Entry {node, m_reader->GetFileSize(node), m_reader->IsFile(node)};
 	}
 
-	std::vector<File::DirEntry> List(std::string_view member) override {
+	std::vector<ArchiveDirEntry> List(std::string_view member) override {
 		const auto node = m_reader->LookUp(member);
 		if (!m_reader->IsDirectory(node)) {
 			return {};
@@ -63,7 +49,7 @@ public:
 		if (count > (1u << 20u)) {
 			return {};
 		}
-		std::vector<File::DirEntry> result;
+		std::vector<ArchiveDirEntry> result;
 		result.reserve(count);
 		for (uint32_t index = 0; index < count; ++index) {
 			ZArchiveReader::DirEntry entry {};
@@ -89,11 +75,17 @@ std::shared_ptr<ArchiveReader> OpenZArchive(const std::filesystem::path& path) {
 }
 
 struct ArchiveFormat {
-	std::string_view extension;
+	std::string_view               extension;
 	std::shared_ptr<ArchiveReader> (*open)(const std::filesystem::path&);
+	// Extension alone is not enough for some formats (.img): probe the file as well.
+	bool (*probe)(const std::filesystem::path&);
 };
 
-constexpr ArchiveFormat Formats[] = {{".zar", OpenZArchive}};
+constexpr ArchiveFormat Formats[] = {
+    {".zar", OpenZArchive, nullptr},
+    {".exfat", OpenExfatImage, nullptr},
+    {".img", OpenExfatImage, IsExfatImageFile},
+};
 using NativeView                  = std::basic_string_view<std::filesystem::path::value_type>;
 
 const ArchiveFormat* FindFormat(NativeView path) {
@@ -104,7 +96,8 @@ const ArchiveFormat* FindFormat(NativeView path) {
 		const auto extension = path.substr(path.size() - format.extension.size());
 		if (std::equal(
 		        extension.begin(), extension.end(), format.extension.begin(),
-		        [](auto a, char b) { return (a >= 'A' && a <= 'Z' ? a + ('a' - 'A') : a) == b; })) {
+		        [](auto a, char b) { return (a >= 'A' && a <= 'Z' ? a + ('a' - 'A') : a) == b; }) &&
+		    (format.probe == nullptr || format.probe(std::filesystem::path(path)))) {
 			return &format;
 		}
 	}
@@ -370,13 +363,16 @@ std::optional<File::Info> GetArchiveInfo(const std::filesystem::path& path) {
 }
 
 std::vector<File::DirEntry> GetArchiveDirEntries(const std::filesystem::path& path) {
-	const auto parsed = ParsePath(path);
+	std::vector<File::DirEntry> result;
+	const auto                  parsed = ParsePath(path);
 	if (parsed) {
 		if (auto reader = OpenArchive(parsed->archive)) {
-			return reader->List(parsed->member);
+			for (auto& entry: reader->List(parsed->member)) {
+				result.push_back({std::move(entry.name), entry.is_file});
+			}
 		}
 	}
-	return {};
+	return result;
 }
 
 std::unique_ptr<ArchiveFile> OpenArchiveFile(const std::filesystem::path& path) {
