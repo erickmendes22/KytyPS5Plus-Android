@@ -8,6 +8,7 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/host_gpu/vulkanDebugLabel.h"
 
 #include <bit>
 #include <cinttypes>
@@ -125,7 +126,13 @@ void FaultManager::ProcessFaultBuffer() {
 	                             m_fault_process_pipeline_layout, 0, writes);
 	const auto num_threads    = BufferCache::CACHING_NUMPAGES / 32;
 	const auto num_workgroups = (num_threads + 63) / 64;
-	command.dispatch(static_cast<uint32_t>(num_workgroups), 1, 1);
+	// Marked so GPU hang dumps show this dispatch instead of folding it into "other".
+	m_scheduler.Current().MarkGpu("misc");
+	{
+		const ScopedDebugLabel label(command, "fault-scan", 0);
+		command.dispatch(static_cast<uint32_t>(num_workgroups), 1, 1);
+	}
+	m_scheduler.Current().MarkGpu("fault-scan");
 	dependency.pBufferMemoryBarriers = &post_barrier;
 	command.pipelineBarrier2(dependency);
 

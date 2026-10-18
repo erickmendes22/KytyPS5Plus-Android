@@ -12,9 +12,9 @@
 // ("[vvl]" lines; logcat tag KytyVVL), with a summary every 30 s and at a GPU fatal error.
 //
 //   KYTY_VK_VALIDATION=1             core + synchronization validation + GPU-assisted validation
-//   KYTY_VK_VALIDATION=core,sync,... any of: core, sync, gpuav (GPU-AV incl. buffer device address
-//                                    OOB checks), limit (keep the layer's 10-per-VUID message cap;
-//                                    by default every message reaches the callback to be counted)
+//   KYTY_VK_VALIDATION=core+sync+... any of (',' or '+' separated): core, sync, gpuav (GPU-AV
+//                                    incl. buffer device address OOB checks), limit (keep the
+//                                    layer's 10-per-VUID cap; by default every message is counted)
 namespace Libs::Graphics::VulkanValidation {
 
 struct Options {

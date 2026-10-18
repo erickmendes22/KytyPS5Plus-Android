@@ -46,7 +46,8 @@ Options Parse(const char* value) {
 	}
 	std::string_view rest(value);
 	while (!rest.empty()) {
-		const auto comma = rest.find(',');
+		// '+' because --env values travel inside the comma-separated launch arguments.
+		const auto comma = rest.find_first_of(",+");
 		const auto token = rest.substr(0, comma);
 		if (token == "core") {
 			options.core = true;
@@ -229,7 +230,18 @@ VKAPI_ATTR vk::Bool32 VKAPI_CALL MessengerCallback(
 	const char* severity_name =
 	    severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError ? "E" : "W";
 	const char* id_name = data->pMessageIdName != nullptr ? data->pMessageIdName : "?";
-	auto        key     = DedupKey(id_name, data->pMessage);
+	// Core VUIDs do not name the debug region; the open command-buffer labels do.
+	std::string text = data->pMessage;
+	if (data->cmdBufLabelCount > 0 && data->pCmdBufLabels != nullptr) {
+		text += " [cmd labels:";
+		for (uint32_t i = 0; i < data->cmdBufLabelCount; i++) {
+			const char* name = data->pCmdBufLabels[i].pLabelName;
+			text += ' ';
+			text += name != nullptr ? name : "?";
+		}
+		text += ']';
+	}
+	auto key = DedupKey(id_name, text.c_str());
 
 	auto&       state = GetState();
 	std::string line;
@@ -245,7 +257,7 @@ VKAPI_ATTR vk::Bool32 VKAPI_CALL MessengerCallback(
 			}
 			Entry entry {.severity      = severity_name,
 			             .id_name       = id_name,
-			             .first_message = data->pMessage,
+			             .first_message = text,
 			             .count         = 0,
 			             .first_secs    = SecondsSince(state.start)};
 			it = state.entries.emplace(std::move(key), std::move(entry)).first;
@@ -254,7 +266,7 @@ VKAPI_ATTR vk::Bool32 VKAPI_CALL MessengerCallback(
 		entry.count++;
 		if (entry.count == 1) {
 			line = fmt::format("[vvl] NEW #{} {} {} +{} s: {}", state.entries.size(),
-			                   severity_name, id_name, entry.first_secs, data->pMessage);
+			                   severity_name, id_name, entry.first_secs, text);
 		} else if (IsMilestone(entry.count)) {
 			line = fmt::format("[vvl] x{} {} {}: {:.200}", entry.count, severity_name, id_name,
 			                   entry.first_message);
