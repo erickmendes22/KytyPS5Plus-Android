@@ -36,6 +36,8 @@ struct ShaderFastPaths {
 	bool drop_carried = false;
 	// ShaderDeviceFeatures::fold_same_condition_selects (KYTY_SELECT_FOLD).
 	bool select_fold = false;
+	// ShaderDeviceFeatures::single_mode_alias_slots (KYTY_ALIAS_SLOTS).
+	bool alias_slots = false;
 	// ShaderDeviceFeatures::constant_lane_broadcast (KYTY_LANE_BROADCAST).
 	bool lane_broadcast = false;
 	// ShaderDeviceFeatures::first_lane_value_sets (KYTY_FIRSTLANE_SETS).

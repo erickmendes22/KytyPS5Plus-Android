@@ -318,6 +318,12 @@ struct ShaderDeviceFeatures {
 	// raw vertex dword otherwise keep the per-vertex read alive through the nested select of the
 	// next masked write, and the pixel shader keeps its geometry stage (KYTY_SELECT_FOLD).
 	bool fold_same_condition_selects = false;
+	// Without fragment_shader_barycentric, a pixel parameter slot that a flat and a smooth input
+	// alias (SPI_PS_INPUT_CNTL offsets) stays a native input while the shader uses only one of the
+	// two modes; that alias alone is declared, with its own qualifier. Otherwise any use of such a
+	// slot needs per-vertex data (geometry stage), and packed-varying lowering that leaves only the
+	// flat alias in use is rejected (KYTY_ALIAS_SLOTS).
+	bool single_mode_alias_slots = false;
 	// shaderStorageImageArrayNonUniformIndexing. Without it, GPU-selected storage images are
 	// indexed dynamically without the NonUniform decoration (shaderStorageImageArrayDynamicIndexing).
 	bool storage_image_array_non_uniform_indexing = true;

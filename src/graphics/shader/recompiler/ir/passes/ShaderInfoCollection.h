@@ -21,15 +21,19 @@ uint32_t DropCarriedBarycentrics(Program& program, bool drop_carried = false);
 
 // True when a pixel shader cannot run on native interpolated inputs alone: it reads raw I/J
 // values (other than ones DropCarriedBarycentrics would drop), reads P0/P10/P20 of a non-flat
-// parameter, or uses flat and smooth aliases of one parameter slot. These are exactly the uses
+// parameter, or uses flat and smooth aliases of one parameter slot (with
+// Program::single_mode_alias_slots: uses both a flat and a smooth alias of one slot; a slot used in
+// one mode only is declared with that mode alone). These are exactly the uses
 // CollectShaderInfo rejects without barycentrics, so a shader for which this is false compiles
 // on the native path.
 bool PixelShaderNeedsBarycentrics(const Program& program, const ShaderPixelInputInfo& pixel,
                                   bool drop_carried = false);
 
-// True when one parameter slot has a flat and a smooth alias, either of them in `used`.
+// True when one parameter slot has a flat and a smooth alias, either of them in `used` (both of
+// them with single_mode_alias_slots, Program::single_mode_alias_slots).
 bool PixelParameterSlotsMixFlatAndSmooth(const ShaderPixelInputInfo& pixel,
-                                         const std::array<bool, 32>& used);
+                                         const std::array<bool, 32>& used,
+                                         bool single_mode_alias_slots = false);
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR
 

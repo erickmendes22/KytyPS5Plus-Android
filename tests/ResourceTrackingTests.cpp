@@ -8172,12 +8172,23 @@ void TestFoldSameConditionSelects() {
 // last write's kept operand is the earlier masked copy, which keeps the raw read live: the shader
 // keeps its geometry stage. Folded, the kept operand is the register's value before the block and
 // the packed-varying lowering removes every per-vertex read.
-void TestManualInterpolationNestedExecMerge(bool fold) {
+//
+// flat_alias: input 1 is a flat alias of the same slot (SPI_PS_INPUT_CNTL offset 0, FLAT_SHADE)
+// that the shader still reads. Without Program::single_mode_alias_slots (KYTY_ALIAS_SLOTS) the
+// lowering is rejected; with it the flat read becomes a flat packed varying of the slot.
+void TestManualInterpolationNestedExecMerge(bool fold, bool flat_alias = false,
+                                            bool single_mode_aliases = false) {
   Fixture fixture(ShaderType::Pixel);
+  fixture.program.single_mode_alias_slots = single_mode_aliases;
   Libs::Graphics::ShaderPixelInputInfo pixel;
-  pixel.input_num = 1;
+  pixel.input_num = flat_alias ? 2 : 1;
+  pixel.interpolator_settings[1] = 0x400u; // FLAT_SHADE, offset 0
   pixel.custom_interpolation_mask = 1u;
   pixel.packed_varyings_allowed = true;
+  if (flat_alias) {
+    fixture.Emit(ValueOpcode::ReferenceU32,
+                 {fixture.Emit(ValueOpcode::GetInterpolationParameter, {Value(1u), Value(0u), Value(2u)})});
+  }
   const auto f32 = [&](Value value) { return fixture.Emit(ValueOpcode::BitCastF32U32, {value}); };
   const auto u32 = [&](Value value) { return fixture.Emit(ValueOpcode::BitCastU32F32, {value}); };
   const auto bary = [&](uint32_t index) {
@@ -8210,11 +8221,20 @@ void TestManualInterpolationNestedExecMerge(bool fold) {
     Check(!lowered && reason == "parameter 0 still read per vertex", "unfolded shader keeps its reads");
     return;
   }
+  if (flat_alias && !single_mode_aliases) {
+    Check(!lowered && reason == "flat and smooth aliases of one slot", "flat alias in use rejects");
+    return;
+  }
   Check(lowered, "folded shader lowers");
-  Check(fixture.program.info.packed_varyings.size() == 1u, "one interpolated field");
+  const auto &varyings = fixture.program.info.packed_varyings;
+  Check(varyings.size() == (flat_alias ? 2u : 1u), "one interpolated field (and one flat dword)");
+  const auto flat_dwords = std::count_if(varyings.begin(), varyings.end(), [](const PackedVarying &v) {
+    return v.flat && v.source_location == 0u && v.bit_count == 32u;
+  });
+  Check(flat_dwords == (flat_alias ? 1 : 0), "the flat alias reads its slot's dword through a flat varying");
   for (const auto *block : fixture.program.blocks)
     for (const auto &inst : *block)
-      Check(inst.GetOpcode() != ValueOpcode::GetInterpolationParameter, "no per-vertex read left");
+      Check(inst.GetOpcode() != ValueOpcode::GetInterpolationParameter, "no parameter read left");
   Check(!PixelShaderNeedsBarycentrics(fixture.program, pixel), "lowered shader runs natively");
 }
 
@@ -8506,6 +8526,8 @@ int main() {
     Run("nested exec merge interpolation", [] {
       TestManualInterpolationNestedExecMerge(false);
       TestManualInterpolationNestedExecMerge(true);
+      TestManualInterpolationNestedExecMerge(true, true, false);
+      TestManualInterpolationNestedExecMerge(true, true, true);
     });
     Run("dense buffers", TestDenseBufferTracking);
     Run("compute buffer fill", TestComputeBufferFill);

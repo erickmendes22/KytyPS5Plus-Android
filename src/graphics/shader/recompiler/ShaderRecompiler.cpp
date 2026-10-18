@@ -922,6 +922,7 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	// Manual per-vertex interpolation becomes hardware interpolation of fields the vertex shader
 	// unpacks, when that is provably the same (passes/ManualInterpolation.h).
 	const bool drop_carried = options.device_features.drop_carried_vertex_data;
+	ir.single_mode_alias_slots = options.device_features.single_mode_alias_slots;
 	if (ir.stage == ShaderType::Pixel && !native_barycentrics &&
 	    options.device_features.fold_same_condition_selects &&
 	    options.device_features.packed_varying_locations != 0 &&

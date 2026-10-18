@@ -426,7 +426,18 @@ private:
 		}
 	}
 
-	void VisitInterpolationParameter(const Inst& inst) {
+	bool SlotHasSmoothAlias(uint32_t param) const {
+		const auto location = ShaderPixelParameterMappedLocation(pixel, param);
+		for (uint32_t alias = 0; alias < pixel.input_num; alias++) {
+			if (ShaderPixelParameterMappedLocation(pixel, alias) == location &&
+			    !ShaderPixelParameterIsFlat(pixel, alias)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void VisitInterpolationParameter(Inst& inst) {
 		if (!inst.Arg(0).IsImmediate() || !inst.Arg(1).IsImmediate() || !inst.Arg(2).IsImmediate()) {
 			Reject("dynamic v_interp_mov");
 			return;
@@ -436,7 +447,15 @@ private:
 			Reject("v_interp_mov out of range");
 			return;
 		}
-		if (ShaderPixelParameterIsFlat(pixel, param)) return; // native flat input
+		if (ShaderPixelParameterIsFlat(pixel, param)) {
+			// A native flat input. When its slot also has a smooth alias, one native variable cannot
+			// serve both modes; with single_mode_alias_slots the flat read becomes a flat packed
+			// varying of the same exported dword (the provoking vertex's, as the native input).
+			if (program.single_mode_alias_slots && SlotHasSmoothAlias(param)) {
+				flat_reads[&inst] = AttributeIndex({param, chan, 0, 32, PackedVaryingFormat::Float32, true});
+			}
+			return;
+		}
 		Abs result;
 		result.kind       = Kind::Raw;
 		result.source     = &inst;
@@ -806,7 +825,7 @@ bool LowerManualInterpolation(Program& program, const ShaderPixelInputInfo& pixe
 			}
 		}
 	}
-	if (PixelParameterSlotsMixFlatAndSmooth(pixel, used)) {
+	if (PixelParameterSlotsMixFlatAndSmooth(pixel, used, program.single_mode_alias_slots)) {
 		return fail("flat and smooth aliases of one slot");
 	}
 

@@ -72,6 +72,7 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	                     !graphics.optional_features.fragment_shader_barycentric,
 	    .drop_carried         = EnvToggle("KYTY_DROP_CARRIED", false),
 	    .select_fold          = EnvToggle("KYTY_SELECT_FOLD", false),
+	    .alias_slots          = EnvToggle("KYTY_ALIAS_SLOTS", false),
 	    .lane_broadcast       = EnvToggle("KYTY_LANE_BROADCAST", turnip),
 	    .first_lane_sets      = EnvToggle("KYTY_FIRSTLANE_SETS", false),
 	    .bvh_emulation        = EnvBits("KYTY_BVH_OPT", 0u),
@@ -91,11 +92,11 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: native_float_min_max={} "
 	                                      "robust_buffer_loads={} lane_exec_branches={} "
 	                                      "wqm_entry_lane_fold={} wave_slices={} quad_dpp={} "
-	                                      "bvh_vec={} packed_interp={} drop_carried={} select_fold={} lane_broadcast={} first_lane_sets={} bvh_opt={} "
+	                                      "bvh_vec={} packed_interp={} drop_carried={} select_fold={} alias_slots={} lane_broadcast={} first_lane_sets={} bvh_opt={} "
 	                                      "ubo_constants={}B x{}\n",
 	                                      paths.native_float_min_max, paths.robust_buffer_loads,
 	                                      paths.lane_exec_branches, paths.wqm_entry_lane_fold,
-	                                      paths.wave_slices, paths.quad_dpp, paths.bvh_vector_loads, paths.packed_interp, paths.drop_carried, paths.select_fold,
+	                                      paths.wave_slices, paths.quad_dpp, paths.bvh_vector_loads, paths.packed_interp, paths.drop_carried, paths.select_fold, paths.alias_slots,
 	                                      paths.lane_broadcast, paths.first_lane_sets, paths.bvh_emulation,
 	                                      paths.uniform_constant_buffer_bytes,
 	                                      paths.uniform_buffers_per_stage));
