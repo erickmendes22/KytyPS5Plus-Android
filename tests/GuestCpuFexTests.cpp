@@ -283,6 +283,55 @@ void TestImportedCallbackRoundTrip() {
   std::puts("PASS T9 guest->HLE->guest callback round trip");
 }
 
+// T10: guest address folding (kernel/addressFold.h). With the fold mask on, guest accesses to
+// L | 2^39 reach host memory at L: plain, register-indexed, atomic, REP STOS/MOVS accesses, while
+// RDI after REP STOS keeps its unfolded value.
+void TestAddressFold() {
+  constexpr uint64_t kFoldBit = uint64_t {1} << 39;
+  auto* host = static_cast<uint8_t*>(mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+  Check(host != MAP_FAILED, "fold page mmap");
+  const auto low = reinterpret_cast<uint64_t>(host);
+  Check(low < kFoldBit, "host page below 2^39");
+
+  const uint64_t fn = X86Code()
+                          .Op({0x48, 0xC7, 0x07}).Imm32(0x11111111)       // mov qword [rdi], 0x11111111
+                          .Op({0xBE}).Imm32(2)                            // mov esi, 2
+                          .Op({0xB8}).Imm32(0x22222222)                   // mov eax, 0x22222222
+                          .Op({0x48, 0x89, 0x04, 0xF7})                   // mov [rdi + rsi*8], rax
+                          .Op({0x48, 0x8B, 0x57, 0x10})                   // mov rdx, [rdi + 16]
+                          .Op({0x48, 0x89, 0x57, 0x08})                   // mov [rdi + 8], rdx
+                          .Op({0xF0, 0x48, 0x83, 0x47, 0x18, 0x05})       // lock add qword [rdi + 24], 5
+                          .Op({0x49, 0x89, 0xF8})                         // mov r8, rdi
+                          .Op({0x48, 0x8D, 0x7F, 0x40})                   // lea rdi, [rdi + 64]
+                          .Op({0xB9}).Imm32(32)                           // mov ecx, 32
+                          .Op({0xB8}).Imm32(0xAB)                         // mov eax, 0xAB
+                          .Op({0xF3, 0xAA})                               // rep stosb
+                          .Op({0x49, 0x89, 0xF9})                         // mov r9, rdi
+                          .Op({0x49, 0x8D, 0x70, 0x40})                   // lea rsi, [r8 + 64]
+                          .Op({0x49, 0x8D, 0xB8}).Imm32(0x80)             // lea rdi, [r8 + 128]
+                          .Op({0xB9}).Imm32(32)                           // mov ecx, 32
+                          .Op({0xF3, 0xA4})                               // rep movsb
+                          .Op({0x4C, 0x89, 0xC8})                         // mov rax, r9
+                          .Ret()
+                          .Install();
+
+  EnableAddressFold(kFoldBit - 1);
+  const uint64_t args[1] = {low | kFoldBit};
+  const uint64_t rdi_after = CallGuest(fn, args);
+  EnableAddressFold(0);
+
+  uint64_t words[4] {};
+  std::memcpy(words, host, sizeof(words));
+  bool ok = words[0] == 0x11111111 && words[1] == 0x22222222 && words[2] == 0x22222222 && words[3] == 5;
+  for (int i = 0; i < 32; i++) {
+    ok = ok && host[64 + i] == 0xAB && host[128 + i] == 0xAB;
+  }
+  Check(ok, "T10 folded guest accesses reach the host page");
+  Check(rdi_after == ((low | kFoldBit) + 96), "T10 RDI after REP STOS stays unfolded");
+  munmap(host, 4096);
+  std::puts("PASS T10 guest address folding");
+}
+
 int main() {
   Check(Init(), "translator init");
   Check(AttachCurrentThread(MapStack()), "attach main thread");
@@ -299,6 +348,7 @@ int main() {
   Check(AttachCurrentThread(MapStack()), "re-attach main thread");
   TestImportedHleFunction();
   TestImportedCallbackRoundTrip();
+  TestAddressFold();
 
   DetachCurrentThread();
   std::puts("GuestCpuFexTests: all cases passed");
