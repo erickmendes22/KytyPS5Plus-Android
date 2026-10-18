@@ -493,6 +493,16 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 			    mode < 2u || !ShaderPixelParameterIsFlat(*input_info.pixel, input);
 			break;
 		}
+		case ValueOpcode::GetPackedVarying: {
+			const auto slot = inst.Arg(0).IsImmediate() ? inst.Arg(0).U32() : UINT32_MAX;
+			if (program.stage != ShaderType::Pixel || slot >= info.packed_varyings.size()) {
+				return Fail("packed varying reference is invalid");
+			}
+			const auto& varying = info.packed_varyings[slot];
+			AddInput(info, StageInputKind::PackedVarying, varying.location, 4,
+			         fmt::format("in_packed_{}", varying.location), false, varying.sampling);
+			break;
+		}
 		case ValueOpcode::GetBuiltin: {
 			if (!inst.Arg(0).IsImmediate() || inst.Arg(0).GetType() != Type::U32 ||
 			    !inst.Arg(1).IsImmediate() || inst.Arg(1).GetType() != Type::U32) {
@@ -651,12 +661,17 @@ bool IsRawBarycentricRead(const Inst& inst) {
 }
 
 // True when every use of value only carries it as the previous register value of exec-masked
-// writes, directly or through phis that are themselves only carried.
-bool OnlyCarriedThroughExecMerges(const Inst& value, std::vector<const Inst*>& visited) {
+// writes, directly or through phis that are themselves only carried. With drop_carried, the kept value
+// of a DPP update (lanes it does not write) counts as carried too, and so does its result.
+bool OnlyCarriedThroughExecMerges(const Inst& value, std::vector<const Inst*>& visited,
+                                  bool drop_carried) {
 	for (const auto& use: value.Uses()) {
 		const auto& user = *use.user;
 		if (user.GetOpcode() == ValueOpcode::SelectU32 && use.operand == 2u &&
 		    user.Flags<SelectOrigin>() == SelectOrigin::ExecMerge) {
+			continue;
+		}
+		if (drop_carried && user.GetOpcode() == ValueOpcode::DppUpdateU32 && use.operand == 1u) {
 			continue;
 		}
 		if (user.GetOpcode() == ValueOpcode::Phi) {
@@ -664,7 +679,7 @@ bool OnlyCarriedThroughExecMerges(const Inst& value, std::vector<const Inst*>& v
 				continue;
 			}
 			visited.push_back(&user);
-			if (OnlyCarriedThroughExecMerges(user, visited)) {
+			if (OnlyCarriedThroughExecMerges(user, visited, drop_carried)) {
 				continue;
 			}
 		}
@@ -675,7 +690,7 @@ bool OnlyCarriedThroughExecMerges(const Inst& value, std::vector<const Inst*>& v
 
 } // namespace
 
-uint32_t DropCarriedBarycentrics(Program& program) {
+uint32_t DropCarriedBarycentrics(Program& program, bool drop_carried) {
 	uint32_t replaced = 0;
 	for (auto* block: program.blocks) {
 		for (auto& inst: *block) {
@@ -683,7 +698,7 @@ uint32_t DropCarriedBarycentrics(Program& program) {
 				continue;
 			}
 			std::vector<const Inst*> visited;
-			if (OnlyCarriedThroughExecMerges(inst, visited)) {
+			if (OnlyCarriedThroughExecMerges(inst, visited, drop_carried)) {
 				inst.ReplaceUsesWith(Value(0u));
 				replaced++;
 			}
@@ -715,7 +730,8 @@ bool MixesFlatAndSmoothInUse(const ShaderPixelInputInfo& pixel, const std::array
 
 } // namespace
 
-bool PixelShaderNeedsBarycentrics(const Program& program, const ShaderPixelInputInfo& pixel) {
+bool PixelShaderNeedsBarycentrics(const Program& program, const ShaderPixelInputInfo& pixel,
+                                  bool drop_carried) {
 	std::array<bool, 32> used {};
 	const auto mark_used = [&](const Inst& inst) {
 		if (inst.Arg(0).IsImmediate() && inst.Arg(0).U32() < used.size()) {
@@ -736,7 +752,7 @@ bool PixelShaderNeedsBarycentrics(const Program& program, const ShaderPixelInput
 				default:
 					if (IsRawBarycentricRead(inst) && inst.HasUses()) {
 						std::vector<const Inst*> visited;
-						if (!OnlyCarriedThroughExecMerges(inst, visited)) {
+						if (!OnlyCarriedThroughExecMerges(inst, visited, drop_carried)) {
 							return true;
 						}
 					}
@@ -744,6 +760,11 @@ bool PixelShaderNeedsBarycentrics(const Program& program, const ShaderPixelInput
 			}
 		}
 	}
+	return MixesFlatAndSmoothInUse(pixel, used);
+}
+
+bool PixelParameterSlotsMixFlatAndSmooth(const ShaderPixelInputInfo& pixel,
+                                         const std::array<bool, 32>& used) {
 	return MixesFlatAndSmoothInUse(pixel, used);
 }
 

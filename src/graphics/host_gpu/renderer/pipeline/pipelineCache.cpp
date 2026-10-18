@@ -494,6 +494,13 @@ struct PipelineCache::ProgramCache {
 		return {};
 	}
 
+	// Varying locations usable between the vertex and fragment stages.
+	uint32_t PackedVaryingLocations() const {
+		const auto& limits = graphics.GetPhysicalDeviceProperties().limits;
+		return std::min<uint32_t>({limits.maxVertexOutputComponents,
+		                           limits.maxFragmentInputComponents, 128u}) / 4u;
+	}
+
 	// Everything the recompiler is told besides the program itself. The spans and input_info must
 	// outlive the options (MakeJob re-points them at the job's own copies).
 	template <typename InputInfo>
@@ -529,6 +536,9 @@ struct PipelineCache::ProgramCache {
 		         .subgroup_arithmetic =
 		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eArithmetic),
 		         .subgroup_quad_dpp = fast_paths.quad_dpp,
+		         .bvh_vector_loads  = fast_paths.bvh_vector_loads,
+		         .packed_varying_locations = fast_paths.packed_interp ? PackedVaryingLocations() : 0u,
+		         .drop_carried_vertex_data = fast_paths.drop_carried,
 		         .storage_image_array_non_uniform_indexing =
 		             graphics.optional_features.storage_image_array_non_uniform_indexing,
 		         .mesh_shader       = graphics.mesh_shader_enabled,
@@ -791,7 +801,7 @@ struct PipelineCache::ProgramCache {
 		const auto  options = MakeOptions(ShaderType::Vertex, 0, {}, {}, dummy, "");
 		const auto& f       = options.device_features;
 		const auto  text    = fmt::format(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={} ubo={}/{} f16={} quad={}", f.fragment_shader_barycentric,
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={} ubo={}/{} f16={} quad={} bvh={} packed={} dropc={}", f.fragment_shader_barycentric,
             f.geometry_varying_locations, f.shader_float64, f.shader_shared_int64_atomics,
             f.signed_zero_inf_nan_preserve_f32, f.subgroup_vertex, f.subgroup_tessellation,
             f.subgroup_fragment, f.subgroup_vote, f.subgroup_arithmetic,
@@ -799,7 +809,7 @@ struct PipelineCache::ProgramCache {
             f.robust_buffer_loads, f.lane_exec_branches, f.wqm_entry_lane_fold, f.wave_slices, f.render_scale,
             f.render_scale_keep_fragcoord, f.render_scale_keep_texels, options.maintenance8_enabled,
             options.device_quirks.branchless_bounds_checks, f.uniform_constant_buffer_bytes,
-            f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp);
+            f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp, f.bvh_vector_loads, f.packed_varying_locations, f.drop_carried_vertex_data);
 		return XXH3_64bits(text.data(), text.size());
 	}
 
@@ -1280,6 +1290,10 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		} else {
 			pixel_info.parameter_mode = ShaderPixelParameterMode::FirstVertex;
 		}
+		// Only a plain vertex shader can supply unpacked parameter fields (packed varyings).
+		pixel_info.packed_varyings_allowed =
+		    !mesh_active && !tess_active &&
+		    pixel_info.parameter_mode != ShaderPixelParameterMode::Rectangle;
 		const auto& blend = context.GetBlendControl(0);
 		pixel_info.dual_source_blending =
 		    blend.enable && !context.GetRenderTarget(0).info.blend_bypass &&
@@ -1334,16 +1348,62 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 	                  : ShaderRecompiler::IR::PushData::GraphicsDrawDwords(mesh_active,
 	                                                                       object_primitive_id);
 	GraphicsPrograms  result;
-	// Every stage is requested even when an earlier one is still translating, so the workers
-	// translate them in parallel; the draw is skipped until all are installed.
-	if (pixel_active) {
-		result.pixel = m_program_cache->Get(pixel_params, pixel_info, push_data_cursor, true);
-		result.ready = result.ready && static_cast<bool>(result.pixel);
-	}
-	for (uint32_t i = 0; i < (tess_active ? 3u : 1u); i++) {
-		result.vertex[i] =
-		    m_program_cache->Get(vertex_params[i], vertex_info[i], push_data_cursor, true);
-		result.ready = result.ready && static_cast<bool>(result.vertex[i]);
+	const auto        first_push_data_cursor = push_data_cursor;
+	const auto        request = [&] {
+		result = {};
+		push_data_cursor = first_push_data_cursor;
+		// Every stage is requested even when an earlier one is still translating, so the workers
+		// translate them in parallel; the draw is skipped until all are installed.
+		if (pixel_active) {
+			result.pixel = m_program_cache->Get(pixel_params, pixel_info, push_data_cursor, true);
+			result.ready = result.ready && static_cast<bool>(result.pixel);
+		}
+		for (uint32_t i = 0; i < (tess_active ? 3u : 1u); i++) {
+			result.vertex[i] =
+			    m_program_cache->Get(vertex_params[i], vertex_info[i], push_data_cursor, true);
+			result.ready = result.ready && static_cast<bool>(result.vertex[i]);
+		}
+	};
+	request();
+	// A pixel shader whose manual interpolation became packed varyings needs a vertex shader that
+	// writes them: once both are known, the vertex shader is requested again with that request.
+	if (pixel_active && pixel_info.packed_varyings_allowed && result.pixel && result.vertex[0] &&
+	    pixel_info.stage.program != nullptr && vertex_info[0].stage.program != nullptr &&
+	    !pixel_info.stage.program->info.packed_varyings.empty()) {
+		const auto& varyings = pixel_info.stage.program->info.packed_varyings;
+		const auto& vertex   = *vertex_info[0].stage.program;
+		bool conflict = varyings.size() > ShaderPackedVaryingRequest::MaxEntries;
+		for (const auto& varying: varyings) {
+			conflict = conflict || varying.location >= 32u ||
+			           ((vertex.param_export_mask >> varying.location) & 1u) != 0 ||
+			           varying.location == vertex.info.raster_outputs.layer_viewport_location;
+		}
+		if (conflict) {
+			static std::atomic_uint32_t logged = 0;
+			if (logged.fetch_add(1) < 8u) {
+				PipelineCacheLog("Packed varyings: VS 0x{:016x} exports a location PS 0x{:016x} "
+				                 "needs; using the geometry stage instead",
+				                 vertex.shader_hash, pixel_info.stage.program->shader_hash);
+			}
+			pixel_info.packed_varyings_allowed = false;
+		} else {
+			auto& packed = vertex_info[0].packed_varyings;
+			packed.count = static_cast<uint32_t>(varyings.size());
+			for (size_t i = 0; i < varyings.size(); i++) {
+				const auto& varying = varyings[i];
+				packed.entries[i]   = {
+				      .source_location  = varying.source_location,
+				      .source_component = varying.source_component,
+				      .bit_offset       = varying.bit_offset,
+				      .bit_count        = varying.bit_count,
+				      .format           = static_cast<uint8_t>(varying.format),
+				      .location         = varying.location,
+				      .component        = varying.component,
+				      .flat             = static_cast<uint8_t>(varying.flat ? 1u : 0u),
+				};
+			}
+		}
+		request();
 	}
 	return result;
 }

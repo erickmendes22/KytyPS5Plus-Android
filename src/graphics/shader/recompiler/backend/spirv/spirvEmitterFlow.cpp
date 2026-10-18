@@ -463,6 +463,79 @@ uint32_t ConvertPositionToClipSpace(EmitterState& state, uint32_t position) {
 
 } // namespace
 
+void EmitPackedVaryingOutputs(EmitterState& state) {
+	if (state.packed_varying_outputs.empty()) {
+		return;
+	}
+	const auto& request = state.input_info.vertex->packed_varyings;
+	const auto  f = TypeF32(state), u = TypeU32(state);
+	const auto  vec4 = TypeF32Vector(state, 4);
+	const auto  field = [&](spv::Op op, uint32_t bits, uint32_t offset, uint32_t count) {
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(op, u, result, bits, ConstantU32(state, offset),
+		                          ConstantU32(state, count));
+		return result;
+	};
+	for (const auto& [location, variable]: state.packed_varying_outputs) {
+		bool flat = false;
+		for (uint32_t i = 0; i < request.count; i++) {
+			flat = flat || (request.entries[i].location == location && request.entries[i].flat != 0);
+		}
+		std::array<uint32_t, 4> components;
+		components.fill(flat ? ConstantU32(state, 0) : ConstantF32Value(state, 0.0f));
+		for (uint32_t i = 0; i < request.count; i++) {
+			const auto& entry = request.entries[i];
+			if (entry.location != location || entry.component >= 4) continue;
+			const auto source = std::ranges::find_if(state.outputs, [&](const OutputBinding& output) {
+				return output.kind == IR::StageOutputKind::Parameter &&
+				       output.location == entry.source_location && output.variable_id != 0;
+			});
+			uint32_t bits = ConstantU32(state, 0);
+			if (source != state.outputs.end()) {
+				const auto vector = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpLoad, vec4, vector, source->variable_id);
+				const auto component = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpCompositeExtract, f, component, vector,
+				                          entry.source_component & 3u);
+				bits = Unary(state, spv::OpBitcast, u, component);
+			}
+			uint32_t value = 0;
+			if (flat) {
+				components[entry.component] = bits;
+				continue;
+			}
+			switch (static_cast<IR::PackedVaryingFormat>(entry.format)) {
+				case IR::PackedVaryingFormat::Float32: value = Unary(state, spv::OpBitcast, f, bits); break;
+				case IR::PackedVaryingFormat::Unsigned:
+					value = Unary(state, spv::OpConvertUToF, f,
+					              field(spv::OpBitFieldUExtract, bits, entry.bit_offset, entry.bit_count));
+					break;
+				case IR::PackedVaryingFormat::Signed: {
+					const auto converted = Unary(state, spv::OpConvertSToF, f,
+					    field(spv::OpBitFieldSExtract, bits, entry.bit_offset, entry.bit_count));
+					const auto limit = -(static_cast<float>((1u << (entry.bit_count - 1u)) - 1u));
+					value = EmitGlsl<GLSLstd450FMax, IR::Type::F32>(state, converted,
+					                                               ConstantF32Value(state, limit));
+					break;
+				}
+				case IR::PackedVaryingFormat::Half: {
+					const auto unpacked = EmitGlsl<GLSLstd450UnpackHalf2x16, IR::Type::F32x2>(
+					    state, field(spv::OpBitFieldUExtract, bits, entry.bit_offset, 16));
+					value = state.builder.AllocateId();
+					state.builder.AddFunction(spv::OpCompositeExtract, f, value, unpacked, 0u);
+					break;
+				}
+			}
+			components[entry.component] = value;
+		}
+		const auto vector = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeConstruct, flat ? TypeU32Vector(state, 4) : vec4,
+		                          vector, components[0], components[1], components[2],
+		                          components[3]);
+		state.builder.AddFunction(spv::OpStore, variable, vector);
+	}
+}
+
 uint32_t EmitPerVertexComponentF32(EmitterState& state, const InputBinding& input, uint32_t vertex,
                                    uint32_t component) {
 	const bool emulated = BarycentricsEmulated(state);
@@ -1083,6 +1156,27 @@ uint32_t EmitPermlane16U32(ValueEmitContext& ctx, const IR::Inst& inst) {
 
 uint32_t EmitGetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 	return EmitAttribute(ctx.state, inst.Arg(0).U32(), inst.Arg(1).U32());
+}
+
+uint32_t EmitGetPackedVarying(ValueEmitContext& ctx, const IR::Inst& inst) {
+	auto&       state    = ctx.state;
+	const auto  slot     = inst.Arg(0).U32();
+	const auto& varyings = state.program.info.packed_varyings;
+	if (slot >= varyings.size()) ctx.Fail(inst, "names no packed varying");
+	const auto& varying = varyings[slot];
+	const auto  input   = std::ranges::find_if(state.inputs, [&](const InputBinding& binding) {
+		return binding.kind == IR::StageInputKind::PackedVarying && binding.location == varying.location;
+	});
+	if (input == state.inputs.end() || input->variable_id == 0) {
+		ctx.Fail(inst, "has no packed varying input");
+	}
+	const auto type    = varying.flat ? TypeU32(state) : TypeF32(state);
+	const auto pointer = state.builder.AllocateId();
+	const auto value   = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAccessChain, TypePointer(state, spv::StorageClassInput, type),
+	                          pointer, input->variable_id, ConstantU32(state, varying.component));
+	state.builder.AddFunction(spv::OpLoad, type, value, pointer);
+	return varying.flat ? Unary(state, spv::OpBitcast, TypeF32(state), value) : value;
 }
 
 uint32_t EmitGetInterpolationParameter(ValueEmitContext& ctx, const IR::Inst& inst) {

@@ -172,6 +172,9 @@ struct EmitterState {
 	uint32_t                   layer_variable                        = 0;
 	uint32_t                   viewport_index_variable               = 0;
 	uint32_t                   layer_viewport_mirror_variable        = 0;
+	// Vertex stage: (location, variable) of the unpacked parameter fields a pixel shader reads
+	// (ShaderVertexInputInfo::packed_varyings), written at return.
+	std::vector<std::pair<uint32_t, uint32_t>> packed_varying_outputs;
 	uint32_t                   depth_variable                        = 0;
 	uint32_t                   object_primitive_id_variable          = 0;
 	uint32_t                   sample_mask_variable                  = 0;
@@ -339,6 +342,10 @@ inline bool BarycentricsEmulated(const EmitterState& state) {
 }
 
 // One component of one vertex of a per-vertex pixel parameter, as an f32 value.
+// Vertex stage: writes the unpacked parameter fields (packed_varying_outputs) from the parameter
+// outputs written so far. Called before each return.
+void EmitPackedVaryingOutputs(EmitterState& state);
+
 uint32_t EmitPerVertexComponentF32(EmitterState& state, const InputBinding& input, uint32_t vertex,
                                    uint32_t component);
 

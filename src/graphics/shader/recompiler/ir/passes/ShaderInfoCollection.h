@@ -16,14 +16,20 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info,
 // possibly through phis); that value only survives in the lanes the write skipped. Such reads are
 // replaced with zero so the pair stops being a live raw read. Returns the number of replaced reads.
 // Any other read of a raw I/J VGPR is left for CollectShaderInfo to reject.
-uint32_t DropCarriedBarycentrics(Program& program);
+// drop_carried: also the kept value of a DPP update (KYTY_DROP_CARRIED).
+uint32_t DropCarriedBarycentrics(Program& program, bool drop_carried = false);
 
 // True when a pixel shader cannot run on native interpolated inputs alone: it reads raw I/J
 // values (other than ones DropCarriedBarycentrics would drop), reads P0/P10/P20 of a non-flat
 // parameter, or uses flat and smooth aliases of one parameter slot. These are exactly the uses
 // CollectShaderInfo rejects without barycentrics, so a shader for which this is false compiles
 // on the native path.
-bool PixelShaderNeedsBarycentrics(const Program& program, const ShaderPixelInputInfo& pixel);
+bool PixelShaderNeedsBarycentrics(const Program& program, const ShaderPixelInputInfo& pixel,
+                                  bool drop_carried = false);
+
+// True when one parameter slot has a flat and a smooth alias, either of them in `used`.
+bool PixelParameterSlotsMixFlatAndSmooth(const ShaderPixelInputInfo& pixel,
+                                         const std::array<bool, 32>& used);
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR
 

@@ -676,6 +676,14 @@ void DefineInputs(EmitterState& state) {
 			case IR::StageInputKind::BaryCoordSmooth:
 			case IR::StageInputKind::BaryCoordNoPerspective: type = TypeF32Vector(state, 3); break;
 			case IR::StageInputKind::FrontFacing: type = TypeBool(state); break;
+			case IR::StageInputKind::PackedVarying: {
+				const auto& varyings = state.program.info.packed_varyings;
+				const bool  flat     = std::ranges::any_of(varyings, [&](const IR::PackedVarying& v) {
+					return v.location == input.location && v.flat;
+				});
+				type = flat ? TypeU32Vector(state, 4) : TypeF32Vector(state, 4);
+				break;
+			}
 			case IR::StageInputKind::Parameter:
 				if (state.program.stage == ShaderType::Vertex ||
 				    state.program.stage == ShaderType::Local) {
@@ -734,6 +742,27 @@ void DefineInputs(EmitterState& state) {
 			state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationLocation,
 			                            emulated ? input.emulated_location
 			                                     : PixelParameterLocation(state, input.location));
+		} else if (input.kind == IR::StageInputKind::PackedVarying) {
+			const auto& varyings = state.program.info.packed_varyings;
+			const auto  varying  = std::ranges::find_if(varyings, [&](const IR::PackedVarying& v) {
+				return v.location == input.location;
+			});
+			EXIT_IF(varying == varyings.end());
+			if (varying->flat) {
+				state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationFlat);
+			} else if (varying->no_perspective) {
+				state.builder.AddAnnotation(spv::OpDecorate, input.variable_id,
+				                            spv::DecorationNoPerspective);
+			}
+			if (!varying->flat && varying->sampling != IR::PixelInterpolationSampling::Center) {
+				state.builder.AddAnnotation(
+				    spv::OpDecorate, input.variable_id,
+				    varying->sampling == IR::PixelInterpolationSampling::Sample
+				        ? spv::DecorationSample
+				        : spv::DecorationCentroid);
+			}
+			state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationLocation,
+			                            input.location);
 		} else if (emulated && (input.kind == IR::StageInputKind::BaryCoordSmooth ||
 		                        input.kind == IR::StageInputKind::BaryCoordNoPerspective)) {
 			// The geometry stage's barycentric vector stands in for the BaryCoord built-in.
@@ -902,6 +931,32 @@ void DefineOutputs(EmitterState& state) {
 				}
 				break;
 			}
+		}
+	}
+	if (state.program.stage == ShaderType::Vertex && state.input_info.vertex != nullptr) {
+		const auto& request = state.input_info.vertex->packed_varyings;
+		for (uint32_t i = 0; i < request.count; i++) {
+			const uint32_t location = request.entries[i].location;
+			if (std::ranges::any_of(state.packed_varying_outputs,
+			                        [&](const auto& output) { return output.first == location; })) {
+				continue;
+			}
+			if (std::ranges::any_of(state.outputs, [&](const OutputBinding& output) {
+				    return output.kind == IR::StageOutputKind::Parameter && output.location == location;
+			    })) {
+				EXIT("vertex shader hash=0x%016" PRIx64 " exports parameter %u, which a packed "
+				     "varying of its pixel shader also uses\n",
+				     state.program.shader_hash, location);
+			}
+			bool flat = false;
+			for (uint32_t j = 0; j < request.count; j++) {
+				flat = flat || (request.entries[j].location == location && request.entries[j].flat != 0);
+			}
+			const auto variable = DefineInterfaceVariable(
+			    state, flat ? TypeU32Vector(state, 4) : TypeF32Vector(state, 4),
+			    spv::StorageClassOutput, "out_packed");
+			state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationLocation, location);
+			state.packed_varying_outputs.emplace_back(location, variable);
 		}
 	}
 	DefineRasterOutputs(state, clip_distance_count, cull_distance_count);

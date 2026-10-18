@@ -255,6 +255,7 @@ enum class StageInputKind {
 	BaseVertex,   // gl_BaseVertex (--gpu-indirect draws)
 	BaseInstance, // gl_BaseInstance (--gpu-indirect draws)
 	Parameter,
+	PackedVarying, // An unpacked parameter field interpolated by the hardware (PackedVarying).
 };
 
 enum class StageOutputKind {
@@ -379,6 +380,32 @@ struct EmulatedVarying {
 	PixelInterpolationSampling sampling        = PixelInterpolationSampling::Center;
 
 	bool operator==(const EmulatedVarying& other) const = default;
+};
+
+// A parameter field that a pixel shader interpolated by hand from per-vertex reads, lowered to an
+// ordinary interpolated input (passes/ManualInterpolation.h). The previous stage writes
+// x = Unpack(export[source_location][source_component]) to component `component` of `location`.
+enum class PackedVaryingFormat : uint8_t {
+	Float32,  // The dword as a float.
+	Unsigned, // float(bits [bit_offset, bit_offset + bit_count)).
+	Signed,   // float(sign-extended field), clamped to >= -(2^(bit_count-1) - 1).
+	Half,     // The 16-bit half float at bit_offset.
+};
+
+struct PackedVarying {
+	uint8_t                    source_location  = 0;
+	uint8_t                    source_component = 0;
+	uint8_t                    bit_offset       = 0;
+	uint8_t                    bit_count        = 32;
+	PackedVaryingFormat        format           = PackedVaryingFormat::Float32;
+	uint8_t                    location         = 0;
+	uint8_t                    component        = 0;
+	// The provoking vertex's dword, bit-exact (a uvec4 location): format Float32, full dword.
+	bool                       flat             = false;
+	bool                       no_perspective   = false;
+	PixelInterpolationSampling sampling         = PixelInterpolationSampling::Center;
+
+	bool operator==(const PackedVarying& other) const = default;
 };
 
 struct BarycentricEmulation {
@@ -652,6 +679,8 @@ struct ShaderInfo {
 	// Filled by the SPIR-V emitter: a Mesh stage emitted as a compute shader (mesh emulation).
 	bool                            mesh_emulation                = false;
 	BarycentricEmulation            barycentric_emulation;
+	// Pixel shader: inputs that replaced manual per-vertex interpolation (GetPackedVarying).
+	std::vector<PackedVarying>      packed_varyings;
 	PreRasterOutputs                raster_outputs;
 
 	bool operator==(const ShaderInfo& other) const = default;
