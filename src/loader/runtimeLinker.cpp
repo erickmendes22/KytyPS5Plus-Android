@@ -36,8 +36,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
+#include <iterator>
 #include <magic_enum.hpp>
 #include <memory>
+#include <string>
 #include <vector>
 
 #if KYTY_HOST_ARM64 && !defined(_WIN32)
@@ -701,6 +703,59 @@ static bool GuestGpuFault(uintptr_t fault_address, bool is_write) {
 }
 #endif
 
+#if KYTY_HOST_ARM64
+// "module+0xoffset" for a guest code address, or the bare address outside every loaded module.
+static std::string DescribeGuestCodeAddress(uint64_t vaddr) {
+	auto* program = Common::Singleton<Loader::RuntimeLinker>::Instance()->FindProgramByAddr(vaddr);
+	if (program == nullptr) {
+		return fmt::format("0x{:016x} (no module)", vaddr);
+	}
+	return fmt::format(
+	    "0x{:016x} ({}+0x{:x})", vaddr,
+	    Common::FilenameWithoutDirectory(Common::PathToGenericString(program->file_name)).c_str(),
+	    vaddr - program->base_vaddr);
+}
+
+// A fault in translated guest code that neither GPU tracking nor a guest handler claimed: the guest
+// itself crashed (UE titles, for example, deliberately fault after LowLevelFatalError). Reported in
+// guest terms, then the emulator exits as for any fatal error.
+[[noreturn]] static void ReportGuestCrash(const Common::HostException::ExceptionInfo& info,
+                                         const Cpu::GuestCpu::GuestRegisters&        regs) {
+	using Regs = Cpu::GuestCpu::GuestRegisters;
+
+	char thread_name[64] = "(host thread)";
+	if (auto self = Libs::LibKernel::PthreadSelfOrNull(); self != nullptr) {
+		if (Libs::LibKernel::PthreadGetname(self, thread_name) != 0) {
+			std::snprintf(thread_name, sizeof(thread_name), "(unnamed guest thread)");
+		}
+	}
+
+	std::string report = fmt::format(
+	    "Guest crashed: {} access to 0x{:016x}\n"
+	    "  thread: {}\n"
+	    "  rip: {}\n"
+	    "  rax={:016x} rbx={:016x} rcx={:016x} rdx={:016x}\n"
+	    "  rsi={:016x} rdi={:016x} rbp={:016x} rsp={:016x}\n"
+	    "  r8 ={:016x} r9 ={:016x} r10={:016x} r11={:016x}\n"
+	    "  r12={:016x} r13={:016x} r14={:016x} r15={:016x}\n",
+	    magic_enum::enum_name(info.access_violation_type), info.access_violation_vaddr,
+	    thread_name, DescribeGuestCodeAddress(regs.rip), regs.gpr[Regs::kRax],
+	    regs.gpr[Regs::kRbx], regs.gpr[Regs::kRcx], regs.gpr[Regs::kRdx], regs.gpr[Regs::kRsi],
+	    regs.gpr[Regs::kRdi], regs.gpr[Regs::kRbp], regs.gpr[Regs::kRsp], regs.gpr[Regs::kR8],
+	    regs.gpr[Regs::kR9], regs.gpr[Regs::kR10], regs.gpr[Regs::kR11], regs.gpr[Regs::kR12],
+	    regs.gpr[Regs::kR13], regs.gpr[Regs::kR14], regs.gpr[Regs::kR15]);
+
+	void*     frames[16];
+	const int depth = WalkGuestStack(regs.gpr[Regs::kRbp], regs.gpr[Regs::kRsp], frames,
+	                                 static_cast<int>(std::size(frames)));
+	for (int i = 0; i < depth; i++) {
+		report += fmt::format("  [{}] {}\n", i,
+		                      DescribeGuestCodeAddress(reinterpret_cast<uint64_t>(frames[i])));
+	}
+	EXIT("%s", report.c_str());
+}
+#endif
+
 static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exception_info) {
 	const auto* info = &exception_info;
 
@@ -732,6 +787,12 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
 			return true;
 		}
+#if KYTY_HOST_ARM64
+		if (Cpu::GuestCpu::GuestRegisters regs {};
+		    Cpu::GuestCpu::CaptureFaultingGuestRegisters(info->native_context, &regs)) {
+			ReportGuestCrash(*info, regs);
+		}
+#endif
 	}
 	// Report whatever guest context can be read safely before terminating: which guest thread
 	// faulted, the register file, the faulting code bytes and the top of its stack.

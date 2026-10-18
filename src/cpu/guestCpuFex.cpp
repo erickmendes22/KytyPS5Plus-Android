@@ -5,6 +5,7 @@
 
 #include "common/hostFaultAccess.h"
 
+#include "ArchHelpers/MContext.h"
 #include "CodeLoader.h"
 #include "Common/Config.h"
 #include "Common/HostFeatures.h"
@@ -28,6 +29,7 @@ extern char** environ;
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <pthread.h>
 
@@ -372,6 +374,32 @@ void RegisterGuestCodeRange(uint64_t base, uint64_t size) {
 	auto* state = t_attached.state;
 	Fex::GetRuntime().syscalls->AddVirtualPage(state != nullptr ? state->Thread : nullptr, base, size,
 	                                           PROT_READ | PROT_WRITE | PROT_EXEC);
+}
+
+bool CaptureFaultingGuestRegisters(void* host_signal_context, GuestRegisters* out) {
+	const auto* attached = t_attached.state;
+	if (host_signal_context == nullptr || out == nullptr || attached == nullptr ||
+	    attached->Thread == nullptr || attached->Thread->CurrentFrame == nullptr) {
+		return false;
+	}
+	auto*      thread  = attached->Thread;
+	auto&      runtime = Fex::GetRuntime();
+	const auto host_pc = FEX::ArchHelpers::Context::GetPc(host_signal_context);
+	if (!runtime.ctx->IsAddressInCodeBuffer(thread, host_pc)) {
+		return false;
+	}
+	const auto& state = thread->CurrentFrame->State;
+	static_assert(sizeof(out->gpr) == sizeof(state.gregs));
+	std::memcpy(out->gpr, state.gregs, sizeof(out->gpr));
+	// Inside JIT code the statically allocated guest registers live in host registers.
+	const auto& config = runtime.signals->GetConfig();
+	for (uint32_t i = 0; i < config.SRAGPRCount && i < std::size(out->gpr); i++) {
+		out->gpr[i] =
+		    FEX::ArchHelpers::Context::GetArmReg(host_signal_context, config.SRAGPRMapping[i]);
+	}
+	out->rip     = runtime.ctx->RestoreRIPFromHostPC(thread, host_pc);
+	out->fs_base = state.fs_cached;
+	return true;
 }
 
 void RegisterHostFaultHandler(HostFaultHandler handler) {
