@@ -1756,6 +1756,16 @@ void TestOversizedReservationIsLazy() {
 	      "a later reservation overlaps the lazy reservation");
 	CheckOk(test, KernelMunmap(other_addr, page), "KernelMunmap(page)");
 
+	// UE5 then reserves 64 MiB with the same hint; with no room above it, the search falls back to
+	// free space below the hint instead of failing.
+	void*              hinted      = reinterpret_cast<void*>(base);
+	constexpr uint64_t hinted_size = 64ull << 20u;
+	CheckOk(test, KernelReserveVirtualRange(&hinted, hinted_size, 0, page),
+	        "KernelReserveVirtualRange(64 MiB at the lazy base)");
+	const auto hinted_addr = reinterpret_cast<uint64_t>(hinted);
+	Check(test, hinted_addr + hinted_size <= base, "hinted reservation not placed below the hint");
+	CheckOk(test, KernelMunmap(hinted_addr, hinted_size), "KernelMunmap(64 MiB)");
+
 	CheckOk(test, KernelMunmap(base, size), "KernelMunmap(whole lazy reservation)");
 	ExpectUnmapped(test, base);
 	CheckOk(test, KernelReleaseDirectMemory(physical, page), "KernelReleaseDirectMemory");

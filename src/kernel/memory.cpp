@@ -846,7 +846,19 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 	};
 
 	if (search_addr != 0) {
-		return find_in(search_addr, HOST_USER_MAX + 1u);
+		const auto addr = find_in(search_addr, HOST_USER_MAX + 1u);
+		if (addr != 0 || search_addr <= GUEST_DEFAULT_MAP_BASE) {
+			return addr;
+		}
+		// A hint only says where the search starts. On the PS5 there is always user VA above a
+		// hint up to 0xFC00000000; here the window can end first (for example when a lazy
+		// reservation, kernel/lazyReservation.h, covers it), so fall back to the free space below.
+		const auto below = find_in(GUEST_DEFAULT_MAP_BASE,
+		                           std::min<uint64_t>(search_addr, HOST_SYSTEM_MANAGED_MAX + 1u));
+		if (below != 0 || search_addr <= HOST_USER_MIN) {
+			return below;
+		}
+		return find_in(HOST_USER_MIN, std::min<uint64_t>(search_addr, HOST_USER_MAX + 1u));
 	}
 	auto addr = find_in(GUEST_DEFAULT_MAP_BASE, HOST_SYSTEM_MANAGED_MAX + 1u);
 	if (addr == 0) {
