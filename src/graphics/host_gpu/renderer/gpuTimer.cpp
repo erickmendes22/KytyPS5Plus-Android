@@ -1,11 +1,14 @@
 #include "graphics/host_gpu/renderer/gpuTimer.h"
 
 #include "common/assert.h"
+#include "common/logging/log.h"
+#include "gpu_blit_shaders/gpu_clock_probe_spv.h"
 #include "common/perfWaits.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cinttypes>
 #include <cstdio>
@@ -18,7 +21,22 @@ namespace {
 constexpr size_t kLogTop  = 6;
 constexpr size_t kFileTop = 60;
 
+// Clock probe defaults: ~0.7 ms of FMA work on an Adreno 830 at its top clock.
+constexpr long     kProbeDefaultMs         = 2000;
+constexpr uint32_t kProbeDefaultIterations = 4096;
+constexpr uint32_t kProbeDefaultGroups     = 1024;
+
 std::atomic<uint32_t> g_instances {0};
+
+long EnvLong(const char* name, long fallback) {
+	const char* value = std::getenv(name);
+	if (value == nullptr || *value == '\0') {
+		return fallback;
+	}
+	char*      end    = nullptr;
+	const long parsed = std::strtol(value, &end, 10);
+	return end != nullptr && *end == '\0' && parsed >= 0 ? parsed : fallback;
+}
 
 std::string LabelName(const char* kind, uint64_t hash, const GpuPassInfo& pass) {
 	char buf[128];
@@ -67,12 +85,129 @@ GpuTimer::GpuTimer(GraphicContext& graphics, MasterSemaphore& master)
 	m_period_ns    = static_cast<double>(period);
 	m_enabled      = true;
 	m_last_dump_ns = Common::PerfStats::Detail::MonotonicNs();
+	m_start_ns     = m_last_dump_ns;
 	m_instance     = g_instances.fetch_add(1, std::memory_order_relaxed);
+	if (m_instance == 0) {
+		CreateProbe();
+	}
 }
 
 GpuTimer::~GpuTimer() {
 	for (auto pool: m_all_pools) {
 		m_graphics.device.destroyQueryPool(pool, nullptr);
+	}
+	if (m_probe_pool != nullptr) {
+		m_graphics.device.destroyQueryPool(m_probe_pool, nullptr);
+	}
+	if (m_probe_pipeline != nullptr) {
+		m_graphics.device.destroyPipeline(m_probe_pipeline, nullptr);
+	}
+	if (m_probe_layout != nullptr) {
+		m_graphics.device.destroyPipelineLayout(m_probe_layout, nullptr);
+	}
+}
+
+void GpuTimer::CreateProbe() {
+	const long interval_ms = EnvLong("KYTY_GPU_PROBE_MS", kProbeDefaultMs);
+	if (interval_ms == 0) {
+		return;
+	}
+	m_probe_iterations = static_cast<uint32_t>(
+	    std::clamp(EnvLong("KYTY_GPU_PROBE_ITERATIONS", kProbeDefaultIterations), 1L, 1L << 20));
+	m_probe_groups = static_cast<uint32_t>(
+	    std::clamp(EnvLong("KYTY_GPU_PROBE_GROUPS", kProbeDefaultGroups), 1L, 65535L));
+	const auto device = m_graphics.device;
+	const vk::PushConstantRange push {vk::ShaderStageFlagBits::eCompute, 0, sizeof(ProbeParams)};
+	vk::PipelineLayoutCreateInfo layout_info {};
+	layout_info.pushConstantRangeCount = 1;
+	layout_info.pPushConstantRanges    = &push;
+	RequireVulkanSuccess(device.createPipelineLayout(&layout_info, nullptr, &m_probe_layout),
+	                     "create GPU clock probe pipeline layout");
+	const auto module = CompileSPV(GPU_CLOCK_PROBE_SPV, device);
+	vk::ComputePipelineCreateInfo pipeline_info {};
+	pipeline_info.stage.stage  = vk::ShaderStageFlagBits::eCompute;
+	pipeline_info.stage.module = module;
+	pipeline_info.stage.pName  = "main";
+	pipeline_info.layout       = m_probe_layout;
+	const auto result = device.createComputePipelines(nullptr, 1, &pipeline_info, nullptr,
+	                                                  &m_probe_pipeline);
+	device.destroyShaderModule(module, nullptr);
+	RequireVulkanSuccess(result, "create GPU clock probe pipeline");
+	SetVulkanObjectNameF(device, m_probe_pipeline, "GPU Clock Probe");
+
+	vk::QueryPoolCreateInfo pool_info {};
+	pool_info.queryType  = vk::QueryType::eTimestamp;
+	pool_info.queryCount = kProbeSlots * 2;
+	RequireVulkanSuccess(device.createQueryPool(&pool_info, nullptr, &m_probe_pool),
+	                     "create GPU clock probe query pool");
+	m_probe_interval_ns = int64_t {interval_ms} * 1'000'000;
+	char line[160];
+	std::snprintf(line, sizeof(line),
+	              "[perf-probe] GPU clock probe every %ld ms: %u groups x 64 x %u iterations",
+	              interval_ms, m_probe_groups, m_probe_iterations);
+	Common::PerfStats::EmitLine(line);
+}
+
+// At the start of a command buffer: wait for everything submitted before, time the probe alone,
+// and keep the work after it from overlapping it.
+void GpuTimer::RecordProbe(vk::CommandBuffer buffer) {
+	if (m_probe_pipeline == nullptr || m_probe_recorded) {
+		return;
+	}
+	const auto now = Common::PerfStats::Detail::MonotonicNs();
+	if (now - m_last_probe_ns < m_probe_interval_ns) {
+		return;
+	}
+	const uint32_t slot = m_probe_next_slot;
+	for (const auto& pending: m_probe_pending) {
+		if (pending.slot == slot) {
+			return; // all slots in flight; try again at the next command buffer
+		}
+	}
+	m_last_probe_ns   = now;
+	m_probe_next_slot = (slot + 1) % kProbeSlots;
+
+	vk::MemoryBarrier2 fence {};
+	fence.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+	fence.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+	vk::DependencyInfo dependency {};
+	dependency.memoryBarrierCount = 1;
+	dependency.pMemoryBarriers    = &fence;
+
+	buffer.resetQueryPool(m_probe_pool, slot * 2, 2);
+	buffer.pipelineBarrier2(dependency);
+	buffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, m_probe_pool, slot * 2);
+	buffer.bindPipeline(vk::PipelineBindPoint::eCompute, m_probe_pipeline);
+	const ProbeParams params {.sink = 0, .iterations = m_probe_iterations, .never = -1.0f};
+	buffer.pushConstants(m_probe_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(params),
+	                     &params);
+	buffer.dispatch(m_probe_groups, 1, 1);
+	buffer.pipelineBarrier2(dependency);
+	buffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, m_probe_pool, slot * 2 + 1);
+	m_probe_recorded      = true;
+	m_probe_recorded_slot = slot;
+}
+
+void GpuTimer::CollectProbes() {
+	while (!m_probe_pending.empty() && m_master.IsFree(m_probe_pending.front().tick)) {
+		const auto slot = m_probe_pending.front().slot;
+		m_probe_pending.pop_front();
+		std::array<uint64_t, 2> stamps {};
+		const auto result = m_graphics.device.getQueryPoolResults(
+		    m_probe_pool, slot * 2, 2, sizeof(stamps), stamps.data(), sizeof(uint64_t),
+		    vk::QueryResultFlagBits::e64);
+		if (result != vk::Result::eSuccess) {
+			LOGF("[perf-probe] reading probe slot %u failed: %s\n", slot,
+			     vk::to_string(result).c_str());
+			continue;
+		}
+		const uint64_t ticks = (stamps[1] - stamps[0]) & m_valid_mask;
+		const double   ms    = static_cast<double>(ticks) * m_period_ns / 1e6;
+		const double   t     = static_cast<double>(Common::PerfStats::Detail::MonotonicNs() -
+		                                           m_start_ns) / 1e9;
+		char line[96];
+		std::snprintf(line, sizeof(line), "[perf-probe] t=%.1f gpu_ms=%.3f", t, ms);
+		Common::PerfStats::EmitLine(line);
 	}
 }
 
@@ -99,6 +234,7 @@ void GpuTimer::Begin(vk::CommandBuffer buffer) {
 	}
 	EXIT_IF(m_recording);
 	Collect();
+	RecordProbe(buffer);
 	m_current                = {};
 	const auto [pool, dirty] = AcquirePool();
 	if (pool == nullptr) {
@@ -133,6 +269,10 @@ void GpuTimer::End(vk::CommandBuffer buffer) {
 }
 
 void GpuTimer::Submitted(uint64_t tick) {
+	if (m_probe_recorded) {
+		m_probe_recorded = false;
+		m_probe_pending.push_back({m_probe_recorded_slot, tick});
+	}
 	if (!m_recording) {
 		return;
 	}
@@ -161,6 +301,7 @@ void GpuTimer::Collect() {
 		m_free_pools.emplace_back(recording.pool, recording.count);
 		m_pending.pop_front();
 	}
+	CollectProbes();
 	MaybeDump();
 }
 

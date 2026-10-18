@@ -23,6 +23,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <thread>
 #include <nlohmann/json.hpp>
 #include <vulkan/vulkan_android.h>
@@ -113,6 +114,66 @@ int AcquireGpuTurboBalanced() noexcept {
 	(void)SetKgslTurbo(false);
 	std::this_thread::sleep_for(KgslRequestSpacing);
 	return SetKgslTurbo(true);
+}
+
+// Serializes the turbo request between the lifecycle watch and the keeper thread (not the exit
+// release, which may run in a signal handler).
+std::mutex& TurboMutex() {
+	static std::mutex mutex;
+	return mutex;
+}
+
+// KGSL_PROP_PWRCTRL "on" is kgsl_pwrscale_disable(turbo): the devfreq governor is suspended and
+// the power level set to 0, clamped by the thermal and PM QoS limits of the moment
+// (_adjust_pwrlevel). A cap that arrives later (kgsl_cooling_set_cur_state,
+// pmqos_max_notifier_call) lowers the active level, and when it is lifted the level is only
+// re-clamped, not raised: with the governor suspended the GPU keeps the capped clock for good
+// (Astro Bot: ~3x slower GPU work after one Thermal Status 1 episode). Re-taking the request
+// lets the level climb back to the highest one the current limits allow; while a cap holds it
+// changes nothing.
+constexpr long kTurboReassertDefaultMs = 2000;
+
+long TurboReassertMs() {
+	const char* value = std::getenv("KYTY_GPU_TURBO_REASSERT_MS");
+	if (value == nullptr || *value == '\0') {
+		return kTurboReassertDefaultMs;
+	}
+	char*      end    = nullptr;
+	const long parsed = std::strtol(value, &end, 10);
+	return end != nullptr && *end == '\0' && parsed >= 0 ? parsed : kTurboReassertDefaultMs;
+}
+
+void StartGpuTurboKeeper() {
+	const long interval_ms = TurboReassertMs();
+	if (interval_ms == 0) {
+		ReportClock("--gpu-turbo: re-assert off (KYTY_GPU_TURBO_REASSERT_MS=0)", 0);
+		return;
+	}
+	ReportClock(fmt::format("--gpu-turbo: re-asserting every {} ms in the foreground", interval_ms)
+	                .c_str(),
+	            0);
+	std::thread([interval_ms] {
+		uint64_t reasserts = 0;
+		int      reported  = 0;
+		for (;;) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+			const std::lock_guard lock(TurboMutex());
+			if (!g_turbo_active.load(std::memory_order_acquire)) {
+				continue; // background or exiting
+			}
+			const int error = AcquireGpuTurboBalanced();
+			if (!g_turbo_active.load(std::memory_order_acquire)) {
+				// The exit release ran in between: undo the request taken above (an extra
+				// release is harmless, a leaked request is not).
+				(void)SetKgslTurbo(false);
+				continue;
+			}
+			reasserts++;
+			if (error != 0 && reported++ < 4) {
+				ReportClock(fmt::format("--gpu-turbo: re-assert #{}", reasserts).c_str(), error);
+			}
+		}
+	}).detach();
 }
 #endif
 
@@ -249,9 +310,13 @@ void ApplyGpuClockPolicy() {
 		return;
 	}
 	(void)Common::AddProcessExitHook(ReleaseGpuTurbo);
-	g_turbo_active.store(true, std::memory_order_release);
-	ReportClock("--gpu-turbo: maximum clocks (reset on exit and in the background)",
-	            AcquireGpuTurboBalanced());
+	{
+		const std::lock_guard lock(TurboMutex());
+		g_turbo_active.store(true, std::memory_order_release);
+		ReportClock("--gpu-turbo: maximum clocks (reset on exit and in the background)",
+		            AcquireGpuTurboBalanced());
+	}
+	StartGpuTurboKeeper();
 #else
 	if (GpuTurboRequested()) {
 		Report("GPU driver: --gpu-turbo is only supported on Android");
@@ -261,6 +326,7 @@ void ApplyGpuClockPolicy() {
 
 void SuspendGpuTurbo() noexcept {
 #if defined(KYTY_ANDROID)
+	const std::lock_guard lock(TurboMutex());
 	if (g_turbo_active.exchange(false, std::memory_order_acq_rel)) {
 		ReportClock("--gpu-turbo: default clocks while in the background", SetKgslTurbo(false));
 	}
@@ -269,6 +335,7 @@ void SuspendGpuTurbo() noexcept {
 
 void ResumeGpuTurbo() noexcept {
 #if defined(KYTY_ANDROID)
+	const std::lock_guard lock(TurboMutex());
 	if (GpuTurboRequested() && !g_turbo_active.exchange(true, std::memory_order_acq_rel)) {
 		ReportClock("--gpu-turbo: maximum clocks again in the foreground",
 		            AcquireGpuTurboBalanced());

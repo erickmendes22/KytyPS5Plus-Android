@@ -32,6 +32,10 @@ struct GpuPassInfo {
 // closes a region (a render pass, a dispatch) and charges the time since the previous timestamp
 // to its label. Results are read without waiting once the command buffer's tick has completed.
 // Every kDumpSeconds the costliest labels go to _perf_gpu<instance>.txt and the top few to the log.
+// Instance 0 also runs a GPU clock probe (KYTY_GPU_PROBE_MS, default every 2000 ms, 0 = off): a
+// fixed ALU dispatch, fenced off from other work, at the start of a command buffer. Its GPU time
+// goes to the log as "[perf-probe] t=<s> gpu_ms=<ms>" and tracks the shader clock, unlike game
+// regions whose cost changes with the scene.
 class GpuTimer {
 public:
 	GpuTimer(GraphicContext& graphics, MasterSemaphore& master);
@@ -47,6 +51,13 @@ public:
 	void Submitted(uint64_t tick);
 	// Reads finished command buffers' timestamps.
 	void Collect();
+
+	// The probe's push constants (gpu_clock_probe.comp).
+	struct ProbeParams {
+		uint64_t sink       = 0;
+		uint32_t iterations = 0;
+		float    never      = 0.0f;
+	};
 
 private:
 	struct Label {
@@ -67,8 +78,18 @@ private:
 		uint64_t indices = 0;
 	};
 
+	struct PendingProbe {
+		uint32_t slot = 0;
+		uint64_t tick = 0;
+	};
+
 	static constexpr uint32_t kQueriesPerBuffer = 1024;
 	static constexpr int      kDumpSeconds      = 5;
+	static constexpr uint32_t kProbeSlots       = 8; // two queries each
+
+	void CreateProbe();
+	void RecordProbe(vk::CommandBuffer buffer);
+	void CollectProbes();
 
 	// A free pool and how many of its queries need a reset.
 	std::pair<vk::QueryPool, uint32_t> AcquirePool();
@@ -89,6 +110,18 @@ private:
 	uint64_t                   m_window_busy_ns = 0;
 	int64_t                    m_last_dump_ns   = 0;
 	uint32_t                   m_instance       = 0;
+	vk::PipelineLayout         m_probe_layout   = nullptr;
+	vk::Pipeline               m_probe_pipeline = nullptr;
+	vk::QueryPool              m_probe_pool     = nullptr;
+	int64_t                    m_probe_interval_ns = 0;
+	uint32_t                   m_probe_iterations  = 0;
+	uint32_t                   m_probe_groups      = 0;
+	int64_t                    m_last_probe_ns     = 0;
+	int64_t                    m_start_ns          = 0;
+	uint32_t                   m_probe_next_slot   = 0;
+	uint32_t                   m_probe_recorded_slot = 0;
+	bool                       m_probe_recorded    = false; // recorded, not yet submitted
+	std::deque<PendingProbe>   m_probe_pending;
 };
 
 } // namespace Libs::Graphics

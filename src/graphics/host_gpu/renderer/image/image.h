@@ -70,6 +70,11 @@ public:
 	}
 
 	[[nodiscard]] vk::ImageView FindView(const ImageViewInfo& view_info);
+	// --render-scale: `view`, made on either backing, as the same view on the current one. A
+	// SetScaled after a binding resolved its view leaves that view on the other-size backing
+	// (alive, but not what the rescale data and layout transitions describe). nullptr if `view`
+	// was not made on this image.
+	[[nodiscard]] vk::ImageView CurrentBackingView(vk::ImageView view);
 	using Barriers = std::vector<vk::ImageMemoryBarrier2>;
 	[[nodiscard]] Barriers GetBarriers(vk::ImageLayout                      destination_layout,
 	                                   vk::AccessFlags2                     destination_access,

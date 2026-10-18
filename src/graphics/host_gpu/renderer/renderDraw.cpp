@@ -712,6 +712,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		auto& image = cache.GetImage(depth.image_id);
 		ensure_pass_scale(image, depth.desc.view_info, image_view);
 		EXIT_IF(image_view == nullptr || image.backing.samples != depth.desc.info.samples);
+		// Scaling the attachments above may have swapped this image's backing after the draw's
+		// texture bindings resolved their views (RebindImages).
+		RefreshBindingViews(stages);
 		const auto draw_writes = depth.AttachmentWriteAspects();
 		vk::ImageAspectFlags sampled_aspects;
 		for (const auto* stage: stages) {

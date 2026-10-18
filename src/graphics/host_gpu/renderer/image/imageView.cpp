@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/image/imageFormatList.h"
 
+#include <algorithm>
 #include <atomic>
 
 namespace Libs::Graphics {
@@ -309,6 +310,21 @@ bool FormatsCompatible(vk::Format base, vk::Format view) noexcept {
 }
 
 } // namespace ImageViewOps
+
+vk::ImageView Image::CurrentBackingView(vk::ImageView view) {
+	if (view == nullptr) {
+		return nullptr;
+	}
+	if (std::ranges::find(views, view, &CachedImageView::view) != views.end()) {
+		return view;
+	}
+	const auto other = std::ranges::find(m_alternate_views, view, &CachedImageView::view);
+	if (other == m_alternate_views.end()) {
+		return nullptr;
+	}
+	const auto info = other->info; // FindView may grow the view lists
+	return FindView(info);
+}
 
 vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	const auto& image      = backing;

@@ -21,11 +21,16 @@ void SetPrintCaps(bool enabled);
 // so it is dropped on every exit path the process sees (Common::AddProcessExitHook), while the
 // app is in the background (Suspend/Resume from the SDL lifecycle watch), and at the start of
 // every run without --gpu-turbo (a SIGKILL cannot be caught). Android/Adreno only.
+// KGSL holds a turbo request as a fixed power level with the GPU governor suspended, so a thermal
+// or PM QoS cap clamps that level and nothing raises it again once the cap lifts: the clock stays
+// low for the rest of the session. While in the foreground the request is therefore re-taken
+// every KYTY_GPU_TURBO_REASSERT_MS (default 2000, 0 = never), which restores the highest level
+// the current limits allow.
 void RequestGpuTurbo();
 [[nodiscard]] bool GpuTurboRequested();
 // Once, after the command line is parsed: turbo on (and the exit hook) or an explicit reset.
 void ApplyGpuClockPolicy();
-// Idempotent and async-signal-safe.
+// Idempotent. Suspend/Resume run on the lifecycle watch; Release is async-signal-safe.
 void SuspendGpuTurbo() noexcept;
 void ResumeGpuTurbo() noexcept;
 void ReleaseGpuTurbo() noexcept;
