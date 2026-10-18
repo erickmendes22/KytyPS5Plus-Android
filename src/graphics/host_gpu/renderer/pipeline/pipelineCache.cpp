@@ -549,6 +549,8 @@ struct PipelineCache::ProgramCache {
 		         .bvh_emulation     = fast_paths.bvh_emulation,
 		         .packed_varying_locations = fast_paths.packed_interp ? PackedVaryingLocations() : 0u,
 		         .drop_carried_vertex_data = fast_paths.drop_carried,
+		         .fold_same_condition_selects = fast_paths.select_fold,
+		         .single_mode_alias_slots     = fast_paths.alias_slots,
 		         .storage_image_array_non_uniform_indexing =
 		             graphics.optional_features.storage_image_array_non_uniform_indexing,
 		         .mesh_shader       = graphics.mesh_shader_enabled,
@@ -828,7 +830,7 @@ struct PipelineCache::ProgramCache {
 		const auto  options = MakeOptions(ShaderType::Vertex, 0, {}, {}, dummy, "");
 		const auto& f       = options.device_features;
 		const auto  text    = fmt::format(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={} ubo={}/{} f16={} quad={} bvh={} packed={} dropc={} lanebc={}/{}/{}/{} fls={} bvhopt={}", f.fragment_shader_barycentric,
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={} ubo={}/{} f16={} quad={} bvh={} packed={} dropc={} selfold={} alias={} lanebc={}/{}/{}/{} fls={} bvhopt={}", f.fragment_shader_barycentric,
             f.geometry_varying_locations, f.shader_float64, f.shader_shared_int64_atomics,
             f.signed_zero_inf_nan_preserve_f32, f.subgroup_vertex, f.subgroup_tessellation,
             f.subgroup_fragment, f.subgroup_vote, f.subgroup_arithmetic,
@@ -836,7 +838,7 @@ struct PipelineCache::ProgramCache {
             f.robust_buffer_loads, f.lane_exec_branches, f.wqm_entry_lane_fold, f.wave_slices, f.render_scale,
             f.render_scale_keep_fragcoord, f.render_scale_keep_texels, options.maintenance8_enabled,
             options.device_quirks.branchless_bounds_checks, f.uniform_constant_buffer_bytes,
-            f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp, f.bvh_vector_loads, f.packed_varying_locations, f.drop_carried_vertex_data,
+            f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp, f.bvh_vector_loads, f.packed_varying_locations, f.drop_carried_vertex_data, f.fold_same_condition_selects, f.single_mode_alias_slots,
             f.constant_lane_broadcast, f.subgroup_size_min,
             f.compute_required_subgroup_min, f.compute_required_subgroup_max,
             f.first_lane_value_sets, f.bvh_emulation);

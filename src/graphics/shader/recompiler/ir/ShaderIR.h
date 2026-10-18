@@ -850,6 +850,9 @@ struct ResourcePlan {
 	// ShaderDeviceFeatures::uniform_constant_buffer_bytes: read-only scalar buffers up to this
 	// size are specialized as uniform buffers (0: never).
 	uint32_t                            uniform_buffer_limit       = 0;
+	// ShaderDeviceFeatures::single_mode_alias_slots: a pixel parameter slot with flat and smooth
+	// aliases stays native while only one interpolation mode of it is in use (KYTY_ALIAS_SLOTS).
+	bool                                single_mode_alias_slots    = false;
 	ShaderInfo                          info;
 	UniformFillPlan                     uniform_fill;
 #if KYTY_HOST_X86

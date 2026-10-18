@@ -44,6 +44,8 @@ struct InputUsage {
 	uint32_t builtin_count = 0;
 	// No VK_KHR_fragment_shader_barycentric: parameters are native inputs only.
 	bool native_pixel_interpolation = false;
+	// Program::single_mode_alias_slots.
+	bool single_mode_alias_slots = false;
 
 	void AddBuiltin(StageInputKind kind) {
 		const auto bit = 1u << static_cast<uint32_t>(kind);
@@ -131,6 +133,7 @@ void CollectNativePixelParameters(const ShaderPixelInputInfo* pixel, ShaderInfo&
 	};
 	for (uint32_t input = 0; input < pixel->input_num; input++) {
 		auto sampling = PixelInterpolationSampling::Center;
+		bool skip     = false;
 		for (uint32_t alias = 0; alias < pixel->input_num; alias++) {
 			if (!SameParameterSlot(*pixel, input, alias)) {
 				continue;
@@ -140,13 +143,23 @@ void CollectNativePixelParameters(const ShaderPixelInputInfo* pixel, ShaderInfo&
 			if (pixel->parameter_mode == ShaderPixelParameterMode::Rectangle && !same_mode) {
 				continue;
 			}
-			if (!same_mode && (used(input) || used(alias))) {
+			// With single_mode_alias_slots only both modes in use conflict; the unused aliases of
+			// such a slot are not declared, so its one variable takes the used mode's qualifier.
+			const bool conflict = usage.single_mode_alias_slots ? used(input) && used(alias)
+			                                                    : used(input) || used(alias);
+			if (!same_mode && conflict) {
 				return Fail(fmt::format("pixel parameter slot {} mixes flat and smooth "
 				                        "interpolation in use; this needs "
 				                        "VK_KHR_fragment_shader_barycentric",
 				                        ShaderPixelParameterMappedLocation(*pixel, input)));
 			}
+			if (usage.single_mode_alias_slots && !same_mode && !used(input)) {
+				skip = true;
+			}
 			sampling = std::max(sampling, usage.sampling[alias]);
+		}
+		if (skip) {
+			continue;
 		}
 		AddInput(info, StageInputKind::Parameter, input, 4, fmt::format("in_param_{}", input),
 		         false, sampling);
@@ -709,7 +722,8 @@ uint32_t DropCarriedBarycentrics(Program& program, bool drop_carried) {
 
 namespace {
 
-bool MixesFlatAndSmoothInUse(const ShaderPixelInputInfo& pixel, const std::array<bool, 32>& used) {
+bool MixesFlatAndSmoothInUse(const ShaderPixelInputInfo& pixel, const std::array<bool, 32>& used,
+                             bool single_mode_alias_slots) {
 	for (uint32_t input = 0; input < pixel.input_num; input++) {
 		for (uint32_t alias = 0; alias < pixel.input_num; alias++) {
 			if (!SameParameterSlot(pixel, input, alias)) {
@@ -720,7 +734,9 @@ bool MixesFlatAndSmoothInUse(const ShaderPixelInputInfo& pixel, const std::array
 			if (pixel.parameter_mode == ShaderPixelParameterMode::Rectangle && !same_mode) {
 				continue;
 			}
-			if (!same_mode && (used[input] || used[alias])) {
+			const bool conflict = single_mode_alias_slots ? used[input] && used[alias]
+			                                              : used[input] || used[alias];
+			if (!same_mode && conflict) {
 				return true;
 			}
 		}
@@ -760,12 +776,13 @@ bool PixelShaderNeedsBarycentrics(const Program& program, const ShaderPixelInput
 			}
 		}
 	}
-	return MixesFlatAndSmoothInUse(pixel, used);
+	return MixesFlatAndSmoothInUse(pixel, used, program.single_mode_alias_slots);
 }
 
 bool PixelParameterSlotsMixFlatAndSmooth(const ShaderPixelInputInfo& pixel,
-                                         const std::array<bool, 32>& used) {
-	return MixesFlatAndSmoothInUse(pixel, used);
+                                         const std::array<bool, 32>& used,
+                                         bool single_mode_alias_slots) {
+	return MixesFlatAndSmoothInUse(pixel, used, single_mode_alias_slots);
 }
 
 void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info,
@@ -789,6 +806,7 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info,
 	    info.buffer_u8 = info.buffer_u16 = info.shared_int64_atomics = info.coherent_buffers = info.float64 = false;
 	InputUsage inputs;
 	inputs.native_pixel_interpolation = !barycentric_available;
+	inputs.single_mode_alias_slots    = program.single_mode_alias_slots;
 	for (const auto* block: program.blocks) {
 		for (const auto& inst: *block) {
 			Visit(program, input_info, inputs, inst);
