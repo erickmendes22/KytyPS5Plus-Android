@@ -48127,6 +48127,7 @@ ShaderDeviceFeatures FastPathFeatures() {
   features.compute_required_subgroup_min = 64;
   features.compute_required_subgroup_max = 128;
   features.first_lane_value_sets = true;
+  features.bvh_emulation = ShaderBvhTriangleWords | ShaderBvhBoxBranch | ShaderBvhOriginCheck;
   return features;
 }
 
@@ -48543,7 +48544,14 @@ int main(int argc, char **argv) {
     return 0;
   }
 #endif
-  if (argc == 2 && std::strcmp(argv[1], "--ray-tracing-only") == 0) {
+  if (argc == 2 && (std::strcmp(argv[1], "--ray-tracing-only") == 0 ||
+                    std::strcmp(argv[1], "--ray-tracing-fast-paths") == 0)) {
+    if (std::strcmp(argv[1], "--ray-tracing-fast-paths") == 0) {
+      // Same expected results with the KYTY_BVH_OPT variants (and vector node loads).
+      auto features = FastPathFeatures();
+      features.bvh_vector_loads = std::getenv("KYTY_TEST_BVH_VEC") != nullptr;
+      g_features_override = features;
+    }
     VulkanHarness vulkan;
     RunCase(&vulkan, FlatStackApertures(32));
     RunCase(&vulkan, FlatStackApertures(64));

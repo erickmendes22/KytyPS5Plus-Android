@@ -295,6 +295,13 @@ struct ShaderDeviceFeatures {
 	// ray-traced compute pass: 18940 -> 18180 instructions, 7318 -> 6915 NOPs; the gameplay gain
 	// is unmeasured and runs with it showed black streaks not yet ruled out as its doing.
 	bool bvh_vector_loads        = false;
+	// IMAGE_BVH(64)_INTERSECT_RAY emulation variants with the same results (KYTY_BVH_OPT bit mask,
+	// ShaderBvhEmulation bits): triangle corners picked from the node's words with constant word
+	// indices (1), one FP16/FP32 branch around the four box children instead of one per child
+	// (2), the ray origin's NaN/Inf check as one ordered |x| < inf compare per component (4).
+	// Opt-in: on Astro Bot's RT pass 6856320a (KYTY_BVH_OPT=7) fewer NOPs and SY stalls but more
+	// instructions, the same 48 registers, and no faster dispatch in the one gameplay pair.
+	uint32_t bvh_emulation = 0;
 	// Without fragment_shader_barycentric, a pixel shader that interpolates packed parameters by
 	// hand from per-vertex reads may instead read hardware-interpolated fields that its vertex
 	// shader unpacks (KYTY_PACKED_INTERP; recompiler/ir/passes/ManualInterpolation.h). Locations
@@ -374,6 +381,13 @@ struct ShaderDeviceFeatures {
 	// Diagnostics (--render-scale-flags): leave gl_FragCoord / texel coordinates untouched.
 	bool render_scale_keep_fragcoord = false;
 	bool render_scale_keep_texels    = false;
+};
+
+// ShaderDeviceFeatures::bvh_emulation bits.
+enum ShaderBvhEmulation : uint32_t {
+	ShaderBvhTriangleWords = 1u,
+	ShaderBvhBoxBranch     = 2u,
+	ShaderBvhOriginCheck   = 4u,
 };
 
 // True when a shader of this stage may emit native subgroup operations on the device.

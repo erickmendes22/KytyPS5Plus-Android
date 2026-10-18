@@ -544,6 +544,7 @@ struct PipelineCache::ProgramCache {
 		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eArithmetic),
 		         .subgroup_quad_dpp = fast_paths.quad_dpp,
 		         .bvh_vector_loads  = fast_paths.bvh_vector_loads,
+		         .bvh_emulation     = fast_paths.bvh_emulation,
 		         .packed_varying_locations = fast_paths.packed_interp ? PackedVaryingLocations() : 0u,
 		         .drop_carried_vertex_data = fast_paths.drop_carried,
 		         .storage_image_array_non_uniform_indexing =
@@ -825,7 +826,7 @@ struct PipelineCache::ProgramCache {
 		const auto  options = MakeOptions(ShaderType::Vertex, 0, {}, {}, dummy, "");
 		const auto& f       = options.device_features;
 		const auto  text    = fmt::format(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={} ubo={}/{} f16={} quad={} bvh={} packed={} dropc={} lanebc={}/{}/{}/{} fls={}", f.fragment_shader_barycentric,
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={} ubo={}/{} f16={} quad={} bvh={} packed={} dropc={} lanebc={}/{}/{}/{} fls={} bvhopt={}", f.fragment_shader_barycentric,
             f.geometry_varying_locations, f.shader_float64, f.shader_shared_int64_atomics,
             f.signed_zero_inf_nan_preserve_f32, f.subgroup_vertex, f.subgroup_tessellation,
             f.subgroup_fragment, f.subgroup_vote, f.subgroup_arithmetic,
@@ -836,7 +837,7 @@ struct PipelineCache::ProgramCache {
             f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp, f.bvh_vector_loads, f.packed_varying_locations, f.drop_carried_vertex_data,
             f.constant_lane_broadcast, f.subgroup_size_min,
             f.compute_required_subgroup_min, f.compute_required_subgroup_max,
-            f.first_lane_value_sets);
+            f.first_lane_value_sets, f.bvh_emulation);
 		return XXH3_64bits(text.data(), text.size());
 	}
 
