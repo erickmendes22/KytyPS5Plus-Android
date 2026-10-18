@@ -1636,6 +1636,12 @@ void CheckRectListShaders() {
   ValidateSpirv(name, position_only.evaluation);
 }
 
+// --compile-only[-fast-paths]: compile every case without a device. The fast-path run replaces
+// the default device features with g_features_override and keeps only the structural checks
+// (validation, redundant bitcasts), since cases pin the default lowering in their SPIR-V text.
+std::optional<ShaderDeviceFeatures> g_features_override;
+bool g_skip_spirv_text_checks = false;
+
 void CheckSpirvEmission(const TestCase &test, const std::vector<u32> &spirv) {
   std::vector<u32> result_types(spirv[3]);
   for (size_t offset = 5; offset < spirv.size();) {
@@ -1651,7 +1657,8 @@ void CheckSpirvEmission(const TestCase &test, const std::vector<u32> &spirv) {
     }
     offset += words.size();
   }
-  if (test.required_spirv.empty() && test.forbidden_spirv.empty()) {
+  if (g_skip_spirv_text_checks ||
+      (test.required_spirv.empty() && test.forbidden_spirv.empty())) {
     return;
   }
 
@@ -1700,6 +1707,9 @@ CompiledShader CompileCase(const TestCase &test, u32 host_subgroup_size = 64) {
   compute_info.host_subgroup_size = host_subgroup_size;
   options.input_info.compute = &compute_info;
   options.user_data = user_data;
+  if (g_features_override) {
+    options.device_features = *g_features_override;
+  }
 
   if (test.has_compute_info) {
     options.wave_size = test.compute_info.wave_size;
@@ -17598,7 +17608,7 @@ public:
       mode.polymode_back_ptype = back;
       mode.provoking_vtx_last = provoking_last;
       registers.SetModeControl(mode);
-      return context.GetPipelineCache().GetGraphicsPipeline(
+      return *context.GetPipelineCache().GetGraphicsPipeline(
           std::span{&color, 1u}, depth, std::span{&vertex, 1u}, scheduler.Current(), &pixel,
           topology, false,
           PipelineCache::GraphicsPrograms{{vertex_shader}, pixel_shader});
@@ -48106,12 +48116,132 @@ void CheckPm4CeCompletion(RenderContext &renderer) {
 } // namespace
 } // namespace Libs::Graphics
 
+namespace Libs::Graphics {
+
+// Turnip-like device features with the opt-in emitter fast paths of this file's compile-only
+// checks enabled.
+ShaderDeviceFeatures FastPathFeatures() {
+  ShaderDeviceFeatures features;
+  features.constant_lane_broadcast = true;
+  features.subgroup_size_min = 64;
+  features.compute_required_subgroup_min = 64;
+  features.compute_required_subgroup_max = 128;
+  features.first_lane_value_sets = true;
+  features.bvh_emulation = ShaderBvhTriangleWords | ShaderBvhBoxBranch | ShaderBvhOriginCheck;
+  return features;
+}
+
+// Waterfall-style M0 from V_READFIRSTLANE of a value written under EXEC: the V_MOVRELS chain
+// compares M0 with nothing but the value the first EXEC lane holds.
+TestCase FirstLaneMoveRelSource() {
+  using O = ShaderOpcode;
+  std::vector<u32> code;
+  AppendVMovLiteral(&code, 12, 0x11111111u);
+  AppendVMovLiteral(&code, 13, 0x22222222u);
+  AppendVMovLiteral(&code, 14, 0x33333333u);
+  AppendVMovU32(&code, 1, 2);
+  code.push_back(EncodeVop1(0x02, 0, Vgpr(1))); // v_readfirstlane_b32 s0, v1
+  code.push_back(EncodeSMovB32(124, 0));       // s_mov_b32 m0, s0
+  code.push_back(0x7e6e870cu);                 // v_movrels_b32 v55, v12
+  AppendStoreVgpr(&code, 55, 0);
+  AppendEnd(&code);
+  TestCase test;
+  test.name = "FirstLaneMoveRelSource";
+  test.code = std::move(code);
+  test.expected = {0x33333333u};
+  test.opcodes = {O::V_MOV_B32, O::V_READFIRSTLANE_B32, O::S_MOV_B32, O::V_MOVRELS_B32,
+                  O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  return test;
+}
+
+// KYTY_FIRSTLANE_SETS: the chain folds away; without it every register after the base is compared.
+void CheckFirstLaneMoveRel() {
+  const auto saved = g_features_override;
+  auto features = FastPathFeatures();
+  g_features_override = features;
+  auto on = FirstLaneMoveRelSource();
+  on.name = "FirstLaneMoveRelSourceSets";
+  on.ir_counts = {{" = IEqual32 ", 0}};
+  (void)CompileCase(on);
+  features.first_lane_value_sets = false;
+  g_features_override = features;
+  auto off = FirstLaneMoveRelSource();
+  const auto compiled = CompileCase(off);
+  (void)compiled;
+  g_features_override = saved;
+}
+
+// KYTY_LANE_BROADCAST: immediate V_READLANE_B32 lanes become constant broadcasts.
+void CheckConstantLaneBroadcast() {
+  const auto saved = g_features_override;
+  g_features_override = FastPathFeatures();
+  auto wave32 = VectorReadlaneSelectsTwoKeysWithinWave();
+  wave32.name = "ConstantLaneBroadcastWave32";
+  wave32.required_spirv = {"OpGroupNonUniformBroadcast %uint %uint_3 %", "OpCapability GroupNonUniformBallot"};
+  wave32.forbidden_spirv = {"OpGroupNonUniformShuffle"};
+  (void)CompileCase(wave32);
+  // A wave64 compute program runs with a required subgroup size of 64: no SubgroupSize builtin.
+  auto wave64 = VectorReadlaneSelectsTwoKeysWithinWave();
+  wave64.name = "ConstantLaneBroadcastWave64";
+  wave64.compute_info.wave_size = 64;
+  wave64.compute_info.threads_num[0] = 64;
+  wave64.required_spirv = {"OpGroupNonUniformBroadcast"};
+  wave64.forbidden_spirv = {"OpGroupNonUniformShuffle", "BuiltIn SubgroupSize"};
+  (void)CompileCase(wave64);
+  // Without size control, lanes below the smallest subgroup size still need no wrap; the
+  // builtin stays for the general path only.
+  auto features = FastPathFeatures();
+  features.compute_required_subgroup_min = features.compute_required_subgroup_max = 0;
+  g_features_override = features;
+  wave64.name = "ConstantLaneBroadcastWave64NoSizeControl";
+  (void)CompileCase(wave64);
+  // Off: the shuffle stays.
+  features.constant_lane_broadcast = false;
+  g_features_override = features;
+  wave64.name = "ConstantLaneBroadcastOff";
+  wave64.required_spirv = {"OpGroupNonUniformShuffle", "BuiltIn SubgroupSize"};
+  wave64.forbidden_spirv = {"OpGroupNonUniformBroadcast"};
+  (void)CompileCase(wave64);
+  g_features_override = saved;
+}
+
+void CompileAllCases(bool fast_paths) {
+  const auto saved = g_features_override;
+  const auto tests = MakeCases();
+  for (const bool vector_loads : {false, true}) {
+    if (fast_paths) {
+      auto features = FastPathFeatures();
+      features.bvh_vector_loads = vector_loads;
+      g_features_override = features;
+      g_skip_spirv_text_checks = true;
+    } else if (vector_loads) {
+      break;
+    }
+    for (const auto &test : tests) {
+      (void)CompileCase(test);
+    }
+  }
+  g_skip_spirv_text_checks = false;
+  g_features_override = saved;
+  std::printf("ShaderRecompilerComputeTests: compiled %zu cases (%s)\n", tests.size(),
+              fast_paths ? "fast paths" : "defaults");
+}
+
+} // namespace Libs::Graphics
+
 int main(int argc, char **argv) {
   using namespace Libs::Graphics;
 
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   EnsureConfigInitialized();
   CheckLeastRecentlyUsedCacheOrdering();
+  if (argc == 2 && (std::strcmp(argv[1], "--compile-only") == 0 ||
+                    std::strcmp(argv[1], "--compile-only-fast-paths") == 0)) {
+    CheckConstantLaneBroadcast();
+    CheckFirstLaneMoveRel();
+    CompileAllCases(std::strcmp(argv[1], "--compile-only-fast-paths") == 0);
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--thread-dimensions-only") == 0) {
     VulkanHarness vulkan;
     CheckComputeThreadDimensions(vulkan);
@@ -48414,7 +48544,14 @@ int main(int argc, char **argv) {
     return 0;
   }
 #endif
-  if (argc == 2 && std::strcmp(argv[1], "--ray-tracing-only") == 0) {
+  if (argc == 2 && (std::strcmp(argv[1], "--ray-tracing-only") == 0 ||
+                    std::strcmp(argv[1], "--ray-tracing-fast-paths") == 0)) {
+    if (std::strcmp(argv[1], "--ray-tracing-fast-paths") == 0) {
+      // Same expected results with the KYTY_BVH_OPT variants (and vector node loads).
+      auto features = FastPathFeatures();
+      features.bvh_vector_loads = std::getenv("KYTY_TEST_BVH_VEC") != nullptr;
+      g_features_override = features;
+    }
     VulkanHarness vulkan;
     RunCase(&vulkan, FlatStackApertures(32));
     RunCase(&vulkan, FlatStackApertures(64));

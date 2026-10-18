@@ -544,6 +544,7 @@ struct PipelineCache::ProgramCache {
 		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eArithmetic),
 		         .subgroup_quad_dpp = fast_paths.quad_dpp,
 		         .bvh_vector_loads  = fast_paths.bvh_vector_loads,
+		         .bvh_emulation     = fast_paths.bvh_emulation,
 		         .packed_varying_locations = fast_paths.packed_interp ? PackedVaryingLocations() : 0u,
 		         .drop_carried_vertex_data = fast_paths.drop_carried,
 		         .storage_image_array_non_uniform_indexing =
@@ -560,6 +561,15 @@ struct PipelineCache::ProgramCache {
 		                               LaneFastPathAllowed(LaneFastPath::WqmLaneFold, hash),
 		         .wave_slices          = fast_paths.wave_slices &&
 		                        LaneFastPathAllowed(LaneFastPath::WaveSlices, hash),
+		         .constant_lane_broadcast  = fast_paths.lane_broadcast,
+		         .first_lane_value_sets    = fast_paths.first_lane_sets,
+		         .subgroup_size_min        = graphics.min_subgroup_size != 0
+		                                         ? std::min(graphics.min_subgroup_size, graphics.subgroup_size)
+		                                         : graphics.subgroup_size,
+		         .compute_required_subgroup_min =
+		             graphics.compute_subgroup_size_control_enabled ? graphics.min_subgroup_size : 0u,
+		         .compute_required_subgroup_max =
+		             graphics.compute_subgroup_size_control_enabled ? graphics.max_subgroup_size : 0u,
 		         .render_scale      = RenderScale::Active(Config::GetRenderScale()),
 		         .render_scale_keep_fragcoord =
 		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_FRAGCOORD) != 0,
@@ -816,7 +826,7 @@ struct PipelineCache::ProgramCache {
 		const auto  options = MakeOptions(ShaderType::Vertex, 0, {}, {}, dummy, "");
 		const auto& f       = options.device_features;
 		const auto  text    = fmt::format(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={} ubo={}/{} f16={} quad={} bvh={} packed={} dropc={}", f.fragment_shader_barycentric,
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={} ubo={}/{} f16={} quad={} bvh={} packed={} dropc={} lanebc={}/{}/{}/{} fls={} bvhopt={}", f.fragment_shader_barycentric,
             f.geometry_varying_locations, f.shader_float64, f.shader_shared_int64_atomics,
             f.signed_zero_inf_nan_preserve_f32, f.subgroup_vertex, f.subgroup_tessellation,
             f.subgroup_fragment, f.subgroup_vote, f.subgroup_arithmetic,
@@ -824,7 +834,10 @@ struct PipelineCache::ProgramCache {
             f.robust_buffer_loads, f.lane_exec_branches, f.wqm_entry_lane_fold, f.wave_slices, f.render_scale,
             f.render_scale_keep_fragcoord, f.render_scale_keep_texels, options.maintenance8_enabled,
             options.device_quirks.branchless_bounds_checks, f.uniform_constant_buffer_bytes,
-            f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp, f.bvh_vector_loads, f.packed_varying_locations, f.drop_carried_vertex_data);
+            f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp, f.bvh_vector_loads, f.packed_varying_locations, f.drop_carried_vertex_data,
+            f.constant_lane_broadcast, f.subgroup_size_min,
+            f.compute_required_subgroup_min, f.compute_required_subgroup_max,
+            f.first_lane_value_sets, f.bvh_emulation);
 		return XXH3_64bits(text.data(), text.size());
 	}
 

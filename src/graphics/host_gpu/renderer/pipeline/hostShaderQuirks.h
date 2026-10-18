@@ -34,6 +34,12 @@ struct ShaderFastPaths {
 	bool packed_interp = false;
 	// ShaderDeviceFeatures::drop_carried_vertex_data (KYTY_DROP_CARRIED, default off).
 	bool drop_carried = false;
+	// ShaderDeviceFeatures::constant_lane_broadcast (KYTY_LANE_BROADCAST).
+	bool lane_broadcast = false;
+	// ShaderDeviceFeatures::first_lane_value_sets (KYTY_FIRSTLANE_SETS).
+	bool first_lane_sets = false;
+	// ShaderDeviceFeatures::bvh_emulation (KYTY_BVH_OPT=<bit mask>, ShaderBvhEmulation).
+	uint32_t bvh_emulation = 0;
 	// ShaderDeviceFeatures::uniform_constant_buffer_bytes / uniform_buffers_per_stage
 	// (KYTY_UBO_CONSTANTS; needs robustBufferAccess2 for uniform buffers). 0: off.
 	uint32_t uniform_constant_buffer_bytes = 0;

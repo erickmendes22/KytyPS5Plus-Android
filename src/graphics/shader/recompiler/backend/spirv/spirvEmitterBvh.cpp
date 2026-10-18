@@ -78,18 +78,49 @@ uint32_t Triangle(EmitterState& s, const NodeWords& node, uint32_t kind, uint32_
 	const auto abs = [&](uint32_t x) { return EmitGlsl<GLSLstd450FAbs, IR::Type::F32>(s, x); };
 	const auto is_kind = [&](uint32_t n) { return cmp(spv::OpIEqual, kind, ConstantU32(s, n)); };
 	// The four triangles are (0,1,2), (1,3,2), (2,3,4), (2,4,0).
-	const std::array vertices {
-		EmitGlsl<GLSLstd450UMin, IR::Type::U32>(s, kind, ConstantU32(s, 2)),
-		Select(s, u, is_kind(0), ConstantU32(s, 1),
-		       Select(s, u, is_kind(3), ConstantU32(s, 4), ConstantU32(s, 3))),
-		Select(s, u, is_kind(2), ConstantU32(s, 4),
-		       Select(s, u, is_kind(3), ConstantU32(s, 0), ConstantU32(s, 2))) };
 	std::array<Vec3, 3> positions;
-	for (uint32_t i = 0; i < 3; ++i) {
-		const auto first = Binary(s, spv::OpIMul, u, vertices[i], ConstantU32(s, 3));
-		for (uint32_t axis = 0; axis < 3; ++axis)
-			positions[i][axis] = Unary(s, spv::OpBitcast, f,
-			    NodeWord(s, block, Binary(s, spv::OpIAdd, u, first, ConstantU32(s, axis))));
+	if ((s.device_features.bvh_emulation & ShaderBvhTriangleWords) != 0u) {
+		// Each corner's coordinate is one of four node words with constant indices, picked by the
+		// two kind bits: the loads do not wait for the kind (or reuse the vector loads).
+		static constexpr std::array<std::array<uint32_t, 3>, 4> corners {
+		    {{0, 1, 2}, {1, 3, 2}, {2, 3, 4}, {2, 4, 0}}};
+		const auto bit = [&](uint32_t mask) {
+			return cmp(spv::OpINotEqual, Binary(s, spv::OpBitwiseAnd, u, kind, ConstantU32(s, mask)),
+			           ConstantU32(s, 0));
+		};
+		const auto low_bit = bit(1), high_bit = bit(2);
+		std::array<uint32_t, 15> words {};
+		const auto word = [&](uint32_t index) {
+			if (words[index] == 0u) words[index] = Unary(s, spv::OpBitcast, f, node.Word(s, index));
+			return words[index];
+		};
+		// Select between two vertices' coordinate, sharing it when they are the same vertex.
+		const auto pick = [&](uint32_t condition, uint32_t taken, uint32_t other, uint32_t axis) {
+			return taken == other ? word(taken * 3 + axis)
+			                      : Select(s, f, condition, word(taken * 3 + axis), word(other * 3 + axis));
+		};
+		for (uint32_t corner = 0; corner < 3; ++corner) {
+			for (uint32_t axis = 0; axis < 3; ++axis) {
+				const auto k = [&](uint32_t triangle) { return corners[triangle][corner]; };
+				const auto low  = pick(low_bit, k(1), k(0), axis);
+				const auto high = pick(low_bit, k(3), k(2), axis);
+				const bool same = k(0) == k(2) && k(1) == k(3);
+				positions[corner][axis] = same ? low : Select(s, f, high_bit, high, low);
+			}
+		}
+	} else {
+		const std::array vertices {
+			EmitGlsl<GLSLstd450UMin, IR::Type::U32>(s, kind, ConstantU32(s, 2)),
+			Select(s, u, is_kind(0), ConstantU32(s, 1),
+			       Select(s, u, is_kind(3), ConstantU32(s, 4), ConstantU32(s, 3))),
+			Select(s, u, is_kind(2), ConstantU32(s, 4),
+			       Select(s, u, is_kind(3), ConstantU32(s, 0), ConstantU32(s, 2))) };
+		for (uint32_t i = 0; i < 3; ++i) {
+			const auto first = Binary(s, spv::OpIMul, u, vertices[i], ConstantU32(s, 3));
+			for (uint32_t axis = 0; axis < 3; ++axis)
+				positions[i][axis] = Unary(s, spv::OpBitcast, f,
+				    NodeWord(s, block, Binary(s, spv::OpIAdd, u, first, ConstantU32(s, axis))));
+		}
 	}
 	const auto flag = node.Word(s, 15);
 	const auto y_largest = cmp(spv::OpFOrdLessThan, abs(direction[0]), abs(direction[1]));
@@ -165,6 +196,29 @@ uint32_t Triangle(EmitterState& s, const NodeWords& node, uint32_t kind, uint32_
 	return Vector(s, TypeU32Vector(s, 4), result);
 }
 
+std::array<uint32_t, 6> HalfBox(EmitterState& s, const NodeWords& first, uint32_t child) {
+	const auto f = TypeF32(s);
+	std::array<uint32_t, 6> packed;
+	for (uint32_t pair = 0; pair < 3; ++pair) {
+		const auto word = first.Word(s, 4 + child * 3 + pair);
+		const auto unpacked = EmitGlsl<GLSLstd450UnpackHalf2x16, IR::Type::F32x2>(s, word);
+		packed[pair * 2] = Extract(s, f, unpacked, 0);
+		packed[pair * 2 + 1] = Extract(s, f, unpacked, 1);
+	}
+	return packed;
+}
+
+std::array<uint32_t, 6> FullBox(EmitterState& s, const NodeWords& first, uint32_t second,
+                                uint32_t child) {
+	std::array<uint32_t, 6> full;
+	for (uint32_t component = 0; component < 6; ++component) {
+		const auto word = 4 + child * 6 + component;
+		full[component] = Unary(s, spv::OpBitcast, TypeF32(s), word < 16 ? first.Word(s, word)
+		                                                       : NodeWord(s, second, ConstantU32(s, word % 16)));
+	}
+	return full;
+}
+
 std::array<uint32_t, 6> Box(EmitterState& s, const NodeWords& first, uint32_t second,
                            uint32_t half, uint32_t child) {
 	const auto f = TypeF32(s);
@@ -173,22 +227,13 @@ std::array<uint32_t, 6> Box(EmitterState& s, const NodeWords& first, uint32_t se
 	s.builder.AddFunction(spv::OpSelectionMerge, merge, spv::SelectionControlMaskNone);
 	s.builder.AddFunction(spv::OpBranchConditional, half, half_label, full_label);
 	EmitLabel(s, half_label);
-	std::array<uint32_t, 6> packed, full, result;
-	for (uint32_t pair = 0; pair < 3; ++pair) {
-		const auto word = first.Word(s, 4 + child * 3 + pair);
-		const auto unpacked = EmitGlsl<GLSLstd450UnpackHalf2x16, IR::Type::F32x2>(s, word);
-		packed[pair * 2] = Extract(s, f, unpacked, 0);
-		packed[pair * 2 + 1] = Extract(s, f, unpacked, 1);
-	}
+	const auto packed = HalfBox(s, first, child);
 	s.builder.AddFunction(spv::OpBranch, merge);
 	EmitLabel(s, full_label);
-	for (uint32_t component = 0; component < 6; ++component) {
-		const auto word = 4 + child * 6 + component;
-		full[component] = Unary(s, spv::OpBitcast, f, word < 16 ? first.Word(s, word)
-		                                                         : NodeWord(s, second, ConstantU32(s, word % 16)));
-	}
+	const auto full = FullBox(s, first, second, child);
 	s.builder.AddFunction(spv::OpBranch, merge);
 	EmitLabel(s, merge);
+	std::array<uint32_t, 6> result;
 	for (uint32_t component = 0; component < 6; ++component) {
 		result[component] = s.builder.AllocateId();
 		s.builder.AddFunction(spv::OpPhi, f, result[component], packed[component], half_label,
@@ -197,16 +242,16 @@ std::array<uint32_t, 6> Box(EmitterState& s, const NodeWords& first, uint32_t se
 	return result;
 }
 
-uint32_t Boxes(EmitterState& s, const NodeWords& first, uint32_t second, uint32_t half,
-               uint32_t grow, uint32_t sort, uint32_t extent, const Vec3& origin, const Vec3& inverse) {
+// The four children's slab tests and the sort; `box(child)` emits a child's six bounds.
+template <typename BoxFn>
+uint32_t SortedChildren(EmitterState& s, const NodeWords& first, uint32_t grow, uint32_t sort,
+                        uint32_t extent, const Vec3& origin, const Vec3& inverse, const Vec3& forward,
+                        BoxFn&& box_of) {
 	const auto f = TypeF32(s), u = TypeU32(s), b = TypeBool(s);
 	const auto zero = ConstantF32Value(s, 0.0f);
 	std::array<uint32_t, 4> depths, indices;
-	Vec3 forward;
-	for (uint32_t axis = 0; axis < 3; ++axis)
-		forward[axis] = Binary(s, spv::OpFOrdGreaterThanEqual, b, inverse[axis], zero);
 	for (uint32_t child = 0; child < 4; ++child) {
-		const auto box = Box(s, first, second, half, child);
+		const auto box = box_of(child);
 		Vec3 near, far;
 		for (uint32_t axis = 0; axis < 3; ++axis) {
 			const auto lo = Binary(s, spv::OpFMul, f,
@@ -254,6 +299,39 @@ uint32_t Boxes(EmitterState& s, const NodeWords& first, uint32_t second, uint32_
 		indices[c] = Select(s, u, swap, index, indices[c]);
 	}
 	return Vector(s, TypeU32Vector(s, 4), indices);
+}
+
+uint32_t Boxes(EmitterState& s, const NodeWords& first, uint32_t second, uint32_t half,
+               uint32_t grow, uint32_t sort, uint32_t extent, const Vec3& origin, const Vec3& inverse) {
+	const auto b = TypeBool(s);
+	Vec3 forward;
+	for (uint32_t axis = 0; axis < 3; ++axis)
+		forward[axis] = Binary(s, spv::OpFOrdGreaterThanEqual, b, inverse[axis], ConstantF32Value(s, 0.0f));
+	const auto sorted = [&](auto&& box_of) {
+		return SortedChildren(s, first, grow, sort, extent, origin, inverse, forward, box_of);
+	};
+	if ((s.device_features.bvh_emulation & ShaderBvhBoxBranch) == 0u) {
+		return sorted([&](uint32_t child) { return Box(s, first, second, half, child); });
+	}
+	// The box format is the node's: branch once, so each arm keeps only its own bounds live and
+	// the arms merge the four sorted child pointers.
+	const auto vec4 = TypeU32Vector(s, 4);
+	const auto half_label = s.builder.AllocateId(), full_label = s.builder.AllocateId();
+	const auto merge = s.builder.AllocateId();
+	s.builder.AddFunction(spv::OpSelectionMerge, merge, spv::SelectionControlMaskNone);
+	s.builder.AddFunction(spv::OpBranchConditional, half, half_label, full_label);
+	EmitLabel(s, half_label);
+	const auto half_value = sorted([&](uint32_t child) { return HalfBox(s, first, child); });
+	const auto half_exit = s.current_label;
+	s.builder.AddFunction(spv::OpBranch, merge);
+	EmitLabel(s, full_label);
+	const auto full_value = sorted([&](uint32_t child) { return FullBox(s, first, second, child); });
+	const auto full_exit = s.current_label;
+	s.builder.AddFunction(spv::OpBranch, merge);
+	EmitLabel(s, merge);
+	const auto value = s.builder.AllocateId();
+	s.builder.AddFunction(spv::OpPhi, vec4, value, half_value, half_exit, full_value, full_exit);
+	return value;
 }
 
 } // namespace
@@ -315,10 +393,18 @@ void DefineBvhIntersect(EmitterState& s) {
 	               PackU64(s, words[2], and_bits(words[3], 0x3ff))));
 	require(Binary(s, spv::OpULessThan, b, last_address, ConstantU64(s, uint64_t {1} << 48)));
 	require(Unary(s, spv::OpLogicalNot, b, Unary(s, spv::OpIsNan, b, extent)));
+	const bool origin_check = (s.device_features.bvh_emulation & ShaderBvhOriginCheck) != 0u;
 	for (uint32_t i = 0; i < 3; ++i) {
-		for (const auto value: {origin[i], direction[i], inverse[i]})
+		for (const auto value: {direction[i], inverse[i]})
 			require(Unary(s, spv::OpLogicalNot, b, Unary(s, spv::OpIsNan, b, value)));
-		require(Unary(s, spv::OpLogicalNot, b, Unary(s, spv::OpIsInf, b, origin[i])));
+		if (origin_check) {
+			// Ordered: false for NaN, and |x| < inf rejects both infinities.
+			require(Binary(s, spv::OpFOrdLessThan, b, EmitGlsl<GLSLstd450FAbs, IR::Type::F32>(s, origin[i]),
+			               ConstantF32(s, 0x7f800000)));
+		} else {
+			require(Unary(s, spv::OpLogicalNot, b, Unary(s, spv::OpIsNan, b, origin[i])));
+			require(Unary(s, spv::OpLogicalNot, b, Unary(s, spv::OpIsInf, b, origin[i])));
+		}
 	}
 	const std::array triangle_invalid {ConstantU32(s, 0x7f800000), ConstantU32(s, 0x3f800000),
 	                                  ConstantU32(s, ~0u), ConstantU32(s, 0)};

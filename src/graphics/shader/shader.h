@@ -295,6 +295,13 @@ struct ShaderDeviceFeatures {
 	// ray-traced compute pass: 18940 -> 18180 instructions, 7318 -> 6915 NOPs; the gameplay gain
 	// is unmeasured and runs with it showed black streaks not yet ruled out as its doing.
 	bool bvh_vector_loads        = false;
+	// IMAGE_BVH(64)_INTERSECT_RAY emulation variants with the same results (KYTY_BVH_OPT bit mask,
+	// ShaderBvhEmulation bits): triangle corners picked from the node's words with constant word
+	// indices (1), one FP16/FP32 branch around the four box children instead of one per child
+	// (2), the ray origin's NaN/Inf check as one ordered |x| < inf compare per component (4).
+	// Opt-in: on Astro Bot's RT pass 6856320a (KYTY_BVH_OPT=7) fewer NOPs and SY stalls but more
+	// instructions, the same 48 registers, and no faster dispatch in the one gameplay pair.
+	uint32_t bvh_emulation = 0;
 	// Without fragment_shader_barycentric, a pixel shader that interpolates packed parameters by
 	// hand from per-vertex reads may instead read hardware-interpolated fields that its vertex
 	// shader unpacks (KYTY_PACKED_INTERP; recompiler/ir/passes/ManualInterpolation.h). Locations
@@ -346,6 +353,27 @@ struct ShaderDeviceFeatures {
 	// READFIRSTLANE / DS_APPEND use wave-local lane numbers (KYTY_WAVE_SLICES=1). Without it,
 	// host lanes >= 32 read lane (n & 31) of the first wave's mask. Experimental, off.
 	bool wave_slices = false;
+	// V_READLANE_B32 and V_READFIRSTLANE_B32 read their wave-uniform lane with
+	// OpGroupNonUniformBroadcast (a constant id for immediate lanes, else a dynamically uniform one,
+	// SPIR-V 1.5) instead of OpGroupNonUniformShuffle, and gl_SubgroupSize becomes a constant in
+	// compute programs that run with a required subgroup size (KYTY_LANE_BROADCAST). Mesa ir3 on
+	// a7xx/a8xx rewrites every shuffle, a uniform index included, as a rotate by
+	// (index - invocation), which is divergent and becomes a loop over the distinct values; a
+	// broadcast is one movs. Same lane read, same result.
+	bool constant_lane_broadcast = false;
+	// The value V_READFIRSTLANE_B32 returns is one of its source's values in a lane where its EXEC
+	// predicate holds, so selects on a condition that predicate implies have one possible value
+	// (KYTY_FIRSTLANE_SETS). A waterfall loop over a per-lane register index (readfirstlane, M0,
+	// V_MOVRELS) then compares M0 only with the few indices that lane can hold instead of every
+	// register after the base: Astro Bot's VS 7d308cde had 24 such chains of ~110 selects each.
+	bool first_lane_value_sets = false;
+	// Smallest host subgroup size of any stage (minSubgroupSize, or subgroupSize without
+	// subgroup size control); 0: unknown. A guest lane below it never wraps.
+	uint32_t subgroup_size_min = 0;
+	// Compute programs whose wave size lies in [min, max] run with it as the required subgroup
+	// size (subgroupSizeControl for compute); 0: no size control.
+	uint32_t compute_required_subgroup_min = 0;
+	uint32_t compute_required_subgroup_max = 0;
 	// --render-scale is active: pixel and compute shaders read the rescale push dwords
 	// (IR::PushData::Rescale*) to unscale gl_FragCoord and scale texel coordinates. Off, the
 	// emitted SPIR-V is unchanged.
@@ -353,6 +381,13 @@ struct ShaderDeviceFeatures {
 	// Diagnostics (--render-scale-flags): leave gl_FragCoord / texel coordinates untouched.
 	bool render_scale_keep_fragcoord = false;
 	bool render_scale_keep_texels    = false;
+};
+
+// ShaderDeviceFeatures::bvh_emulation bits.
+enum ShaderBvhEmulation : uint32_t {
+	ShaderBvhTriangleWords = 1u,
+	ShaderBvhBoxBranch     = 2u,
+	ShaderBvhOriginCheck   = 4u,
 };
 
 // True when a shader of this stage may emit native subgroup operations on the device.
