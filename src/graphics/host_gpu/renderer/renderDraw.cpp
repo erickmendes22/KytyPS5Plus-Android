@@ -22,6 +22,7 @@
 #include "graphics/host_gpu/renderer/gpuTimer.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -1273,6 +1274,30 @@ static void MarkDrawForLiveKnobs(const CommandBuffer& buffer, const DrawRenderSt
 	                .aux     = ps != nullptr && vs != nullptr ? vs->shader_hash : 0});
 }
 
+// --perf-stats: every 16th GPU-executed indirect draw (at most 256 lines) names its shaders and
+// the first guest record as the backing holds it (stale when the GPU wrote it: "gpu_dirty=1").
+static void LogIndirectDrawSample(const DrawRenderState& state, const IndirectDrawArgs& args) {
+	static std::atomic<uint32_t> seen {0};
+	const auto                   n = seen.fetch_add(1, std::memory_order_relaxed);
+	if (n % 16u != 0u || n / 16u >= 256u) {
+		return;
+	}
+	const auto* ps = state.ps_active ? state.ps_input_info.stage.program : nullptr;
+	const auto* vs = state.vertex_info[0].stage.program;
+	std::array<uint32_t, 5> record {};
+	const bool read = Libs::LibKernel::Memory::TryReadBacking(
+	    args.args_addr, record.data(), (args.indexed ? 5u : 4u) * sizeof(uint32_t));
+	char line[320];
+	std::snprintf(line, sizeof(line),
+	              "[perf-indirect] ps=0x%016" PRIx64 " vs=0x%016" PRIx64 " indexed=%d max=%u "
+	              "count_addr=%d args=0x%010" PRIx64 " backing=%s %u %u %u %u %u",
+	              ps != nullptr ? ps->shader_hash : 0, vs != nullptr ? vs->shader_hash : 0,
+	              args.indexed ? 1 : 0, args.max_count, args.count_addr != 0 ? 1 : 0,
+	              args.args_addr, read ? "ok" : "no", record[0], record[1], record[2], record[3],
+	              record[4]);
+	Common::PerfStats::EmitLine(line);
+}
+
 static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_buffer,
                                const DrawCallInfo& draw, const DrawEmitInfo& emit) {
 	switch (ucfg.GetPrimType()) {
@@ -1515,6 +1540,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (indirect != nullptr && !mesh_active) {
 		indirect_records = m_indirect_fixup->Record(buffer, *indirect, indirect_sources);
 	}
+	if (indirect != nullptr && Common::PerfStats::Enabled()) {
+		LogIndirectDrawSample(state, *indirect);
+	}
 	EmulatedMeshDraw emulated_mesh;
 	if (mesh_emulated && indirect != nullptr) {
 		emulated_mesh = DispatchEmulatedMeshIndirect(buffer, state.vertex_info[0],
@@ -1586,6 +1614,32 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const uint64_t indices = mesh_emulated ? uint64_t {emulated_mesh.index_count}
 		                                       : uint64_t {draw.index_count} * draw.instance_count;
 		buffer.NotePassDraw(named.program != nullptr ? named.program->shader_hash : 0, indices);
+		// KYTY_DRAW_LOG=<hash prefixes>: every 8th draw of those pixel (or vertex) shaders, at
+		// most 400 lines: the parameters behind the pass labels ("Kindices" is 0 for indirect).
+		static const std::vector<std::string> draw_log = [] {
+			const char* spec = std::getenv("KYTY_DRAW_LOG");
+			return spec != nullptr ? PipelineStats::ParseSpec(spec) : std::vector<std::string> {};
+		}();
+		static uint32_t sampled = 0;
+		if (!draw_log.empty() && named.program != nullptr &&
+		    PipelineStats::Matches(draw_log, named.program->shader_hash) && sampled++ % 8u == 0u &&
+		    sampled / 8u < 400u) {
+			char line[256];
+			std::snprintf(line, sizeof(line),
+			              "[perf-draw] hash=0x%016" PRIx64 " vs=0x%016" PRIx64
+			              " %s count=%u instances=%u prim=%u indirect=%d mesh=%d/%d gs=%d %ux%u",
+			              named.program != nullptr ? named.program->shader_hash : 0,
+			              state.vertex_info[0].stage.program != nullptr
+			                  ? state.vertex_info[0].stage.program->shader_hash : 0,
+			              draw.Name(), draw.index_count, draw.instance_count,
+			              static_cast<uint32_t>(ucfg.GetPrimType()), indirect != nullptr ? 1 : 0,
+			              mesh_emulated ? 1 : 0, mesh_active ? 1 : 0,
+			              state.ps_active && state.ps_input_info.stage.program != nullptr &&
+			                      state.ps_input_info.stage.program->info.barycentric_emulation.enabled
+			                  ? 1 : 0,
+			              rendering.width, rendering.height);
+			Common::PerfStats::EmitLine(line);
+		}
 	}
 	const bool draw_marks = Common::PerfStats::Enabled() && LiveKnobs::DrawMarks();
 	if (draw_marks) {

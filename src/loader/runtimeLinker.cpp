@@ -1,3 +1,4 @@
+#include "common/perfWaits.h"
 #include "loader/runtimeLinker.h"
 
 #include "common/assert.h"
@@ -718,6 +719,16 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			case CoreAccess::Execute: access = GpuAccess::Execute; break;
 			case CoreAccess::Unknown: return false;
 		}
+#if KYTY_HOST_ARM64 && defined(__ANDROID__)
+		if (Common::PerfStats::TraceEnabled() && Common::PerfStats::IsGpuThread()) {
+			if (const auto* uc = static_cast<const ucontext_t*>(info->native_context); uc != nullptr) {
+				Common::PerfStats::TraceHostStack(
+				    access == GpuAccess::Write ? "gpu-fault-w" : "gpu-fault-r",
+				    info->access_violation_vaddr, info->exception_address,
+				    uc->uc_mcontext.regs[30], uc->uc_mcontext.regs[29]);
+			}
+		}
+#endif
 		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
 			return true;
 		}

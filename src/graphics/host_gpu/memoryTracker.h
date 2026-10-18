@@ -64,6 +64,19 @@ public:
 		});
 		QueueBdaSync(vaddr, size);
 	}
+	// See RegionManager::MarkCleanPagesCpuModified. Returns the pages made writable.
+	uint32_t MarkCleanPagesCpuModified(uint64_t vaddr, uint64_t size) noexcept {
+		CheckNotInUploadCallback();
+		uint32_t changed = 0;
+		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
+			std::scoped_lock lock(manager->lock);
+			changed += manager->MarkCleanPagesCpuModified(manager->GetCpuAddr() + offset, bytes);
+		});
+		if (changed != 0) {
+			QueueBdaSync(vaddr, size);
+		}
+		return changed;
+	}
 #if KYTY_BUILD == KYTY_BUILD_DEBUG
 	void ValidateGpuDirtyPages(const RangeSet& dirty, uint64_t vaddr, uint64_t size,
 	                           const char* operation) const noexcept;

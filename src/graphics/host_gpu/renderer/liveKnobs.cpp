@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 
 #include "common/logging/log.h"
+#include "common/perfWaits.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "libs/controller.h"
 
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <fmt/format.h>
 #include <sys/stat.h>
 
 namespace Libs::Graphics::LiveKnobs {
@@ -111,6 +113,10 @@ void Poll() {
 	     snapshot->shake_seconds);
 	std::fprintf(stderr, "[live-knobs] skip=[%s] marks=%d shake=%d\n", skip.c_str(),
 	             snapshot->draw_marks ? 1 : 0, snapshot->shake_seconds);
+	// Also in the perf log, so per-second [perf] lines can be split by knob phase.
+	Common::PerfStats::EmitLine(fmt::format("[live-knobs] t={:.1f} skip=[{}] marks={}",
+	                                        static_cast<double>(now) / 1e6, skip,
+	                                        snapshot->draw_marks ? 1 : 0));
 	if (snapshot->shake_seconds > 0 && !Libs::Controller::StartSyntheticShake(snapshot->shake_seconds)) {
 		LOGF("Live knobs: shake ignored (already shaking or no pad)\n");
 	}
