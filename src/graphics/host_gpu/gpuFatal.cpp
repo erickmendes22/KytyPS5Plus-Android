@@ -5,7 +5,9 @@
 #include "common/logging/log.h"
 
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <array>
+#include <cinttypes>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -73,7 +75,77 @@ void RunHooks(vk::Result result) {
 	}
 }
 
+vk::Device                g_fault_device = nullptr;
+std::array<uint64_t, 16>  g_fault_addresses {};
+std::atomic<size_t>       g_fault_address_count {0};
+
+const char* FaultAddressTypeName(vk::DeviceFaultAddressTypeEXT type) {
+	switch (type) {
+		case vk::DeviceFaultAddressTypeEXT::eNone: return "none";
+		case vk::DeviceFaultAddressTypeEXT::eReadInvalid: return "read-invalid";
+		case vk::DeviceFaultAddressTypeEXT::eWriteInvalid: return "write-invalid";
+		case vk::DeviceFaultAddressTypeEXT::eExecuteInvalid: return "execute-invalid";
+		case vk::DeviceFaultAddressTypeEXT::eInstructionPointerUnknown: return "ip-unknown";
+		case vk::DeviceFaultAddressTypeEXT::eInstructionPointerInvalid: return "ip-invalid";
+		case vk::DeviceFaultAddressTypeEXT::eInstructionPointerFault: return "ip-fault";
+		default: return "?";
+	}
+}
+
+void ReportDeviceFault(vk::Result result) {
+	if (result != vk::Result::eErrorDeviceLost || g_fault_device == nullptr ||
+	    VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceFaultInfoEXT == nullptr) {
+		return;
+	}
+	const auto device = static_cast<VkDevice>(g_fault_device);
+	VkDeviceFaultCountsEXT counts {VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+	auto status = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceFaultInfoEXT(device, &counts, nullptr);
+	LOGF("[gpu-fault] vkGetDeviceFaultInfoEXT counts: %s addresses=%u vendor=%u binary=%" PRIu64 "\n",
+	     vk::to_string(static_cast<vk::Result>(status)).c_str(), counts.addressInfoCount,
+	     counts.vendorInfoCount, static_cast<uint64_t>(counts.vendorBinarySize));
+	if (status != VK_SUCCESS && status != VK_INCOMPLETE) {
+		return;
+	}
+	std::array<VkDeviceFaultAddressInfoEXT, 16> addresses {};
+	std::array<VkDeviceFaultVendorInfoEXT, 16>  vendors {};
+	counts.addressInfoCount = std::min<uint32_t>(counts.addressInfoCount, addresses.size());
+	counts.vendorInfoCount  = std::min<uint32_t>(counts.vendorInfoCount, vendors.size());
+	counts.vendorBinarySize = 0;
+	VkDeviceFaultInfoEXT info {VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT};
+	info.pAddressInfos = addresses.data();
+	info.pVendorInfos  = vendors.data();
+	status = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceFaultInfoEXT(device, &counts, &info);
+	LOGF("[gpu-fault] %s: %s\n", vk::to_string(static_cast<vk::Result>(status)).c_str(),
+	     info.description);
+	size_t stored = 0;
+	for (uint32_t i = 0; i < counts.addressInfoCount; i++) {
+		const auto& address = addresses[i];
+		LOGF("[gpu-fault] address %u: %s 0x%016" PRIx64 " precision 0x%" PRIx64 "\n", i,
+		     FaultAddressTypeName(static_cast<vk::DeviceFaultAddressTypeEXT>(address.addressType)),
+		     static_cast<uint64_t>(address.reportedAddress),
+		     static_cast<uint64_t>(address.addressPrecision));
+		if (stored < g_fault_addresses.size()) {
+			g_fault_addresses[stored++] = address.reportedAddress;
+		}
+	}
+	g_fault_address_count.store(stored, std::memory_order_release);
+	for (uint32_t i = 0; i < counts.vendorInfoCount; i++) {
+		LOGF("[gpu-fault] vendor %u: %s code=0x%" PRIx64 " data=0x%" PRIx64 "\n", i,
+		     vendors[i].description, static_cast<uint64_t>(vendors[i].vendorFaultCode),
+		     static_cast<uint64_t>(vendors[i].vendorFaultData));
+	}
+}
+
 } // namespace
+
+void EnableDeviceFaultReport(vk::Device device) {
+	g_fault_device = device;
+	AddGpuFatalHook(ReportDeviceFault);
+}
+
+std::span<const uint64_t> ReportedFaultAddresses() {
+	return {g_fault_addresses.data(), g_fault_address_count.load(std::memory_order_acquire)};
+}
 
 void AddGpuFatalHook(GpuFatalHook hook) {
 	for (auto& slot: g_hooks) {

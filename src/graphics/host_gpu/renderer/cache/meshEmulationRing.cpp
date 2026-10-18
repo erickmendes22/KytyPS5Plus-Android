@@ -34,10 +34,34 @@ MeshEmulationRing::MeshEmulationRing(GraphicContext& graphics, CommandScheduler&
                                      uint64_t size, const char* name)
     : m_graphics(graphics), m_scheduler(scheduler), m_name(name),
       m_buffer(CreateRingBuffer(graphics, scheduler, size, name)) {
-	LOGF("%s: ring buffer %" PRIu64 " KiB\n", name, size >> 10u);
+	LOGF("%s: ring buffer %" PRIu64 " KiB at 0x%016" PRIx64 "\n", name, size >> 10u,
+	     m_buffer->BufferDeviceAddress());
 }
 
 MeshEmulationRing::~MeshEmulationRing() = default;
+
+void MeshEmulationRing::DescribeFaultAddresses(std::span<const uint64_t> addresses) const {
+	const auto describe = [&](const char* state, const Buffer& buffer, uint64_t tick) {
+		const auto begin = buffer.BufferDeviceAddress();
+		const auto end   = begin + buffer.Size();
+		LOGF("[gpu-fault] %s %s [0x%016" PRIx64 ", 0x%016" PRIx64 ") tick=%" PRIu64 "\n", m_name,
+		     state, begin, end, tick);
+		for (const auto address: addresses) {
+			if (address >= begin && address < end) {
+				LOGF("[gpu-fault] 0x%016" PRIx64 " inside %s %s at +0x%" PRIx64 "\n", address, m_name,
+				     state, address - begin);
+			}
+		}
+	};
+	describe("current", *m_buffer, 0);
+	for (const auto& [buffer, tick]: m_retired) {
+		describe("retired", *buffer, tick);
+	}
+	for (const auto& range: m_ranges) {
+		LOGF("[gpu-fault] %s range [0x%" PRIx64 ", 0x%" PRIx64 ") tick=%" PRIu64 "\n", m_name,
+		     range.begin, range.end, range.tick);
+	}
+}
 
 // Pruning only consults GPU progress the renderer already observed. CommandScheduler::IsFree
 // would query the timeline for every unfinished range on every emulated mesh draw, a kernel call
@@ -61,6 +85,7 @@ void MeshEmulationRing::Grow(uint64_t size) {
 	     Capacity() >> 20u, capacity >> 20u, size);
 	m_retired.emplace_back(std::move(m_buffer), m_scheduler.CurrentTick());
 	m_buffer = CreateRingBuffer(m_graphics, m_scheduler, capacity, m_name);
+	LOGF("%s: new buffer at 0x%016" PRIx64 "\n", m_name, m_buffer->BufferDeviceAddress());
 	m_offset = 0;
 	m_ranges.clear();
 }

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -42,6 +43,8 @@ public:
 
 	[[nodiscard]] Reservation Reserve(uint64_t size);
 	[[nodiscard]] uint64_t    Capacity() const noexcept { return m_buffer->Size(); }
+	// Device-loss diagnostics: logs the current and retired buffers holding any address.
+	void DescribeFaultAddresses(std::span<const uint64_t> addresses) const;
 
 private:
 	struct Range {

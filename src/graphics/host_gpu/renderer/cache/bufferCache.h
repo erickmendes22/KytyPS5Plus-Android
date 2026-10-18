@@ -78,6 +78,8 @@ public:
 	}
 	// Mesh emulation output ring, created on the first emulated mesh draw.
 	[[nodiscard]] MeshEmulationRing& GetMeshEmulationRing();
+	// Device-loss diagnostics: logs the buffers containing or near each address.
+	void DescribeFaultAddresses(std::span<const uint64_t> addresses) const;
 	// --gpu-indirect fixed-up draw records, created on the first GPU indirect draw.
 	[[nodiscard]] MeshEmulationRing& GetIndirectDrawRing();
 	[[nodiscard]] const Buffer* GetGdsBuffer() const noexcept { return &m_gds_buffer; }

@@ -10,6 +10,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/timer.h"
+#include "graphics/host_gpu/gpuFatal.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/ubwcProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
@@ -837,6 +838,12 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		create_info.pNext     = &executable_info;
 		graphics.pipeline_executable_info_enabled = true;
 	}
+	vk::PhysicalDeviceFaultFeaturesEXT device_fault {};
+	if (graphics.device_fault_enabled) {
+		device_fault.deviceFault = VK_TRUE;
+		device_fault.pNext       = const_cast<void*>(create_info.pNext);
+		create_info.pNext        = &device_fault;
+	}
 	if (compression_control_extension && compression_control.imageCompressionControl == VK_TRUE) {
 		compression_control.pNext = const_cast<void*>(create_info.pNext);
 		create_info.pNext         = &compression_control;
@@ -1246,6 +1253,17 @@ void WindowContext::CreateVulkan() {
 			device_extensions.push_back(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
 			device_extensions.push_back(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
 		}
+		if (HasExtension(available_extensions, VK_EXT_DEVICE_FAULT_EXTENSION_NAME)) {
+			vk::PhysicalDeviceFaultFeaturesEXT fault {};
+			vk::PhysicalDeviceFeatures2        features {};
+			features.pNext = &fault;
+			graphic_ctx.physical_device.getFeatures2(&features);
+			if (fault.deviceFault == VK_TRUE) {
+				device_extensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+				graphic_ctx.device_fault_enabled = true;
+			}
+		}
+		LOGF("Vulkan device fault reports: %s\n", graphic_ctx.device_fault_enabled ? "on" : "off");
 	}
 
 	graphic_ctx.device = VulkanCreateDevice(graphic_ctx, device_extensions);
@@ -1253,6 +1271,9 @@ void WindowContext::CreateVulkan() {
 		EXIT("Could not create device");
 	}
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(graphic_ctx.device);
+	if (graphic_ctx.device_fault_enabled) {
+		EnableDeviceFaultReport(graphic_ctx.device);
+	}
 	graphic_ctx.device.getQueue(graphic_ctx.queue_family, 0, &graphic_ctx.queue);
 	EXIT_IF(graphic_ctx.queue == nullptr);
 

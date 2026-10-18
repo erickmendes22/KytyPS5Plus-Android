@@ -69,6 +69,8 @@ struct GraphicContext {
 	bool                               attachment_feedback_loop_enabled      = false;
 	bool                               provoking_vertex_last_enabled         = false;
 	bool                               maintenance8_enabled                  = false;
+	// VK_EXT_device_fault: a device loss logs the faulting address (gpuFatal.h).
+	bool                               device_fault_enabled                  = false;
 	// VkPhysicalDeviceDriverProperties::driverID of the selected device.
 	vk::DriverId                       driver_id                             = {};
 	// VK_KHR_pipeline_executable_properties, enabled only for KYTY_PIPELINE_STATS.

@@ -3,6 +3,9 @@
 
 #include "graphics/host_gpu/vulkanCommon.h"
 
+#include <cstdint>
+#include <span>
+
 namespace Libs::Graphics {
 
 // Exit statuses for unrecoverable GPU errors (the generic fatal error exits with 65).
@@ -24,6 +27,14 @@ inline constexpr int kExitGpuOutOfMemory = 67;
 // timer's in-flight regions on a device loss). At most a few hooks; each runs once.
 using GpuFatalHook = void (*)(vk::Result result);
 void AddGpuFatalHook(GpuFatalHook hook);
+
+// VK_EXT_device_fault: after a device loss, logs the faulting GPU addresses the driver reports
+// ("[gpu-fault]" lines) before the other hooks run. Called once the device exists with the
+// extension and its deviceFault feature enabled.
+void EnableDeviceFaultReport(vk::Device device);
+// Addresses the device-fault report found (empty before a loss or without the extension), for
+// hooks that map them to allocations.
+[[nodiscard]] std::span<const uint64_t> ReportedFaultAddresses();
 
 inline void CheckGpuResult(const char* what, vk::Result result) {
 	if (result != vk::Result::eSuccess) {

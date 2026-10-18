@@ -7,6 +7,7 @@
 #include "common/perfWaits.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/graphicsRun.h"
+#include "graphics/host_gpu/gpuFatal.h"
 #include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
@@ -411,6 +412,56 @@ uint64_t BufferCache::WriterTick(uint64_t begin, uint64_t end) const {
 	return tick;
 }
 
+namespace {
+
+// VK_EXT_device_fault: which known buffers lie at or near each reported fault address.
+const BufferCache* g_fault_cache = nullptr;
+
+void DumpFaultNeighbors(vk::Result /*result*/) {
+	if (g_fault_cache != nullptr) {
+		g_fault_cache->DescribeFaultAddresses(ReportedFaultAddresses());
+	}
+}
+
+} // namespace
+
+void BufferCache::DescribeFaultAddresses(std::span<const uint64_t> addresses) const {
+	if (addresses.empty()) {
+		return;
+	}
+	constexpr uint64_t Near = 4 * MiB;
+	const auto describe = [&](const char* name, const Buffer& buffer) {
+		if (!buffer.HasDeviceAddress()) {
+			return;
+		}
+		const auto begin = buffer.BufferDeviceAddress();
+		const auto end   = begin + buffer.Size();
+		for (const auto address: addresses) {
+			if (address + Near >= begin && address < end + Near) {
+				LOGF("[gpu-fault] 0x%016" PRIx64 " %s %s [0x%016" PRIx64 ", 0x%016" PRIx64
+				     ") cpu=0x%010" PRIx64 "\n",
+				     address, address >= begin && address < end ? "inside" : "near", name, begin,
+				     end, buffer.CpuAddress());
+			}
+		}
+	};
+	describe("bda-pagetable", m_bda_pagetable_buffer);
+	describe("staging", m_staging_buffer);
+	describe("stream", m_stream_buffer);
+	describe("download", m_download_buffer);
+	describe("device-stream", m_device_buffer);
+	if (m_mesh_emulation_ring) {
+		m_mesh_emulation_ring->DescribeFaultAddresses(addresses);
+	}
+	if (m_indirect_draw_ring) {
+		m_indirect_draw_ring->DescribeFaultAddresses(addresses);
+	}
+	for (const auto& [cpu_address, id]: m_buffers) {
+		(void)cpu_address;
+		describe("guest-buffer", m_slot_buffers[id]);
+	}
+}
+
 BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
                          PageManager& page_manager, TextureCache& texture_cache)
     : m_graphics(graphics), m_scheduler(scheduler), m_fault_manager(graphics, scheduler, *this),
@@ -431,6 +482,8 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	    m_slot_buffers.insert(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0, AllFlags, 16);
 	EXIT_IF(null_id != NULL_BUFFER_ID);
 	SetVulkanObjectNameF(m_graphics.device, GetBuffer(null_id).Handle(), "Kyty.NullBuffer");
+	g_fault_cache = this;
+	AddGpuFatalHook(DumpFaultNeighbors);
 	if (m_graphics.MemoryBudgetEnabled()) {
 		m_budget_mode = true;
 		ApplyBudgetThresholds(m_graphics.MemoryBudget());
