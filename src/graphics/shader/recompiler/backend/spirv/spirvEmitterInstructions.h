@@ -226,6 +226,7 @@ void                  EmitRetraceStoreU32(EmitterState& state, uint32_t index, u
 uint32_t              EmitRetraceLoadU32(EmitterState& state, uint32_t index);
 void                  EmitRetraceAppendU32(EmitterState& state, uint32_t value, uint32_t exec);
 void                  EmitStoreCompletion(EmitterState& state);
+void                  EmitDataCacheInvalidate(EmitterState& state);
 void                  EmitMeshAllocate(ValueEmitContext& ctx, const IR::Inst& inst);
 uint32_t              EmitMeshDrawParameter(ValueEmitContext& ctx, const IR::Inst& inst);
 uint32_t              EmitGetTessellationAttribute(ValueEmitContext& ctx, const IR::Inst& inst);

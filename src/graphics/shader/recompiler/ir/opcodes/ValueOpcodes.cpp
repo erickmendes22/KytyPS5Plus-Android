@@ -97,6 +97,7 @@ bool HasSideEffects(ValueOpcode opcode) {
 		case ValueOpcode::DebugLogStoreU32:
 		case ValueOpcode::RetraceStoreU32:
 		case ValueOpcode::RetraceAppendU32:
+		case ValueOpcode::DataCacheInvalidate:
 		case ValueOpcode::Barrier: return true;
 		default: return false;
 	}
