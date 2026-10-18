@@ -39,9 +39,10 @@ Options Parse(const char* value) {
 	}
 	options.requested = true;
 	if (std::string_view(value) == "1") {
-		options.core  = true;
-		options.sync  = true;
-		options.gpuav = true;
+		// GPU-AV is opt-in: on Turnip v32 it hangs Astro Bot's boot (all threads idle in futex
+		// waits at ~4 s guest time, nothing presented), while Vampire Survivors boots with it.
+		options.core = true;
+		options.sync = true;
 		return options;
 	}
 	std::string_view rest(value);
