@@ -1,3 +1,4 @@
+#include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 
 #include "common/assert.h"
@@ -201,7 +202,7 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	}
 	auto& desc = r.desc;
 	desc.type              = TextureCache::BindingType::RenderTarget;
-	desc.info.data            = {rt.base.addr, 0};
+	desc.info.data            = {Kernel::AddressFold::Fold(rt.base.addr), 0};
 	desc.info.pixel_format = target_format.format;
 	desc.info.guest_format = target_format.guest_format;
 	desc.info.type         = image_type;
@@ -235,7 +236,8 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 		}
 		// DCC owns the clear when both planes are enabled; single-sample CMASK stays expanded.
 		desc.info.metadata.kind = has_dcc ? ImageMetadataKind::Dcc : ImageMetadataKind::Cmask;
-		desc.info.metadata.range = {has_dcc ? rt.dcc_addr.addr : rt.cmask.addr, metadata_size.size};
+		desc.info.metadata.range = {
+	    Kernel::AddressFold::Fold(has_dcc ? rt.dcc_addr.addr : rt.cmask.addr), metadata_size.size};
 		desc.info.metadata.clear_word =
 		    rt.clear_word0.word0 | (uint64_t {rt.clear_word1.word1} << 32u);
 		desc.info.metadata.clear_register_valid = true;

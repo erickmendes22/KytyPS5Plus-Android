@@ -1,3 +1,4 @@
+#include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
 #include "common/alignment.h"
@@ -557,7 +558,7 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		return {.image_id = id, .desc = std::move(desc), .placeholder = true};
 	}
 
-	const auto address         = descriptor.Base40();
+	const auto address         = Kernel::AddressFold::Fold(descriptor.Base40());
 	const auto width           = static_cast<uint32_t>(descriptor.Width5()) + 1u;
 	const auto height          = static_cast<uint32_t>(descriptor.Height5()) + 1u;
 	const auto base_level      = descriptor.BaseLevel();
@@ -669,7 +670,8 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		(void)TileGetDccSize(width, height, volume ? depth : image_layers,
 		                     desc.info.bytes_per_block, physical_levels, tile, metadata_size,
 		                     std::countr_zero(samples));
-		desc.info.metadata.range         = {descriptor.MetaAddr() << 8u, metadata_size.size};
+		desc.info.metadata.range         = {Kernel::AddressFold::Fold(descriptor.MetaAddr() << 8u),
+		                                    metadata_size.size};
 		desc.info.metadata.dcc_alpha_msb = descriptor.DccAlphaPos();
 	}
 	desc.view_info = TextureViewInfo(resource, descriptor, view_format, surface_format, storage,
@@ -809,7 +811,7 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			if (metadata.descriptor_index == UINT32_MAX) continue;
 			auto& source = prepared.buffer_sources[metadata.descriptor_index];
 			const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[resource]);
-			const auto address = descriptor.Base48();
+			const auto address = Kernel::AddressFold::Fold(descriptor.Base48());
 			auto size = descriptor.GetSize();
 			if (address == 0 || size == 0) {
 				source = {};

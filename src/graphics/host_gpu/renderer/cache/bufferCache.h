@@ -6,6 +6,7 @@
 #include "common/lruCache.h"
 #include "common/perfWaits.h"
 #include "common/slotVector.h"
+#include "kernel/addressFold.h"
 #include "graphics/host_gpu/memoryTracker.h"
 #include "kernel/addressLayout.h"
 #include "graphics/host_gpu/rangeSet.h"
@@ -58,7 +59,7 @@ public:
 	// --fault-window: after a CPU write fault, also make the clean tracked pages of the
 	// surrounding window writable (see MemoryTracker::MarkCleanPagesCpuModified).
 	uint32_t               OpenWriteWindow(uint64_t vaddr, uint64_t size) {
-		return m_memory_tracker.MarkCleanPagesCpuModified(vaddr, size);
+		return m_memory_tracker.MarkCleanPagesCpuModified(Kernel::AddressFold::Fold(vaddr), size);
 	}
 	void                   ReadMemory(uint64_t vaddr, uint64_t size, bool is_write = false);
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
@@ -97,7 +98,7 @@ public:
 	void               ProcessFaultBuffer();
 	void               SynchronizeBda(const RangeSet& mapped);
 	void               QueueBdaSync(uint64_t vaddr, uint64_t size) {
-		m_memory_tracker.QueueBdaSync(vaddr, size);
+		m_memory_tracker.QueueBdaSync(Kernel::AddressFold::Fold(vaddr), size);
 	}
 	void               RunGarbageCollector();
 	// Bytes of guest-mirroring buffers the cache owns, and the mesh emulation ring (0 if unused).

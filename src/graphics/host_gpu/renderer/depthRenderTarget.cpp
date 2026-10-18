@@ -1,3 +1,4 @@
+#include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 
 #include "common/assert.h"
@@ -135,9 +136,12 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
                                                   const HW::DepthRenderTarget& z,
                                                   bool write_buffer = false) {
 	const bool has_stencil = z.stencil_info.format != Prospero::StencilFormat::kInvalid;
-	const auto depth_address = write_buffer ? z.z_write_base_addr : z.z_read_base_addr;
-	const auto stencil_address =
-	    write_buffer ? z.stencil_write_base_addr : z.stencil_read_base_addr;
+	// The GPU side works on host addresses (kernel/addressFold.h).
+	const auto depth_address =
+	    Kernel::AddressFold::Fold(write_buffer ? z.z_write_base_addr : z.z_read_base_addr);
+	const auto stencil_address = Kernel::AddressFold::Fold(
+	    write_buffer ? z.stencil_write_base_addr : z.stencil_read_base_addr);
+	const auto htile_address = Kernel::AddressFold::Fold(z.htile_data_base_addr);
 	if (!z.z_info.HasValidTextureCompatibility() ||
 	    !z.stencil_info.HasValidTextureCompatibility()) {
 		DepthFatal("invalid PS5 depth texture-compatibility encoding");
@@ -219,7 +223,7 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 	const auto htile_backing_size   = htile_size.size * view.image_layers;
 	if (!GuestRange {depth_address, depth_backing_size}.Valid() ||
 	    (has_stencil && !GuestRange {stencil_address, stencil_backing_size}.Valid()) ||
-	    (has_htile && !GuestRange {z.htile_data_base_addr, htile_backing_size}.Valid())) {
+	    (has_htile && !GuestRange {htile_address, htile_backing_size}.Valid())) {
 		DepthFatal("layered depth backing range is invalid");
 	}
 	TextureCache::ImageDesc desc {};
@@ -238,7 +242,7 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 	desc.info.tile_mode       = Prospero::TileMode::kDepth;
 	desc.info.UpdateSize();
 	desc.info.metadata.range =
-	    has_htile ? GuestRange {z.htile_data_base_addr, htile_backing_size} : GuestRange {};
+	    has_htile ? GuestRange {htile_address, htile_backing_size} : GuestRange {};
 	desc.info.metadata.kind   = has_htile ? ImageMetadataKind::Htile : ImageMetadataKind::None;
 	desc.info.metadata.stencil_compressed =
 	    has_stencil && has_htile && !z.stencil_info.htile_stencil_disabled;

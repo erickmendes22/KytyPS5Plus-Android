@@ -1,3 +1,4 @@
+#include "kernel/addressFold.h"
 #include "graphics/presentation/videoOut.h"
 
 #include "common/abi.h"
@@ -1480,8 +1481,11 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 			LOGF("\t buffers[%d]: ignoring reserved fields {%p, %p}\n", i, buffers[i].reserved[0],
 			     buffers[i].reserved[1]);
 		}
-		const auto data_address     = reinterpret_cast<uint64_t>(buffers[i].data);
-		const auto metadata_address = reinterpret_cast<uint64_t>(buffers[i].metadata);
+		// The GPU side works on host addresses (kernel/addressFold.h).
+		const auto data_address =
+		    Kernel::AddressFold::Fold(reinterpret_cast<uint64_t>(buffers[i].data));
+		const auto metadata_address =
+		    Kernel::AddressFold::Fold(reinterpret_cast<uint64_t>(buffers[i].metadata));
 		registrations.push_back({
 		    .group_index      = set_index,
 		    .data_address     = data_address,

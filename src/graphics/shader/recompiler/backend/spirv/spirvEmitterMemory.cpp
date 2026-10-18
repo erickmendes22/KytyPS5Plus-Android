@@ -1,3 +1,4 @@
+#include "kernel/addressFold.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
@@ -1358,14 +1359,22 @@ void DefineGetBdaPointer(EmitterState& state) {
 	const auto type            = TypeU64(state);
 	const auto function_type   = state.builder.Type(spv::OpTypeFunction, type, type);
 	state.bda_pointer_function = state.builder.AllocateId();
-	const auto address         = state.builder.AllocateId();
+	const auto parameter       = state.builder.AllocateId();
 	const auto entry_label     = state.builder.AllocateId();
 	state.builder.AddName(state.bda_pointer_function, "get_bda_pointer");
 	state.builder.AddFunction(spv::OpFunction, type, state.bda_pointer_function,
 	                          spv::FunctionControlMaskNone, function_type);
-	state.builder.AddFunction(spv::OpFunctionParameter, type, address);
+	state.builder.AddFunction(spv::OpFunctionParameter, type, parameter);
 	EmitLabel(state, entry_label);
 
+	// Guest addresses above 2^39 are backed at their folded host address (kernel/addressFold.h);
+	// the page table is indexed by host addresses. Only emitted once folding is on, so shaders of
+	// games that never need it are unchanged.
+	auto address = parameter;
+	if (Kernel::AddressFold::IsEnabled()) {
+		address = Binary(state, spv::OpBitwiseAnd, type, parameter,
+		                 ConstantU64(state, Kernel::AddressFold::kFoldMask));
+	}
 	const auto extended = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), address,
 	                             ConstantU64(state, LibKernel::Memory::kExtendedMemoryBase));
 	const auto packed   = Select(
