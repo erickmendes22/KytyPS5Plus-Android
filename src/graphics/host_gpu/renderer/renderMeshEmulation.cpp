@@ -8,6 +8,7 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cache/meshEmulationRing.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -151,7 +152,9 @@ RenderExecutor::EmulatedMeshDraw RenderExecutor::RecordEmulatedMesh(
 	                        sizeof(push), push.data());
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	buffer.MarkGpu("misc");
-	{
+	// KYTY_LIVE_KNOBS mesh-skip-cs=: the draw reads what the range already holds.
+	const bool skip_dispatch = LiveKnobs::SkipMeshDispatch(mesh_input.stage.program->shader_hash);
+	if (!skip_dispatch) {
 		const ScopedDebugLabel label(vk_buffer, "mesh-cs", mesh_input.stage.program->shader_hash);
 		if (source.indirect != nullptr) {
 			vk_buffer.dispatchIndirect(source.indirect->buffer, source.indirect->dispatch_offset);

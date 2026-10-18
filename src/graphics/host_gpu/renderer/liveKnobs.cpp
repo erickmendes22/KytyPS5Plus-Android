@@ -53,6 +53,21 @@ std::string_view Trim(std::string_view text) {
 	return text;
 }
 
+std::vector<std::string> ParsePrefixes(std::string_view value) {
+	auto prefixes = PipelineStats::ParseSpec(value);
+	// "all" would drop every draw; an empty prefix is never a useful skip.
+	std::erase_if(prefixes, [](const std::string& prefix) { return prefix.empty(); });
+	return prefixes;
+}
+
+std::string JoinPrefixes(const std::vector<std::string>& prefixes) {
+	std::string text;
+	for (const auto& prefix: prefixes) {
+		text += text.empty() ? prefix : "," + prefix;
+	}
+	return text;
+}
+
 std::string ReadFile() {
 	std::FILE* file = std::fopen(kFileName, "rb");
 	if (file == nullptr) {
@@ -105,18 +120,19 @@ void Poll() {
 	}
 	g_last_mtime_ns = mtime;
 	const auto* snapshot = new Snapshot(mtime == 0 ? Snapshot {} : Parse(ReadFile()));
-	std::string skip;
-	for (const auto& prefix: snapshot->skip) {
-		skip += skip.empty() ? prefix : "," + prefix;
-	}
-	LOGF("Live knobs: skip=[%s] marks=%d shake=%d\n", skip.c_str(), snapshot->draw_marks ? 1 : 0,
+	const auto skip      = JoinPrefixes(snapshot->skip);
+	const auto skip_draw = JoinPrefixes(snapshot->mesh_skip_draw);
+	const auto skip_cs   = JoinPrefixes(snapshot->mesh_skip_cs);
+	LOGF("Live knobs: skip=[%s] mesh-skip-draw=[%s] mesh-skip-cs=[%s] marks=%d shake=%d\n",
+	     skip.c_str(), skip_draw.c_str(), skip_cs.c_str(), snapshot->draw_marks ? 1 : 0,
 	     snapshot->shake_seconds);
-	std::fprintf(stderr, "[live-knobs] skip=[%s] marks=%d shake=%d\n", skip.c_str(),
-	             snapshot->draw_marks ? 1 : 0, snapshot->shake_seconds);
+	std::fprintf(stderr, "[live-knobs] skip=[%s] mesh-skip-draw=[%s] mesh-skip-cs=[%s] marks=%d shake=%d\n",
+	             skip.c_str(), skip_draw.c_str(), skip_cs.c_str(), snapshot->draw_marks ? 1 : 0,
+	             snapshot->shake_seconds);
 	// Also in the perf log, so per-second [perf] lines can be split by knob phase.
-	Common::PerfStats::EmitLine(fmt::format("[live-knobs] t={:.1f} skip=[{}] marks={}",
-	                                        static_cast<double>(now) / 1e6, skip,
-	                                        snapshot->draw_marks ? 1 : 0));
+	Common::PerfStats::EmitLine(fmt::format(
+	    "[live-knobs] t={:.1f} skip=[{}] mesh-skip-draw=[{}] mesh-skip-cs=[{}] marks={}",
+	    static_cast<double>(now) / 1e6, skip, skip_draw, skip_cs, snapshot->draw_marks ? 1 : 0));
 	if (snapshot->shake_seconds > 0 && !Libs::Controller::StartSyntheticShake(snapshot->shake_seconds)) {
 		LOGF("Live knobs: shake ignored (already shaking or no pad)\n");
 	}
@@ -141,10 +157,11 @@ Snapshot Parse(std::string_view text) {
 		const auto key   = Trim(line.substr(0, equals));
 		const auto value = Trim(line.substr(equals + 1));
 		if (key == "skip") {
-			auto prefixes = PipelineStats::ParseSpec(value);
-			// "all" would drop every draw; an empty prefix is never a useful skip.
-			std::erase_if(prefixes, [](const std::string& prefix) { return prefix.empty(); });
-			snapshot.skip = std::move(prefixes);
+			snapshot.skip = ParsePrefixes(value);
+		} else if (key == "mesh-skip-draw") {
+			snapshot.mesh_skip_draw = ParsePrefixes(value);
+		} else if (key == "mesh-skip-cs") {
+			snapshot.mesh_skip_cs = ParsePrefixes(value);
 		} else if (key == "marks") {
 			snapshot.draw_marks = value == "1";
 		} else if (key == "pad") {
@@ -172,6 +189,16 @@ const Snapshot& Current() {
 bool SkipShader(uint64_t guest_hash) {
 	const auto& skip = Current().skip;
 	return !skip.empty() && PipelineStats::Matches(skip, guest_hash);
+}
+
+bool SkipMeshDraw(uint64_t mesh_hash) {
+	const auto& prefixes = Current().mesh_skip_draw;
+	return !prefixes.empty() && PipelineStats::Matches(prefixes, mesh_hash);
+}
+
+bool SkipMeshDispatch(uint64_t mesh_hash) {
+	const auto& prefixes = Current().mesh_skip_cs;
+	return !prefixes.empty() && PipelineStats::Matches(prefixes, mesh_hash);
 }
 
 bool DrawMarks() {
