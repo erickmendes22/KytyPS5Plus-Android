@@ -40592,9 +40592,26 @@ void CheckIndirectImageKeySwitch(VulkanHarness &vulkan) {
   CollectShaderInfo(program, {.compute = &compute});
   spirv = ShaderRecompiler::Spirv::EmitProgram(program, {.compute = &compute});
   ValidateSpirv(name, spirv);
-  Require(name, "mixed contiguous image runs", tools.Disassemble(spirv, &text) &&
-              CountText(text, "OpImageSampleExplicitLod") == 3,
-          "one cube split the native arrays into per-image samples");
+  Require(name, "mixed image types", tools.Disassemble(spirv, &text) &&
+              CountText(text, "OpImageSampleExplicitLod") == 2,
+          "one cube duplicated the surrounding 2D samples");
+
+  for (u32 ordinal = 1; ordinal < root.indirect_resources.size(); ordinal += 2u) {
+    auto &alternating = program.info.images[root.indirect_resources[ordinal]];
+    alternating.dimension = ShaderRecompiler::Decoder::ImageDimension::Dim2DArray;
+    alternating.cube = true;
+  }
+  program.shader_info_complete = false;
+  CollectShaderInfo(program, {.compute = &compute});
+  spirv = ShaderRecompiler::Spirv::EmitProgram(program, {.compute = &compute});
+  ValidateSpirv(name, spirv);
+  Require(name, "alternating image types", tools.Disassemble(spirv, &text) &&
+              CountText(text, "OpImageSampleExplicitLod") == 2,
+          "alternating cube and 2D descriptors expanded the typed samples");
+  // The descriptor selector may grow, but 189 candidates still need only two
+  // sample bodies and should fit comfortably within a 32 KiB module.
+  Require(name, "alternating image emitted size", spirv.size() <= 8192u,
+          "alternating descriptors exceeded the 32 KiB SPIR-V regression budget");
 
   program.memory_info[0].image_dimension =
       ShaderRecompiler::Decoder::ImageDimension::Dim2DArray;
@@ -40794,7 +40811,7 @@ void CheckIndirectImageKeySwitch(VulkanHarness &vulkan) {
       const auto image_opcode = fetch ? "OpImageFetch" : gather ? "OpImageGather"
                                                           : "OpImageSampleExplicitLod";
       Require(test.name, "native array image runs", tools.Disassemble(compiled.spirv, &text) &&
-                  CountText(text, image_opcode) == (homogeneous ? 1u : 3u) * halves,
+                  CountText(text, image_opcode) == (homogeneous ? 1u : 2u) * halves,
               "mixed runs expanded into per-image accesses");
       if (homogeneous) {
         Require(test.name, "homogeneous gather array", text.find("OpSwitch") == std::string::npos,
@@ -40816,7 +40833,7 @@ void CheckIndirectImageKeySwitch(VulkanHarness &vulkan) {
         Require(test.name, "nonuniform image operands",
                 std::ranges::count_if(image_operands, [&](u32 operand) {
                   return std::ranges::find(decorated, operand) != decorated.end();
-                }) == (homogeneous ? 1u : 2u) * halves,
+                }) == halves,
                 "a dynamically selected image operand lacks its nonuniform decoration");
       }
       test.initial.assign(wave_size, 0xdeadbeefu);
@@ -40863,7 +40880,7 @@ void CheckIndirectImageKeySwitch(VulkanHarness &vulkan) {
         }
         Require(test.name, "mixed numeric image result", raw_join &&
                     tools.Disassemble(mixed_spirv, &text) &&
-                    CountText(text, image_opcode) == (mode == Access::Fetch1D ? 3u : 4u) * halves &&
+                    CountText(text, image_opcode) == (mode == Access::Fetch1D ? 2u : 3u) * halves &&
                     CountText(text, "OpConvertUToF") == coordinate_conversions,
                 "mixed image classes lost raw result bits or expanded per image");
         typed.numeric_class = Prospero::TextureNumericClass::Float;
@@ -40928,7 +40945,7 @@ void CheckIndirectImageKeySwitch(VulkanHarness &vulkan) {
       const auto halves = wave_size > compute.host_subgroup_size ? 2u : 1u;
       Require(test.name, "native array writes per dimension and swizzle run",
               tools.Disassemble(compiled.spirv, &text) &&
-                  CountText(text, "OpImageWrite") == (mixed ? 5u : 1u) * halves &&
+                  CountText(text, "OpImageWrite") == (mixed ? 4u : 1u) * halves &&
                   (mixed || text.find("OpSwitch") == std::string::npos) &&
                   text.find("StorageImageArrayNonUniformIndexing") != std::string::npos,
               "storage candidates lost their typed native array runs");
