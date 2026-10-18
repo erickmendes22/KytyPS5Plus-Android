@@ -1,9 +1,11 @@
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/host_gpu/vulkanDebugLabel.h"
 
 #include "common/assert.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 
 #include <array>
+#include <atomic>
 
 VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 
@@ -132,6 +134,18 @@ vk::ShaderModule CompileSPV(std::span<const uint32_t> code, vk::Device device) {
 	RequireVulkanSuccess(device.createShaderModule(&create_info, nullptr, &module),
 	                     "create SPIR-V shader module");
 	return module;
+}
+
+namespace {
+std::atomic<bool> g_debug_labels {false};
+} // namespace
+
+void SetDebugLabelsEnabled(bool enabled) {
+	g_debug_labels.store(enabled, std::memory_order_relaxed);
+}
+
+bool DebugLabelsEnabled() {
+	return g_debug_labels.load(std::memory_order_relaxed);
 }
 
 } // namespace Libs::Graphics

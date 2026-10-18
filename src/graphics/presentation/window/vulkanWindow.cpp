@@ -17,11 +17,13 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
 #include "graphics/presentation/window/vulkanDriverLoader.h"
+#include "graphics/presentation/window/vulkanValidation.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "kernel/memory.h"
 #include "libs/controller.h"
@@ -33,6 +35,7 @@
 #include <cstring>
 #include <fmt/format.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -881,7 +884,8 @@ static void VulkanGetExtensions(VulkanExtensions& r) {
 		        return vk::enumerateInstanceExtensionProperties(nullptr, count, values);
 	        });
 
-	r.enable_validation_layers = Config::VulkanValidationEnabled();
+	const auto& vvl            = VulkanValidation::Requested();
+	r.enable_validation_layers = Config::VulkanValidationEnabled() || vvl.requested;
 	if (Config::HdrEnabled() &&
 	    HasExtension(r.available_extensions, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME) &&
 	    !HasExtension(r.required_extensions, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {
@@ -918,7 +922,8 @@ static void VulkanGetExtensions(VulkanExtensions& r) {
 	if (r.enable_validation_layers) {
 		for (const char* l: r.required_layers) {
 			if (!HasLayer(r.available_layers, l)) {
-				LOGF("no validation layer: %s\n", l);
+				LOGF("%sno validation layer: %s\n", vvl.requested ? "[vvl] KYTY_VK_VALIDATION: " : "",
+				     l);
 				r.enable_validation_layers = false;
 				break;
 			}
@@ -938,7 +943,15 @@ static void VulkanGetExtensions(VulkanExtensions& r) {
 			     ext.extensionName.data(), ext.specVersion);
 		}
 
-		if (HasExtension(available_extensions, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)) {
+		if (vvl.requested) {
+			// KYTY_VK_VALIDATION configures the layer with VkLayerSettingsCreateInfoEXT.
+			if (HasExtension(available_extensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME)) {
+				r.required_extensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+			} else {
+				LOGF("[vvl] the layer has no %s; it runs with its default settings\n",
+				     VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+			}
+		} else if (HasExtension(available_extensions, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)) {
 			r.required_extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
 		} else {
 			r.enable_validation_layers = false;
@@ -1103,6 +1116,18 @@ void WindowContext::CreateVulkan() {
 	                                  vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
 	dbg_create_info.pfnUserCallback = VulkanDebugMessengerCallback;
 
+	// KYTY_VK_VALIDATION: layer settings instead of validation features, a non-fatal deduplicating
+	// callback, warnings and errors only.
+	const bool vvl_active = r.enable_validation_layers && VulkanValidation::Requested().requested;
+	std::optional<VulkanValidation::LayerSettings> vvl_settings;
+	if (vvl_active) {
+		vvl_settings.emplace();
+		dbg_create_info.pNext           = vvl_settings->Info();
+		dbg_create_info.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+		                                  vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
+		dbg_create_info.pfnUserCallback = VulkanValidation::MessengerCallback;
+	}
+
 	vk::InstanceCreateInfo inst_info {};
 	inst_info.pNext                   = (r.enable_validation_layers ? &dbg_create_info : nullptr);
 #if defined(__APPLE__)
@@ -1149,6 +1174,13 @@ void WindowContext::CreateVulkan() {
 		                                       &graphic_ctx.debug_messenger) !=
 		    vk::Result::eSuccess) {
 			EXIT("Could not create debug messenger");
+		}
+		if (vvl_active) {
+			AddGpuFatalHook([](vk::Result /*result*/) { VulkanValidation::LogSummary("GPU fatal"); });
+			SetDebugLabelsEnabled(true);
+			LOGF("[vvl] KYTY_VK_VALIDATION active: core=%d sync=%d gpuav=%d\n",
+			     VulkanValidation::Requested().core ? 1 : 0, VulkanValidation::Requested().sync ? 1 : 0,
+			     VulkanValidation::Requested().gpuav ? 1 : 0);
 		}
 	}
 

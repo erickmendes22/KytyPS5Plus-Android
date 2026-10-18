@@ -12,6 +12,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
@@ -447,7 +448,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	buffer.MarkGpu("misc");
-	vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
+	{
+		const ScopedDebugLabel label(vk_buffer, "cs", program.shader_hash);
+		vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
+	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();
 	buffer.MarkGpu("cs", program.shader_hash);
@@ -524,7 +528,10 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	                          1, &barrier, 0, nullptr, 0, nullptr);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	buffer.MarkGpu("misc");
-	vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
+	{
+		const ScopedDebugLabel label(vk_buffer, "cs-indirect", program.shader_hash);
+		vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
+	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();
 	buffer.MarkGpu("cs-indirect", program.shader_hash);

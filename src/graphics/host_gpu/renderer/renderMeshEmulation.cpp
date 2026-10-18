@@ -4,6 +4,7 @@
 #include "common/emulatorConfig.h"
 #include "common/perfWaits.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cache/meshEmulationRing.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
@@ -150,10 +151,13 @@ RenderExecutor::EmulatedMeshDraw RenderExecutor::RecordEmulatedMesh(
 	                        sizeof(push), push.data());
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	buffer.MarkGpu("misc");
-	if (source.indirect != nullptr) {
-		vk_buffer.dispatchIndirect(source.indirect->buffer, source.indirect->dispatch_offset);
-	} else {
-		vk_buffer.dispatch(groups, instances, 1);
+	{
+		const ScopedDebugLabel label(vk_buffer, "mesh-cs", mesh_input.stage.program->shader_hash);
+		if (source.indirect != nullptr) {
+			vk_buffer.dispatchIndirect(source.indirect->buffer, source.indirect->dispatch_offset);
+		} else {
+			vk_buffer.dispatch(groups, instances, 1);
+		}
 	}
 	buffer.MarkGpu("mesh-cs", mesh_input.stage.program->shader_hash);
 	Common::PerfStats::Count(Common::PerfStats::Counter::MeshDispatches);

@@ -27,13 +27,35 @@ val kytyNativeLibs: Map<String, File> = mapOf(
     .associateWith { adrenotoolsHookDir.resolve(it) }
 val kytyJniLibsDir: File = layout.projectDirectory.dir("src/main/jniLibs/arm64-v8a").asFile
 
+// Khronos validation layer for KYTY_VK_VALIDATION runs, packaged only on request:
+// -PkytyValidationLayer=<path to the arm64-v8a libVkLayer_khronos_validation.so> (Android loads
+// layers from the app's own nativeLibraryDir). Without the property a staged copy is removed, so
+// normal builds never ship it.
+val validationLayerName = "libVkLayer_khronos_validation.so"
+val validationLayer: File? = providers.gradleProperty("kytyValidationLayer").orNull?.let { file(it) }
+
 val syncKytyNativeLibs = tasks.register("syncKytyNativeLibs") {
     description = "Copies the emulator's native libraries into src/main/jniLibs/arm64-v8a (if present)."
     kytyNativeLibs.forEach { (name, source) ->
         inputs.files(source).optional().withPropertyName("kytyNative_$name")
         outputs.file(kytyJniLibsDir.resolve(name))
     }
+    inputs.property("kytyValidationLayer", validationLayer?.path ?: "")
+    validationLayer?.let { inputs.file(it).withPropertyName("kytyValidationLayerFile") }
+    outputs.file(kytyJniLibsDir.resolve(validationLayerName))
     doLast {
+        val layer = validationLayer
+        val stagedLayer = kytyJniLibsDir.resolve(validationLayerName)
+        if (layer == null) {
+            stagedLayer.delete()
+        } else {
+            if (!layer.isFile) {
+                throw GradleException("kytyValidationLayer: ${layer.path} is not a file")
+            }
+            kytyJniLibsDir.mkdirs()
+            layer.copyTo(stagedLayer, overwrite = true)
+            logger.lifecycle("Staged $validationLayerName from ${layer.path}")
+        }
         kytyNativeLibs.forEach { (name, source) ->
             val staged = kytyJniLibsDir.resolve(name)
             if (source.isFile) {

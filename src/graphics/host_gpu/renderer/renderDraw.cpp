@@ -14,6 +14,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
@@ -1653,17 +1654,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		// so the next mark times this draw alone.
 		buffer.MarkGpu("misc");
 	}
-	if (mesh_emulated && indirect != nullptr) {
-		vk_buffer.drawIndexedIndirect(emulated_mesh.draw_buffer, emulated_mesh.draw_offset, 1,
-		                              5 * sizeof(uint32_t));
-	} else if (indirect != nullptr) {
-		m_indirect_fixup->Draw(vk_buffer, indirect_records, indirect->indexed);
-	} else if (mesh_emulated) {
-		vk_buffer.drawIndexed(emulated_mesh.index_count, 1, 0, 0, 0);
-	} else if (mesh_active) {
-		vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
-	} else {
-		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
+	const auto* label_vs = vertex_stages.empty() ? nullptr : vertex_stages.front().stage.program;
+	const auto* label_ps = state.ps_active ? state.ps_input_info.stage.program : nullptr;
+	{
+		const ScopedDebugLabel draw_label(vk_buffer, mesh_emulated ? "draw-mesh" : "draw",
+		                                  label_vs != nullptr ? label_vs->shader_hash : 0,
+		                                  label_ps != nullptr ? label_ps->shader_hash : 0);
+		if (mesh_emulated && indirect != nullptr) {
+			vk_buffer.drawIndexedIndirect(emulated_mesh.draw_buffer, emulated_mesh.draw_offset, 1,
+			                              5 * sizeof(uint32_t));
+		} else if (indirect != nullptr) {
+			m_indirect_fixup->Draw(vk_buffer, indirect_records, indirect->indexed);
+		} else if (mesh_emulated) {
+			vk_buffer.drawIndexed(emulated_mesh.index_count, 1, 0, 0, 0);
+		} else if (mesh_active) {
+			vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
+		} else {
+			EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
+		}
 	}
 
 	if (draw_marks) {
