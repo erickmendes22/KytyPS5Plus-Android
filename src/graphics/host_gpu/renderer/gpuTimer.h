@@ -96,8 +96,11 @@ private:
 	// KYTY_GPU_BREADCRUMBS=1: after every region recorded outside a render pass (pass ends,
 	// dispatches) the GPU writes the region's index to host-visible memory, fenced by full
 	// barriers (slow; diagnostics only). DumpInFlight reads them back after a device loss.
+	// KYTY_CRUMB_KINDS=<begin,pass,cs,mesh-cs,indirect-fixup>: only those regions get the fenced
+	// write (barrier bisection); the others are not recorded. Default: all of them.
 	void CreateBreadcrumbs();
-	void WriteBreadcrumb(vk::CommandBuffer buffer, uint32_t value);
+	void WriteBreadcrumb(vk::CommandBuffer buffer, uint32_t value, bool fenced = true);
+	[[nodiscard]] bool CrumbKind(const char* kind) const;
 	void RecordProbe(vk::CommandBuffer buffer);
 	void CollectProbes();
 
@@ -138,6 +141,7 @@ private:
 	vk::DeviceMemory           m_crumb_memory = nullptr;
 	volatile uint32_t*         m_crumbs       = nullptr;
 	uint32_t                   m_crumb_serial = 0;
+	uint32_t                   m_crumb_kinds  = ~0u; // bit per kind, see CrumbKind
 };
 
 } // namespace Libs::Graphics

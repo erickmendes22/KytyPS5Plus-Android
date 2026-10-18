@@ -85,6 +85,46 @@ size_t LogTop() {
 
 } // namespace
 
+namespace {
+
+constexpr std::array<const char*, 5> kCrumbKindNames {"begin", "pass", "cs", "mesh-cs",
+                                                      "indirect-fixup"};
+
+// Index into kCrumbKindNames ("cs" matches every compute kind, e.g. "cs-indirect").
+int CrumbKindIndex(const char* kind) {
+	if (kind == nullptr) {
+		return -1;
+	}
+	for (size_t i = 0; i < kCrumbKindNames.size(); i++) {
+		if (std::strcmp(kind, kCrumbKindNames[i]) == 0) {
+			return static_cast<int>(i);
+		}
+	}
+	return std::strncmp(kind, "cs", 2) == 0 ? 2 : -1;
+}
+
+uint32_t ParseCrumbKinds(const char* spec) {
+	if (spec == nullptr || *spec == '\0') {
+		return ~0u;
+	}
+	uint32_t    kinds = 0;
+	std::string list  = spec;
+	size_t      start = 0;
+	while (start <= list.size()) {
+		// ',' ':' or '+' (EXTRA_ARGS splits on commas).
+		const auto end   = std::min(list.find_first_of(",:+", start), list.size());
+		const auto token = list.substr(start, end - start);
+		const auto index = CrumbKindIndex(token.c_str());
+		if (index >= 0) {
+			kinds |= 1u << static_cast<uint32_t>(index);
+		}
+		start = end + 1;
+	}
+	return kinds;
+}
+
+} // namespace
+
 GpuTimer::GpuTimer(GraphicContext& graphics, MasterSemaphore& master)
     : m_graphics(graphics), m_master(master) {
 	if (!Common::PerfStats::Enabled() || graphics.queue_family == static_cast<uint32_t>(-1)) {
@@ -180,12 +220,25 @@ void GpuTimer::CreateBreadcrumbs() {
 		m_crumb_buffer = nullptr;
 		return;
 	}
-	m_crumbs = static_cast<volatile uint32_t*>(map);
-	LOGF("[gpu-hang] timer%u breadcrumbs on (%u slots)\n", m_instance, kCrumbSlots);
+	m_crumbs      = static_cast<volatile uint32_t*>(map);
+	m_crumb_kinds = ParseCrumbKinds(std::getenv("KYTY_CRUMB_KINDS"));
+	LOGF("[gpu-hang] timer%u breadcrumbs on (%u slots, kinds 0x%x)\n", m_instance, kCrumbSlots,
+	     m_crumb_kinds);
 }
 
-void GpuTimer::WriteBreadcrumb(vk::CommandBuffer buffer, uint32_t value) {
+bool GpuTimer::CrumbKind(const char* kind) const {
+	const auto index = CrumbKindIndex(kind);
+	return index >= 0 && (m_crumb_kinds & (1u << static_cast<uint32_t>(index))) != 0;
+}
+
+void GpuTimer::WriteBreadcrumb(vk::CommandBuffer buffer, uint32_t value, bool fenced) {
 	if (m_crumbs == nullptr) {
+		return;
+	}
+	if (!fenced) {
+		// Resets the command buffer's slot only; the next fenced write orders after it.
+		buffer.fillBuffer(m_crumb_buffer, m_current.crumb_slot * sizeof(uint32_t),
+		                  sizeof(uint32_t), value);
 		return;
 	}
 	vk::MemoryBarrier before {};
@@ -343,7 +396,7 @@ void GpuTimer::Begin(vk::CommandBuffer buffer) {
 	m_current.labels.push_back({});
 	m_recording = true;
 	m_current.crumb_slot = m_crumb_serial++ % kCrumbSlots;
-	WriteBreadcrumb(buffer, 0);
+	WriteBreadcrumb(buffer, 0, CrumbKind("begin"));
 }
 
 void GpuTimer::Mark(vk::CommandBuffer buffer, const char* kind, uint64_t hash,
@@ -356,9 +409,7 @@ void GpuTimer::Mark(vk::CommandBuffer buffer, const char* kind, uint64_t hash,
 	                      m_current.count++);
 	m_current.labels.push_back({kind, hash, pass});
 	// Only regions closed outside a render pass (a pass end, a dispatch).
-	if (m_crumbs != nullptr && kind != nullptr &&
-	    (std::strcmp(kind, "pass") == 0 || std::strncmp(kind, "cs", 2) == 0 ||
-	     std::strcmp(kind, "mesh-cs") == 0 || std::strcmp(kind, "indirect-fixup") == 0)) {
+	if (m_crumbs != nullptr && CrumbKind(kind)) {
 		WriteBreadcrumb(buffer, m_current.count - 1u);
 	}
 }
