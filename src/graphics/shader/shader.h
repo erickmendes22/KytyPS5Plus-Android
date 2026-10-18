@@ -346,6 +346,12 @@ struct ShaderDeviceFeatures {
 	// READFIRSTLANE / DS_APPEND use wave-local lane numbers (KYTY_WAVE_SLICES=1). Without it,
 	// host lanes >= 32 read lane (n & 31) of the first wave's mask. Experimental, off.
 	bool wave_slices = false;
+	// The value V_READFIRSTLANE_B32 returns is one of its source's values in a lane where its EXEC
+	// predicate holds, so selects on a condition that predicate implies have one possible value
+	// (KYTY_FIRSTLANE_SETS). A waterfall loop over a per-lane register index (readfirstlane, M0,
+	// V_MOVRELS) then compares M0 only with the few indices that lane can hold instead of every
+	// register after the base: Astro Bot's VS 7d308cde had 24 such chains of ~110 selects each.
+	bool first_lane_value_sets = false;
 	// --render-scale is active: pixel and compute shaders read the rescale push dwords
 	// (IR::PushData::Rescale*) to unscale gl_FragCoord and scale texel coordinates. Off, the
 	// emitted SPIR-V is unchanged.

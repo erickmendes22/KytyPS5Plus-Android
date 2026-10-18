@@ -816,9 +816,10 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	}
 	IR::RewriteToSsa(ir.blocks);
 	const bool wqm_entry_lane_fold = options.device_features.wqm_entry_lane_fold;
-	const auto simplify = [&ir, wqm_entry_lane_fold] {
+	const bool first_lane_sets     = options.device_features.first_lane_value_sets;
+	const auto simplify = [&ir, wqm_entry_lane_fold, first_lane_sets] {
 		IR::ConstantPropagationPass(ir.blocks, ir.wave_size,
-		                            wqm_entry_lane_fold);
+		                            wqm_entry_lane_fold, first_lane_sets);
 		IR::RemoveIdentities(ir);
 		IR::EliminateDeadCode(ir.blocks);
 	};

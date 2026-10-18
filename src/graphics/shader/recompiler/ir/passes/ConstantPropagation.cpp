@@ -348,9 +348,52 @@ PossibleValues UnitePossibleValues(const PossibleValues& lhs, const PossibleValu
 	return MakePossibleValues(std::move(values));
 }
 
+// ConstantPropagationPass(first_lane_sets): V_READFIRSTLANE only sees lanes where its EXEC
+// predicate holds (KYTY_FIRSTLANE_SETS).
+thread_local bool t_first_lane_sets = false;
+
+// Whether lane predicate `guard` is true only in lanes where `condition` is. SSA predicates keep
+// one value per lane, so the implication holds wherever both are used. Phis on a cycle are
+// assumed to imply it while their incoming values are checked (induction over iterations).
+bool ImpliesU1(Value guard, Value condition, uint32_t depth, std::vector<const Inst*>& assumed) {
+	guard = guard.Resolve();
+	if (guard == condition) {
+		return true;
+	}
+	if (IsImmediate(guard, Type::U1)) {
+		return !guard.U1();
+	}
+	const auto* inst = guard.TryInstruction();
+	if (inst == nullptr || depth == 0u) {
+		return false;
+	}
+	switch (inst->GetOpcode()) {
+		case ValueOpcode::LogicalAnd:
+			return ImpliesU1(inst->Arg(0), condition, depth - 1u, assumed) ||
+			       ImpliesU1(inst->Arg(1), condition, depth - 1u, assumed);
+		case ValueOpcode::Phi: {
+			if (inst->GetType() != Type::U1 || inst->NumArgs() == 0u) {
+				return false;
+			}
+			if (std::ranges::find(assumed, inst) != assumed.end()) {
+				return true;
+			}
+			assumed.push_back(inst);
+			bool implied = true;
+			for (size_t index = 0; index < inst->NumArgs() && implied; index++) {
+				implied = ImpliesU1(inst->Arg(index), condition, depth - 1u, assumed);
+			}
+			assumed.pop_back();
+			return implied;
+		}
+		default: return false;
+	}
+}
+
 // Follows the same operand semantics as the folds below. Loops terminate through the
-// depth limit, which leaves any cyclic value unknown.
-PossibleValues PossibleU32(Value value, uint32_t depth, uint32_t& budget) {
+// depth limit, which leaves any cyclic value unknown. `guard` (optional): only lanes where this
+// predicate holds matter, so a select on a condition it implies has one possible operand.
+PossibleValues PossibleU32(Value value, uint32_t depth, uint32_t& budget, Value guard = {}) {
 	value = value.Resolve();
 	if (IsImmediate(value, Type::U32)) {
 		return std::vector<uint32_t> {value.U32()};
@@ -361,8 +404,21 @@ PossibleValues PossibleU32(Value value, uint32_t depth, uint32_t& budget) {
 	}
 	budget--;
 	const auto operand = [&](size_t index) {
-		return PossibleU32(inst->Arg(index), depth - 1u, budget);
+		return PossibleU32(inst->Arg(index), depth - 1u, budget, guard);
 	};
+	if (t_first_lane_sets) {
+		if (inst->GetOpcode() == ValueOpcode::ReadFirstLane) {
+			// A wave-uniform copy of the first lane where EXEC holds: one of the source's values
+			// in such a lane. (With no such lane the read is undefined on the host either way.)
+			return PossibleU32(inst->Arg(0), depth - 1u, budget, inst->Arg(1).Resolve());
+		}
+		if (inst->GetOpcode() == ValueOpcode::SelectU32 && !guard.IsEmpty()) {
+			std::vector<const Inst*> assumed;
+			if (ImpliesU1(guard, Arg(*inst, 0), PossibleValueDepth, assumed)) {
+				return operand(1);
+			}
+		}
+	}
 	const auto binary = [&](auto function) {
 		const auto lhs = operand(0);
 		return lhs ? CombinePossibleValues(lhs, operand(1), function) : std::nullopt;
@@ -1234,7 +1290,13 @@ private:
 
 } // namespace
 
-void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size, bool wqm_entry_lane_fold) {
+void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size, bool wqm_entry_lane_fold,
+                             bool first_lane_sets) {
+	struct FirstLaneSets {
+		explicit FirstLaneSets(bool enabled): saved(t_first_lane_sets) { t_first_lane_sets = enabled; }
+		~FirstLaneSets() { t_first_lane_sets = saved; }
+		bool saved;
+	} first_lane_scope(first_lane_sets);
 	FoldWorklist worklist;
 	LaneMaskProjection mask_projection(worklist, wqm_entry_lane_fold);
 	for (auto* block: blocks)

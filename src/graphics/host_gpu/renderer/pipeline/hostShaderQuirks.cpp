@@ -63,6 +63,7 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	    .packed_interp        = EnvToggle("KYTY_PACKED_INTERP", turnip) &&
 	                     !graphics.optional_features.fragment_shader_barycentric,
 	    .drop_carried         = EnvToggle("KYTY_DROP_CARRIED", false),
+	    .first_lane_sets      = EnvToggle("KYTY_FIRSTLANE_SETS", false),
 	};
 	if (EnvToggle("KYTY_UBO_CONSTANTS", false) && graphics.optional_features.robust_uniform_buffer_access2) {
 		const auto& limits = graphics.GetPhysicalDeviceProperties().limits;
@@ -79,10 +80,12 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: native_float_min_max={} "
 	                                      "robust_buffer_loads={} lane_exec_branches={} "
 	                                      "wqm_entry_lane_fold={} wave_slices={} quad_dpp={} "
-	                                      "bvh_vec={} packed_interp={} drop_carried={} ubo_constants={}B x{}\n",
+	                                      "bvh_vec={} packed_interp={} drop_carried={} first_lane_sets={} "
+	                                      "ubo_constants={}B x{}\n",
 	                                      paths.native_float_min_max, paths.robust_buffer_loads,
 	                                      paths.lane_exec_branches, paths.wqm_entry_lane_fold,
 	                                      paths.wave_slices, paths.quad_dpp, paths.bvh_vector_loads, paths.packed_interp, paths.drop_carried,
+	                                      paths.first_lane_sets,
 	                                      paths.uniform_constant_buffer_bytes,
 	                                      paths.uniform_buffers_per_stage));
 	return paths;
