@@ -529,6 +529,7 @@ struct PipelineCache::ProgramCache {
 		         .subgroup_arithmetic =
 		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eArithmetic),
 		         .subgroup_quad_dpp = fast_paths.quad_dpp,
+		         .bvh_vector_loads  = fast_paths.bvh_vector_loads,
 		         .storage_image_array_non_uniform_indexing =
 		             graphics.optional_features.storage_image_array_non_uniform_indexing,
 		         .mesh_shader       = graphics.mesh_shader_enabled,
@@ -791,7 +792,7 @@ struct PipelineCache::ProgramCache {
 		const auto  options = MakeOptions(ShaderType::Vertex, 0, {}, {}, dummy, "");
 		const auto& f       = options.device_features;
 		const auto  text    = fmt::format(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={} ubo={}/{} f16={} quad={}", f.fragment_shader_barycentric,
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} m8={} q={} ubo={}/{} f16={} quad={} bvh={}", f.fragment_shader_barycentric,
             f.geometry_varying_locations, f.shader_float64, f.shader_shared_int64_atomics,
             f.signed_zero_inf_nan_preserve_f32, f.subgroup_vertex, f.subgroup_tessellation,
             f.subgroup_fragment, f.subgroup_vote, f.subgroup_arithmetic,
@@ -799,7 +800,7 @@ struct PipelineCache::ProgramCache {
             f.robust_buffer_loads, f.lane_exec_branches, f.wqm_entry_lane_fold, f.wave_slices, f.render_scale,
             f.render_scale_keep_fragcoord, f.render_scale_keep_texels, options.maintenance8_enabled,
             options.device_quirks.branchless_bounds_checks, f.uniform_constant_buffer_bytes,
-            f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp);
+            f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp, f.bvh_vector_loads);
 		return XXH3_64bits(text.data(), text.size());
 	}
 

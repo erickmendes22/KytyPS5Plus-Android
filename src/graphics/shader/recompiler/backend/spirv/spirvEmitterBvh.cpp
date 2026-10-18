@@ -27,8 +27,44 @@ uint32_t NodeWord(EmitterState& s, uint32_t block, uint32_t word) {
 	return result;
 }
 
-uint32_t Triangle(EmitterState& s, uint32_t block, uint32_t kind, uint32_t bary,
+// The first 64 bytes of a node: the four child pointers and the box data of an FP16 box node,
+// all of a triangle node, and the first half of an FP32 box node. With
+// ShaderDeviceFeatures::bvh_vector_loads they are read once as four 16-byte loads (BVH nodes are
+// 64-byte aligned, and the BDA page table maps 16 KiB guest pages to buffer addresses at the same
+// offset), instead of one dependent 4-byte load with its own 64-bit address math per word use.
+struct NodeWords {
+	uint32_t                 block  = 0; // host address of the node's first 64 bytes
+	bool                     loaded = false;
+	std::array<uint32_t, 16> words {};
+
+	uint32_t Word(EmitterState& s, uint32_t word) const {
+		return loaded ? words[word] : NodeWord(s, block, ConstantU32(s, word));
+	}
+};
+
+NodeWords LoadNodeWords(EmitterState& s, uint32_t block, bool vector_loads) {
+	NodeWords node {.block = block, .loaded = vector_loads};
+	if (!vector_loads) return node;
+	const auto vec4 = TypeU32Vector(s, 4);
+	const auto pointer_type = TypePointer(s, spv::StorageClassPhysicalStorageBuffer, vec4);
+	for (uint32_t quad = 0; quad < 4; ++quad) {
+		const auto address = quad == 0 ? block
+		    : Binary(s, spv::OpIAdd, TypeU64(s), block, ConstantU64(s, quad * 16u));
+		const auto pointer = Unary(s, spv::OpConvertUToPtr, pointer_type, address);
+		const auto value   = s.builder.AllocateId();
+		s.builder.AddFunction(spv::OpLoad, vec4, value, pointer, spv::MemoryAccessAlignedMask, 16u);
+		for (uint32_t i = 0; i < 4; ++i) {
+			node.words[quad * 4 + i] = s.builder.AllocateId();
+			s.builder.AddFunction(spv::OpCompositeExtract, TypeU32(s), node.words[quad * 4 + i],
+			                      value, i);
+		}
+	}
+	return node;
+}
+
+uint32_t Triangle(EmitterState& s, const NodeWords& node, uint32_t kind, uint32_t bary,
                   Vec3 origin, Vec3 direction) {
+	const auto block = node.block;
 	const auto f = TypeF32(s), u = TypeU32(s), b = TypeBool(s);
 	const auto zero = ConstantF32Value(s, 0.0f);
 	const auto op = [&](spv::Op code, uint32_t x, uint32_t y) {
@@ -55,7 +91,7 @@ uint32_t Triangle(EmitterState& s, uint32_t block, uint32_t kind, uint32_t bary,
 			positions[i][axis] = Unary(s, spv::OpBitcast, f,
 			    NodeWord(s, block, Binary(s, spv::OpIAdd, u, first, ConstantU32(s, axis))));
 	}
-	const auto flag = NodeWord(s, block, ConstantU32(s, 15));
+	const auto flag = node.Word(s, 15);
 	const auto y_largest = cmp(spv::OpFOrdLessThan, abs(direction[0]), abs(direction[1]));
 	const auto z_largest = cmp(spv::OpFOrdLessThan,
 	    Select(s, f, y_largest, abs(direction[1]), abs(direction[0])), abs(direction[2]));
@@ -129,7 +165,7 @@ uint32_t Triangle(EmitterState& s, uint32_t block, uint32_t kind, uint32_t bary,
 	return Vector(s, TypeU32Vector(s, 4), result);
 }
 
-std::array<uint32_t, 6> Box(EmitterState& s, uint32_t first, uint32_t second,
+std::array<uint32_t, 6> Box(EmitterState& s, const NodeWords& first, uint32_t second,
                            uint32_t half, uint32_t child) {
 	const auto f = TypeF32(s);
 	const auto half_label = s.builder.AllocateId(), full_label = s.builder.AllocateId();
@@ -139,7 +175,7 @@ std::array<uint32_t, 6> Box(EmitterState& s, uint32_t first, uint32_t second,
 	EmitLabel(s, half_label);
 	std::array<uint32_t, 6> packed, full, result;
 	for (uint32_t pair = 0; pair < 3; ++pair) {
-		const auto word = NodeWord(s, first, ConstantU32(s, 4 + child * 3 + pair));
+		const auto word = first.Word(s, 4 + child * 3 + pair);
 		const auto unpacked = EmitGlsl<GLSLstd450UnpackHalf2x16, IR::Type::F32x2>(s, word);
 		packed[pair * 2] = Extract(s, f, unpacked, 0);
 		packed[pair * 2 + 1] = Extract(s, f, unpacked, 1);
@@ -148,8 +184,8 @@ std::array<uint32_t, 6> Box(EmitterState& s, uint32_t first, uint32_t second,
 	EmitLabel(s, full_label);
 	for (uint32_t component = 0; component < 6; ++component) {
 		const auto word = 4 + child * 6 + component;
-		full[component] = Unary(s, spv::OpBitcast, f,
-		    NodeWord(s, word < 16 ? first : second, ConstantU32(s, word % 16)));
+		full[component] = Unary(s, spv::OpBitcast, f, word < 16 ? first.Word(s, word)
+		                                                         : NodeWord(s, second, ConstantU32(s, word % 16)));
 	}
 	s.builder.AddFunction(spv::OpBranch, merge);
 	EmitLabel(s, merge);
@@ -161,7 +197,7 @@ std::array<uint32_t, 6> Box(EmitterState& s, uint32_t first, uint32_t second,
 	return result;
 }
 
-uint32_t Boxes(EmitterState& s, uint32_t first, uint32_t second, uint32_t half,
+uint32_t Boxes(EmitterState& s, const NodeWords& first, uint32_t second, uint32_t half,
                uint32_t grow, uint32_t sort, uint32_t extent, const Vec3& origin, const Vec3& inverse) {
 	const auto f = TypeF32(s), u = TypeU32(s), b = TypeBool(s);
 	const auto zero = ConstantF32Value(s, 0.0f);
@@ -198,7 +234,7 @@ uint32_t Boxes(EmitterState& s, uint32_t first, uint32_t second, uint32_t half,
 		depths[child] = Unary(s, spv::OpBitcast, u, Select(s, f, hit,
 		    Select(s, f, Binary(s, spv::OpFOrdGreaterThan, b, entry, zero), entry, zero),
 		    ConstantF32(s, 0x7f800000)));
-		indices[child] = Select(s, u, hit, NodeWord(s, first, ConstantU32(s, child)), ConstantU32(s, ~0u));
+		indices[child] = Select(s, u, hit, first.Word(s, child), ConstantU32(s, ~0u));
 	}
 	// A select network keeps the original child order when sorting is disabled.
 	constexpr std::array<std::pair<uint32_t, uint32_t>, 5> network {{{0,1}, {2,3}, {0,2}, {1,3}, {1,2}}};
@@ -302,16 +338,17 @@ void DefineBvhIntersect(EmitterState& s) {
 		    Binary(s, spv::OpLogicalOr, b, Unary(s, spv::OpLogicalNot, b, full),
 		           Binary(s, spv::OpINotEqual, b, second, ConstantU64(s, 0))));
 		return EmitValueOrDefaultIfCondition(s, present, vec4, invalid, [&] {
+			const auto node = LoadNodeWords(s, first, s.device_features.bvh_vector_loads);
 			const auto tri_label = s.builder.AllocateId(), box_label = s.builder.AllocateId();
 			const auto merge = s.builder.AllocateId();
 			s.builder.AddFunction(spv::OpSelectionMerge, merge, spv::SelectionControlMaskNone);
 			s.builder.AddFunction(spv::OpBranchConditional, triangle, tri_label, box_label);
 			EmitLabel(s, tri_label);
-			const auto tri_value = Triangle(s, first, kind, bary, origin, direction);
+			const auto tri_value = Triangle(s, node, kind, bary, origin, direction);
 			const auto tri_exit = s.current_label;
 			s.builder.AddFunction(spv::OpBranch, merge);
 			EmitLabel(s, box_label);
-			const auto box_value = Boxes(s, first, second, half, grow, sort, extent, origin, inverse);
+			const auto box_value = Boxes(s, node, second, half, grow, sort, extent, origin, inverse);
 			const auto box_exit = s.current_label;
 			s.builder.AddFunction(spv::OpBranch, merge);
 			EmitLabel(s, merge);

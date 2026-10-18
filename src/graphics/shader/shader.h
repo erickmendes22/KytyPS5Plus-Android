@@ -267,6 +267,11 @@ struct ShaderDeviceFeatures {
 	// desert gameplay (Turnip v32, --gpu-turbo, one back-to-back pair) went from 162 to 159 GPU
 	// ms per frame (fps median 5.80 -> 5.90), within run-to-run noise.
 	bool subgroup_quad_dpp       = false;
+	// IMAGE_BVH(64)_INTERSECT_RAY reads the node's first 64 bytes as four 16-byte loads up front
+	// instead of one 4-byte load per word where it is used (KYTY_BVH_VEC=1, opt-in). ir3 on the
+	// ray-traced compute pass: 18940 -> 18180 instructions, 7318 -> 6915 NOPs; the gameplay gain
+	// is unmeasured and runs with it showed black streaks not yet ruled out as its doing.
+	bool bvh_vector_loads        = false;
 	// shaderStorageImageArrayNonUniformIndexing. Without it, GPU-selected storage images are
 	// indexed dynamically without the NonUniform decoration (shaderStorageImageArrayDynamicIndexing).
 	bool storage_image_array_non_uniform_indexing = true;
