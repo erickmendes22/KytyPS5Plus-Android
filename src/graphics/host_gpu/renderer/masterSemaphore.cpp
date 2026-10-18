@@ -36,10 +36,14 @@ MasterSemaphore::~MasterSemaphore() {
 
 void MasterSemaphore::Advance(uint64_t counter) noexcept {
 	auto known = m_gpu_tick.load(std::memory_order_acquire);
+	if (known >= counter) {
+		return;
+	}
 	while (known < counter &&
 	       !m_gpu_tick.compare_exchange_weak(known, counter, std::memory_order_release,
 	                                         std::memory_order_relaxed)) {
 	}
+	m_gpu_tick_ns.store(Common::PerfStats::Detail::MonotonicNs(), std::memory_order_release);
 }
 
 void MasterSemaphore::Refresh() {

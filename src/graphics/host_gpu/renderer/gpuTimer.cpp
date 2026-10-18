@@ -5,6 +5,7 @@
 #include "gpu_blit_shaders/gpu_clock_probe_spv.h"
 #include "common/perfWaits.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/gpuFatal.h"
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace Libs::Graphics {
 
@@ -27,6 +29,23 @@ constexpr uint32_t kProbeDefaultIterations = 4096;
 constexpr uint32_t kProbeDefaultGroups     = 1024;
 
 std::atomic<uint32_t> g_instances {0};
+
+// Live timers, for the device-loss dump (GpuFatal runs on whichever thread saw the loss).
+std::mutex              g_timers_mutex;
+std::vector<GpuTimer*>  g_timers;
+
+void DumpAllInFlight(vk::Result result) {
+	const std::lock_guard lock(g_timers_mutex);
+	for (auto* timer: g_timers) {
+		timer->DumpInFlight(result);
+	}
+}
+
+// Regions listed per in-flight command buffer: this many before the first unfinished one and
+// after it (all of them when the driver returns no availability).
+constexpr uint32_t kHangContextBefore = 6;
+constexpr uint32_t kHangContextAfter  = 24;
+constexpr uint32_t kHangMaxBuffers    = 6;
 
 long EnvLong(const char* name, long fallback) {
 	const char* value = std::getenv(name);
@@ -90,9 +109,21 @@ GpuTimer::GpuTimer(GraphicContext& graphics, MasterSemaphore& master)
 	if (m_instance == 0) {
 		CreateProbe();
 	}
+	if (EnvLong("KYTY_GPU_BREADCRUMBS", 0) != 0) {
+		CreateBreadcrumbs();
+	}
+	{
+		const std::lock_guard lock(g_timers_mutex);
+		g_timers.push_back(this);
+	}
+	AddGpuFatalHook(DumpAllInFlight);
 }
 
 GpuTimer::~GpuTimer() {
+	{
+		const std::lock_guard lock(g_timers_mutex);
+		std::erase(g_timers, this);
+	}
 	for (auto pool: m_all_pools) {
 		m_graphics.device.destroyQueryPool(pool, nullptr);
 	}
@@ -105,6 +136,71 @@ GpuTimer::~GpuTimer() {
 	if (m_probe_layout != nullptr) {
 		m_graphics.device.destroyPipelineLayout(m_probe_layout, nullptr);
 	}
+	if (m_crumb_buffer != nullptr) {
+		m_graphics.device.destroyBuffer(m_crumb_buffer, nullptr);
+	}
+	if (m_crumb_memory != nullptr) {
+		m_graphics.device.unmapMemory(m_crumb_memory);
+		m_graphics.device.freeMemory(m_crumb_memory, nullptr);
+	}
+}
+
+void GpuTimer::CreateBreadcrumbs() {
+	const auto device = m_graphics.device;
+	vk::BufferCreateInfo info {};
+	info.size  = kCrumbSlots * sizeof(uint32_t);
+	info.usage = vk::BufferUsageFlagBits::eTransferDst;
+	if (device.createBuffer(&info, nullptr, &m_crumb_buffer) != vk::Result::eSuccess) {
+		m_crumb_buffer = nullptr;
+		return;
+	}
+	vk::MemoryRequirements requirements {};
+	device.getBufferMemoryRequirements(m_crumb_buffer, &requirements);
+	const auto properties = m_graphics.physical_device.getMemoryProperties();
+	const auto wanted     = vk::MemoryPropertyFlagBits::eHostVisible |
+	                    vk::MemoryPropertyFlagBits::eHostCoherent;
+	uint32_t type = UINT32_MAX;
+	for (uint32_t i = 0; i < properties.memoryTypeCount; i++) {
+		if ((requirements.memoryTypeBits & (1u << i)) != 0 &&
+		    (properties.memoryTypes[i].propertyFlags & wanted) == wanted) {
+			type = i;
+			break;
+		}
+	}
+	vk::MemoryAllocateInfo allocate {};
+	allocate.allocationSize  = requirements.size;
+	allocate.memoryTypeIndex = type;
+	void* map = nullptr;
+	if (type == UINT32_MAX ||
+	    device.allocateMemory(&allocate, nullptr, &m_crumb_memory) != vk::Result::eSuccess ||
+	    device.bindBufferMemory(m_crumb_buffer, m_crumb_memory, 0) != vk::Result::eSuccess ||
+	    device.mapMemory(m_crumb_memory, 0, VK_WHOLE_SIZE, {}, &map) != vk::Result::eSuccess) {
+		LOGF("[gpu-hang] breadcrumbs unavailable\n");
+		device.destroyBuffer(m_crumb_buffer, nullptr);
+		m_crumb_buffer = nullptr;
+		return;
+	}
+	m_crumbs = static_cast<volatile uint32_t*>(map);
+	LOGF("[gpu-hang] timer%u breadcrumbs on (%u slots)\n", m_instance, kCrumbSlots);
+}
+
+void GpuTimer::WriteBreadcrumb(vk::CommandBuffer buffer, uint32_t value) {
+	if (m_crumbs == nullptr) {
+		return;
+	}
+	vk::MemoryBarrier before {};
+	before.srcAccessMask = vk::AccessFlagBits::eMemoryWrite;
+	before.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+	buffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+	                       vk::PipelineStageFlagBits::eTransfer, {}, 1, &before, 0, nullptr, 0,
+	                       nullptr);
+	buffer.fillBuffer(m_crumb_buffer, m_current.crumb_slot * sizeof(uint32_t), sizeof(uint32_t),
+	                  value);
+	vk::MemoryBarrier after {};
+	after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+	after.dstAccessMask = vk::AccessFlagBits::eHostRead;
+	buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost,
+	                       {}, 1, &after, 0, nullptr, 0, nullptr);
 }
 
 void GpuTimer::CreateProbe() {
@@ -246,6 +342,8 @@ void GpuTimer::Begin(vk::CommandBuffer buffer) {
 	m_current.count = 1;
 	m_current.labels.push_back({});
 	m_recording = true;
+	m_current.crumb_slot = m_crumb_serial++ % kCrumbSlots;
+	WriteBreadcrumb(buffer, 0);
 }
 
 void GpuTimer::Mark(vk::CommandBuffer buffer, const char* kind, uint64_t hash,
@@ -257,6 +355,12 @@ void GpuTimer::Mark(vk::CommandBuffer buffer, const char* kind, uint64_t hash,
 	buffer.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, m_current.pool,
 	                      m_current.count++);
 	m_current.labels.push_back({kind, hash, pass});
+	// Only regions closed outside a render pass (a pass end, a dispatch).
+	if (m_crumbs != nullptr && kind != nullptr &&
+	    (std::strcmp(kind, "pass") == 0 || std::strncmp(kind, "cs", 2) == 0 ||
+	     std::strcmp(kind, "mesh-cs") == 0 || std::strcmp(kind, "indirect-fixup") == 0)) {
+		WriteBreadcrumb(buffer, m_current.count - 1u);
+	}
 }
 
 void GpuTimer::End(vk::CommandBuffer buffer) {
@@ -278,7 +382,10 @@ void GpuTimer::Submitted(uint64_t tick) {
 	}
 	m_recording    = false;
 	m_current.tick = tick;
-	m_pending.push_back(std::move(m_current));
+	{
+		const std::lock_guard lock(m_pending_mutex);
+		m_pending.push_back(std::move(m_current));
+	}
 	m_current = {};
 }
 
@@ -299,10 +406,71 @@ void GpuTimer::Collect() {
 			Account(recording, stamps);
 		}
 		m_free_pools.emplace_back(recording.pool, recording.count);
+		const std::lock_guard lock(m_pending_mutex);
 		m_pending.pop_front();
 	}
 	CollectProbes();
 	MaybeDump();
+}
+
+void GpuTimer::DumpInFlight(vk::Result result) {
+	const std::lock_guard lock(m_pending_mutex);
+	const auto now  = Common::PerfStats::Detail::MonotonicNs();
+	const auto last = m_master.LastProgressNs();
+	LOGF("[gpu-hang] timer%u %s: known_gpu_tick=%" PRIu64 " submitted_tick=%" PRIu64
+	     " last GPU progress %.0f ms ago, %zu timed command buffers in flight\n",
+	     m_instance, vk::to_string(result).c_str(), m_master.KnownGpuTick(),
+	     m_master.SubmittedTick(), last == 0 ? -1.0 : static_cast<double>(now - last) / 1e6,
+	     m_pending.size());
+	uint32_t shown = 0;
+	for (const auto& recording: m_pending) {
+		if (recording.tick <= m_master.KnownGpuTick()) {
+			continue;
+		}
+		if (shown++ == kHangMaxBuffers) {
+			break;
+		}
+		// Per query: the timestamp and its availability word.
+		std::vector<uint64_t> words(size_t {recording.count} * 2u, 0);
+		const auto query = m_graphics.device.getQueryPoolResults(
+		    recording.pool, 0, recording.count, words.size() * sizeof(uint64_t), words.data(),
+		    2 * sizeof(uint64_t),
+		    vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWithAvailability);
+		const bool known = query == vk::Result::eSuccess || query == vk::Result::eNotReady;
+		uint32_t   first = recording.count; // first region whose end stamp is unavailable
+		if (known) {
+			for (uint32_t i = 0; i < recording.count; i++) {
+				if (words[i * 2u + 1u] == 0) {
+					first = i;
+					break;
+				}
+			}
+		}
+		if (!known && m_crumbs != nullptr) {
+			// The last breadcrumb the GPU wrote: every region up to it finished.
+			const uint32_t crumb = m_crumbs[recording.crumb_slot];
+			if (crumb < recording.count) {
+				first = crumb + 1u;
+			}
+			LOGF("[gpu-hang]  tick=%" PRIu64 " breadcrumb=%u\n", recording.tick, crumb);
+		}
+		const bool located = known || m_crumbs != nullptr;
+		LOGF("[gpu-hang]  tick=%" PRIu64 " regions=%u queries=%s first_unfinished=%u\n",
+		     recording.tick, recording.count - 1u, vk::to_string(query).c_str(), first);
+		const uint32_t begin = located && first > kHangContextBefore ? first - kHangContextBefore : 1u;
+		const uint32_t end   = located ? std::min(recording.count, first + kHangContextAfter)
+		                               : recording.count;
+		for (uint32_t i = std::max(begin, 1u); i < end; i++) {
+			const auto& label = recording.labels[i];
+			const bool  done  = known && i < first;
+			const auto  us    = done ? static_cast<double>((words[i * 2u] - words[(i - 1u) * 2u]) &
+			                                               m_valid_mask) * m_period_ns / 1e3
+			                         : -1.0;
+			LOGF("[gpu-hang]   %s#%u %s %.0fus\n", i == first ? ">>" : "  ", i,
+			     LabelName(label.kind != nullptr ? label.kind : "start", label.hash, label.pass).c_str(),
+			     us);
+		}
+	}
 }
 
 void GpuTimer::Account(const Recording& recording, const std::vector<uint64_t>& stamps) {

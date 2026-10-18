@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,9 @@ public:
 	void Submitted(uint64_t tick);
 	// Reads finished command buffers' timestamps.
 	void Collect();
+	// After a device loss (GpuFatal hook): the command buffers still in flight, each with how far
+	// its timestamps got, so the region the GPU was in when it hung or faulted is named.
+	void DumpInFlight(vk::Result result);
 
 	// The probe's push constants (gpu_clock_probe.comp).
 	struct ProbeParams {
@@ -70,6 +74,7 @@ private:
 		uint32_t           count = 0;
 		uint64_t           tick  = 0;
 		std::vector<Label> labels; // labels[i] closes the region ending at query i
+		uint32_t           crumb_slot = 0;
 	};
 	struct Cost {
 		uint64_t ns      = 0;
@@ -88,6 +93,11 @@ private:
 	static constexpr uint32_t kProbeSlots       = 8; // two queries each
 
 	void CreateProbe();
+	// KYTY_GPU_BREADCRUMBS=1: after every region recorded outside a render pass (pass ends,
+	// dispatches) the GPU writes the region's index to host-visible memory, fenced by full
+	// barriers (slow; diagnostics only). DumpInFlight reads them back after a device loss.
+	void CreateBreadcrumbs();
+	void WriteBreadcrumb(vk::CommandBuffer buffer, uint32_t value);
 	void RecordProbe(vk::CommandBuffer buffer);
 	void CollectProbes();
 
@@ -104,6 +114,7 @@ private:
 	bool                       m_recording   = false;
 	Recording                  m_current;
 	std::deque<Recording>      m_pending;
+	std::mutex                 m_pending_mutex; // m_pending against DumpInFlight's thread
 	std::vector<std::pair<vk::QueryPool, uint32_t>> m_free_pools; // pool, queries written last use
 	std::vector<vk::QueryPool> m_all_pools;
 	std::map<std::string, Cost> m_costs;
@@ -122,6 +133,11 @@ private:
 	uint32_t                   m_probe_recorded_slot = 0;
 	bool                       m_probe_recorded    = false; // recorded, not yet submitted
 	std::deque<PendingProbe>   m_probe_pending;
+	static constexpr uint32_t  kCrumbSlots = 256;
+	vk::Buffer                 m_crumb_buffer = nullptr;
+	vk::DeviceMemory           m_crumb_memory = nullptr;
+	volatile uint32_t*         m_crumbs       = nullptr;
+	uint32_t                   m_crumb_serial = 0;
 };
 
 } // namespace Libs::Graphics

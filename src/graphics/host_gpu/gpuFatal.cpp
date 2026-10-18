@@ -5,6 +5,7 @@
 #include "common/logging/log.h"
 
 #include <SDL3/SDL.h>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -61,7 +62,28 @@ void ShowDialog(const char* title, const std::string& message) {
 	(void)done->try_acquire_for(Timeout);
 }
 
+constexpr size_t                       kMaxHooks = 4;
+std::array<std::atomic<GpuFatalHook>, kMaxHooks> g_hooks {};
+
+void RunHooks(vk::Result result) {
+	for (auto& slot: g_hooks) {
+		if (const auto hook = slot.load(std::memory_order_acquire); hook != nullptr) {
+			hook(result);
+		}
+	}
+}
+
 } // namespace
+
+void AddGpuFatalHook(GpuFatalHook hook) {
+	for (auto& slot: g_hooks) {
+		GpuFatalHook expected = nullptr;
+		if (slot.load(std::memory_order_acquire) == hook ||
+		    slot.compare_exchange_strong(expected, hook, std::memory_order_acq_rel)) {
+			return;
+		}
+	}
+}
 
 bool GpuFatalTestDue() {
 	using Clock               = std::chrono::steady_clock;
@@ -91,6 +113,7 @@ void GpuFatal(const char* what, vk::Result result) {
 #if defined(__ANDROID__)
 	__android_log_write(ANDROID_LOG_ERROR, "KytyGpu", line.c_str());
 #endif
+	RunHooks(result);
 	Common::DbgExitHandler(__FILE__, __LINE__, message);
 	if (Config::GpuFatalDialogEnabled()) {
 		ShowDialog(reason.title, message);
