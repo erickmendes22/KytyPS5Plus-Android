@@ -109,14 +109,18 @@ void Poll() {
 	for (const auto& prefix: snapshot->skip) {
 		skip += skip.empty() ? prefix : "," + prefix;
 	}
-	LOGF("Live knobs: skip=[%s] marks=%d shake=%d\n", skip.c_str(), snapshot->draw_marks ? 1 : 0,
-	     snapshot->shake_seconds);
-	std::fprintf(stderr, "[live-knobs] skip=[%s] marks=%d shake=%d\n", skip.c_str(),
-	             snapshot->draw_marks ? 1 : 0, snapshot->shake_seconds);
+	std::string ints;
+	for (const auto& [name, number]: snapshot->ints) {
+		ints += fmt::format(" {}={}", name, number);
+	}
+	LOGF("Live knobs: skip=[%s] marks=%d shake=%d%s\n", skip.c_str(), snapshot->draw_marks ? 1 : 0,
+	     snapshot->shake_seconds, ints.c_str());
+	std::fprintf(stderr, "[live-knobs] skip=[%s] marks=%d shake=%d%s\n", skip.c_str(),
+	             snapshot->draw_marks ? 1 : 0, snapshot->shake_seconds, ints.c_str());
 	// Also in the perf log, so per-second [perf] lines can be split by knob phase.
-	Common::PerfStats::EmitLine(fmt::format("[live-knobs] t={:.1f} skip=[{}] marks={}",
+	Common::PerfStats::EmitLine(fmt::format("[live-knobs] t={:.1f} skip=[{}] marks={}{}",
 	                                        static_cast<double>(now) / 1e6, skip,
-	                                        snapshot->draw_marks ? 1 : 0));
+	                                        snapshot->draw_marks ? 1 : 0, ints));
 	if (snapshot->shake_seconds > 0 && !Libs::Controller::StartSyntheticShake(snapshot->shake_seconds)) {
 		LOGF("Live knobs: shake ignored (already shaking or no pad)\n");
 	}
@@ -155,6 +159,12 @@ Snapshot Parse(std::string_view text) {
 			if (error == std::errc() && ptr == value.data() + value.size() && seconds > 0) {
 				snapshot.shake_seconds = std::min(seconds, kMaxShakeSeconds);
 			}
+		} else {
+			int64_t number = 0;
+			const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), number);
+			if (!key.empty() && error == std::errc() && ptr == value.data() + value.size()) {
+				snapshot.ints.emplace_back(std::string(key), number);
+			}
 		}
 	}
 	return snapshot;
@@ -176,6 +186,15 @@ bool SkipShader(uint64_t guest_hash) {
 
 bool DrawMarks() {
 	return Current().draw_marks;
+}
+
+int64_t Int(std::string_view name, int64_t fallback) {
+	for (const auto& [key, number]: Current().ints) {
+		if (key == name) {
+			return number;
+		}
+	}
+	return fallback;
 }
 
 } // namespace Libs::Graphics::LiveKnobs
