@@ -55,6 +55,11 @@ public:
 	KYTY_CLASS_NO_COPY(BufferCache);
 
 	void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
+	// --fault-window: after a CPU write fault, also make the clean tracked pages of the
+	// surrounding window writable (see MemoryTracker::MarkCleanPagesCpuModified).
+	uint32_t               OpenWriteWindow(uint64_t vaddr, uint64_t size) {
+		return m_memory_tracker.MarkCleanPagesCpuModified(vaddr, size);
+	}
 	void                   ReadMemory(uint64_t vaddr, uint64_t size, bool is_write = false);
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);

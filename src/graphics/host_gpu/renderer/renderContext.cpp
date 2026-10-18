@@ -8,6 +8,8 @@
 #include "graphics/presentation/videoOut.h"
 #include "libs/errno.h"
 
+#include <cstdlib>
+#include <bit>
 #include <algorithm>
 
 namespace Libs::Graphics {
@@ -67,6 +69,23 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemWriteFault);
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
 		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
+		// KYTY_FAULT_WINDOW_KB=<n> (power of two, 8..1024; 0 = off): a write fault also makes
+		// the clean buffer-tracked pages of its aligned n KiB block writable, so a guest that
+		// fills a buffer page by page takes one fault per block instead of one per 4 KiB page
+		// (Bloodborne-Android unprotects 64 KiB). Pages the GPU wrote keep their read-back
+		// fault; pages an image watches stay write-protected by the texture cache's watcher.
+		// The cost is uploading the window's untouched pages on the next GPU use.
+		static const uint64_t window = [] {
+			const char* value = std::getenv("KYTY_FAULT_WINDOW_KB");
+			const auto  kb    = value != nullptr ? std::strtoull(value, nullptr, 10) : 0ull;
+			return kb >= 8 && kb <= 1024 && std::has_single_bit(kb) ? kb * 1024ull : 0ull;
+		}();
+		if (window != 0) {
+			const auto begin = fault_vaddr & ~(window - 1);
+			if (IsMapped(begin, window)) {
+				m_buffer_cache.OpenWriteWindow(begin, window);
+			}
+		}
 	} else {
 		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemReadFault);
 		m_buffer_cache.ReadMemory(fault_vaddr, fault_size);

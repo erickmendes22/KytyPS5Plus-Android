@@ -140,6 +140,24 @@ public:
 		}
 	}
 
+	// Write-fault window: makes the pages of [vaddr, vaddr + size) that are tracked (neither CPU-
+	// nor GPU-modified) CPU-modified, i.e. writable until the next upload, as one protection
+	// change. GPU-modified pages keep their read-back-on-fault path. Returns the pages changed.
+	uint32_t MarkCleanPagesCpuModified(uint64_t vaddr, uint64_t size) {
+		const auto [start, end] = GetPageRange(vaddr, size);
+		uint32_t   changed      = 0;
+		for (size_t page = start; page < end; page++) {
+			if (!m_cpu_dirty.Get(page) && !m_gpu_dirty.Get(page)) {
+				m_cpu_dirty.Set(page);
+				changed++;
+			}
+		}
+		if (changed != 0) {
+			UpdateProtection<false, false>();
+		}
+		return changed;
+	}
+
 	template <DirtySource source, bool clear, typename Func>
 	void ForEachModifiedRange(uint64_t vaddr, uint64_t size, Func&& func) {
 		const auto [start, end] = GetPageRange(vaddr, size);
