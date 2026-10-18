@@ -13,6 +13,7 @@
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vulkanDebugLabel.h"
+#include "graphics/host_gpu/renderer/dispatchSplit.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
@@ -20,6 +21,7 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/renderIndirect.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
@@ -32,7 +34,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cinttypes>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -233,6 +237,91 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 	}
 	bindings.shared_memory = {storage.Handle(), 0, size};
 }
+
+static DispatchGroups ComputeGroupLimits(const GraphicContext& graphics) {
+	const auto& limits = graphics.GetPhysicalDeviceProperties().limits.maxComputeWorkGroupCount;
+	return {limits[0], limits[1], limits[2]};
+}
+
+static bool LdsInStorage(const ShaderRecompiler::IR::CompiledShaderInfo& program) {
+	return program.bindings.descriptor_counts[static_cast<size_t>(
+	           ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory)] != 0;
+}
+
+// Records one guest dispatch. Past maxComputeWorkGroupCount it is recorded as pieces within the
+// limits (vkCmdDispatchBase cannot cross them: VUID-vkCmdDispatchBase-groupCountX-00424), each
+// with its first group in the program's group-base shader data (Bindings::group_base_dword),
+// which the translated shader adds to gl_WorkGroupID / gl_GlobalInvocationID. The
+// LDS-in-storage-buffer fallback indexes its per-group slot with the piece's gl_NumWorkGroups:
+// unique within a piece, not across pieces, so its pieces are serialized.
+static void RecordGuestDispatch(vk::CommandBuffer command, const DispatchGroups& limits,
+                                const DispatchGroups&                           groups,
+                                const ShaderRecompiler::IR::CompiledShaderInfo& program,
+                                const PipelineCache::Pipeline&                  pipeline) {
+	if (DispatchFits(groups, limits)) {
+		command.dispatch(groups[0], groups[1], groups[2]);
+		return;
+	}
+	using ShaderRecompiler::IR::PushData;
+	const auto& bindings       = program.bindings;
+	const bool  reads_ids      = bindings.group_base_dword != PushData::NoStart;
+	const bool  lds_in_storage = LdsInStorage(program);
+	if (reads_ids && !bindings.UsesPushData()) {
+		// Shader data in a uniform buffer: no per-piece base. Recorded unsplit, as before.
+		static std::atomic<uint32_t> unsplit_count {0};
+		if (unsplit_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("Compute dispatch split: cs=0x%016" PRIx64 " groups=%ux%ux%u exceeds the limits "
+			     "but its shader data is not push data; dispatched unsplit\n",
+			     program.shader_hash, groups[0], groups[1], groups[2]);
+		}
+		command.dispatch(groups[0], groups[1], groups[2]);
+		return;
+	}
+	const uint32_t base_offset =
+	    reads_ids ? (bindings.push_data_start_dword + bindings.group_base_dword) * 4u : 0u;
+	uint32_t   recorded = 0;
+	const auto pieces   = ForEachDispatchPiece(groups, limits, [&](const DispatchPiece& piece) {
+        if (lds_in_storage && recorded != 0) {
+            vk::MemoryBarrier barrier {};
+            barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+            barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+            command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                                    vk::PipelineStageFlagBits::eComputeShader, {}, 1, &barrier, 0,
+                                    nullptr, 0, nullptr);
+        }
+        if (reads_ids) {
+            command.pushConstants(pipeline.pipeline_layout, pipeline.push_constant_stages,
+                                  base_offset, sizeof(piece.base), piece.base.data());
+        }
+        command.dispatch(piece.count[0], piece.count[1], piece.count[2]);
+        recorded++;
+    });
+	if (reads_ids) {
+		// Later dispatches of this pipeline without a re-commit see base 0 again.
+		const DispatchGroups zero {};
+		command.pushConstants(pipeline.pipeline_layout, pipeline.push_constant_stages, base_offset,
+		                      sizeof(zero), zero.data());
+	}
+	static std::atomic<uint64_t> split_count {0};
+	const auto                   count = split_count.fetch_add(1, std::memory_order_relaxed) + 1;
+	if (count <= 16 || count % 4096 == 0) {
+		LOGF("Compute dispatch split #%" PRIu64 ": cs=0x%016" PRIx64 " groups=%ux%ux%u > limits "
+		     "%ux%ux%u -> %u pieces%s%s\n",
+		     count, program.shader_hash, groups[0], groups[1], groups[2], limits[0], limits[1],
+		     limits[2], pieces, reads_ids ? " (group base in push data)" : " (ids unused)",
+		     lds_in_storage ? " (serialized: LDS in storage buffer)" : "");
+	}
+}
+
+// KYTY_INDIRECT_DISPATCH_CLAMP=0 dispatches GPU-written indirect arguments unclamped (A/B).
+static bool IndirectDispatchClampEnabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_INDIRECT_DISPATCH_CLAMP");
+		return value == nullptr || std::strcmp(value, "0") != 0;
+	}();
+	return enabled;
+}
+
 
 void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
                                     uint32_t thread_group_x, uint32_t thread_group_y,
@@ -450,7 +539,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	buffer.MarkGpu("misc");
 	{
 		const ScopedDebugLabel label(vk_buffer, "cs", program.shader_hash);
-		vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
+		RecordGuestDispatch(vk_buffer, ComputeGroupLimits(m_context.GetGraphics()),
+		                    {thread_group_x, thread_group_y, thread_group_z}, program, pipeline);
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();
@@ -471,11 +561,15 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	                    0, mode, buffer.GetShaders().GetCs().cs_regs.data_addr);
 	Common::LockGuard lock(m_context.GetMutex());
 	vk::DispatchIndirectCommand args {};
-	if (!m_context.GetBufferCache().HasGpuDirtyBytes(args_addr, sizeof(args)) &&
-	    LibKernel::Memory::TryReadBacking(args_addr, &args, sizeof(args)) &&
-	    (args.x == 0 || args.y == 0 || args.z == 0)) {
+	const bool cpu_args = !m_context.GetBufferCache().HasGpuDirtyBytes(args_addr, sizeof(args)) &&
+	                      LibKernel::Memory::TryReadBacking(args_addr, &args, sizeof(args));
+	if (cpu_args && (args.x == 0 || args.y == 0 || args.z == 0)) {
 		return;
 	}
+	const auto limits = ComputeGroupLimits(m_context.GetGraphics());
+	// Arguments the CPU knows past the host limits: recorded as direct vkCmdDispatchBase pieces.
+	// GPU-written ones: clamped to the limits by a fix-up pass (logged when it clamps).
+	const bool split_on_cpu = cpu_args && !DispatchFits({args.x, args.y, args.z}, limits);
 	const auto& cs_regs = buffer.GetShaders().GetCs();
 	if (cs_regs.cs_regs.data_addr == 0) {
 		return;
@@ -506,6 +600,15 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	    args_addr, sizeof(vk::DispatchIndirectCommand), false);
 	EXIT_IF(args_buffer == nullptr || (args_offset & 3u) != 0);
 	RebindBuffers(bindings);
+	vk::Buffer indirect_buffer = args_buffer->Handle();
+	uint64_t   indirect_offset = args_offset;
+	if (!cpu_args && IndirectDispatchClampEnabled()) {
+		// Recorded before the guest bindings: the fix-up binds its own pipeline and push data.
+		const auto clamped = GetIndirectDrawFixup().RecordDispatchClamp(
+		    buffer, args_buffer->BufferDeviceAddress() + args_offset, limits, args_addr);
+		indirect_buffer = clamped.buffer;
+		indirect_offset = clamped.offset;
+	}
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
 	const auto vk_buffer = buffer.Handle();
@@ -530,7 +633,11 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	buffer.MarkGpu("misc");
 	{
 		const ScopedDebugLabel label(vk_buffer, "cs-indirect", program.shader_hash);
-		vk_buffer.dispatchIndirect(args_buffer->Handle(), args_offset);
+		if (split_on_cpu) {
+			RecordGuestDispatch(vk_buffer, limits, {args.x, args.y, args.z}, program, pipeline);
+		} else {
+			vk_buffer.dispatchIndirect(indirect_buffer, indirect_offset);
+		}
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();

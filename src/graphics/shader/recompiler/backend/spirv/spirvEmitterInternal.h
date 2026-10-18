@@ -464,6 +464,8 @@ uint32_t EmitVertexParameterComponentU32(EmitterState& state, const InputBinding
                                          uint32_t component);
 
 uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uint32_t component);
+// The split-dispatch piece base along an axis (Bindings::group_base_dword), 0 without one.
+uint32_t EmitGroupBaseU32(EmitterState& state, uint32_t component);
 
 uint32_t EmitLocalInvocationIndex(EmitterState& state);
 
