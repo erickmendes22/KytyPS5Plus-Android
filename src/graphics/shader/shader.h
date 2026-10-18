@@ -310,19 +310,22 @@ struct ShaderDeviceFeatures {
 	// Values a register only keeps in lanes a write skipped (the kept operand of an exec-merge
 	// select or a DPP update) are taken as dead: a raw I/J kept by a DPP update no longer needs
 	// the geometry stage, and packed-varying lowering zeroes such kept vertex data so the
-	// per-vertex reads behind it go away (KYTY_DROP_CARRIED, opt-in).
+	// per-vertex reads behind it go away (KYTY_DROP_CARRIED; default Mesa Turnip). Astro Bot's
+	// particle pixel shaders (5a10a907, 969c5ed1) then run without the geometry stage, which drew
+	// them magenta.
 	bool drop_carried_vertex_data = false;
 	// Before packed-varying lowering, a select whose operand is a select on the same condition
 	// takes that select's operand on its own side (passes/ManualInterpolation.h,
 	// FoldSameConditionSelects; same results). Exec-masked blocks that reuse a register holding a
 	// raw vertex dword otherwise keep the per-vertex read alive through the nested select of the
-	// next masked write, and the pixel shader keeps its geometry stage (KYTY_SELECT_FOLD).
+	// next masked write, and the pixel shader keeps its geometry stage (KYTY_SELECT_FOLD; default
+	// Mesa Turnip).
 	bool fold_same_condition_selects = false;
 	// Without fragment_shader_barycentric, a pixel parameter slot that a flat and a smooth input
 	// alias (SPI_PS_INPUT_CNTL offsets) stays a native input while the shader uses only one of the
 	// two modes; that alias alone is declared, with its own qualifier. Otherwise any use of such a
 	// slot needs per-vertex data (geometry stage), and packed-varying lowering that leaves only the
-	// flat alias in use is rejected (KYTY_ALIAS_SLOTS).
+	// flat alias in use is rejected (KYTY_ALIAS_SLOTS; default Mesa Turnip).
 	bool single_mode_alias_slots = false;
 	// shaderStorageImageArrayNonUniformIndexing. Without it, GPU-selected storage images are
 	// indexed dynamically without the NonUniform decoration (shaderStorageImageArrayDynamicIndexing).

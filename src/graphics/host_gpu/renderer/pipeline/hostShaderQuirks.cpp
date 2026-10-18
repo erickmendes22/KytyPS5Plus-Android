@@ -70,9 +70,9 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	    .bvh_vector_loads     = EnvToggle("KYTY_BVH_VEC", false),
 	    .packed_interp        = EnvToggle("KYTY_PACKED_INTERP", turnip) &&
 	                     !graphics.optional_features.fragment_shader_barycentric,
-	    .drop_carried         = EnvToggle("KYTY_DROP_CARRIED", false),
-	    .select_fold          = EnvToggle("KYTY_SELECT_FOLD", false),
-	    .alias_slots          = EnvToggle("KYTY_ALIAS_SLOTS", false),
+	    .drop_carried         = EnvToggle("KYTY_DROP_CARRIED", turnip),
+	    .select_fold          = EnvToggle("KYTY_SELECT_FOLD", turnip),
+	    .alias_slots          = EnvToggle("KYTY_ALIAS_SLOTS", turnip),
 	    .lane_broadcast       = EnvToggle("KYTY_LANE_BROADCAST", turnip),
 	    .first_lane_sets      = EnvToggle("KYTY_FIRSTLANE_SETS", false),
 	    .bvh_emulation        = EnvBits("KYTY_BVH_OPT", 0u),
