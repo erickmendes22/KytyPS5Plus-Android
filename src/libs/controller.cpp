@@ -17,8 +17,10 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 namespace Libs::Controller {
@@ -1038,6 +1040,64 @@ void ResetInputState() {
 
 int GetActiveControllerId() {
 	return g_controller != nullptr ? g_controller->GetActiveControllerId() : -1;
+}
+
+namespace {
+
+constexpr float    SHAKE_HZ            = 4.0f;  // a vigorous hand shake
+constexpr float    SHAKE_GYRO_RAD_S    = 6.0f;  // peak angular velocity per axis
+constexpr float    SHAKE_ACCEL_G       = 1.2f;  // peak linear acceleration on top of gravity
+constexpr int      SHAKE_SAMPLE_MS     = 10;    // 100 Hz, like a DualSense report stream
+constexpr int      SHAKE_MAX_SECONDS   = 60;
+std::atomic<bool>  g_shake_running {false};
+
+void RunSyntheticShake(int seconds) {
+	using Clock     = std::chrono::steady_clock;
+	const auto start = Clock::now();
+	const auto end   = start + std::chrono::seconds(seconds);
+	for (auto now = start; now < end; now = Clock::now()) {
+		const int id = GetActiveControllerId();
+		if (id >= 0) {
+			const float t     = std::chrono::duration<float>(now - start).count();
+			const float phase = 2.0f * 3.14159265f * SHAKE_HZ * t;
+			const float gyro[3]  = {SHAKE_GYRO_RAD_S * std::sin(phase), 0.5f * SHAKE_GYRO_RAD_S * std::sin(phase * 0.5f),
+			                        SHAKE_GYRO_RAD_S * std::cos(phase)};
+			const float accel[3] = {SHAKE_ACCEL_G * SDL_STANDARD_GRAVITY * std::sin(phase),
+			                        (1.0f + SHAKE_ACCEL_G * std::cos(phase)) * SDL_STANDARD_GRAVITY, 0.0f};
+			const auto  time_us  = static_cast<uint64_t>(
+			    std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
+			SetSensor(id, Sensor::Accel, accel, time_us);
+			SetSensor(id, Sensor::Gyro, gyro, time_us);
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(SHAKE_SAMPLE_MS));
+	}
+	// Leave the pad at rest: gravity only, no rotation.
+	const int id = GetActiveControllerId();
+	if (id >= 0) {
+		const float rest_accel[3] = {0.0f, SDL_STANDARD_GRAVITY, 0.0f};
+		const float rest_gyro[3]  = {0.0f, 0.0f, 0.0f};
+		const auto  time_us       = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count());
+		SetSensor(id, Sensor::Accel, rest_accel, time_us);
+		SetSensor(id, Sensor::Gyro, rest_gyro, time_us);
+	}
+	g_shake_running = false;
+}
+
+} // namespace
+
+bool StartSyntheticShake(int seconds) {
+	if (g_controller == nullptr || seconds <= 0) {
+		return false;
+	}
+	bool expected = false;
+	if (!g_shake_running.compare_exchange_strong(expected, true)) {
+		return false;
+	}
+	const int clamped = std::min(seconds, SHAKE_MAX_SECONDS);
+	LOGF("Pad: synthetic shake for %d s\n", clamped);
+	std::thread(RunSyntheticShake, clamped).detach();
+	return true;
 }
 
 static bool PadOpenArgsAreValid(int user_id, int type, int index) {

@@ -2,8 +2,11 @@
 
 #include "common/logging/log.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
+#include "libs/controller.h"
 
+#include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +21,7 @@ namespace {
 constexpr const char* kFileName     = "_live.txt";
 constexpr int64_t     kPollInterval = 1'000'000'000;
 constexpr size_t      kMaxFileBytes = 4096;
+constexpr int         kMaxShakeSeconds = 60;
 
 bool Enabled() {
 	static const bool enabled = [] {
@@ -103,9 +107,13 @@ void Poll() {
 	for (const auto& prefix: snapshot->skip) {
 		skip += skip.empty() ? prefix : "," + prefix;
 	}
-	LOGF("Live knobs: skip=[%s] marks=%d\n", skip.c_str(), snapshot->draw_marks ? 1 : 0);
-	std::fprintf(stderr, "[live-knobs] skip=[%s] marks=%d\n", skip.c_str(),
-	             snapshot->draw_marks ? 1 : 0);
+	LOGF("Live knobs: skip=[%s] marks=%d shake=%d\n", skip.c_str(), snapshot->draw_marks ? 1 : 0,
+	     snapshot->shake_seconds);
+	std::fprintf(stderr, "[live-knobs] skip=[%s] marks=%d shake=%d\n", skip.c_str(),
+	             snapshot->draw_marks ? 1 : 0, snapshot->shake_seconds);
+	if (snapshot->shake_seconds > 0 && !Libs::Controller::StartSyntheticShake(snapshot->shake_seconds)) {
+		LOGF("Live knobs: shake ignored (already shaking or no pad)\n");
+	}
 	g_current.store(snapshot, std::memory_order_release);
 }
 
@@ -130,6 +138,12 @@ Snapshot Parse(std::string_view text) {
 			snapshot.skip = std::move(prefixes);
 		} else if (key == "marks") {
 			snapshot.draw_marks = value == "1";
+		} else if (key == "shake") {
+			int seconds = 0;
+			const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), seconds);
+			if (error == std::errc() && ptr == value.data() + value.size() && seconds > 0) {
+				snapshot.shake_seconds = std::min(seconds, kMaxShakeSeconds);
+			}
 		}
 	}
 	return snapshot;

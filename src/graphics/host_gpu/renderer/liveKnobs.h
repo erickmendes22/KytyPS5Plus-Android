@@ -15,6 +15,9 @@
 //   marks=1               --perf-stats: one GPU timestamp per draw, labelled by its path
 //                         (draw / draw-gs / draw-rect / draw-mesh / draw-tess) and pixel shader,
 //                         with the vertex shader appended
+//   shake=<seconds>       shake the pad (synthetic accelerometer + gyroscope) for 1-60 s, starting
+//                         when the file changes; for motion-only prompts (Astro Bot's intro "shake
+//                         to fix Astro") on a tablet with on-screen controls
 //
 // A missing file means no skips and no draw marks.
 namespace Libs::Graphics::LiveKnobs {
@@ -22,6 +25,7 @@ namespace Libs::Graphics::LiveKnobs {
 struct Snapshot {
 	std::vector<std::string> skip;
 	bool                     draw_marks = false;
+	int                      shake_seconds = 0;
 };
 
 // Parses the file contents. Unknown keys and bad hash prefixes are ignored. Exposed for tests.

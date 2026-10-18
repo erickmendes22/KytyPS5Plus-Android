@@ -74,6 +74,10 @@ void SetRightStick(int id, int x, int y);
 void SetTouchPad(int id, int finger, bool down, float x, float y);
 void SetSensor(int id, Sensor sensor, const float* data, uint64_t time_us);
 void ToggleGyroEmulation(int id);
+// Feeds the active pad a vigorous shake (accelerometer + gyroscope at 100 Hz) for <seconds>
+// (at most 60) on a background thread, for motion-only prompts without a motion-capable pad.
+// Returns false when a shake is already running or no controller exists.
+bool StartSyntheticShake(int seconds);
 void ResetInputState();
 int  GetActiveControllerId();
 
