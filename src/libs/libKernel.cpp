@@ -1129,12 +1129,18 @@ void KernelDispatchPendingSignalForCurrentThread() {
 		return;
 	}
 
-	for (int signum = 0; signum < static_cast<int>(std::size(g_exception_handlers)); signum++) {
+	// Called on every guest sleep, yield and wait poll (tens of thousands of times a second in
+	// Astro Bot): one load when nothing is pending instead of an atomic read-modify-write per
+	// signal number. Pending bits exist only for signals 0-63; the lowest one is taken first.
+	for (uint64_t pending = PthreadPendingSignalMask(current); pending != 0; pending &= pending - 1) {
+		const int signum = std::countr_zero(pending);
 		if (!PthreadTakePendingSignal(current, signum)) {
-			continue;
+			continue; // another dispatcher took it meanwhile
 		}
 
-		auto* handler = reinterpret_cast<exception_handler_func_t>(g_exception_handlers[signum]);
+		auto* handler = signum < static_cast<int>(std::size(g_exception_handlers))
+		                    ? reinterpret_cast<exception_handler_func_t>(g_exception_handlers[signum])
+		                    : nullptr;
 		if (handler != nullptr) {
 			SignalDispatchScope scope;
 			auto                ctx = CreateSignalUcontext();

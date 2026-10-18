@@ -3209,6 +3209,10 @@ bool PthreadHasAnyPendingSignal(Pthread thread) {
 	return thread != nullptr && thread->pending_signal_mask.load(std::memory_order_acquire) != 0;
 }
 
+uint64_t PthreadPendingSignalMask(Pthread thread) {
+	return thread != nullptr ? thread->pending_signal_mask.load(std::memory_order_acquire) : 0;
+}
+
 bool PthreadTakePendingSignal(Pthread thread, int signum) {
 	if (thread == nullptr || signum < 0 || signum >= 64) {
 		return false;
