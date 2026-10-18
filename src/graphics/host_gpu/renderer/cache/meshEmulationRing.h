@@ -51,6 +51,8 @@ public:
 
 	// KYTY_MESH_RING_MIB, else DefaultInitialSize.
 	[[nodiscard]] static uint64_t ConfiguredInitialSize();
+	// KYTY_MESH_RING_GROW_MIB (diagnostic), else 0.
+	[[nodiscard]] static uint64_t ConfiguredForcedGrowth();
 
 	[[nodiscard]] Reservation Reserve(uint64_t size);
 	[[nodiscard]] uint64_t    Capacity() const noexcept { return m_buffer->Size(); }
@@ -73,6 +75,7 @@ private:
 	const char*                                           m_name;
 	std::unique_ptr<Buffer>                               m_buffer;
 	uint64_t                                              m_offset = 0;
+	uint64_t m_forced_growth = ConfiguredForcedGrowth();
 	std::deque<Range>                                     m_ranges;
 	std::vector<std::pair<std::unique_ptr<Buffer>, uint64_t>> m_retired;
 };

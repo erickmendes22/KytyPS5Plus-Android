@@ -156,6 +156,17 @@ void Buffer::InvalidateReadback(uint64_t offset, uint64_t size) {
 	}
 }
 
+void Buffer::LogAllocation(const char* name) const {
+	VmaAllocationInfo info {};
+	vmaGetAllocationInfo(m_graphics->allocator, m_allocation, &info);
+	VkMemoryPropertyFlags properties = 0;
+	vmaGetAllocationMemoryProperties(m_graphics->allocator, m_allocation, &properties);
+	LOGF("%s: allocation type=%u props=0x%x memory=%p offset=0x%" PRIx64 " size=0x%" PRIx64
+	     " addr=0x%016" PRIx64 "\n",
+	     name, info.memoryType, properties, static_cast<void*>(info.deviceMemory), info.offset,
+	     info.size, m_device_address);
+}
+
 vk::DeviceAddress Buffer::BufferDeviceAddress() const noexcept {
 	EXIT_IF(m_device_address == 0);
 	return m_device_address;

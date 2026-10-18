@@ -53,12 +53,29 @@ uint64_t MeshEmulationRing::ConfiguredInitialSize() {
 	return mib << 20u;
 }
 
+// KYTY_MESH_RING_GROW_MIB=<n> (diagnostic): grow the ring to n MiB at the first reservation of
+// at least kLoggedReservationSize, i.e. when the scene's large mesh draws appear.
+uint64_t MeshEmulationRing::ConfiguredForcedGrowth() {
+	const char* value = std::getenv("KYTY_MESH_RING_GROW_MIB");
+	if (value == nullptr || *value == '\0') {
+		return 0;
+	}
+	char*      end = nullptr;
+	const auto mib = std::strtoull(value, &end, 10);
+	if (end == nullptr || *end != '\0' || mib < 16 || mib > 2048) {
+		LOGF("KYTY_MESH_RING_GROW_MIB=%s ignored (16..2048)\n", value);
+		return 0;
+	}
+	return mib << 20u;
+}
+
 MeshEmulationRing::MeshEmulationRing(GraphicContext& graphics, CommandScheduler& scheduler,
                                      uint64_t size, const char* name)
     : m_graphics(graphics), m_scheduler(scheduler), m_name(name),
       m_buffer(CreateRingBuffer(graphics, scheduler, size, name)) {
 	LOGF("%s: ring buffer %" PRIu64 " KiB at 0x%016" PRIx64 "\n", name, size >> 10u,
 	     m_buffer->BufferDeviceAddress());
+	m_buffer->LogAllocation(name);
 }
 
 MeshEmulationRing::~MeshEmulationRing() = default;
@@ -107,7 +124,9 @@ void MeshEmulationRing::Grow(uint64_t size, const char* reason) {
 	     m_name, Capacity() >> 20u, capacity >> 20u, size, reason);
 	m_retired.emplace_back(std::move(m_buffer), m_scheduler.CurrentTick());
 	m_buffer = CreateRingBuffer(m_graphics, m_scheduler, capacity, m_name);
-	LOGF("%s: new buffer at 0x%016" PRIx64 "\n", m_name, m_buffer->BufferDeviceAddress());
+	LOGF("%s: new buffer at 0x%016" PRIx64 " (old retired at tick %" PRIu64 ")\n", m_name,
+	     m_buffer->BufferDeviceAddress(), m_retired.back().second);
+	m_buffer->LogAllocation(m_name);
 	m_offset = 0;
 	m_ranges.clear();
 }
@@ -116,6 +135,12 @@ MeshEmulationRing::Reservation MeshEmulationRing::Reserve(uint64_t size) {
 	EXIT_IF(size == 0);
 	ReleaseRetired();
 	size = Common::AlignUp(size, Alignment);
+	if (m_forced_growth != 0 && size >= kLoggedReservationSize) {
+		if (m_forced_growth > Capacity()) {
+			Grow(m_forced_growth, "forced by KYTY_MESH_RING_GROW_MIB");
+		}
+		m_forced_growth = 0;
+	}
 	if (size > Capacity()) {
 		Grow(size, "for a larger draw");
 	}
