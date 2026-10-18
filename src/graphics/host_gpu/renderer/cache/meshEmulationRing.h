@@ -41,6 +41,9 @@ public:
 	~MeshEmulationRing();
 	KYTY_CLASS_NO_COPY(MeshEmulationRing);
 
+	// KYTY_MESH_RING_MIB, else InitialSize.
+	[[nodiscard]] static uint64_t ConfiguredInitialSize();
+
 	[[nodiscard]] Reservation Reserve(uint64_t size);
 	[[nodiscard]] uint64_t    Capacity() const noexcept { return m_buffer->Size(); }
 	// Device-loss diagnostics: logs the current and retired buffers holding any address.
@@ -53,7 +56,7 @@ private:
 		uint64_t end   = 0;
 	};
 
-	void               Grow(uint64_t size);
+	void               Grow(uint64_t size, const char* reason);
 	void               ReleaseRetired();
 	[[nodiscard]] bool KnownFree(uint64_t tick) const;
 

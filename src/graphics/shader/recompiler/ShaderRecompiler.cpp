@@ -724,6 +724,15 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 		decoded_dump = Decoder::ProgramToString(decoded);
 		if (options.early_dump) {
 			LOGF("%s decoded RDNA2 (early):\n%s", GetDumpLabel(options), decoded_dump.c_str());
+			if (options.stage == ShaderType::Pixel && options.input_info.pixel != nullptr) {
+				// SPI_PS_INPUT_CNTL_n: OFFSET [5:0], DEFAULT_VAL [9:8], FLAT_SHADE [10].
+				const auto& pixel = *options.input_info.pixel;
+				for (uint32_t i = 0; i < pixel.input_num; i++) {
+					LOGF("%s PS input %u: SPI_PS_INPUT_CNTL=0x%08x custom=%u\n",
+					     GetDumpLabel(options), i, pixel.interpolator_settings[i],
+					     (pixel.custom_interpolation_mask >> i) & 1u);
+				}
+			}
 		}
 	}
 

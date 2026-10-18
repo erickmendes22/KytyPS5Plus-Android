@@ -8,7 +8,9 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
+#include <cstdlib>
 
 namespace Libs::Graphics {
 
@@ -28,7 +30,28 @@ std::unique_ptr<Buffer> CreateRingBuffer(GraphicContext& graphics, CommandSchedu
 	return buffer;
 }
 
+// Reservations of at least kLoggedReservationSize, and wraps or reuses of the current command
+// buffer's ranges by ones of at least kLoggedWrapSize, are logged (first kLoggedReservations).
+constexpr uint64_t kLoggedReservationSize = 16ull * 1024 * 1024;
+constexpr uint64_t kLoggedWrapSize        = 1024ull * 1024;
+constexpr uint32_t kLoggedReservations    = 4000;
+
 } // namespace
+
+// KYTY_MESH_RING_MIB=<n>: initial size of the mesh emulation ring (default InitialSize).
+uint64_t MeshEmulationRing::ConfiguredInitialSize() {
+	const char* value = std::getenv("KYTY_MESH_RING_MIB");
+	if (value == nullptr || *value == '\0') {
+		return InitialSize;
+	}
+	char*      end = nullptr;
+	const auto mib = std::strtoull(value, &end, 10);
+	if (end == nullptr || *end != '\0' || mib < 16 || mib > 2048) {
+		LOGF("KYTY_MESH_RING_MIB=%s ignored (16..2048)\n", value);
+		return InitialSize;
+	}
+	return mib << 20u;
+}
 
 MeshEmulationRing::MeshEmulationRing(GraphicContext& graphics, CommandScheduler& scheduler,
                                      uint64_t size, const char* name)
@@ -74,15 +97,14 @@ void MeshEmulationRing::ReleaseRetired() {
 	std::erase_if(m_retired, [this](const auto& retired) { return KnownFree(retired.second); });
 }
 
-void MeshEmulationRing::Grow(uint64_t size) {
+void MeshEmulationRing::Grow(uint64_t size, const char* reason) {
 	auto capacity = Capacity();
 	while (capacity < size) {
 		EXIT_IF(capacity > UINT64_MAX / 2u);
 		capacity *= 2u;
 	}
-	LOGF("Mesh emulation: growing ring buffer %" PRIu64 " -> %" PRIu64 " MiB for a %" PRIu64
-	     " byte draw\n",
-	     Capacity() >> 20u, capacity >> 20u, size);
+	LOGF("%s: growing ring buffer %" PRIu64 " -> %" PRIu64 " MiB (%" PRIu64 " bytes) %s\n",
+	     m_name, Capacity() >> 20u, capacity >> 20u, size, reason);
 	m_retired.emplace_back(std::move(m_buffer), m_scheduler.CurrentTick());
 	m_buffer = CreateRingBuffer(m_graphics, m_scheduler, capacity, m_name);
 	LOGF("%s: new buffer at 0x%016" PRIx64 "\n", m_name, m_buffer->BufferDeviceAddress());
@@ -95,14 +117,15 @@ MeshEmulationRing::Reservation MeshEmulationRing::Reserve(uint64_t size) {
 	ReleaseRetired();
 	size = Common::AlignUp(size, Alignment);
 	if (size > Capacity()) {
-		Grow(size);
+		Grow(size, "for a larger draw");
 	}
-	auto begin = Common::AlignUp(m_offset, Alignment);
-	if (begin > Capacity() - size) {
+	const auto current = m_scheduler.CurrentTick();
+	auto       begin   = Common::AlignUp(m_offset, Alignment);
+	const bool wrapped = begin > Capacity() - size;
+	if (wrapped) {
 		begin = 0;
 	}
-	const auto end     = begin + size;
-	const auto current = m_scheduler.CurrentTick();
+	const auto end = begin + size;
 	Reservation result {.buffer = m_buffer->Handle(), .offset = begin};
 	// Ranges are in allocation order; any of them may overlap after a wrap.
 	std::erase_if(m_ranges, [&](const Range& range) {
@@ -124,6 +147,17 @@ MeshEmulationRing::Reservation MeshEmulationRing::Reserve(uint64_t size) {
 	}
 	m_offset       = end;
 	result.address = m_buffer->BufferDeviceAddress() + begin;
+	if (size >= kLoggedReservationSize ||
+	    (size >= kLoggedWrapSize && (wrapped || result.reuses_current))) {
+		static std::atomic_uint32_t s_logged = 0;
+		if (s_logged.fetch_add(1, std::memory_order_relaxed) < kLoggedReservations) {
+			LOGF("%s: reserve 0x%" PRIx64 " at [0x%" PRIx64 ", 0x%" PRIx64 ") of 0x%" PRIx64
+			     " addr=0x%016" PRIx64 " tick=%" PRIu64 "%s%s ranges=%zu\n",
+			     m_name, size, begin, end, Capacity(), result.address, current,
+			     wrapped ? " wrapped" : "", result.reuses_current ? " reuses_current" : "",
+			     m_ranges.size());
+		}
+	}
 	return result;
 }
 

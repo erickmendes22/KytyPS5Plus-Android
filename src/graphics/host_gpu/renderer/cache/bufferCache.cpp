@@ -18,6 +18,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <cstring>
 #include <memory>
@@ -516,7 +517,8 @@ uint64_t BufferCache::MeshRingCapacity() const noexcept {
 
 MeshEmulationRing& BufferCache::GetMeshEmulationRing() {
 	if (!m_mesh_emulation_ring) {
-		m_mesh_emulation_ring = std::make_unique<MeshEmulationRing>(m_graphics, m_scheduler);
+		m_mesh_emulation_ring = std::make_unique<MeshEmulationRing>(
+		    m_graphics, m_scheduler, MeshEmulationRing::ConfiguredInitialSize());
 	}
 	return *m_mesh_emulation_ring;
 }
@@ -937,10 +939,18 @@ void BufferCache::RunGarbageCollector() {
 	const size_t   limit      = aggressive ? 64 : 32;
 
 	std::vector<BufferId> dirty_buffers;
-	size_t                retire_count = 0;
+	size_t                retire_count  = 0;
+	uint64_t              retired_bytes = 0;
+	uint64_t              largest_addr  = 0;
+	uint64_t              largest_size  = 0;
 	m_lru_cache.ForEachItemBelow(tick - age, [&](BufferId id) {
 		auto& buffer = m_slot_buffers[id];
 		EXIT_IF(buffer.is_deleted);
+		retired_bytes += buffer.Size();
+		if (buffer.Size() > largest_size) {
+			largest_size = buffer.Size();
+			largest_addr = buffer.CpuAddress();
+		}
 		m_memory_tracker.ValidateGpuDirtyOwnership(m_gpu_modified_ranges, buffer.CpuAddress(),
 		                                           buffer.Size(), "garbage collection");
 		const bool dirty = m_memory_tracker.IsRegionGpuModified(buffer.CpuAddress(), buffer.Size());
@@ -956,6 +966,18 @@ void BufferCache::RunGarbageCollector() {
 		}
 		return ++retire_count == limit;
 	});
+	if (retire_count != 0) {
+		// Device-loss diagnostics: which guest buffers the collector retired, and when.
+		static std::atomic_uint32_t s_logged = 0;
+		if (s_logged.fetch_add(1, std::memory_order_relaxed) < 3000) {
+			LOGF("BufferCache GC: tick=%" PRIu64 " used=%" PRIu64 " MiB critical=%" PRIu64
+			     " MiB aggressive=%d retired=%zu (%" PRIu64 " KiB, %zu GPU-written) largest guest=0x%"
+			     PRIx64 " size=0x%" PRIx64 "\n",
+			     tick, used_memory >> 20u, m_critical_gc_memory >> 20u, aggressive ? 1 : 0,
+			     retire_count, retired_bytes >> 10u, dirty_buffers.size(), largest_addr,
+			     largest_size);
+		}
+	}
 	if (dirty_buffers.empty()) {
 		return;
 	}
