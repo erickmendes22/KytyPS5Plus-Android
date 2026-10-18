@@ -352,9 +352,29 @@ PossibleValues UnitePossibleValues(const PossibleValues& lhs, const PossibleValu
 // predicate holds (KYTY_FIRSTLANE_SETS).
 thread_local bool t_first_lane_sets = false;
 
-// Whether lane predicate `guard` is true only in lanes where `condition` is. SSA predicates keep
-// one value per lane, so the implication holds wherever both are used. Phis on a cycle are
-// assumed to imply it while their incoming values are checked (induction over iterations).
+// Whether a block lies on a control-flow cycle (a loop body or header).
+bool BlockOnCycle(const Block* start) {
+	std::vector<const Block*> stack(start->ImmSuccessors().begin(), start->ImmSuccessors().end());
+	std::unordered_set<const Block*> seen;
+	while (!stack.empty()) {
+		const auto* block = stack.back();
+		stack.pop_back();
+		if (block == start) {
+			return true;
+		}
+		if (!seen.insert(block).second) {
+			continue;
+		}
+		stack.insert(stack.end(), block->ImmSuccessors().begin(), block->ImmSuccessors().end());
+	}
+	return false;
+}
+
+// Whether lane predicate `guard` is true only in lanes where `condition` is. The caller passes a
+// `condition` defined outside every loop: it then has one value per lane for the whole
+// invocation, so an implication proved for any dynamic instance of `guard` holds wherever
+// `condition` is used (a select of an earlier iteration included). Phis on a cycle are assumed
+// to imply it while their incoming values are checked (induction over iterations).
 bool ImpliesU1(Value guard, Value condition, uint32_t depth, std::vector<const Inst*>& assumed) {
 	guard = guard.Resolve();
 	if (guard == condition) {
@@ -413,8 +433,12 @@ PossibleValues PossibleU32(Value value, uint32_t depth, uint32_t& budget, Value 
 			return PossibleU32(inst->Arg(0), depth - 1u, budget, inst->Arg(1).Resolve());
 		}
 		if (inst->GetOpcode() == ValueOpcode::SelectU32 && !guard.IsEmpty()) {
+			const auto condition = Arg(*inst, 0);
+			const auto* defined = condition.TryInstruction();
 			std::vector<const Inst*> assumed;
-			if (ImpliesU1(guard, Arg(*inst, 0), PossibleValueDepth, assumed)) {
+			if (defined != nullptr && defined->Parent() != nullptr &&
+			    !BlockOnCycle(defined->Parent()) &&
+			    ImpliesU1(guard, condition, PossibleValueDepth, assumed)) {
 				return operand(1);
 			}
 		}
