@@ -28,6 +28,11 @@ constexpr uint64_t GUEST_MEMORY_MIN = 0x40000;
 
 } // namespace
 
+const char*& SpecializationTraceSite() {
+	thread_local const char* site = nullptr;
+	return site;
+}
+
 SrtRuntime SrtReadCapture::ObservedRuntime() {
 	auto runtime = m_source;
 	runtime.userdata = this;
@@ -1283,6 +1288,7 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		if (clean && (m_clean_evaluator == nullptr || m_runtime.read_specialization_memory == nullptr))
 			return false;
 		auto& evaluator = clean ? *m_clean_evaluator : *this;
+		const ScopedSpecializationSite site(clean ? "srt-clean" : "srt");
 		return read.flat_offset < flat.size() && evaluator.Evaluate(read.value, flat[read.flat_offset]);
 	};
 	auto& active = m_program.active_sources;
@@ -1316,6 +1322,7 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 			const auto& block = m_program.control_flow[index];
 			uint32_t condition = 0;
 			auto& predicate = m_clean_evaluator != nullptr ? *m_clean_evaluator : *this;
+			const ScopedSpecializationSite site("branch");
 			if (!block.condition.IsEmpty() &&
 			    (m_runtime.read_specialization_memory != nullptr || !m_program.capture_specialization_reads) &&
 			    predicate.Evaluate(block.condition, condition)) {

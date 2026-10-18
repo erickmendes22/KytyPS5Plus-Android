@@ -9,6 +9,7 @@
 #include "common/virtualMemory.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 
@@ -872,6 +873,8 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 		auto& buffers = GetGpuResources().GetBufferCache();
 		if (buffers.HasGpuDirtyBytes(vaddr, size)) {
 			dirty = true;
+			const Common::PerfStats::ScopedTraceSite site(
+			    Graphics::ShaderRecompiler::IR::SpecializationTraceSite());
 			Common::PerfStats::TraceHostStack("spec-read", vaddr, 0, 0, 0);
 			buffers.ReadMemory(vaddr, size);
 		}
@@ -891,11 +894,16 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 		const bool periodic     = reads++ % 100 == 0;
 		if ((changed || periodic) && logged++ < 3000) {
 			const auto* words = static_cast<const uint32_t*>(data);
-			char        line[192];
+			char        line[224];
 			std::snprintf(line, sizeof(line),
 			              "[perf-trace] spec-val addr=0x%010" PRIx64 " size=%" PRIu64
-			              " pm4=0x%03x n=%" PRIu64 " %s v=%08x %08x %08x %08x",
-			              vaddr, size, Common::PerfStats::CurrentPm4Opcode(), reads,
+			              " pm4=0x%03x ctx=0x%016" PRIx64 " site=%s n=%" PRIu64 " %s v=%08x %08x %08x %08x",
+			              vaddr, size, Common::PerfStats::CurrentPm4Opcode(),
+			              Common::PerfStats::CurrentTraceShader(),
+			              Graphics::ShaderRecompiler::IR::SpecializationTraceSite() != nullptr
+			                  ? Graphics::ShaderRecompiler::IR::SpecializationTraceSite()
+			                  : "-",
+			              reads,
 			              changed ? "changed" : "same", words[0],
 			              size >= 8 ? words[1] : 0u, size >= 12 ? words[2] : 0u,
 			              size >= 16 ? words[3] : 0u);

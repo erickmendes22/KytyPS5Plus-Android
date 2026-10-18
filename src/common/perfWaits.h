@@ -187,6 +187,23 @@ enum class ReadbackMode : uint8_t {
 // taken by the GPU thread can be attributed to the packet that read the memory.
 void               SetPm4Opcode(uint32_t opcode);
 [[nodiscard]] uint32_t CurrentPm4Opcode();
+// The shader whose resources the GPU thread is specializing (0 = none): "[perf-trace]" lines
+// name it as ctx=, so a specialization readback can be attributed to its shader.
+void               SetTraceShader(uint64_t hash);
+[[nodiscard]] uint64_t CurrentTraceShader();
+// What the specialization was evaluating (a static string, nullptr = unknown), as site=.
+const char*        ExchangeTraceSite(const char* site);
+[[nodiscard]] const char* CurrentTraceSite();
+class ScopedTraceSite {
+public:
+	explicit ScopedTraceSite(const char* site): m_previous(ExchangeTraceSite(site)) {}
+	~ScopedTraceSite() { ExchangeTraceSite(m_previous); }
+	ScopedTraceSite(const ScopedTraceSite&)            = delete;
+	ScopedTraceSite& operator=(const ScopedTraceSite&) = delete;
+
+private:
+	const char* m_previous;
+};
 // Reader tags for readbacks requested by other threads.
 constexpr uint32_t kReaderGuestRead  = 0x1000;
 constexpr uint32_t kReaderGuestWrite = 0x1001;

@@ -344,6 +344,7 @@ bool EvaluateIndirectCount(const DescriptorSource::IndirectDescriptor& indirect,
 		    ? 0u : runtime.workgroup_counts[indirect.workgroup_axis];
 		return true;
 	}
+	const ScopedSpecializationSite site("key-count");
 	if (!clean.Evaluate(indirect.key_count, count)) return false;
 	if (indirect.signed_count && std::bit_cast<int32_t>(count) < 0) count = 0;
 	return true;
@@ -1559,6 +1560,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	SrtWalker clean(program, CleanRuntime(observed));
 	SrtWalker walker(program, observed,
 	                 capture_reads || program.requires_specialization_memory ? &clean : nullptr);
+	const ScopedSpecializationSite site("materialize");
 	if (!walker.RefreshFlatBuffer(snapshot.flattened_srt)) {
 		return SpecializationFail(fmt::format("SRT refresh complete={} reads={} user_data={}",
 		    program.srt_plan_complete, program.srt_reads.size(), runtime.user_data.size()));
@@ -1569,6 +1571,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		for (uint32_t source = 0; source < program.descriptor_sources.size(); ++source) {
 			if ((!active.empty() && !active[source]) ||
 			    !uses_workgroup_count(program.descriptor_sources[source])) continue;
+			const ScopedSpecializationSite site("dispatch-args");
 			if ((runtime.indirect_args_address & 3u) != 0u ||
 			    !ReadTable(runtime.indirect_args_address, sizeof(workgroup_counts), 0u,
 			               observed, workgroup_counts)) return false;
@@ -1582,6 +1585,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	std::array<uint32_t, 4> stored {};
 	bool uniform_fill = words != 0;
 	for (uint32_t i = 0; i < words && uniform_fill; ++i) {
+		const ScopedSpecializationSite site("fill");
 		uniform_fill = clean.Evaluate(fill.values[i], stored[i]) && stored[i] == stored[0];
 	}
 	if (uniform_fill) {
@@ -1593,6 +1597,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 			return false;
 		}
 		if (active.empty() || active[source]) {
+			const ScopedSpecializationSite site(written ? "desc-written" : "desc");
 			return (capture_reads && written ? clean : walker).EvaluateDescriptor(source, value) ||
 			    SpecializationFail(fmt::format("descriptor evaluation source={}", source));
 		}

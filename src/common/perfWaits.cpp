@@ -40,6 +40,8 @@ namespace {
 thread_local Wait     t_wait_site  = Wait::SemOther;
 thread_local bool     t_gpu_thread = false;
 thread_local uint32_t t_pm4_opcode = 0;
+thread_local uint64_t t_trace_shader = 0;
+thread_local const char* t_trace_site = nullptr;
 
 // Readbacks of the current period, by (site, reader, 4 KiB page).
 struct ReadbackStats {
@@ -152,6 +154,24 @@ uint32_t CurrentPm4Opcode() {
 	return t_pm4_opcode;
 }
 
+void SetTraceShader(uint64_t hash) {
+	t_trace_shader = hash;
+}
+
+uint64_t CurrentTraceShader() {
+	return t_trace_shader;
+}
+
+const char* ExchangeTraceSite(const char* site) {
+	const char* previous = t_trace_site;
+	t_trace_site         = site;
+	return previous;
+}
+
+const char* CurrentTraceSite() {
+	return t_trace_site;
+}
+
 void RecordReadback(Wait site, uint32_t reader, uint64_t address, uint64_t bytes, uint64_t wait_ns,
                     uint64_t lag, ReadbackMode mode) {
 	if (!Enabled() || mode >= ReadbackMode::Count) {
@@ -195,6 +215,11 @@ void TraceHostStack(const char* tag, uint64_t address, uint64_t pc, uint64_t lr,
 	std::snprintf(part, sizeof(part), " addr=0x%010" PRIx64 " pm4=0x%03x", address,
 	              CurrentPm4Opcode());
 	line += part;
+	if (t_trace_shader != 0) {
+		std::snprintf(part, sizeof(part), " ctx=0x%016" PRIx64 " site=%s", t_trace_shader,
+		              t_trace_site != nullptr ? t_trace_site : "-");
+		line += part;
+	}
 	const auto append = [&](uint64_t frame) {
 #if !defined(_WIN32)
 		if (Dl_info dl {}; frame != 0 && dladdr(reinterpret_cast<void*>(frame), &dl) != 0 &&

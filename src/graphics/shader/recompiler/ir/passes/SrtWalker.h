@@ -10,6 +10,22 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 
 class Value;
 
+// KYTY_FAULT_TRACE: what the specialization is evaluating on this thread (a static string or
+// nullptr), so a readback it forces can be attributed (kernel/memory.cpp prints it as site=).
+const char*& SpecializationTraceSite();
+class ScopedSpecializationSite {
+public:
+	explicit ScopedSpecializationSite(const char* site): m_previous(SpecializationTraceSite()) {
+		SpecializationTraceSite() = site;
+	}
+	~ScopedSpecializationSite() { SpecializationTraceSite() = m_previous; }
+	ScopedSpecializationSite(const ScopedSpecializationSite&)            = delete;
+	ScopedSpecializationSite& operator=(const ScopedSpecializationSite&) = delete;
+
+private:
+	const char* m_previous;
+};
+
 using SrtMemoryReader = bool (*)(void* userdata, uint64_t address, std::span<uint32_t> values);
 // Reports whether [address, address + size) is mapped guest memory.
 using SrtAddressProbe = bool (*)(uint64_t address, uint64_t size);

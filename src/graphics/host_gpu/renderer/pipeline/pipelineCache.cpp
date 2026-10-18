@@ -6,6 +6,7 @@
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 #include "common/perfStats.h"
+#include "common/perfWaits.h"
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -601,6 +602,13 @@ struct PipelineCache::ProgramCache {
 		}
 
 		const auto user_data = std::span(params.user_data).first(params.user_data_count);
+		// KYTY_FAULT_TRACE: specialization readbacks below name this shader.
+		struct TraceShaderScope {
+			explicit TraceShaderScope(uint64_t hash) { Common::PerfStats::SetTraceShader(hash); }
+			~TraceShaderScope() { Common::PerfStats::SetTraceShader(0); }
+			TraceShaderScope(const TraceShaderScope&)            = delete;
+			TraceShaderScope& operator=(const TraceShaderScope&) = delete;
+		} trace_shader {params.hash};
 		lookup_key.stage           = stage;
 		lookup_key.hash            = params.hash;
 		lookup_key.user_data_count = params.user_data_count;
