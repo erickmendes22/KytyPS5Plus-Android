@@ -179,10 +179,15 @@ RenderExecutor::EmulatedMeshDraw RenderExecutor::RecordEmulatedMesh(
 		     source.indirect != nullptr ? " (indirect, reserved)" : "", sizes.vertex_bytes,
 		     sizes.index_count);
 	}
-	return {.vertex_address = vertex_address,
-	        .index_buffer   = output.buffer,
-	        .index_offset   = output.offset + index_offset,
-	        .index_count    = sizes.index_count};
+	const uint64_t vertex_count = uint64_t {groups} * instances * mesh_input.mesh.max_vertices;
+	EXIT_IF(vertex_count > UINT32_MAX);
+	ring.PollOutOfRangeCounter();
+	return {.vertex_address       = vertex_address,
+	        .index_buffer         = output.buffer,
+	        .index_offset         = output.offset + index_offset,
+	        .index_count          = sizes.index_count,
+	        .vertex_count         = static_cast<uint32_t>(vertex_count),
+	        .out_of_range_counter = ring.OutOfRangeCounterAddress()};
 }
 
 } // namespace Libs::Graphics

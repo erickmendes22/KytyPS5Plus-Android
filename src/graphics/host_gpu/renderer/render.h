@@ -284,6 +284,9 @@ private:
 		vk::Buffer index_buffer   = nullptr;
 		uint64_t   index_offset   = 0;
 		uint32_t   index_count    = 0;
+		// Vertex records the compute stage wrote; the vertex-pull shader clamps indices to them.
+		uint32_t          vertex_count          = 0;
+		vk::DeviceAddress out_of_range_counter = 0;
 		// --gpu-indirect: the VkDrawIndexedIndirectCommand of the triangle-list draw.
 		vk::Buffer draw_buffer = nullptr;
 		uint64_t   draw_offset = 0;

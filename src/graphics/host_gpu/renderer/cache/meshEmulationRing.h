@@ -58,6 +58,11 @@ public:
 	[[nodiscard]] uint64_t    Capacity() const noexcept { return m_buffer->Size(); }
 	// Device-loss diagnostics: logs the current and retired buffers holding any address.
 	void DescribeFaultAddresses(std::span<const uint64_t> addresses) const;
+	// Device address of the counter the vertex-pull shader increments for each vertex index past
+	// its draw's records (meshVertexPullShader.cpp); a host-visible word, created on first use.
+	[[nodiscard]] vk::DeviceAddress OutOfRangeCounterAddress();
+	// Logs the counter when it changed (at most once a second; also from DescribeFaultAddresses).
+	void PollOutOfRangeCounter(bool force = false);
 
 private:
 	struct Range {
@@ -76,6 +81,9 @@ private:
 	std::unique_ptr<Buffer>                               m_buffer;
 	uint64_t                                              m_offset = 0;
 	uint64_t m_forced_growth = ConfiguredForcedGrowth();
+	std::unique_ptr<Buffer>                               m_out_of_range;
+	uint32_t                                              m_out_of_range_logged = 0;
+	int64_t                                               m_out_of_range_polled_ms = 0;
 	std::deque<Range>                                     m_ranges;
 	std::vector<std::pair<std::unique_ptr<Buffer>, uint64_t>> m_retired;
 };

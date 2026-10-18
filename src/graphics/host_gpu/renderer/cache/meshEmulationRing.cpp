@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
+#include <chrono>
 #include <cstdlib>
+#include <cstring>
 
 namespace Libs::Graphics {
 
@@ -79,6 +81,39 @@ MeshEmulationRing::MeshEmulationRing(GraphicContext& graphics, CommandScheduler&
 }
 
 MeshEmulationRing::~MeshEmulationRing() = default;
+
+vk::DeviceAddress MeshEmulationRing::OutOfRangeCounterAddress() {
+	if (!m_out_of_range) {
+		m_out_of_range = std::make_unique<Buffer>(
+		    m_graphics, m_scheduler, MemoryUsage::Download, 0,
+		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+		    256);
+		EXIT_IF(m_out_of_range->Mapped().size() < sizeof(uint32_t));
+		std::memset(m_out_of_range->Mapped().data(), 0, sizeof(uint32_t));
+		m_out_of_range->Flush(0, sizeof(uint32_t));
+	}
+	return m_out_of_range->BufferDeviceAddress();
+}
+
+void MeshEmulationRing::PollOutOfRangeCounter(bool force) {
+	if (!m_out_of_range) {
+		return;
+	}
+	const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                        std::chrono::steady_clock::now().time_since_epoch())
+	                        .count();
+	if (!force && now_ms - m_out_of_range_polled_ms < 1000) {
+		return;
+	}
+	m_out_of_range_polled_ms = now_ms;
+	m_out_of_range->Invalidate(0, sizeof(uint32_t));
+	uint32_t count = 0;
+	std::memcpy(&count, m_out_of_range->Mapped().data(), sizeof(count));
+	if (count != m_out_of_range_logged || force) {
+		LOGF("%s: %u out-of-range vertex indices so far (clamped to record 0)\n", m_name, count);
+		m_out_of_range_logged = count;
+	}
+}
 
 void MeshEmulationRing::DescribeFaultAddresses(std::span<const uint64_t> addresses) const {
 	const auto describe = [&](const char* state, const Buffer& buffer, uint64_t tick) {
