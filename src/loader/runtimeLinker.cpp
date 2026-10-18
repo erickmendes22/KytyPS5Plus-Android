@@ -1970,6 +1970,18 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	// above. Claim the ones GPU write tracking caused; the translator would otherwise unprotect the
 	// page as self-modifying code and the GPU caches would never see the CPU write.
 	Cpu::GuestCpu::RegisterHostFaultHandler(GuestGpuFault);
+	// KYTY_ADDRESS_FOLD=1 switches guest address folding on from the start (kernel/addressFold.h),
+	// to measure its cost on games that never need it.
+	static const bool fold_forced = [] {
+		const char* value = std::getenv("KYTY_ADDRESS_FOLD");
+		if (value == nullptr || value[0] != '1') {
+			return false;
+		}
+		Kernel::AddressFold::SetEnabled();
+		Cpu::GuestCpu::EnableAddressFold(Kernel::AddressFold::kFoldMask);
+		return true;
+	}();
+	(void)fold_forced;
 #endif
 
 	std::vector<std::pair<uint64_t, uint64_t>> executable_segments;
