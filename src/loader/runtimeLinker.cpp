@@ -2396,7 +2396,21 @@ void RuntimeLinker::SetupTlsHandler(Program* program) {
 	auto* code = new (reinterpret_cast<void*>(program->tls.handler_vaddr)) Jit::SafeCall;
 
 #if KYTY_HOST_ARM64
-	code->SetTarget(GuestHost::NewTrap("kyty.TlsMainGetAddr", &TlsMainGetAddrThunk));
+	// The main TCB is the guest FS base of every attached thread (AttachGuestThread sets it from
+	// CurrentThreadTcb), so the handler reads it in guest code; UE5 titles call it millions of times
+	// a second. Threads without an FS base yet fall back to the trap.
+	const uint64_t slow = GuestHost::NewTrap("kyty.TlsMainGetAddr", &TlsMainGetAddrThunk);
+	std::vector<uint8_t> fast = {
+	    0xF3, 0x48, 0x0F, 0xAE, 0xC0,       // rdfsbase rax
+	    0x48, 0x85, 0xC0,                   // test rax, rax
+	    0x74, 0x01,                         // jz slow
+	    0xC3,                               // ret
+	    0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, // slow: jmp [rip] -> trap
+	};
+	for (int i = 0; i < 8; i++) {
+		fast.push_back(static_cast<uint8_t>(slow >> (8 * i)));
+	}
+	code->SetTarget(Cpu::GuestCpu::AllocateGuestCode(fast));
 #else
 	code->SetFunc(TlsMainGetAddr);
 #endif

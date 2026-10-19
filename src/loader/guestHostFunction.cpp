@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #endif
 
 #include <atomic>
@@ -87,9 +88,43 @@ uint64_t Address(std::string_view key, std::string_view label, uint64_t native_a
 	return address;
 }
 
+struct GuestNatives {
+	std::mutex                                                     mutex;
+	std::unordered_map<uint64_t, std::pair<GuestNativeFactory, uint64_t>> by_native; // -> (factory, code)
+};
+
+GuestNatives& Natives() {
+	static GuestNatives natives;
+	return natives;
+}
+
+void RegisterGuestNative(uint64_t native_address, GuestNativeFactory factory) {
+	auto&           natives = Natives();
+	std::lock_guard lock(natives.mutex);
+	natives.by_native[native_address] = {factory, 0};
+}
+
+// Guest-native code registered for this native function, or 0.
+static uint64_t GuestNativeAddress(uint64_t native_address) {
+	auto&           natives = Natives();
+	std::lock_guard lock(natives.mutex);
+	const auto      it = natives.by_native.find(native_address);
+	if (it == natives.by_native.end()) {
+		return 0;
+	}
+	auto& [factory, code] = it->second;
+	if (code == 0) {
+		code = factory();
+	}
+	return code;
+}
+
 uint64_t SymbolAddress(const SymbolRecord& record) {
 	if (!record.host_function || record.type != SymbolType::Func || record.vaddr == 0) {
 		return record.vaddr;
+	}
+	if (const auto native = GuestNativeAddress(record.vaddr); native != 0) {
+		return native;
 	}
 	const std::string_view label = record.dbg_name.empty() ? std::string_view(record.name)
 	                                                       : std::string_view(record.dbg_name);
@@ -162,6 +197,8 @@ uint64_t NewTrap(std::string_view /*label*/, GuestAbi::HleThunk /*thunk*/) {
 	std::fprintf(stderr, "NewTrap is an ARM64-only operation\n");
 	std::abort();
 }
+
+void RegisterGuestNative(uint64_t /*native_address*/, GuestNativeFactory /*factory*/) {}
 
 bool AttachGuestThread(uint64_t /*stack_top*/) {
 	return true;

@@ -43,6 +43,13 @@ uint64_t AddressOf(std::string_view key) {
 // ARM64; data symbols and guest exports keep their address.
 uint64_t SymbolAddress(const SymbolRecord& record);
 
+// Guest-native replacement for an HLE function (ARM64): when a symbol resolves to the native function
+// at `native_address`, the guest gets the x86 code `factory` installs instead of a trap, so hot
+// calls that need no host state (a counter read, a TLS base) skip the trap round trip. The factory
+// runs once, at the first resolution, after the translator is up.
+using GuestNativeFactory = uint64_t (*)();
+void RegisterGuestNative(uint64_t native_address, GuestNativeFactory factory);
+
 // Label of the trap whose thunk is running on this thread ("" outside a trap).
 std::string_view CurrentTrapName();
 

@@ -3933,6 +3933,37 @@ uint64_t KYTY_SYSV_ABI KernelGetProcessTimeCounter() {
 	return KernelGetElapsedTsc();
 }
 
+#if KYTY_HOST_ARM64 && KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
+// Guest-native counter reads (loader/guestHostFunction.h): UE5 titles read the process time counter
+// about a million times a second, each a trap into the host. FEXCore's RDTSC reads CNTVCT_EL0 (no
+// TSC scaling is configured), the same counter KernelReadTscNative reads, so x86 code can do it.
+static uint64_t MakeGuestReadTsc(bool since_start) {
+	std::vector<uint8_t> code = {
+	    0x0F, 0x31,             // rdtsc
+	    0x48, 0xC1, 0xE2, 0x20, // shl rdx, 32
+	    0x48, 0x09, 0xD0,       // or rax, rdx
+	};
+	if (since_start) {
+		const uint64_t initial = KernelGetInitialTsc();
+		code.insert(code.end(), {0x48, 0xBA}); // movabs rdx, initial
+		for (int i = 0; i < 8; i++) {
+			code.push_back(static_cast<uint8_t>(initial >> (8 * i)));
+		}
+		code.insert(code.end(), {0x48, 0x29, 0xD0}); // sub rax, rdx
+	}
+	code.push_back(0xC3); // ret
+	return Cpu::GuestCpu::AllocateGuestCode(code);
+}
+
+[[maybe_unused]] static const bool g_guest_native_tsc_registered = [] {
+	Loader::GuestHost::RegisterGuestNative(
+	    reinterpret_cast<uint64_t>(&KernelGetProcessTimeCounter), [] { return MakeGuestReadTsc(true); });
+	Loader::GuestHost::RegisterGuestNative(reinterpret_cast<uint64_t>(&KernelReadTsc),
+	                                       [] { return MakeGuestReadTsc(false); });
+	return true;
+}();
+#endif
+
 uint64_t KYTY_SYSV_ABI KernelGetProcessTimeCounterFrequency() {
 	return KernelGetTscFrequencyNative();
 }
