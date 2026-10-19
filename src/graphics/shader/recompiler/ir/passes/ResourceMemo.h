@@ -79,6 +79,7 @@ private:
 	// KYTY_SRT_MEMO_TRACE only: read-content hash -> result hash, and result hashes seen.
 	std::unordered_map<uint64_t, uint64_t> m_trace_content;
 	std::unordered_set<uint64_t>           m_trace_results;
+	std::unordered_map<uint64_t, uint64_t> m_trace_logs; // log hash -> masked result hash
 };
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

@@ -32,6 +32,11 @@ std::atomic<uint64_t> g_trace_walks {0};
 std::atomic<uint64_t> g_trace_same_content {0};
 std::atomic<uint64_t> g_trace_same_content_result {0};
 std::atomic<uint64_t> g_trace_same_result {0};
+// ...walks whose whole log (addresses too) equals an earlier walk's: the differing key words fed
+// only descriptor values, not addresses or branches.
+std::atomic<uint64_t> g_trace_same_log {0};
+// ...of those, results equal once buffer/image base addresses are masked (rebasable by patching).
+std::atomic<uint64_t> g_trace_same_log_masked {0};
 
 uint64_t HashBytes(uint64_t hash, const void* data, size_t size) {
 	const auto* bytes = static_cast<const uint8_t*>(data);
@@ -46,6 +51,32 @@ uint64_t ContentHash(const SrtReadLog& log) {
 		hash = HashBytes(hash, shape, sizeof(shape));
 	}
 	return HashBytes(hash, log.values.data(), log.values.size());
+}
+
+uint64_t LogHash(const SrtReadLog& log) {
+	uint64_t hash = ContentHash(log);
+	for (const auto& entry: log.entries) hash = HashBytes(hash, &entry.address, sizeof(entry.address));
+	return hash;
+}
+
+// Result hash without V# / T# base addresses (buffer dword0 + dword1[15:0], image dword0 +
+// dword1[7:0]) and without the user-data copy.
+uint64_t MaskedResultHash(const ResourceSnapshot& snapshot) {
+	uint64_t hash = 0xcbf29ce484222325ull;
+	for (auto value: snapshot.buffers) {
+		value.dwords[0] = 0;
+		value.dwords[1] &= ~0xffffu;
+		hash = HashBytes(hash, value.dwords.data(), value.dword_count * 4u);
+	}
+	hash = HashBytes(hash, "|", 1);
+	for (auto value: snapshot.images) {
+		value.dwords[0] = 0;
+		value.dwords[1] &= ~0xffu;
+		hash = HashBytes(hash, value.dwords.data(), value.dword_count * 4u);
+	}
+	hash = HashBytes(hash, "|", 1);
+	for (const auto& value: snapshot.samplers) hash = HashBytes(hash, value.dwords.data(), value.dword_count * 4u);
+	return HashBytes(hash, snapshot.flattened_srt.data(), snapshot.flattened_srt.size() * 4u);
 }
 
 uint64_t ResultHash(const ResourceSnapshot& snapshot) {
@@ -151,6 +182,12 @@ std::string ResourceMemo::TakeMissReport() {
 	std::snprintf(part, sizeof(part), " same_result=%llu",
 	              static_cast<unsigned long long>(g_trace_same_result.exchange(0, std::memory_order_relaxed)));
 	report += part;
+	std::snprintf(part, sizeof(part), " same_log=%llu",
+	              static_cast<unsigned long long>(g_trace_same_log.exchange(0, std::memory_order_relaxed)));
+	report += part;
+	std::snprintf(part, sizeof(part), " +masked_result=%llu",
+	              static_cast<unsigned long long>(g_trace_same_log_masked.exchange(0, std::memory_order_relaxed)));
+	report += part;
 	report += " | closest differs in";
 	const char* names[] = {"1", "2", "3", "4-7", "8+"};
 	for (size_t i = 0; i < g_trace_distance.size(); ++i) {
@@ -172,6 +209,13 @@ void ResourceMemo::TraceContent(const ResourceSnapshot& snapshot) {
 		if (found->second == result) g_trace_same_content_result.fetch_add(1, std::memory_order_relaxed);
 	}
 	if (!m_trace_results.insert(result).second) g_trace_same_result.fetch_add(1, std::memory_order_relaxed);
+	if (m_trace_logs.size() > 8192) m_trace_logs.clear();
+	const auto masked = MaskedResultHash(snapshot);
+	if (const auto [it, inserted] = m_trace_logs.try_emplace(LogHash(m_log), masked); !inserted) {
+		g_trace_same_log.fetch_add(1, std::memory_order_relaxed);
+		if (it->second == masked) g_trace_same_log_masked.fetch_add(1, std::memory_order_relaxed);
+		it->second = masked;
+	}
 	m_trace_content[content] = result;
 }
 
