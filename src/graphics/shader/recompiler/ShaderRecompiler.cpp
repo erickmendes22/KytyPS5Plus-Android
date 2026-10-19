@@ -949,9 +949,17 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	    ir.stage == ShaderType::Pixel && !native_barycentrics &&
 	    options.device_features.geometry_varying_locations != 0 &&
 	    IR::PixelShaderNeedsBarycentrics(ir, *options.input_info.pixel, drop_carried);
-	if (ir.stage == ShaderType::Pixel && !native_barycentrics && !emulate_barycentrics &&
+	// Also with native barycentrics: raw I/J that only reach skipped lanes of exec merges / DPP
+	// updates are dropped the same way, so such shaders (Astro Bot's particle pixel shaders
+	// 5a10a907/969c5ed1) behave as on the native-input path instead of feeding the real I/J into
+	// those lanes (drawn magenta through both the geometry stage and the driver's barycentrics).
+	if (ir.stage == ShaderType::Pixel && !emulate_barycentrics &&
 	    IR::DropCarriedBarycentrics(ir, drop_carried) != 0) {
 		IR::EliminateDeadCode(ir.blocks);
+		if (native_barycentrics) {
+			LOGF("%s carried barycentrics dropped (native barycentrics): hash=0x%016" PRIx64 "\n",
+			     GetDumpLabel(options), ir.shader_hash);
+		}
 	}
 
 	IR::CollectShaderInfo(ir, options.input_info, native_barycentrics || emulate_barycentrics);

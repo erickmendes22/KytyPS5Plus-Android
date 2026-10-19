@@ -350,6 +350,7 @@ private:
 		bool     buffer;
 	};
 	std::vector<WrittenRange>             m_written_ranges;
+	std::vector<uint64_t>                 m_written_max_end;
 	std::vector<vk::DescriptorImageInfo>  m_descriptor_images;
 	std::vector<vk::WriteDescriptorSet>   m_descriptor_writes;
 	std::array<vk::DescriptorBufferInfo, 2> m_address_buffers {};

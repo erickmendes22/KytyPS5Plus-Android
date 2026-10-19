@@ -9,17 +9,21 @@
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/hardwareContext.h"
+#include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/Tessellation.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "graphics/shader/shaderVertexMetadata.h"
+#include "kernel/memory.h"
 #include "libs/errno.h"
 
 #include <algorithm>
 #include <bit>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -136,6 +140,28 @@ static void ShaderDetectBuffers(ShaderVertexInputInfo& info) {
 	}
 }
 
+// KYTY_TABLE_READS (default 1; live knob table_reads): the vertex attribute and buffer tables are read
+// through the buffer cache's byte-precise GPU-written ranges (Memory::TryReadGuestPrecise)
+// instead of only dereferencing guest memory. A table that only shares a page with bytes a
+// GPU pass wrote then no longer takes a read fault that waits for that pass; bytes the GPU did
+// write are still read back first. 0 = dereference (page-granular read fault). Astro Bot
+// gameplay: 4 of its ~6.6 read faults a frame were these tables (pm4 DRAW_INDEX_OFFSET_2), each
+// waiting ~8 ms for GPU work that wrote other bytes of the page.
+static bool PreciseTableReads() {
+	static const int64_t start = [] {
+		const char* value = std::getenv("KYTY_TABLE_READS");
+		return value != nullptr ? static_cast<int64_t>(std::strtol(value, nullptr, 10)) : int64_t {1};
+	}();
+	return LiveKnobs::Int("table_reads", start) != 0;
+}
+
+static void ReadGuestTable(const uint32_t* src, uint32_t* dst, size_t dwords, bool precise) {
+	if (!precise || !LibKernel::Memory::TryReadGuestPrecise(reinterpret_cast<uint64_t>(src), dst,
+	                                                         dwords * sizeof(uint32_t))) {
+		std::memcpy(dst, src, dwords * sizeof(uint32_t)); // may fault: waits for GPU-written bytes
+	}
+}
+
 static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
                                        std::span<const ShaderSemantic> input_semantics,
                                        const uint32_t* attrib, const uint32_t* buffer) {
@@ -144,6 +170,7 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 	EXIT_IF(attrib == nullptr || buffer == nullptr);
 
 	const bool debug_dump = Config::GraphicsDebugDumpEnabled();
+	const bool precise    = PreciseTableReads();
 
 	for (uint32_t i = 0; i < input_semantics.size(); i++) {
 		const auto& in = input_semantics[i];
@@ -153,20 +180,23 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 		uint32_t reg  = in.hardware_mapping;
 		uint32_t size = in.size_in_elements;
 
+		uint32_t attrib_word = 0;
+		ReadGuestTable(&attrib[in.semantic], &attrib_word, 1, precise);
+
 		if (debug_dump) {
-			LOGF("reg = %u, size = %u, va[%u] = 0x%08" PRIx32 "\n", reg, size, i,
-			     attrib[in.semantic]);
+			LOGF("reg = %u, size = %u, va[%u] = 0x%08" PRIx32 "\n", reg, size, i, attrib_word);
 		}
 
-		size_t index = attrib[in.semantic] & 0x1fu;
+		size_t index = attrib_word & 0x1fu;
 		auto   format =
-		    static_cast<Prospero::VertexAttribFormat>((attrib[in.semantic] >> 5u) & 0x1ffu);
-		uint32_t offset      = (attrib[in.semantic] >> 14u) & 0xfffu;
-		uint32_t fetch_index = (attrib[in.semantic] >> 26u) & 0x1u;
+		    static_cast<Prospero::VertexAttribFormat>((attrib_word >> 5u) & 0x1ffu);
+		uint32_t offset      = (attrib_word >> 14u) & 0xfffu;
+		uint32_t fetch_index = (attrib_word >> 26u) & 0x1u;
 
 		EXIT_NOT_IMPLEMENTED(index >= ShaderVertexInputInfo::RES_MAX);
 
-		const auto* sharp = &buffer[index * 4];
+		uint32_t sharp[4] {};
+		ReadGuestTable(&buffer[index * 4], sharp, 4, precise);
 
 		EXIT_NOT_IMPLEMENTED(info.resources_num >= ShaderVertexInputInfo::RES_MAX);
 

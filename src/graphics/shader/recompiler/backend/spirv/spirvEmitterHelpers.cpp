@@ -209,7 +209,18 @@ uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uin
 	                          TypePointer(state, spv::StorageClassInput, TypeU32(state)), pointer,
 	                          variable, ConstantU32(state, component));
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, pointer);
+	if (kind == IR::StageInputKind::WorkgroupId && component < 3u) {
+		return EmitAddU32(state, value, EmitGroupBaseU32(state, component));
+	}
 	return value;
+}
+
+uint32_t EmitGroupBaseU32(EmitterState& state, uint32_t component) {
+	const auto start = state.program.bindings.group_base_dword;
+	if (start == IR::PushData::NoStart) {
+		return ConstantU32(state, 0);
+	}
+	return EmitShaderDataDwordLoad(state, start + component);
 }
 
 uint32_t EmitLocalInvocationIndex(EmitterState& state) {

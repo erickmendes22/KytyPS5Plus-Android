@@ -81,6 +81,8 @@ public:
 	[[nodiscard]] MeshEmulationRing& GetMeshEmulationRing();
 	// Device-loss diagnostics: logs the buffers containing or near each address.
 	void DescribeFaultAddresses(std::span<const uint64_t> addresses) const;
+	// KYTY_MESH_BOUNDS: logs the emulated mesh stage's recorded violations (GPU fatal hook).
+	void DumpMeshBoundsLog() const;
 	// --gpu-indirect fixed-up draw records, created on the first GPU indirect draw.
 	[[nodiscard]] MeshEmulationRing& GetIndirectDrawRing();
 	[[nodiscard]] const Buffer* GetGdsBuffer() const noexcept { return &m_gds_buffer; }
@@ -93,6 +95,9 @@ public:
 	// Cache-index and exact dirty-range queries require GPU-thread serialization.
 	[[nodiscard]] bool IsRegionRegistered(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool HasGpuDirtyBytes(uint64_t vaddr, uint64_t size);
+	// Bumped whenever bytes become GPU-written (GPU thread): a page seen without GPU-written
+	// bytes stays so while this is unchanged.
+	[[nodiscard]] uint64_t GpuDirtyGeneration() const { return m_gpu_dirty_generation; }
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	void               ProcessFaultBuffer();
@@ -178,6 +183,7 @@ private:
 	BufferMap                                         m_buffers;
 	PageTable                                         m_page_table;
 	RangeSet                                          m_gpu_modified_ranges;
+	uint64_t                                          m_gpu_dirty_generation = 0;
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;

@@ -25,6 +25,15 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 	if (kind == IR::StageInputKind::LocalInvocationIndex) {
 		return EmitLocalInvocationIndex(state);
 	}
+	if (kind == IR::StageInputKind::GlobalInvocationId && state.lane_count != 2 &&
+	    state.program.bindings.group_base_dword != IR::PushData::NoStart && component < 3u) {
+		// Split dispatches (RecordGuestDispatch): the piece's first group along this axis.
+		const auto* cs   = ShaderWorkgroupInput(state.program.stage, state.input_info);
+		const auto  size = std::max(cs->threads_num[component], 1u);
+		return EmitAddU32(state, EmitInputComponentU32(state, kind, component),
+		                  EmitBinaryU32(state, spv::OpIMul, EmitGroupBaseU32(state, component),
+		                                ConstantU32(state, size)));
+	}
 	if (state.lane_count == 2 && (kind == IR::StageInputKind::LocalInvocationId ||
 	                              kind == IR::StageInputKind::GlobalInvocationId)) {
 		const auto* cs      = ShaderWorkgroupInput(state.program.stage, state.input_info);

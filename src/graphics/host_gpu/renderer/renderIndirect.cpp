@@ -13,6 +13,8 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cinttypes>
 #include <cstring>
 
 namespace Libs::Graphics {
@@ -27,6 +29,10 @@ constexpr uint64_t MeshRecordBytes    = 12 * sizeof(uint32_t);
 constexpr uint64_t MeshDispatchOffset = 12 * sizeof(uint32_t);
 constexpr uint64_t MeshDrawOffset     = 16 * sizeof(uint32_t);
 constexpr uint64_t MeshOutputBytes    = 21 * sizeof(uint32_t);
+// indirect_draw_fixup.comp `mode` values.
+constexpr uint32_t ModeDraws          = 0;
+constexpr uint32_t ModeMesh           = 1;
+constexpr uint32_t ModeDispatchClamp  = 2;
 
 // Mirrors the push constants of indirect_draw_fixup.comp.
 struct FixupParams {
@@ -39,17 +45,19 @@ struct FixupParams {
 	uint32_t max_count            = 0;
 	uint32_t index_limit          = 0;
 	uint32_t indexed              = 0;
-	uint32_t mesh                 = 0;
+	uint32_t mode                 = 0; // ModeDraws / ModeMesh / ModeDispatchClamp
 	uint32_t element_bytes        = 0;
 	uint32_t primitive_size       = 0;
 	uint32_t primitive_step       = 0;
 	uint32_t primitives_per_group = 0;
 	uint32_t indices_per_group    = 0;
 	uint32_t max_slots            = 0;
-	uint32_t max_groups           = 0;
-	uint32_t max_instances        = 0;
+	uint32_t max_groups           = 0; // x (mesh: groups) limit
+	uint32_t max_instances        = 0; // y (mesh: instances) limit
+	uint32_t max_z                = 0; // ModeDispatchClamp: z limit
+	uint32_t padding              = 0;
 };
-static_assert(sizeof(FixupParams) == 96);
+static_assert(sizeof(FixupParams) == 104);
 
 uint32_t RecordBytes(bool indexed) {
 	return indexed ? IndexedRecordBytes : DirectRecordBytes;
@@ -198,11 +206,34 @@ vk::DeviceAddress IndirectDrawFixup::AcquireFeedback(uint32_t& slot) {
 	return m_feedback_buffer->BufferDeviceAddress() + slot * sizeof(uint32_t);
 }
 
-void IndirectDrawFixup::CommitFeedback(uint32_t slot, uint64_t site, bool mesh, uint32_t reserved) {
+void IndirectDrawFixup::CommitFeedback(uint32_t slot, uint64_t site, bool mesh, uint32_t reserved,
+                                       bool dispatch) {
 	m_feedback[slot] = {.tick     = m_context.GetCommandScheduler().CurrentTick(),
 	                    .site     = site,
 	                    .reserved = reserved,
-	                    .mesh     = mesh};
+	                    .mesh     = mesh,
+	                    .dispatch = dispatch};
+}
+
+IndirectDrawFixup::DispatchRecord IndirectDrawFixup::RecordDispatchClamp(
+    CommandBuffer& buffer, vk::DeviceAddress args, const std::array<uint32_t, 3>& limits,
+    uint64_t site) {
+	EXIT_IF(args == 0);
+	PollFeedback();
+	uint32_t    feedback_slot = 0;
+	FixupParams params {};
+	params.source        = args;
+	params.feedback      = AcquireFeedback(feedback_slot);
+	params.max_count     = 1;
+	params.mode          = ModeDispatchClamp;
+	params.max_groups    = limits[0];
+	params.max_instances = limits[1];
+	params.max_z         = limits[2];
+	const auto output    = Dispatch(buffer, sizeof(vk::DispatchIndirectCommand), &params, 1);
+	if (params.feedback != 0) {
+		CommitFeedback(feedback_slot, site, false, 0, true);
+	}
+	return {.buffer = output.buffer, .offset = output.offset};
 }
 
 bool IndirectDrawFixup::LikelyEmpty(uint64_t args_addr) {
@@ -230,6 +261,16 @@ void IndirectDrawFixup::PollFeedback() {
 		uint32_t requested = 0;
 		std::memcpy(&requested, m_feedback_buffer->Mapped().data() + slot * sizeof(uint32_t),
 		            sizeof(requested));
+		if (feedback.dispatch) {
+			static std::atomic<uint32_t> clamp_count {0};
+			if (requested != 0 && clamp_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF("GPU indirect dispatch: guest record 0x%016" PRIx64 " asked for more "
+				     "workgroups than maxComputeWorkGroupCount; clamped (work dropped)\n",
+				     feedback.site);
+			}
+			feedback = {};
+			continue;
+		}
 		NoteCpuResult(feedback.site, requested == 0);
 		if (!feedback.mesh) {
 			feedback = {};
@@ -273,7 +314,7 @@ IndirectDrawFixup::MeshRecords IndirectDrawFixup::RecordMesh(CommandBuffer& buff
 	params.max_count            = 1;
 	params.index_limit          = args.index_buffer_size;
 	params.indexed              = 1;
-	params.mesh                 = 1;
+	params.mode                 = ModeMesh;
 	params.element_bytes        = args.index_type_and_size == 1u ? 4u : 2u;
 	params.primitive_size       = shape.primitive_size;
 	params.primitive_step       = shape.primitive_step;

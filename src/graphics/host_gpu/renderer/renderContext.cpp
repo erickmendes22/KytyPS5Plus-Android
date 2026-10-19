@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/liveKnobs.h"
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
@@ -75,11 +76,13 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 		// (Bloodborne-Android unprotects 64 KiB). Pages the GPU wrote keep their read-back
 		// fault; pages an image watches stay write-protected by the texture cache's watcher.
 		// The cost is uploading the window's untouched pages on the next GPU use.
-		static const uint64_t window = [] {
+		// The live knob fault_kb=<n> overrides the start value while a game runs.
+		static const int64_t start_kb = [] {
 			const char* value = std::getenv("KYTY_FAULT_WINDOW_KB");
-			const auto  kb    = value != nullptr ? std::strtoull(value, nullptr, 10) : 0ull;
-			return kb >= 8 && kb <= 1024 && std::has_single_bit(kb) ? kb * 1024ull : 0ull;
+			return value != nullptr ? static_cast<int64_t>(std::strtoull(value, nullptr, 10)) : int64_t {0};
 		}();
+		const auto     kb     = static_cast<uint64_t>(std::max<int64_t>(LiveKnobs::Int("fault_kb", start_kb), 0));
+		const uint64_t window = kb >= 8 && kb <= 1024 && std::has_single_bit(kb) ? kb * 1024ull : 0ull;
 		if (window != 0) {
 			const auto begin = fault_vaddr & ~(window - 1);
 			if (IsMapped(begin, window)) {

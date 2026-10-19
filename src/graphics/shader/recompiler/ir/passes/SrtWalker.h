@@ -27,6 +27,10 @@ private:
 };
 
 using SrtMemoryReader = bool (*)(void* userdata, uint64_t address, std::span<uint32_t> values);
+// Host copy of guest memory for ordinary (non-vector) SRT reads that have no reader. Default:
+// memcpy from the guest address (a read fault on a GPU-written page reads back the whole page).
+using SrtHostRead = void (*)(uint64_t address, void* data, size_t size);
+void SetSrtHostRead(SrtHostRead read);
 // Reports whether [address, address + size) is mapped guest memory.
 using SrtAddressProbe = bool (*)(uint64_t address, uint64_t size);
 

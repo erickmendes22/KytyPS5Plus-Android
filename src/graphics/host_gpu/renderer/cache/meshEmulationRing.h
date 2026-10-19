@@ -5,6 +5,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -55,6 +56,14 @@ public:
 	[[nodiscard]] vk::DeviceAddress OutOfRangeCounterAddress();
 	// Logs the counter when it changed (at most once a second; also from DescribeFaultAddresses).
 	void PollOutOfRangeCounter(bool force = false);
+	// KYTY_MESH_BOUNDS=1 (graphics/shader/meshBoundsCheck.h): allocates the violation log of the
+	// emulated mesh compute stage and publishes its address to the shader emitter. Call before
+	// mesh shaders compile.
+	void EnableBoundsLog();
+	// Logs violations recorded since the last poll (at most once a second unless forced). The
+	// const form logs every recorded entry (GPU fatal hook).
+	void PollBoundsLog(bool force = false);
+	void DumpBoundsLog() const;
 
 private:
 	struct Range {
@@ -74,8 +83,11 @@ private:
 	uint64_t                                              m_offset = 0;
 	uint64_t m_forced_growth = ConfiguredForcedGrowth();
 	std::unique_ptr<Buffer>                               m_out_of_range;
-	uint32_t                                              m_out_of_range_logged = 0;
+	std::array<uint32_t, 4>                               m_out_of_range_logged {};
 	int64_t                                               m_out_of_range_polled_ms = 0;
+	std::unique_ptr<Buffer>                               m_bounds_log;
+	uint32_t                                              m_bounds_logged = 0;
+	int64_t                                               m_bounds_polled_ms = 0;
 	std::deque<Range>                                     m_ranges;
 	std::vector<std::pair<std::unique_ptr<Buffer>, uint64_t>> m_retired;
 };

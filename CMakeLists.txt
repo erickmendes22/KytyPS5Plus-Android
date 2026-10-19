@@ -568,6 +568,9 @@ target_include_directories(surface_lifecycle_tests PRIVATE ${inc_headers})
 add_executable(gpu_memory_budget_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/GpuMemoryBudgetTests.cpp")
 target_include_directories(gpu_memory_budget_tests PRIVATE ${inc_headers})
 
+add_executable(dispatch_split_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/DispatchSplitTests.cpp")
+target_include_directories(dispatch_split_tests PRIVATE ${inc_headers})
+
 add_executable(gpu_diagnostics_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/GpuDiagnosticsTests.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineStats.cpp"
