@@ -1,5 +1,7 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
+#include "graphics/host_gpu/renderer/cache/bufferCache.h"
+
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 namespace {
 
@@ -417,7 +419,18 @@ void DefineBvhIntersect(EmitterState& s) {
 	const auto result = EmitValueOrDefaultIfCondition(s, valid, vec4, invalid, [&] {
 		const auto first = GetBdaPointer(s, address);
 		const auto second  = EmitValueOrDefaultIfCondition(s, full, wide, ConstantU64(s, 0), [&] {
-			return GetBdaPointer(s, Binary(s, spv::OpIAdd, wide, address, ConstantU64(s, 64)));
+			const auto next = Binary(s, spv::OpIAdd, wide, address, ConstantU64(s, 64));
+			if ((s.device_features.bvh_emulation & ShaderBvhSecondPage) == 0u) {
+				return GetBdaPointer(s, next);
+			}
+			// Nodes are 64-byte aligned: the second half is on another page only when the first
+			// half ends its page. Otherwise it is the first half's host bytes + 64.
+			constexpr uint32_t page_bytes = 1u << BufferCache::CACHING_PAGEBITS;
+			const auto offset  = and_bits(Unary(s, spv::OpUConvert, u, address), page_bytes - 1u);
+			const auto crosses = Binary(s, spv::OpIEqual, b, offset, ConstantU32(s, page_bytes - 64u));
+			return EmitValueOrDefaultIfCondition(
+			    s, crosses, wide, Binary(s, spv::OpIAdd, wide, first, ConstantU64(s, 64)),
+			    [&] { return GetBdaPointer(s, next); });
 		});
 		const auto present = Binary(
 		    s, spv::OpLogicalAnd, b, Binary(s, spv::OpINotEqual, b, first, ConstantU64(s, 0)),

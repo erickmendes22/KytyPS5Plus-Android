@@ -334,6 +334,13 @@ static bool ComputeGroupPackEnabled() {
 	return LiveKnobs::Int("cs_pack", env_on ? 1 : 0) != 0;
 }
 
+// KYTY_LIVE_KNOBS bvh_opt=<0..31>: BVH emulation bits for programs compiled from now on
+// (ShaderComputeInputInfo::bvh_live); absent keeps KYTY_BVH_OPT / KYTY_BVH_VEC.
+static uint8_t LiveBvhOptions() {
+	const auto value = LiveKnobs::Int("bvh_opt", -1);
+	return value < 0 ? uint8_t {0} : static_cast<uint8_t>(0x80u | (static_cast<uint32_t>(value) & 0x1fu));
+}
+
 static bool ComputeGroupPackCandidate(const ShaderComputeInputInfo& input_info, uint32_t threads,
                                       uint32_t groups_x) {
 	return ComputeGroupPackEnabled() && !input_info.dispatch_thread_dimensions && threads <= 32u &&
@@ -408,6 +415,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	ShaderComputeInputInfo input_info {};
 	input_info.async_compute = async_compute;
+	input_info.bvh_live      = LiveBvhOptions();
 	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
 	input_info.dispatch_thread_dimensions = use_thread_dimensions;
 	input_info.workgroup_counts[0] = thread_group_x;
@@ -614,6 +622,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	ShaderComputeInputInfo input_info {};
 	input_info.async_compute = async_compute;
 	input_info.indirect_args_address = args_addr;
+	input_info.bvh_live              = LiveBvhOptions();
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);
 	if (input_info.stage.program != nullptr &&

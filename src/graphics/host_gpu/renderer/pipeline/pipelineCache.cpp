@@ -587,6 +587,12 @@ struct PipelineCache::ProgramCache {
 		         .render_scale_keep_texels =
 		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_TEXELS) != 0,
 		};
+		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
+			if ((input_info.bvh_live & 0x80u) != 0u) {
+				options.device_features.bvh_emulation    = input_info.bvh_live & 0x0fu;
+				options.device_features.bvh_vector_loads = (input_info.bvh_live & 0x10u) != 0u;
+			}
+		}
 		options.device_quirks = device_quirks;
 		options.shader_hash = hash;
 		options.user_data   = user_data;

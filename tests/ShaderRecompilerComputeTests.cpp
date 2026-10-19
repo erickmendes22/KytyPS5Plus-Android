@@ -48222,7 +48222,9 @@ ShaderDeviceFeatures FastPathFeatures() {
   features.compute_required_subgroup_min = 64;
   features.compute_required_subgroup_max = 128;
   features.first_lane_value_sets = true;
-  features.bvh_emulation = ShaderBvhTriangleWords | ShaderBvhBoxBranch | ShaderBvhOriginCheck;
+  features.bvh_emulation =
+      ShaderBvhTriangleWords | ShaderBvhBoxBranch | ShaderBvhOriginCheck | ShaderBvhSecondPage;
+  features.bvh_vector_loads = true;
   return features;
 }
 

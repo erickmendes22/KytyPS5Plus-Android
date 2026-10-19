@@ -208,6 +208,10 @@ struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
 	// wave32 each) per 64-lane host workgroup; 2 = requested, else 0. The program's
 	// ShaderInfo::group_pack says whether the recompiler did it.
 	uint8_t            pack_groups                = 0;
+	// KYTY_LIVE_KNOBS bvh_opt=<n> (in-run A/B of the BVH emulation): 0x80 | n overrides
+	// ShaderDeviceFeatures::bvh_emulation (n & 0x0f) and bvh_vector_loads (n & 0x10) for this
+	// program; 0 keeps the device features.
+	uint8_t            bvh_live                   = 0;
 	ShaderStageRuntime stage;
 };
 
@@ -413,6 +417,9 @@ enum ShaderBvhEmulation : uint32_t {
 	ShaderBvhTriangleWords = 1u,
 	ShaderBvhBoxBranch     = 2u,
 	ShaderBvhOriginCheck   = 4u,
+	// A full (FP32) box node's second 64 bytes are on its first half's page unless the node
+	// crosses a page: reuse that translation instead of a second page-table load.
+	ShaderBvhSecondPage    = 8u,
 };
 
 // True when a shader of this stage may emit native subgroup operations on the device.
