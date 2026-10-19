@@ -25,6 +25,7 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <atomic>
 #include <fmt/format.h>
@@ -1807,10 +1808,19 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 	int32_t attribute = 0;
 	const bool hdr_allowed = !Loader::SystemContentParamSfoGetInt("ATTRIBUTE", &attribute) ||
 	                         (attribute & 0x20000000) != 0;
+	// KYTY_VIDEO_OUT_1080P=1 reports a 1080p display, so games that size their output from it (UE5
+	// titles render their 4K swap chain at full resolution otherwise) render a quarter of the pixels.
+	static const bool force_1080p = [] {
+		const char* value = std::getenv("KYTY_VIDEO_OUT_1080P");
+		return value != nullptr && value[0] == '1';
+	}();
 	ctx->mutex.Lock();
 	// Primary output reports 4K unless param.json Video-out Info enables resolution detection.
 	status->resolution =
-	    ((attribute3 & 4) != 0 && ctx->width < 3840 && ctx->height < 2160 ? 1u : 2u);
+	    force_1080p ||
+	            ((attribute3 & 4) != 0 && ctx->width < 3840 && ctx->height < 2160)
+	        ? 1u
+	        : 2u;
 	status->dynamicRange = hdr_allowed && DriverState().IsHdrSupported() ? 2u : 1u;
 	status->refreshRate =
 	    (ctx->output_mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ || Config::GetVblankFrequency() >= 119
