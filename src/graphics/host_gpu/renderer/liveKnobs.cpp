@@ -4,6 +4,7 @@
 #include "common/perfWaits.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "libs/controller.h"
+#include "loader/systemContent.h"
 
 #include <algorithm>
 #include <atomic>
@@ -195,19 +196,65 @@ const Snapshot& Current() {
 	return snapshot != nullptr ? *snapshot : Empty();
 }
 
+namespace {
+
+struct TitleWorkaround {
+	const char* title_id;
+	const char* lines;
+	const char* reason;
+};
+
+// Astro Bot (PPSA21567): the crash-landing cinematic loses the device on Adreno 830 / Turnip in
+// about half the runs. Dropping the draw of mesh shader 2b3be82b (the falling ship's particle
+// trail; its compute stage still runs) avoids it; the shader is not used in gameplay, so the
+// visual cost is that trail during that one cinematic.
+constexpr TitleWorkaround kTitleWorkarounds[] = {
+    {"PPSA21567", "mesh-skip-draw=2b3be82b",
+     "Astro Bot: VK_ERROR_DEVICE_LOST in the crash-landing cinematic on Adreno 830"},
+};
+
+bool Matches(const std::vector<std::string>& prefixes, uint64_t hash) {
+	return !prefixes.empty() && PipelineStats::Matches(prefixes, hash);
+}
+
+} // namespace
+
+const Snapshot& TitleWorkarounds() {
+	static const Snapshot snapshot = [] {
+		const char* value = std::getenv("KYTY_TITLE_WORKAROUNDS");
+		if (value == nullptr || std::strcmp(value, "1") != 0) {
+			return Snapshot {};
+		}
+		std::string title_id;
+		if (!Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id)) {
+			LOGF("Title workarounds: no TITLE_ID, none applied\n");
+			return Snapshot {};
+		}
+		for (const auto& workaround: kTitleWorkarounds) {
+			if (title_id == workaround.title_id) {
+				LOGF("Title workarounds: %s: %s (%s)\n", workaround.title_id, workaround.lines,
+				     workaround.reason);
+				return Parse(workaround.lines);
+			}
+		}
+		LOGF("Title workarounds: none for %s\n", title_id.c_str());
+		return Snapshot {};
+	}();
+	return snapshot;
+}
+
 bool SkipShader(uint64_t guest_hash) {
-	const auto& skip = Current().skip;
-	return !skip.empty() && PipelineStats::Matches(skip, guest_hash);
+	return Matches(Current().skip, guest_hash) || Matches(TitleWorkarounds().skip, guest_hash);
 }
 
 bool SkipMeshDraw(uint64_t mesh_hash) {
-	const auto& prefixes = Current().mesh_skip_draw;
-	return !prefixes.empty() && PipelineStats::Matches(prefixes, mesh_hash);
+	return Matches(Current().mesh_skip_draw, mesh_hash) ||
+	       Matches(TitleWorkarounds().mesh_skip_draw, mesh_hash);
 }
 
 bool SkipMeshDispatch(uint64_t mesh_hash) {
-	const auto& prefixes = Current().mesh_skip_cs;
-	return !prefixes.empty() && PipelineStats::Matches(prefixes, mesh_hash);
+	return Matches(Current().mesh_skip_cs, mesh_hash) ||
+	       Matches(TitleWorkarounds().mesh_skip_cs, mesh_hash);
 }
 
 bool DrawMarks() {

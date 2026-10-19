@@ -51,6 +51,12 @@ struct Snapshot {
 // The current knobs (re-read at most once a second). Never null.
 [[nodiscard]] const Snapshot& Current();
 
+// KYTY_TITLE_WORKAROUNDS=1 (opt-in): built-in knob lines for known titles, keyed by TITLE_ID and
+// parsed like the live file, applied for the whole run (without KYTY_LIVE_KNOBS too) on top of
+// the live knobs. Only the skip keys are used. Empty for other titles or without the variable.
+[[nodiscard]] const Snapshot& TitleWorkarounds();
+
+// The skip queries below match the live knobs and the title workarounds.
 [[nodiscard]] bool SkipShader(uint64_t guest_hash);
 // mesh-skip-draw= / mesh-skip-cs= for an emulated mesh stage's guest hash.
 [[nodiscard]] bool SkipMeshDraw(uint64_t mesh_hash);
