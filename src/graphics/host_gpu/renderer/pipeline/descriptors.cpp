@@ -1,4 +1,3 @@
-#include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
 #include "common/alignment.h"
@@ -30,6 +29,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/shader.h"
+#include "kernel/addressFold.h"
 #include "kernel/memory.h"
 
 #include <algorithm>

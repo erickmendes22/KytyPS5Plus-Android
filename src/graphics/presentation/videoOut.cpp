@@ -1,4 +1,3 @@
-#include "kernel/addressFold.h"
 #include "graphics/presentation/videoOut.h"
 
 #include "common/abi.h"
@@ -19,6 +18,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/renderDoc.h"
+#include "kernel/addressFold.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "libs/libs.h"

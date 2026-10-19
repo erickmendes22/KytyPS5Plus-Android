@@ -1,4 +1,3 @@
-#include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 
 #include "common/assert.h"
@@ -14,6 +13,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "kernel/addressFold.h"
 
 #include <algorithm>
 #include <array>

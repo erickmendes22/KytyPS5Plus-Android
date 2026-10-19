@@ -1,8 +1,8 @@
-#include "kernel/addressFold.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
+#include "kernel/addressFold.h"
 
 #include <algorithm>
 #include <bit>

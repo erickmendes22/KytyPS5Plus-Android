@@ -1,4 +1,3 @@
-#include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 
 #include "common/alignment.h"
@@ -16,6 +15,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "kernel/addressFold.h"
 #include "kernel/memory.h"
 
 #include <algorithm>
