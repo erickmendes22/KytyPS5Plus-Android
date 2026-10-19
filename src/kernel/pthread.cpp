@@ -17,6 +17,7 @@
 #include "common/timer.h"
 #include "cpu/guestCpu.h"
 #include "kernel/memory.h"
+#include "kernel/threadPlacement.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "loader/guestCall.h"
@@ -3317,6 +3318,7 @@ static void* RunThread(void* arg) {
 #endif
 
 	Common::PerfStats::SampleThisThreadWallClockIfNamed(thread->name);
+	Kernel::ThreadPlacement::RegisterCurrentThread(Kernel::ThreadPlacement::Role::Guest, thread->name);
 
 	LOGF("\tPthread run begin: %s, id = %d, os_thread_id = %" PRIu64 ", entry = 0x%016" PRIx64
 	     ", arg = 0x%016" PRIx64 ", stack_addr = 0x%016" PRIx64 ", stack_size = %" PRIu64 "\n",
