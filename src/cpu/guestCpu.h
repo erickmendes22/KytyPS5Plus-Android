@@ -106,6 +106,11 @@ bool RedirectTrappedGuest(const GuestRegisters& regs);
 using SafePointHook = void (*)();
 void RegisterSafePointHook(SafePointHook hook);
 
+// Folds every guest memory access of code compiled from now on with `mask` (guest address A is
+// accessed at A & mask) and drops all compiled code so it is recompiled that way. See
+// kernel/addressFold.h. Idempotent for the same mask.
+void EnableAddressFold(uint64_t mask);
+
 // Installs the process-wide host SIGSEGV hook. Only one handler is kept; later calls replace it.
 void RegisterHostFaultHandler(HostFaultHandler handler);
 

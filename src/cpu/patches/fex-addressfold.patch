@@ -1,0 +1,289 @@
+--- a/FEXCore/Source/CMakeLists.txt
++++ b/FEXCore/Source/CMakeLists.txt
+@@ -65,6 +65,7 @@
+   Interface/IR/PassManager.cpp
+   Interface/IR/Passes/IRDumperPass.cpp
+   Interface/IR/Passes/IRValidation.cpp
++  Interface/IR/Passes/GuestAddressFoldPass.cpp
+   Interface/IR/Passes/RedundantFlagCalculationElimination.cpp
+   Interface/IR/Passes/RegisterAllocationPass.cpp
+   Interface/IR/Passes/x87StackOptimizationPass.cpp
+--- a/FEXCore/Source/Interface/IR/PassManager.cpp
++++ b/FEXCore/Source/Interface/IR/PassManager.cpp
+@@ -77,6 +77,8 @@
+     InsertPass(CreateDeadFlagCalculationEliminination());
+   }
+ 
++  // Kyty Android port: folds guest addresses when FEXCore::GuestAddressFold has a mask (no-op otherwise).
++  InsertPass(CreateGuestAddressFoldPass(), "GuestAddressFold");
+   InsertPass(IR::CreateRegisterAllocationPass(&ctx->CPUID), "RA");
+ 
+ #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
+--- a/FEXCore/Source/Interface/IR/Passes.h
++++ b/FEXCore/Source/Interface/IR/Passes.h
+@@ -14,6 +14,7 @@
+ fextl::unique_ptr<Pass> CreateDeadFlagCalculationEliminination();
+ fextl::unique_ptr<Pass> CreateRegisterAllocationPass(const CPUIDEmu* CPUID);
+ fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures&, OpSize GPROpSize);
++fextl::unique_ptr<Pass> CreateGuestAddressFoldPass();
+ 
+ namespace Validation {
+   fextl::unique_ptr<Pass> CreateIRValidation();
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -10,6 +10,7 @@
+ #include "FEXCore/Utils/Telemetry.h"
+ #include "Interface/Context/Context.h"
+ #include "Interface/Core/OpcodeDispatcher.h"
++#include <FEXCore/Core/GuestAddressFold.h>
+ #include "Interface/Core/X86Tables/X86Tables.h"
+ #include "Interface/IR/IR.h"
+ #include "Interface/IR/IREmitter.h"
+@@ -3252,7 +3253,18 @@
+ 
+     Ref Counter = LoadGPRRegister(X86State::REG_RCX);
+ 
+-    auto Result = _MemSet(CTX->IsAtomicTSOEnabled(), Size, Segment ?: InvalidNode, Dest, Src, Counter, LoadDir(1));
++    // Kyty Android port: fold the address the fill uses, keep RDI's unfolded high bits.
++    const uint64_t FoldMask = FEXCore::GuestAddressFold::GetMask();
++    Ref DestHigh {};
++    if (FoldMask != 0) {
++      DestHigh = _And(OpSize::i64Bit, Dest, Constant(~FoldMask));
++      Dest = _And(OpSize::i64Bit, Dest, Constant(FoldMask));
++    }
++
++    Ref Result = _MemSet(CTX->IsAtomicTSOEnabled(), Size, Segment ?: InvalidNode, Dest, Src, Counter, LoadDir(1));
++    if (FoldMask != 0) {
++      Result = _Or(OpSize::i64Bit, Result, DestHigh);
++    }
+     StoreGPRRegister(X86State::REG_RCX, Constant(0));
+     StoreGPRRegister(X86State::REG_RDI, Result);
+   }
+@@ -3282,11 +3294,27 @@
+ 
+     if (SrcSegment) {
+       SrcAddr = Add(OpSize::i64Bit, SrcAddr, SrcSegment);
++    }
++
++    // Kyty Android port: fold the addresses the copy uses, keep RDI/RSI's unfolded high bits.
++    const uint64_t FoldMask = FEXCore::GuestAddressFold::GetMask();
++    Ref DstHigh {};
++    Ref SrcHigh {};
++    if (FoldMask != 0) {
++      DstHigh = _And(OpSize::i64Bit, DstAddr, Constant(~FoldMask));
++      SrcHigh = _And(OpSize::i64Bit, SrcAddr, Constant(~FoldMask));
++      DstAddr = _And(OpSize::i64Bit, DstAddr, Constant(FoldMask));
++      SrcAddr = _And(OpSize::i64Bit, SrcAddr, Constant(FoldMask));
+     }
+ 
+     Ref Result_Src = _AllocateGPR(false);
+     Ref Result_Dst = _AllocateGPR(false);
+     _MemCpy(CTX->IsAtomicTSOEnabled(), Size, DstAddr, SrcAddr, Counter, LoadDir(1), Result_Dst, Result_Src);
++
++    if (FoldMask != 0) {
++      Result_Dst = _Or(OpSize::i64Bit, Result_Dst, DstHigh);
++      Result_Src = _Or(OpSize::i64Bit, Result_Src, SrcHigh);
++    }
+ 
+     if (DstSegment) {
+       Result_Dst = Sub(OpSize::i64Bit, Result_Dst, DstSegment);
+--- /dev/null
++++ b/FEXCore/Source/Interface/IR/Passes/GuestAddressFoldPass.cpp
+@@ -0,0 +1,171 @@
++// SPDX-License-Identifier: MIT
++/*
++$info$
++tags: ir|opts
++desc: Folds guest memory addresses with FEXCore::GuestAddressFold's mask (Kyty Android port)
++$end_info$
++*/
++
++#include "Interface/IR/IR.h"
++#include "Interface/IR/IREmitter.h"
++#include "Interface/IR/PassManager.h"
++#include "Interface/IR/Passes.h"
++
++#include <FEXCore/Core/GuestAddressFold.h>
++#include <FEXCore/IR/IR.h>
++#include <FEXCore/Utils/Profiler.h>
++
++#include <atomic>
++#include <bit>
++
++namespace FEXCore::GuestAddressFold {
++namespace {
++  std::atomic<uint64_t> CurrentMask {0};
++}
++
++void SetMask(uint64_t Mask) {
++  CurrentMask.store(Mask, std::memory_order_release);
++}
++
++uint64_t GetMask() {
++  return CurrentMask.load(std::memory_order_acquire);
++}
++} // namespace FEXCore::GuestAddressFold
++
++namespace FEXCore::IR {
++namespace {
++
++  // Immediate offsets up to this size are kept on the access: folding the base alone is then
++  // equivalent to folding the sum unless base and offset straddle a fold boundary.
++  constexpr int64_t KeepImmediateLimit = int64_t {1} << 20;
++
++  class GuestAddressFold final : public Pass {
++  public:
++    void Run(IREmitter* IREmit) override;
++
++  private:
++    // Replaces Args[AddrIndex] with Args[AddrIndex] & Mask.
++    void FoldBase(IREmitter* IREmit, Ref CodeNode, IROp_Header* IROp, uint8_t AddrIndex, uint64_t Mask);
++
++    // Folds Addr + extend(Offset) << Scale as a whole and drops the offset, unless the offset is a
++    // small immediate, in which case only the base is folded.
++    template<typename T>
++    void FoldBaseAndOffset(IREmitter* IREmit, Ref CodeNode, IROp_Header* IROp, uint64_t Mask);
++  };
++
++  void GuestAddressFold::FoldBase(IREmitter* IREmit, Ref CodeNode, IROp_Header* IROp, uint8_t AddrIndex, uint64_t Mask) {
++    if (IROp->Args[AddrIndex].IsInvalid()) {
++      return;
++    }
++    auto CurrentIR = IREmit->ViewIR();
++    Ref Addr = CurrentIR.GetNode(IROp->Args[AddrIndex]);
++    IREmit->SetWriteCursorBefore(CodeNode);
++    Ref Folded = IREmit->_And(OpSize::i64Bit, Addr, IREmit->_InlineConstant(Mask));
++    IREmit->ReplaceNodeArgument(CodeNode, AddrIndex, Folded);
++  }
++
++  template<typename T>
++  void GuestAddressFold::FoldBaseAndOffset(IREmitter* IREmit, Ref CodeNode, IROp_Header* IROp, uint64_t Mask) {
++    auto* Op = IROp->CW<T>();
++    if (Op->Offset.IsInvalid()) {
++      FoldBase(IREmit, CodeNode, IROp, T::Addr_Index, Mask);
++      return;
++    }
++
++    auto CurrentIR = IREmit->ViewIR();
++    Ref Offset = CurrentIR.GetNode(Op->Offset);
++    uint64_t Imm {};
++    if (IREmit->IsValueInlineConstant(Op->Offset) || IREmit->IsValueConstant(Op->Offset, &Imm)) {
++      if (IREmit->IsValueInlineConstant(Op->Offset)) {
++        Imm = CurrentIR.GetOp<IROp_InlineConstant>(Op->Offset)->Constant;
++      }
++      const auto Scaled = static_cast<int64_t>(Imm) * static_cast<int64_t>(Op->OffsetScale);
++      if (Op->OffsetType == MemOffsetType::SXTX && Scaled > -KeepImmediateLimit && Scaled < KeepImmediateLimit) {
++        FoldBase(IREmit, CodeNode, IROp, T::Addr_Index, Mask);
++        return;
++      }
++    }
++
++    Ref Addr = CurrentIR.GetNode(Op->Addr);
++    IREmit->SetWriteCursorBefore(CodeNode);
++    Ref Extended = Offset;
++    if (IREmit->IsValueInlineConstant(Op->Offset)) {
++      Extended = IREmit->_Constant(CurrentIR.GetOp<IROp_InlineConstant>(Op->Offset)->Constant);
++    }
++    switch (Op->OffsetType) {
++    case MemOffsetType::UXTW: Extended = IREmit->_Bfe(OpSize::i64Bit, 32, 0, Extended); break;
++    case MemOffsetType::SXTW: Extended = IREmit->_Sbfe(OpSize::i64Bit, 32, 0, Extended); break;
++    case MemOffsetType::SXTX: break;
++    }
++    const auto Shift = static_cast<uint8_t>(std::countr_zero(static_cast<uint32_t>(Op->OffsetScale)));
++    Ref Sum = IREmit->_AddShift(OpSize::i64Bit, Addr, Extended, ShiftType::LSL, Shift);
++    Ref Folded = IREmit->_And(OpSize::i64Bit, Sum, IREmit->_InlineConstant(Mask));
++    IREmit->ReplaceNodeArgument(CodeNode, T::Addr_Index, Folded);
++    IREmit->ReplaceNodeArgument(CodeNode, T::Offset_Index, IREmit->Invalid());
++    Op->OffsetType = MemOffsetType::SXTX;
++    Op->OffsetScale = 1;
++  }
++
++  void GuestAddressFold::Run(IREmitter* IREmit) {
++    const uint64_t Mask = FEXCore::GuestAddressFold::GetMask();
++    if (Mask == 0) {
++      return;
++    }
++    FEXCORE_PROFILE_SCOPED("PassManager::GuestAddressFold");
++
++    auto CurrentIR = IREmit->ViewIR();
++    for (auto [CodeNode, IROp] : CurrentIR.GetAllCode()) {
++      switch (IROp->Op) {
++      case OP_LOADMEM: FoldBaseAndOffset<IROp_LoadMem>(IREmit, CodeNode, IROp, Mask); break;
++      case OP_STOREMEM: FoldBaseAndOffset<IROp_StoreMem>(IREmit, CodeNode, IROp, Mask); break;
++      case OP_LOADMEMTSO: FoldBaseAndOffset<IROp_LoadMemTSO>(IREmit, CodeNode, IROp, Mask); break;
++      case OP_STOREMEMTSO: FoldBaseAndOffset<IROp_StoreMemTSO>(IREmit, CodeNode, IROp, Mask); break;
++      case OP_VLOADVECTORMASKED: FoldBaseAndOffset<IROp_VLoadVectorMasked>(IREmit, CodeNode, IROp, Mask); break;
++      case OP_VSTOREVECTORMASKED: FoldBaseAndOffset<IROp_VStoreVectorMasked>(IREmit, CodeNode, IROp, Mask); break;
++      case OP_STORESTACKMEM: FoldBaseAndOffset<IROp_StoreStackMem>(IREmit, CodeNode, IROp, Mask); break;
++
++      case OP_LOADMEMPAIR: FoldBase(IREmit, CodeNode, IROp, IROp_LoadMemPair::Addr_Index, Mask); break;
++      case OP_STOREMEMPAIR: FoldBase(IREmit, CodeNode, IROp, IROp_StoreMemPair::Addr_Index, Mask); break;
++      case OP_STOREMEMX87SVEOPTPREDICATE: FoldBase(IREmit, CodeNode, IROp, IROp_StoreMemX87SVEOptPredicate::Addr_Index, Mask); break;
++      case OP_LOADMEMX87SVEOPTPREDICATE: FoldBase(IREmit, CodeNode, IROp, IROp_LoadMemX87SVEOptPredicate::Addr_Index, Mask); break;
++      case OP_VLOADVECTORGATHERMASKED: FoldBase(IREmit, CodeNode, IROp, IROp_VLoadVectorGatherMasked::AddrBase_Index, Mask); break;
++      case OP_VLOADVECTORGATHERMASKEDQPS: FoldBase(IREmit, CodeNode, IROp, IROp_VLoadVectorGatherMaskedQPS::AddrBase_Index, Mask); break;
++      case OP_VLOADVECTORELEMENT: FoldBase(IREmit, CodeNode, IROp, IROp_VLoadVectorElement::Addr_Index, Mask); break;
++      case OP_VSTOREVECTORELEMENT: FoldBase(IREmit, CodeNode, IROp, IROp_VStoreVectorElement::Addr_Index, Mask); break;
++      case OP_VBROADCASTFROMMEM: FoldBase(IREmit, CodeNode, IROp, IROp_VBroadcastFromMem::Address_Index, Mask); break;
++      case OP_CACHELINECLEAR: FoldBase(IREmit, CodeNode, IROp, IROp_CacheLineClear::Addr_Index, Mask); break;
++      case OP_CACHELINECLEAN: FoldBase(IREmit, CodeNode, IROp, IROp_CacheLineClean::Addr_Index, Mask); break;
++      case OP_CACHELINEZERO: FoldBase(IREmit, CodeNode, IROp, IROp_CacheLineZero::Addr_Index, Mask); break;
++      case OP_VSTORENONTEMPORAL: FoldBase(IREmit, CodeNode, IROp, IROp_VStoreNonTemporal::Addr_Index, Mask); break;
++      case OP_VSTORENONTEMPORALPAIR: FoldBase(IREmit, CodeNode, IROp, IROp_VStoreNonTemporalPair::Addr_Index, Mask); break;
++      case OP_VLOADNONTEMPORAL: FoldBase(IREmit, CodeNode, IROp, IROp_VLoadNonTemporal::Addr_Index, Mask); break;
++
++      case OP_CAS: FoldBase(IREmit, CodeNode, IROp, IROp_CAS::Addr_Index, Mask); break;
++      case OP_CASPAIR: FoldBase(IREmit, CodeNode, IROp, IROp_CASPair::Addr_Index, Mask); break;
++      case OP_ATOMICSWAP: FoldBase(IREmit, CodeNode, IROp, IROp_AtomicSwap::Addr_Index, Mask); break;
++      case OP_ATOMICFETCHADD: FoldBase(IREmit, CodeNode, IROp, IROp_AtomicFetchAdd::Addr_Index, Mask); break;
++      case OP_ATOMICFETCHSUB: FoldBase(IREmit, CodeNode, IROp, IROp_AtomicFetchSub::Addr_Index, Mask); break;
++      case OP_ATOMICFETCHAND: FoldBase(IREmit, CodeNode, IROp, IROp_AtomicFetchAnd::Addr_Index, Mask); break;
++      case OP_ATOMICFETCHCLR: FoldBase(IREmit, CodeNode, IROp, IROp_AtomicFetchCLR::Addr_Index, Mask); break;
++      case OP_ATOMICFETCHOR: FoldBase(IREmit, CodeNode, IROp, IROp_AtomicFetchOr::Addr_Index, Mask); break;
++      case OP_ATOMICFETCHXOR: FoldBase(IREmit, CodeNode, IROp, IROp_AtomicFetchXor::Addr_Index, Mask); break;
++      case OP_ATOMICFETCHNEG: FoldBase(IREmit, CodeNode, IROp, IROp_AtomicFetchNeg::Addr_Index, Mask); break;
++
++      // Not folded here:
++      // - Push/PushTwo/Pop/PopTwo return the updated stack pointer, which must stay unfolded; guest
++      //   stacks are allocated by the frontend below the fold boundary.
++      // - MemSet/MemCpy return the updated RDI/RSI; the OpcodeDispatcher folds their inputs and
++      //   restores the high bits of the results.
++      // - Prefetch cannot fault.
++      default: break;
++      }
++    }
++  }
++
++} // namespace
++
++fextl::unique_ptr<Pass> CreateGuestAddressFoldPass() {
++  return fextl::make_unique<GuestAddressFold>();
++}
++
++} // namespace FEXCore::IR
+--- /dev/null
++++ b/FEXCore/include/FEXCore/Core/GuestAddressFold.h
+@@ -0,0 +1,23 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++
++#include <FEXCore/Utils/CompilerDefs.h>
++
++#include <cstdint>
++
++// Guest address folding (Kyty Android port).
++//
++// On hosts whose user address space is smaller than what a guest reserves (a 39-bit Android
++// kernel against a PS5 game that reserves 512 GiB), the frontend can ask the JIT to fold every
++// guest memory access: the effective address is ANDed with a mask before the access, so guest
++// address A is backed by host address A & Mask. Guest register values are never changed; only the
++// address an access uses is.
++//
++// A mask of 0 disables folding (the default). Blocks are compiled with the mask current at
++// compile time, so the caller must invalidate already compiled code when it enables folding.
++namespace FEXCore::GuestAddressFold {
++
++FEX_DEFAULT_VISIBILITY void SetMask(uint64_t Mask);
++FEX_DEFAULT_VISIBILITY uint64_t GetMask();
++
++} // namespace FEXCore::GuestAddressFold

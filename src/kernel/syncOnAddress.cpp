@@ -1,5 +1,7 @@
 #include "kernel/syncOnAddress.h"
 
+#include "kernel/addressFold.h"
+
 #include "common/threads.h"
 #include "libs/errno.h"
 
@@ -135,7 +137,9 @@ int WaitLinux(volatile T* address, T expected, const WaitDeadline& deadline,
 
 		long result     = 0;
 		int  wait_error = 0;
-		result          = syscall(SYS_futex, const_cast<T*>(address), FUTEX_WAIT_PRIVATE,
+		// Guest words from the fold domain (kernel/addressFold.h) wait on their host address.
+		result          = syscall(SYS_futex, Kernel::AddressFold::FoldPointer(const_cast<T*>(address)),
+		                          FUTEX_WAIT_PRIVATE,
 		                          static_cast<uint32_t>(expected), &timeout, nullptr, 0);
 		if (result != 0) {
 			wait_error = errno;
@@ -161,7 +165,8 @@ int WakeLinux(volatile void* address, int32_t count) {
 		return OK;
 	}
 
-	const auto result = syscall(SYS_futex, const_cast<void*>(address), FUTEX_WAKE_PRIVATE, count,
+	const auto result = syscall(SYS_futex, Kernel::AddressFold::FoldPointer(const_cast<void*>(address)),
+	                            FUTEX_WAKE_PRIVATE, count,
 	                            nullptr, nullptr, 0);
 	return result < 0 ? KERNEL_ERROR_EINVAL : OK;
 }

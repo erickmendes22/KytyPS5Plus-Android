@@ -779,6 +779,7 @@ public:
 	}
 
 	[[nodiscard]] bool Owns(uint64_t vaddr, uint64_t size) {
+		vaddr = HostAddress(vaddr, size);
 		if (size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
 		}
@@ -789,6 +790,7 @@ public:
 	}
 
 	[[nodiscard]] bool OverlapsOwned(uint64_t vaddr, uint64_t size) {
+		vaddr = HostAddress(vaddr, size);
 		if (size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
 		}
@@ -799,15 +801,16 @@ public:
 	}
 
 	bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
-		return m_backing->TryWriteBacking(vaddr, data, size);
+		return m_backing->TryWriteBacking(HostAddress(vaddr, size), data, size);
 	}
 
 	bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
-		return m_backing->TryReadBacking(vaddr, data, size);
+		return m_backing->TryReadBacking(HostAddress(vaddr, size), data, size);
 	}
 
 	template <bool copy_private>
 	bool CopySparseMemory(uint64_t vaddr, void* data, uint64_t size) {
+		vaddr = HostAddress(vaddr, size);
 		if (data == nullptr || !Owns(vaddr, size)) {
 			return false;
 		}
@@ -843,9 +846,12 @@ public:
 		    });
 	}
 
-	bool BackingContains(uint64_t vaddr, uint64_t size) { return m_backing->Contains(vaddr, size); }
+	bool BackingContains(uint64_t vaddr, uint64_t size) {
+		return m_backing->Contains(HostAddress(vaddr, size), size);
+	}
 
 	bool Protect(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
+		vaddr = HostAddress(vaddr, size);
 		if (size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
 		}
@@ -856,6 +862,7 @@ public:
 	// Called for GPU memory tracking from guest write faults on any thread. Callers own the
 	// pages they change, so concurrent calls only need the mapping list to stay unchanged.
 	bool ProtectTransient(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
+		vaddr = HostAddress(vaddr, size);
 		if (size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
 		}
@@ -867,6 +874,7 @@ public:
 	bool MapBacking(uint64_t vaddr, uint64_t size, uint64_t backing_offset,
 	                VirtualMemory::Mode               mode,
 	                GuestBackingStore::FailureReason* failure_reason = nullptr) {
+		vaddr = HostAddress(vaddr, size);
 		std::lock_guard lock(m_mutex);
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 		const bool replacing = ContainsMappedUnlocked(vaddr, size, MappingType::Backing);
@@ -895,6 +903,7 @@ public:
 	}
 
 	bool UnmapBacking(uint64_t vaddr, uint64_t size) {
+		vaddr = HostAddress(vaddr, size);
 		std::lock_guard lock(m_mutex);
 		if (!ContainsMappedUnlocked(vaddr, size, MappingType::Backing)) {
 			return false;
@@ -938,6 +947,7 @@ public:
 	}
 
 	bool ReserveFixed(uint64_t vaddr, uint64_t size) {
+		vaddr = HostAddress(vaddr, size);
 		if (vaddr == 0 || size == 0 || !IsPageAligned(vaddr) || !IsPageAligned(size)) {
 			return false;
 		}
@@ -947,12 +957,14 @@ public:
 
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 	bool TestContainsFree(uint64_t vaddr, uint64_t size) {
+		vaddr = HostAddress(vaddr, size);
 		std::lock_guard lock(m_mutex);
 		return FindContaining(vaddr, size) != m_free.end();
 	}
 #endif
 
 	bool ReleaseFree(uint64_t vaddr, uint64_t size) {
+		vaddr = HostAddress(vaddr, size);
 		std::lock_guard lock(m_mutex);
 		return FindContaining(vaddr, size) != m_free.end();
 	}
@@ -964,6 +976,14 @@ public:
 		if (vaddr == 0 || size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
 		}
+		// The part of a lazy reservation at or above 2^39 folds onto host addresses that other guest
+		// mappings may own (kernel/addressFold.h); a reservation never touched them, so there is
+		// nothing to check there.
+		using Kernel::AddressFold::kFoldSize;
+		if (vaddr >= kFoldSize) {
+			return true;
+		}
+		size = std::min(size, kFoldSize - vaddr);
 		std::lock_guard lock(m_mutex);
 		const auto end = vaddr + size;
 		for (const auto& [owned_start, owned_size]: m_owned) {
@@ -977,6 +997,7 @@ public:
 	}
 
 	bool Commit(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
+		vaddr = HostAddress(vaddr, size);
 		std::lock_guard lock(m_mutex);
 		if (!ConsumeUnlocked(vaddr, size)) {
 			return false;
@@ -1009,6 +1030,7 @@ public:
 	}
 
 	bool ReleaseCommitted(uint64_t vaddr, uint64_t size) {
+		vaddr = HostAddress(vaddr, size);
 		if (vaddr == 0 || size == 0 || !IsPageAligned(vaddr) || !IsPageAligned(size)) {
 			return false;
 		}
@@ -1068,6 +1090,16 @@ public:
 	}
 
 private:
+	// Guest address -> host address (kernel/addressFold.h). UINT64_MAX for a span the host cannot
+	// map contiguously, so the caller's range checks fail on it.
+	static uint64_t HostAddress(uint64_t vaddr, uint64_t size) {
+		uint64_t host = 0;
+		if (size == 0) {
+			return Kernel::AddressFold::Fold(vaddr);
+		}
+		return Kernel::AddressFold::FoldSpan(vaddr, size, &host) ? host : UINT64_MAX;
+	}
+
 	enum class MappingType { Backing, Private };
 
 	struct MappedRegion {

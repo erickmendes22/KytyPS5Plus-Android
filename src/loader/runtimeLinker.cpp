@@ -15,6 +15,7 @@
 #include "common/threads.h"
 #include "common/virtualMemory.h"
 #include "cpu/guestCpu.h"
+#include "kernel/addressFold.h"
 #include "kernel/addressLayout.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "kernel/fileSystem.h"
@@ -30,6 +31,7 @@
 #include "loader/x64InstructionEmulator.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdio>
@@ -716,6 +718,53 @@ static std::string DescribeGuestCodeAddress(uint64_t vaddr) {
 	    vaddr - program->base_vaddr);
 }
 
+// Host code (HLE libraries, the GPU side) dereferenced a guest pointer from the fold domain
+// (kernel/addressFold.h): the address register still holds the unfolded guest address, which the
+// host cannot map. Fold the base register (and the index register of a register-offset access) in
+// the signal context and retry. Only registers holding fold-domain values are touched, and only
+// for faults on fold-domain addresses, so other faults are unaffected.
+static bool FoldFaultingHostAccess(const Common::HostException::ExceptionInfo& info) {
+	namespace Fold = Kernel::AddressFold;
+	if (!Fold::IsEnabled() || !Fold::InDomain(info.access_violation_vaddr)) {
+		return false;
+	}
+	auto* uc = static_cast<ucontext_t*>(info.native_context);
+	if (uc == nullptr) {
+		return false;
+	}
+	uint32_t instruction = 0;
+	std::memcpy(&instruction, reinterpret_cast<const void*>(uc->uc_mcontext.pc), sizeof(instruction));
+	constexpr uint32_t kLoadStoreMask         = 0x0A000000u; // ARM ARM C4.1: op0 = x1x0
+	constexpr uint32_t kLoadStoreValue        = 0x08000000u;
+	constexpr uint32_t kRegisterOffsetMask    = 0x3B200C00u; // LDR/STR (register)
+	constexpr uint32_t kRegisterOffsetValue   = 0x38200800u;
+	if ((instruction & kLoadStoreMask) != kLoadStoreValue) {
+		return false;
+	}
+	std::array<uint32_t, 2> address_registers {(instruction >> 5u) & 31u, 31u};
+	if ((instruction & kRegisterOffsetMask) == kRegisterOffsetValue) {
+		address_registers[1] = (instruction >> 16u) & 31u;
+	}
+	bool folded = false;
+	for (const auto reg: address_registers) {
+		if (reg == 31u) {
+			continue; // SP or no register
+		}
+		auto& value = uc->uc_mcontext.regs[reg];
+		if (Fold::InDomain(value)) {
+			value  = Fold::Fold(value);
+			folded = true;
+		}
+	}
+	static std::atomic<uint32_t> reported {0};
+	if (folded && reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+		std::printf("address fold: host access to 0x%016" PRIx64 " at pc 0x%016" PRIx64
+		            " retried on the folded address\n",
+		            info.access_violation_vaddr, static_cast<uint64_t>(uc->uc_mcontext.pc));
+	}
+	return folded;
+}
+
 // A fault in translated guest code that neither GPU tracking nor a guest handler claimed: the guest
 // itself crashed (UE titles, for example, deliberately fault after LowLevelFatalError). Reported in
 // guest terms, then the emulator exits as for any fatal error.
@@ -791,6 +840,9 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		if (Cpu::GuestCpu::GuestRegisters regs {};
 		    Cpu::GuestCpu::CaptureFaultingGuestRegisters(info->native_context, &regs)) {
 			ReportGuestCrash(*info, regs);
+		}
+		if (FoldFaultingHostAccess(*info)) {
+			return true;
 		}
 #endif
 	}
@@ -1918,6 +1970,18 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	// above. Claim the ones GPU write tracking caused; the translator would otherwise unprotect the
 	// page as self-modifying code and the GPU caches would never see the CPU write.
 	Cpu::GuestCpu::RegisterHostFaultHandler(GuestGpuFault);
+	// KYTY_ADDRESS_FOLD=1 switches guest address folding on from the start (kernel/addressFold.h),
+	// to measure its cost on games that never need it.
+	static const bool fold_forced = [] {
+		const char* value = std::getenv("KYTY_ADDRESS_FOLD");
+		if (value == nullptr || value[0] != '1') {
+			return false;
+		}
+		Kernel::AddressFold::SetEnabled();
+		Cpu::GuestCpu::EnableAddressFold(Kernel::AddressFold::kFoldMask);
+		return true;
+	}();
+	(void)fold_forced;
 #endif
 
 	std::vector<std::pair<uint64_t, uint64_t>> executable_segments;

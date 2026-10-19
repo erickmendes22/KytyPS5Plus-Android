@@ -5,6 +5,7 @@
 #include "common/subsystems.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
+#include "kernel/addressFold.h"
 #include "kernel/addressLayout.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
@@ -1741,12 +1742,36 @@ void TestOversizedReservationIsLazy() {
 	*static_cast<volatile uint32_t*>(low) = 0x5a5a5a5au;
 	Check(test, *static_cast<volatile uint32_t*>(low) == 0x5a5a5a5au, "backed page not writable");
 
-	// The top page lies above every host-owned window (0x8FFFFFC000 on the ARM64 layout).
+	// The range reaches above 2^39, so it is placed by the fold plan (kernel/addressFold.h): its top
+	// page folds onto the alias below the range and can be committed; the host writes through the
+	// folded address and reads the guest's data back there.
+	namespace Fold = Kernel::AddressFold;
+	Check(test, Fold::IsEnabled(), "address folding not switched on by the 512 GiB reservation");
 	void* high = reinterpret_cast<void*>(base + size - page);
+	CheckOk(test,
+	        KernelMapNamedDirectMemory(&high, page, SceKernelProtCpuRw, SceKernelMapFixed,
+	                                   physical, page, "lazy_high"),
+	        "KernelMapNamedDirectMemory(folded top)");
+	Check(test, reinterpret_cast<uint64_t>(high) == base + size - page, "folded top moved");
+	auto* high_host = reinterpret_cast<volatile uint32_t*>(Fold::Fold(base + size - page));
+	Check(test, *high_host == 0x5a5a5a5au, "folded top does not alias the same direct memory");
+	ExpectRange(test, Query(test, base + size - page), base + size - page, base + size,
+	            SceKernelProtCpuRw, 0, 1, 0, 1, "lazy_high", static_cast<uint64_t>(physical));
+	CheckOk(test, KernelMunmap(base + size - page, page), "KernelMunmap(folded top)");
+
+	// The alias itself is never handed to the guest.
+	void* alias = reinterpret_cast<void*>(kHostUserMin);
 	CheckFailed(test,
-	            KernelMapNamedDirectMemory(&high, page, SceKernelProtCpuRw, SceKernelMapFixed,
-	                                       physical, page, "lazy_high"),
-	            "KernelMapNamedDirectMemory(unbacked part)");
+	            KernelReserveVirtualRange(&alias, page, SceKernelMapFixed | SceKernelMapNoOverwrite,
+	                                      page),
+	            "KernelReserveVirtualRange(fixed in the fold alias)");
+
+	// Between the host user window and 2^39 nothing backs the range.
+	void* gap = reinterpret_cast<void*>(kHostUserEnd + 0x80000000ull);
+	CheckFailed(test,
+	            KernelMapNamedDirectMemory(&gap, page, SceKernelProtCpuRw, SceKernelMapFixed,
+	                                       physical, page, "lazy_gap"),
+	            "KernelMapNamedDirectMemory(unbacked middle)");
 
 	// Another hint-less reservation must not land inside the lazy one.
 	void* other = nullptr;

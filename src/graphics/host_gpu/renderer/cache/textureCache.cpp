@@ -1,3 +1,4 @@
+#include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 
 #include "common/alignment.h"
@@ -441,6 +442,7 @@ void TextureCache::TrackImageDownload(ImageId id, Image& image) {
 
 TextureCache::ImageIds TextureCache::FindImagesInRegion(uint64_t address, uint64_t size,
                                                         bool page_overlap) const {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	ImagePageTable::PageRange pages {};
 	if (!ImagePageTable::TryGetPageRange(address, size, pages)) {
 		return {};
@@ -1432,6 +1434,7 @@ void TextureCache::UpdateImage(ImageId id) {
 }
 
 ImageId TextureCache::FindImageFromRange(uint64_t address, uint64_t size, bool ensure_valid) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {address, size}.Valid()) {
 		return {};
 	}
@@ -1600,6 +1603,7 @@ void TextureCache::CommitGpuWrite(Image& image) {
 
 bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address, uint64_t size,
                                         uint32_t packed_clear) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	if (command.IsInvalid() || !GuestRange {address, size}.Valid()) {
 		EXIT("TextureCache: invalid image clear\n");
 	}
@@ -1756,6 +1760,7 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 }
 
 void TextureCache::InvalidateMemory(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {address, size}.Valid()) {
 		EXIT("TextureCache: invalid memory-invalidation range\n");
 	}
@@ -1940,6 +1945,7 @@ bool TextureCache::DownloadImageMemory(ImageId id) {
 }
 
 void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {address, size}.Valid()) {
 		return;
 	}
@@ -1957,6 +1963,7 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
 }
 
 void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	const auto page_begin = Common::AlignDown(address, TRACKER_PAGE_SIZE);
 	const auto page_end   = Common::AlignUp(address + size, TRACKER_PAGE_SIZE);
 	for (const auto id: FindImagesInRegion(address, size, true)) {
@@ -1982,6 +1989,7 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
 }
 
 bool TextureCache::IsColorMetadataRange(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	std::scoped_lock lock {m_lock};
 	auto             next = m_color_metadata_ranges.upper_bound(address);
 	if (next == m_color_metadata_ranges.begin()) {
@@ -1992,12 +2000,14 @@ bool TextureCache::IsColorMetadataRange(uint64_t address, uint64_t size) {
 }
 
 bool TextureCache::IsMeta(uint64_t address) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	std::scoped_lock lock {m_lock};
 	const auto       found = m_surface_metas.find(address);
 	return found != m_surface_metas.end();
 }
 
 bool TextureCache::IsMetaCleared(uint64_t address, uint32_t slice) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	std::scoped_lock lock {m_lock};
 	const auto       found = m_surface_metas.find(address);
 	if (found == m_surface_metas.end() || slice >= found->second.clear_mask.size()) {
@@ -2007,6 +2017,7 @@ bool TextureCache::IsMetaCleared(uint64_t address, uint32_t slice) {
 }
 
 bool TextureCache::ClearMeta(uint64_t address) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	std::scoped_lock lock {m_lock};
 	const auto       found = m_surface_metas.find(address);
 	if (found == m_surface_metas.end()) {
@@ -2017,6 +2028,7 @@ bool TextureCache::ClearMeta(uint64_t address) {
 }
 
 bool TextureCache::TouchMeta(uint64_t address, uint32_t slice, bool is_clear) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	std::scoped_lock lock {m_lock};
 	const auto       found = m_surface_metas.find(address);
 	if (found == m_surface_metas.end() || slice >= found->second.clear_mask.size()) {
@@ -2027,11 +2039,13 @@ bool TextureCache::TouchMeta(uint64_t address, uint32_t slice, bool is_clear) {
 }
 
 bool TextureCache::IsRegionRegistered(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	std::scoped_lock lock {m_lock};
 	return !FindImagesInRegion(address, size, false).empty();
 }
 
 void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {address, size}.Valid()) {
 		EXIT("TextureCache: invalid unmap range\n");
 	}

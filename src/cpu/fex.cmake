@@ -34,10 +34,15 @@ if(KYTY_GUEST_CPU_FEX)
 		set(kyty_fex_fetch GIT_REPOSITORY "${KYTY_FEX_GIT_REPOSITORY}" GIT_TAG "${KYTY_FEX_GIT_TAG}" GIT_SHALLOW OFF)
 		# The Android port is applied to our own clone only; a KYTY_FEX_SOURCE_DIR checkout is taken as patched.
 		# applyFexPatch.cmake is idempotent (it skips the patch when it is already applied).
+		# fex-addressfold.patch (guest address folding, see src/kernel/addressFold.h) applies on top of it.
 		if(ANDROID)
 			list(APPEND kyty_fex_fetch PATCH_COMMAND ${CMAKE_COMMAND}
 				"-DFEX_SOURCE_DIR=${kyty_fex_src}"
 				"-DFEX_PATCH=${KYTY_SOURCE_DIR}/cpu/patches/fex-android.patch"
+				-P "${KYTY_SOURCE_DIR}/cpu/patches/applyFexPatch.cmake"
+				COMMAND ${CMAKE_COMMAND}
+				"-DFEX_SOURCE_DIR=${kyty_fex_src}"
+				"-DFEX_PATCH=${KYTY_SOURCE_DIR}/cpu/patches/fex-addressfold.patch"
 				-P "${KYTY_SOURCE_DIR}/cpu/patches/applyFexPatch.cmake")
 		endif()
 	endif()
@@ -143,6 +148,7 @@ if(KYTY_GUEST_CPU_FEX)
 	add_library(kyty_guest_cpu STATIC
 		"${KYTY_SOURCE_DIR}/cpu/guestCpuFex.cpp"
 		"${KYTY_SOURCE_DIR}/cpu/guestCpuFexHle.cpp"
+		"${KYTY_SOURCE_DIR}/cpu/guestCpuFexFold.cpp"
 		"${KYTY_SOURCE_DIR}/cpu/guestCpuSelfTest.cpp")
 	add_dependencies(kyty_guest_cpu kyty_fex)
 	target_include_directories(kyty_guest_cpu BEFORE PRIVATE

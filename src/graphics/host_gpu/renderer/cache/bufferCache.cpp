@@ -1,3 +1,4 @@
+#include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 
 #include "common/alignment.h"
@@ -568,6 +569,7 @@ BufferCache::~BufferCache() {
 }
 
 void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {vaddr, size}.Valid()) {
 		EXIT("BufferCache: invalid memory-invalidation range\n");
 	}
@@ -592,6 +594,7 @@ bool ReadbackDiffEnabled() {
 } // namespace
 
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
@@ -692,6 +695,7 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 }
 
 BufferId BufferCache::FindBuffer(uint64_t vaddr, uint64_t size) {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if (vaddr == 0) {
 		return NULL_BUFFER_ID;
 	}
@@ -863,6 +867,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t size,
                                                        bool is_written, bool is_texel_buffer,
                                                        BufferId id) {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	auto& command = m_scheduler.Current();
 	if (command.IsInvalid() || !GuestRange {vaddr, size}.Valid()) {
 		EXIT("BufferCache: buffer request requires a recording command buffer\n");
@@ -898,6 +903,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 }
 
 std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t size) {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {vaddr, size}.Valid()) {
 		EXIT("BufferCache: invalid image source\n");
 	}
@@ -924,6 +930,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 }
 
 void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool is_gds) {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if ((vaddr & 3u) != 0 || size == 0 || (size & 3u) != 0 || size > UINT64_MAX - vaddr) {
 		EXIT("BufferCache: fill range must be dword aligned\n");
 	}
@@ -990,6 +997,7 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 }
 
 bool BufferCache::IsRegionRegistered(uint64_t vaddr, uint64_t size) {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {vaddr, size}.Valid()) {
 		EXIT("BufferCache: invalid registered-region query\n");
 	}
@@ -1004,14 +1012,17 @@ bool BufferCache::IsRegionRegistered(uint64_t vaddr, uint64_t size) {
 }
 
 bool BufferCache::IsRegionGpuModified(uint64_t vaddr, uint64_t size) {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	return m_memory_tracker.IsRegionGpuModified(vaddr, size);
 }
 
 bool BufferCache::HasGpuDirtyBytes(uint64_t vaddr, uint64_t size) {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	return m_gpu_modified_ranges.Intersects(vaddr, size);
 }
 
 bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	return m_memory_tracker.IsRegionCpuModified(vaddr, size);
 }
 
