@@ -19,6 +19,7 @@
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/renderDoc.h"
 #include "kernel/pthread.h"
+#include "kernel/threadPlacement.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "loader/systemContent.h"
@@ -1247,6 +1248,16 @@ bool FlipQueue::Flip(uint32_t micros) {
 	if (due) {
 		const uint64_t present_begin = LibKernel::KernelGetProcessTimeCounter();
 		m_presenter.Present(std::span(layers.data(), count));
+		{
+			// KYTY_CPU_PLACE bit 2: the flip-to-flip time is the ADPF session's work duration.
+			static uint64_t last_present = 0;
+			const uint64_t  freq = std::max<uint64_t>(LibKernel::KernelGetProcessTimeCounterFrequency(), 1);
+			if (last_present != 0) {
+				Kernel::ThreadPlacement::ReportFrame(
+				    static_cast<int64_t>((present_begin - last_present) * 1000000000.0 / static_cast<double>(freq)));
+			}
+			last_present = present_begin;
+		}
 		if (Common::PerfStats::Enabled()) {
 			const uint64_t now  = LibKernel::KernelGetProcessTimeCounter();
 			const uint64_t freq = std::max<uint64_t>(LibKernel::KernelGetProcessTimeCounterFrequency(), 1);

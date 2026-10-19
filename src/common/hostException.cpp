@@ -276,6 +276,7 @@ bool IsWriteFault(const void* native_context) {
 // x86 register state lives in the guest CPU translator, so the x86 register fields stay zero.
 static void SignalHandler(int signal_number, siginfo_t* signal_info, void* native_context) {
 	auto* context = static_cast<ucontext_t*>(native_context);
+	RecordFaultRegisters(native_context);
 
 	ExceptionInfo info {};
 	info.exception_address = static_cast<uint64_t>(context->uc_mcontext.pc);
@@ -420,6 +421,33 @@ bool InstallHandler(Handler handler) {
 
 	g_install_state.store(2, std::memory_order_release);
 	return true;
+}
+
+} // namespace Common::HostException
+
+#if (defined(__linux__) || defined(__ANDROID__)) && defined(__aarch64__)
+#include <ucontext.h>
+#endif
+
+namespace Common::HostException {
+
+static thread_local unsigned long long t_fault_registers[3] {};
+
+void RecordFaultRegisters(const void* native_context) {
+#if (defined(__linux__) || defined(__ANDROID__)) && defined(__aarch64__)
+	const auto* context  = static_cast<const ucontext_t*>(native_context);
+	t_fault_registers[0] = context->uc_mcontext.pc;
+	t_fault_registers[1] = context->uc_mcontext.regs[30];
+	t_fault_registers[2] = context->uc_mcontext.regs[29];
+#else
+	(void)native_context;
+#endif
+}
+
+void LastFaultRegisters(unsigned long long* pc, unsigned long long* lr, unsigned long long* fp) {
+	*pc = t_fault_registers[0];
+	*lr = t_fault_registers[1];
+	*fp = t_fault_registers[2];
 }
 
 } // namespace Common::HostException

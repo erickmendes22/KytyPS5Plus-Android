@@ -17,6 +17,8 @@
 #include "common/timer.h"
 #include "cpu/guestCpu.h"
 #include "kernel/memory.h"
+#include "kernel/threadPlacement.h"
+#include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "loader/guestCall.h"
@@ -3317,6 +3319,7 @@ static void* RunThread(void* arg) {
 #endif
 
 	Common::PerfStats::SampleThisThreadWallClockIfNamed(thread->name);
+	Kernel::ThreadPlacement::RegisterCurrentThread(Kernel::ThreadPlacement::Role::Guest, thread->name);
 
 	LOGF("\tPthread run begin: %s, id = %d, os_thread_id = %" PRIu64 ", entry = 0x%016" PRIx64
 	     ", arg = 0x%016" PRIx64 ", stack_addr = 0x%016" PRIx64 ", stack_size = %" PRIu64 "\n",
@@ -3716,8 +3719,41 @@ int KYTY_SYSV_ABI PthreadRename(Pthread thread, const char* name) {
 	return OK;
 }
 
+// KYTY_YIELD_US=<n> (live knob yield_us): a guest thread that keeps yielding (8 yields in a row,
+// each within 200 us of the previous one) sleeps n microseconds per further yield instead of
+// calling sched_yield, so idle spinners stop burning a core. 0 (default) = always sched_yield.
+static int64_t YieldSleepMicros() {
+	static const int64_t start = [] {
+		const char* value = std::getenv("KYTY_YIELD_US");
+		const auto  us    = value != nullptr ? std::strtoll(value, nullptr, 10) : 0ll;
+		return us > 0 && us <= 10000 ? static_cast<int64_t>(us) : int64_t {0};
+	}();
+	const auto live = Libs::Graphics::LiveKnobs::Int("yield_us", start);
+	return live > 0 && live <= 10000 ? live : 0;
+}
+
 void KYTY_SYSV_ABI PthreadYield() {
-	SchedulerBackoffOnce();
+	constexpr uint32_t kSpinYields   = 8;
+	constexpr int64_t  kStreakGapNs = 200'000;
+	thread_local uint32_t streak  = 0;
+	thread_local int64_t  last_ns = 0;
+	const auto sleep_us = YieldSleepMicros();
+	if (sleep_us == 0) {
+		SchedulerBackoffOnce();
+		return;
+	}
+	const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+	                     std::chrono::steady_clock::now().time_since_epoch())
+	                     .count();
+	streak  = now - last_ns > kStreakGapNs ? 1 : streak + 1;
+	if (streak <= kSpinYields) {
+		SchedulerBackoffOnce();
+	} else {
+		Common::Thread::SleepMicro(static_cast<uint32_t>(sleep_us));
+	}
+	last_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+	              std::chrono::steady_clock::now().time_since_epoch())
+	              .count();
 }
 
 int KYTY_SYSV_ABI PthreadGetthreadid() {

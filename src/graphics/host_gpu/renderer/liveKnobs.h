@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Diagnostics knobs that can change while a game runs (KYTY_LIVE_KNOBS=1 only; inert otherwise).
@@ -20,6 +21,8 @@
 //                         to fix Astro") on a tablet with on-screen controls
 //   pad=<script>          timed left stick + buttons (libs/padScript.h), starting when the file
 //                         changes, e.g. pad=3000:128,0;400:128,0,cross;2000:128,0
+//   <name>=<integer>      any other key with a decimal integer value, read with Int() (A/B
+//                         phases of CPU-side options, e.g. cpu_place=1)
 //
 // A missing file means no skips and no draw marks.
 namespace Libs::Graphics::LiveKnobs {
@@ -29,6 +32,8 @@ struct Snapshot {
 	bool                     draw_marks = false;
 	int                      shake_seconds = 0;
 	std::string              pad_script;
+	// Other keys with integer values, in file order.
+	std::vector<std::pair<std::string, int64_t>> ints;
 };
 
 // Parses the file contents. Unknown keys and bad hash prefixes are ignored. Exposed for tests.
@@ -39,6 +44,10 @@ struct Snapshot {
 
 [[nodiscard]] bool SkipShader(uint64_t guest_hash);
 [[nodiscard]] bool DrawMarks();
+
+// The integer value of <name> in the current file, or `fallback` when it is absent (or live knobs
+// are off).
+[[nodiscard]] int64_t Int(std::string_view name, int64_t fallback);
 
 } // namespace Libs::Graphics::LiveKnobs
 

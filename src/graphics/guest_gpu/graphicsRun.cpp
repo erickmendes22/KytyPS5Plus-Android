@@ -18,6 +18,8 @@
 #include "graphics/presentation/window.h"
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
+#include "kernel/threadPlacement.h"
+#include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "libs/agc.h"
 #include "libs/errno.h"
 
@@ -527,6 +529,7 @@ void GuestGpu::ThreadRun(void* data) {
 	g_gpu_state  = gpu;
 	Common::PerfStats::SetGpuThread();
 	Common::PerfStats::SampleThisThreadWallClock();
+	Kernel::ThreadPlacement::RegisterCurrentThread(Kernel::ThreadPlacement::Role::GpuCommand, "gpu");
 
 	for (;;) {
 		Submission                   submission;
@@ -535,6 +538,13 @@ void GuestGpu::ThreadRun(void* data) {
 		bool                         should_stop    = false;
 		// --submit-coalesce: a deferred command-buffer end is submitted before the thread would
 		// idle or wait for blocked submissions, so no guest wait depends on it.
+		Kernel::ThreadPlacement::Poll(LiveKnobs::Int("cpu_place", -1));
+		{
+			static const bool range_cache_start = LibKernel::Memory::RangeCacheStartValue();
+			LibKernel::Memory::SetRangeCacheEnabled(LiveKnobs::Int("range_cache", range_cache_start ? 1 : 0) != 0);
+			static const bool srt_reads_start = LibKernel::Memory::SrtPreciseReadsStartValue();
+			LibKernel::Memory::SetSrtPreciseReads(LiveKnobs::Int("srt_reads", srt_reads_start ? 1 : 0) != 0);
+		}
 		if (gpu->m_flush_deferred && !gpu->HasRunnableWork()) {
 			gpu->FlushDeferred();
 		}
