@@ -1,4 +1,3 @@
-#include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 
 #include "common/alignment.h"
@@ -17,6 +16,7 @@
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "kernel/addressFold.h"
 #include "kernel/memory.h"
 #include "libs/audio.h"
 
@@ -30,6 +30,7 @@
 #include <mutex>
 #include <span>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vulkan/vulkan_format_traits.hpp>
 
@@ -1237,6 +1238,26 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 	}
 }
 
+// --perf-stats: which images are re-uploaded from guest memory, and why. Logs an image on its
+// 1st, 2nd, 4th, 8th, ... refresh (at most 600 lines), so images refreshed every frame stand out.
+static void NoteImageRefresh(const Image& image, bool buffer_modified, bool cpu_dirty) {
+	static std::mutex                             mutex;
+	static std::unordered_map<uint64_t, uint32_t> counts;
+	static uint32_t                               logged = 0;
+	std::lock_guard lock(mutex);
+	const auto      n = ++counts[image.info.data.address];
+	if (!std::has_single_bit(n) || logged >= 600) {
+		return;
+	}
+	logged++;
+	LOGF("[img-refresh] addr=0x%010" PRIx64 " size=0x%" PRIx64 " %ux%ux%u fmt=%s tile=%u n=%u"
+	     " buffer_modified=%d cpu_dirty=%d\n",
+	     image.info.data.address, image.info.data.size, image.info.extent.width,
+	     image.info.extent.height, image.info.extent.depth,
+	     vk::to_string(image.info.pixel_format).c_str(),
+	     static_cast<uint32_t>(image.info.tile_mode), n, buffer_modified ? 1 : 0, cpu_dirty ? 1 : 0);
+}
+
 void TextureCache::RefreshImage(ImageId id) {
 	auto& image = m_slot_images[id];
 	if (image.depth_id &&
@@ -1257,6 +1278,9 @@ void TextureCache::RefreshImage(ImageId id) {
 	}
 	if (!cpu_dirty) {
 		return;
+	}
+	if (Common::PerfStats::Enabled()) {
+		NoteImageRefresh(image, image.IsBufferModified(), image.IsDefinitelyCpuDirty());
 	}
 	InitializeImage(id);
 }
