@@ -571,6 +571,8 @@ void GuestGpu::ThreadRun(void* data) {
 			static const bool srt_reads_start = LibKernel::Memory::SrtPreciseReadsStartValue();
 			LibKernel::Memory::SetSrtPreciseReads(LiveKnobs::Int("srt_reads", srt_reads_start ? 1 : 0) != 0);
 			PollSrtMemo();
+			static const bool guest_rb_start = BufferCache::GuestReadWaitStartValue();
+			BufferCache::SetGuestReadWait(LiveKnobs::Int("guest_rb", guest_rb_start ? 1 : 0) != 0);
 		}
 		if (gpu->m_flush_deferred && !gpu->HasRunnableWork()) {
 			gpu->FlushDeferred();

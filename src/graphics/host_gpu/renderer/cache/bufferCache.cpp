@@ -593,12 +593,67 @@ bool ReadbackDiffEnabled() {
 
 } // namespace
 
+namespace {
+std::atomic<bool> g_guest_read_wait {false};
+} // namespace
+
+void BufferCache::SetGuestReadWait(bool enabled) {
+	g_guest_read_wait.store(enabled, std::memory_order_relaxed);
+}
+
+bool BufferCache::GuestReadWaitStartValue() {
+	const char* value = std::getenv("KYTY_GUEST_READ_WAIT");
+	return value != nullptr && value[0] == '1';
+}
+
+uint64_t BufferCache::PrepareGuestRead(uint64_t vaddr, uint64_t size) {
+	if (!m_targeted_readback) {
+		return 0;
+	}
+	// The writer DownloadBufferMemory would wait for: the newest tick over the GPU-written bytes
+	// of the pages it downloads.
+	uint64_t writer = 0;
+	m_memory_tracker.ForEachDownloadRange<false>(vaddr, size, [&](uint64_t address, uint64_t bytes) noexcept {
+		m_gpu_modified_ranges.ForEachInRange(address, bytes, [&](uint64_t start, uint64_t end) {
+			writer = std::max(writer, WriterTick(start, end));
+		});
+	});
+	if (writer == 0 || m_scheduler.IsFree(writer)) {
+		return 0;
+	}
+	if (writer >= m_scheduler.CurrentTick()) {
+		if (!m_scheduler.Active()) {
+			return 0;
+		}
+		// The open command buffer wrote them: submit it (as the in-place readback would) but
+		// leave the waiting to the faulting thread.
+		m_scheduler.Flush();
+	}
+	return writer;
+}
+
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
 		     vaddr, size);
+	}
+	if (!is_write && !GuestGpu::IsGpuThread() && g_guest_read_wait.load(std::memory_order_relaxed)) {
+		// The download below waits for the bytes' GPU writer on the GPU thread, which then stops
+		// translating the guest's other command buffers for as long (~20 ms per fault on Astro
+		// Bot's 0x0555f41000). Wait for that writer here instead; the download then finds it
+		// complete. A newer writer in between is waited for again (or, after a few rounds, by
+		// the download as before).
+		auto& gpu = m_scheduler.Context().GetGpu();
+		for (int round = 0; round < 3; ++round) {
+			uint64_t writer = 0;
+			gpu.SendCommandSync([this, vaddr, size, &writer] { writer = PrepareGuestRead(vaddr, size); });
+			if (writer == 0) {
+				break;
+			}
+			m_scheduler.GetMasterSemaphore().Wait(writer);
+		}
 	}
 	uint32_t reader = Common::PerfStats::kReaderOther;
 	if (!GuestGpu::IsGpuThread()) {

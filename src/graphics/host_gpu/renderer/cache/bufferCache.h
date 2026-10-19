@@ -62,6 +62,10 @@ public:
 		return m_memory_tracker.MarkCleanPagesCpuModified(Kernel::AddressFold::Fold(vaddr), size);
 	}
 	void                   ReadMemory(uint64_t vaddr, uint64_t size, bool is_write = false);
+	// KYTY_GUEST_READ_WAIT (live knob guest_rb): a guest thread's read fault waits for the GPU
+	// writer of the page itself, so the GPU thread only copies the bytes (see ReadMemory).
+	static void SetGuestReadWait(bool enabled);
+	[[nodiscard]] static bool GuestReadWaitStartValue();
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainBuffer(uint64_t vaddr, uint64_t size,
@@ -167,6 +171,10 @@ private:
 	// Newest tick that wrote any byte of [begin, end): 0 when complete or unknown-but-complete,
 	// CurrentTick() when a pending write overlaps (it is in the open command buffer).
 	[[nodiscard]] uint64_t WriterTick(uint64_t begin, uint64_t end) const;
+	// GPU thread, for a guest read fault: the tick of the command buffer that must complete
+	// before the fault's download can copy without waiting (submitting it if it is the open one),
+	// or 0 when nothing needs waiting for.
+	[[nodiscard]] uint64_t PrepareGuestRead(uint64_t vaddr, uint64_t size);
 	// In-place readback of `ranges` (buffer offsets, sizes) from a host-visible buffer after
 	// waiting only for their writer; returns how it waited.
 	[[nodiscard]] Common::PerfStats::ReadbackMode
