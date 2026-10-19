@@ -50,3 +50,45 @@ By kind: cs 20.8, pass 17.8, cs-indirect 17.3, misc 2.1, mesh-cs (mesh emulation
 
 Driver-side codegen changes can't be measured (bench must use prebuilt driver v32), so not picked.
 Mesh emulation is only 1.1 ms/frame, so not worth targeting.
+
+## Measurements (scale 1.0, driver v32, no turbo, in-run live-knob phases)
+
+GPU clock varies between two DCVS levels during a run ([perf-probe] 4.547 ms vs 6.013 ms for the
+same probe dispatch), so per-phase GPU ms/frame is also given normalized to the 4.547 ms clock.
+
+### RT ceiling (b3_pack2, phase `skip=6856320a`)
+
+| phase | fps | GPU ms/frame | at 4.547 clock |
+|---|---:|---:|---:|
+| base (neighbouring phases) | 11.4-12.1 | 72.9-77.5 | 70.6-72.9 |
+| RT pass skipped | 13.74 | 56.6 | 56.6 |
+
+The RT pass is ~16-17 ms/frame, but skipping it gains only ~1.9 fps: the frame then takes
+~73 ms with the GPU at 57 ms, so the CPU/GPU-thread side becomes the limit. Skipping it also
+removes nearly all lighting (research/runs/b3_pack2/s_sweep_nort.jpg): it is not optional work.
+
+### Compute group packing (b3_pack2, ABBA)
+
+| phase | fps | GPU ms/frame | probe ms | at 4.547 clock | 338b4505 | 3a8772db |
+|---|---:|---:|---:|---:|---:|---:|
+| cs_pack=0 | 11.61 | 74.1 | 4.695 | 71.8 | 5.94 | 3.82 |
+| cs_pack=1 | 10.68 | 81.5 | 6.013 | 61.6 | 1.28 | 0.82 |
+| cs_pack=1 | 10.84 | 81.6 | 6.014 | 61.7 | 1.26 | 0.83 |
+| cs_pack=0 | 12.05 | 72.9 | 4.548 | 72.9 | 6.01 | 3.90 |
+
+The two packed dispatches drop from 9.8 to 2.1 ms/frame (4.7x, at the lower clock). Both packed phases
+of this run were at the throttled clock (probe 6.01 ms), which made packing look like a loss.
+
+### Compute group packing under the clock policy (b3_turbo1, --gpu-turbo, 2 full-clock pairs)
+
+See research/clock_policy.md. Means of the two pairs where both phases were at full clock:
+
+| | fps | GPU ms/frame | 338b4505 | 3a8772db | 6856320a |
+|---|---:|---:|---:|---:|---:|
+| cs_pack=0 | 12.17 | 74.8 | 5.97 | 3.85 | 16.07 |
+| cs_pack=1 | 12.94 | 66.7 | 1.13 | 0.63 | 16.11 |
+
+Packing saves 8.1 GPU ms/frame (-11%) and adds 0.77 fps (+6.3%) at scale 1.0. Screenshots of the
+packed phases (b3_pack2 s_sweep_a1/b1, s_window_mid) match the unpacked ones. b3_pack3 lost the
+device in the crash-landing cinematic on mesh-cs 2b3be82b, the known fault (not a packed shader). b3_pack4 was
+stopped by the thermal guard during settle.
