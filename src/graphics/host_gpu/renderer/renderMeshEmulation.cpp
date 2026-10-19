@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 
 namespace Libs::Graphics {
@@ -27,6 +29,14 @@ namespace Libs::Graphics {
 namespace {
 
 using ShaderRecompiler::IR::PushData;
+
+bool MeshRingTraceEnabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_MESH_RING_TRACE");
+		return value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	return enabled;
+}
 
 struct MeshEmulationSizes {
 	uint64_t vertex_bytes = 0;
@@ -113,6 +123,15 @@ RenderExecutor::EmulatedMeshDraw RenderExecutor::RecordEmulatedMesh(
 	    Common::AlignUp(sizes.vertex_bytes, MeshEmulationRing::Alignment);
 	auto&      ring = m_context.GetBufferCache().GetMeshEmulationRing();
 	const auto output = ring.Reserve(index_offset + sizes.index_bytes);
+	if (MeshRingTraceEnabled()) {
+		// KYTY_MESH_RING_TRACE=1: every reservation, for overlap analysis per command buffer.
+		LOGF("[ring-trace] tick=%" PRIu64 " MS=%016" PRIx64 " off=0x%" PRIx64 " size=0x%" PRIx64
+		     " cap=0x%" PRIx64 " reuse=%d pass_open=%d indirect=%d\n",
+		     m_context.GetCommandScheduler().CurrentTick(), mesh_input.stage.program->shader_hash,
+		     output.offset, index_offset + sizes.index_bytes, ring.Capacity(),
+		     output.reuses_current ? 1 : 0, buffer.IsRendering() ? 1 : 0,
+		     source.indirect != nullptr ? 1 : 0);
+	}
 
 	// The dispatch is recorded on the primary buffer, ahead of the deferred render pass, so
 	// consecutive emulated mesh draws keep sharing one pass (see CommandBuffer::BeginRendering).
