@@ -6,15 +6,18 @@
 #include "common/file.h"
 #include "ArchiveTestFixture.h"
 #include "common/logging/log.h"
+#include "common/singleton.h"
 #include "common/subsystems.h"
 #include "common/threads.h"
 #include "common/stringUtils.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "kernel/eventQueue.h"
 #include "kernel/fileSystem.h"
+#include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "libs/network.h"
 #include "loader/additionalContent.h"
+#include "loader/runtimeLinker.h"
 #include "loader/symbolDatabase.h"
 
 #include <algorithm>
@@ -83,6 +86,148 @@ void Check(bool value, const char *text) {
     std::fprintf(stderr, "KernelFileSystemTests: failed: %s\n", text);
     std::abort();
   }
+}
+
+template <typename Predicate>
+void WaitForMutexTest(Predicate ready) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!ready()) {
+    Check(std::chrono::steady_clock::now() < deadline, "mutex waiter made progress");
+    std::this_thread::yield();
+  }
+}
+
+struct MutexWaiter {
+  Libs::LibKernel::PthreadMutex *mutex;
+  Libs::LibKernel::KernelUseconds timeout = 0;
+  bool cancel = false;
+  Libs::LibKernel::Pthread thread = nullptr;
+  std::vector<uint8_t> stack = std::vector<uint8_t>(1024 * 1024);
+  std::atomic<unsigned> parked{0}, resume{0};
+  std::atomic<bool> acquired{false}, release{false}, finished{false};
+  int result = 0;
+};
+
+thread_local MutexWaiter *current_mutex_waiter = nullptr;
+
+void KYTY_SYSV_ABI ParkMutexWaiter(int, void *) {
+  auto &waiter = *current_mutex_waiter;
+  const auto ticket = waiter.parked.fetch_add(1) + 1;
+  WaitForMutexTest([&] { return waiter.resume.load() >= ticket; });
+}
+
+void *KYTY_SYSV_ABI RunMutexWaiter(void *arg) {
+  using namespace Libs::LibKernel;
+  auto &waiter = *static_cast<MutexWaiter *>(arg);
+  current_mutex_waiter = &waiter;
+  waiter.result = waiter.timeout == 0 ? PthreadMutexLock(waiter.mutex)
+                                      : PthreadMutexTimedlock(waiter.mutex, waiter.timeout);
+  if (waiter.result == OK) {
+    waiter.acquired = true;
+    WaitForMutexTest([&] { return waiter.release.load(); });
+    Check(PthreadMutexUnlock(waiter.mutex) == OK, "waiter unlocks owned mutex");
+  }
+  waiter.finished = true;
+  if (waiter.cancel) {
+    PthreadTestcancel();
+    Check(false, "deferred mutex waiter cancellation remains pending");
+  }
+  return nullptr;
+}
+
+void QueueMutexWaiter(MutexWaiter &waiter) {
+  using namespace Libs::LibKernel;
+  PthreadAttr attr = nullptr;
+  Check(PthreadAttrInit(&attr) == OK &&
+            PthreadAttrSetstack(&attr, waiter.stack.data(), waiter.stack.size()) == OK &&
+            PthreadCreate(&waiter.thread, &attr, RunMutexWaiter, &waiter, "MutexTest") == OK &&
+            PthreadAttrDestroy(&attr) == OK,
+        "create guest mutex waiter");
+  // Pending guest signals are dispatched inside the contended lock, after enqueueing.
+  // Holding that callback proves queue order without letting the waiter acquire.
+  PthreadQueuePendingSignal(waiter.thread, 30);
+  WaitForMutexTest([&] { return waiter.parked.load() == 1; });
+}
+
+void TestMutexHandoff() {
+  using namespace Libs::LibKernel;
+  Common::Singleton<Loader::RuntimeLinker>::Instance();
+  Initialize();
+  PthreadInitSelfForMainThread();
+  Loader::SymbolDatabase symbols;
+  Libs::InitLibKernel_1(&symbols);
+  const auto *install_symbol = symbols.FindByNid("WkwEd3N7w0Y", Loader::SymbolType::Func);
+  const auto *remove_symbol = symbols.FindByNid("Qhv5ARAoOEc", Loader::SymbolType::Func);
+  Check(install_symbol != nullptr && remove_symbol != nullptr, "mutex signal exports resolve");
+  const auto install = reinterpret_cast<int(KYTY_SYSV_ABI *)(int, void *)>(install_symbol->vaddr);
+  const auto remove = reinterpret_cast<int(KYTY_SYSV_ABI *)(int)>(remove_symbol->vaddr);
+  Check(install(30, reinterpret_cast<void *>(ParkMutexWaiter)) == OK, "install mutex test signal");
+
+  PthreadMutexattr attr = nullptr;
+  Check(PthreadMutexattrInit(&attr) == OK && PthreadMutexattrSettype(&attr, 2) == OK,
+        "create recursive mutex attributes");
+  for (unsigned timed = 0; timed < 3; ++timed) {
+    PthreadMutex mutex = nullptr;
+    Check(PthreadMutexInit(&mutex, &attr, "MutexHandoff") == OK &&
+              PthreadMutexLock(&mutex) == OK && PthreadMutexLock(&mutex) == OK,
+          "lock recursive mutex twice");
+    std::array<MutexWaiter, 3> waiters{{{&mutex}, {&mutex}, {&mutex}}};
+    waiters[timed].timeout = 5000;
+    for (auto &waiter : waiters) {
+      QueueMutexWaiter(waiter);
+    }
+    waiters[timed].resume = 1;
+    Check(PthreadJoin(waiters[timed].thread, nullptr) == OK &&
+              waiters[timed].result == KERNEL_ERROR_ETIMEDOUT,
+          "timed waiter unlinks from queue head, middle and tail");
+    Check(PthreadMutexUnlock(&mutex) == OK && PthreadMutexTrylock(&mutex) == OK &&
+              PthreadMutexUnlock(&mutex) == OK,
+          "partial recursive unlock retains ownership");
+    Check(PthreadMutexUnlock(&mutex) == OK &&
+              PthreadMutexTrylock(&mutex) == KERNEL_ERROR_EBUSY,
+          "unlock reserves ownership before queued waiter runs");
+    for (auto &waiter : waiters) {
+      if (&waiter == &waiters[timed]) {
+        continue;
+      }
+      waiter.resume = 1;
+      WaitForMutexTest([&] { return waiter.acquired.load(); });
+      Check(PthreadMutexTrylock(&mutex) == KERNEL_ERROR_EBUSY, "FIFO waiter owns mutex");
+      waiter.release = true;
+      WaitForMutexTest([&] { return waiter.finished.load(); });
+      Check(PthreadJoin(waiter.thread, nullptr) == OK && waiter.result == OK,
+            "FIFO waiter completes");
+    }
+    Check(PthreadMutexLock(&mutex) == OK && PthreadMutexUnlock(&mutex) == OK &&
+              PthreadMutexDestroy(&mutex) == OK,
+          "mutex remains usable after timed waiter removal");
+  }
+  Check(PthreadMutexattrDestroy(&attr) == OK, "destroy recursive mutex attributes");
+
+  PthreadMutex mutex = nullptr;
+  Check(PthreadMutexInit(&mutex, nullptr, "MutexCancel") == OK &&
+            PthreadMutexLock(&mutex) == OK &&
+            PthreadMutexTimedlock(&mutex, 5000) == KERNEL_ERROR_EDEADLK,
+        "nonrecursive self timed lock reports deadlock");
+  MutexWaiter waiter{&mutex};
+  waiter.cancel = true;
+  QueueMutexWaiter(waiter);
+  Check(PthreadCancel(waiter.thread) == OK, "cancel queued mutex waiter");
+  PthreadQueuePendingSignal(waiter.thread, 30);
+  waiter.resume = 1;
+  WaitForMutexTest([&] { return waiter.parked.load() == 2; });
+  Check(PthreadMutexUnlock(&mutex) == OK &&
+            PthreadMutexTrylock(&mutex) == KERNEL_ERROR_EBUSY,
+        "canceled waiter retains its queue position");
+  waiter.release = true;
+  waiter.resume = 2;
+  void *result = nullptr;
+  Check(PthreadJoin(waiter.thread, &result) == OK &&
+            result == reinterpret_cast<void *>(-1) && waiter.acquired && waiter.finished,
+        "mutex lock defers cancellation until explicit cancellation point");
+  Check(PthreadMutexLock(&mutex) == OK && PthreadMutexUnlock(&mutex) == OK &&
+            PthreadMutexDestroy(&mutex) == OK && remove(30) == OK,
+        "mutex remains usable after waiter cancellation");
 }
 
 class TempDirectory {
@@ -2235,7 +2380,7 @@ void CheckSocketWakeup() {
 
 } // namespace
 
-int main(int, char**) {
+int main(int argc, char** argv) {
   Common::InitializeThreads();
   Common::Subsystems subsystems;
   subsystems.Initialize<Config::Lifecycle>();
@@ -2243,6 +2388,13 @@ int main(int, char**) {
   options.printf_direction = Config::LogDirection::Silent;
   Config::Load(options);
   subsystems.Initialize<Log::Lifecycle>();
+
+  TestMutexHandoff();
+  if (argc == 2 && std::string_view(argv[1]) == "--mutex-only") {
+    subsystems.Destroy();
+    std::printf("KernelFileSystemTests: mutex cases passed\n");
+    return 0;
+  }
 
   Check(SDL_InitSubSystem(SDL_INIT_VIDEO), "initialize Vulkan test video");
   auto graphics = std::make_unique<Libs::Graphics::WindowContext>();
