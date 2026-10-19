@@ -3935,13 +3935,26 @@ uint64_t KYTY_SYSV_ABI KernelGetProcessTimeCounter() {
 
 #if KYTY_HOST_ARM64 && KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
 // Guest-native counter reads (loader/guestHostFunction.h): UE5 titles read the process time counter
-// about a million times a second, each a trap into the host. FEXCore's RDTSC reads CNTVCT_EL0 (no
-// TSC scaling is configured), the same counter KernelReadTscNative reads, so x86 code can do it.
+// about a million times a second, each a trap into the host. FEXCore's RDTSC reads CNTVCT_EL0, the
+// counter KernelReadTscNative reads, shifted left so it ticks at 1 GHz or more (its SmallTSCScale
+// default); the guest code shifts it back.
+static uint8_t FexTscScale() {
+	uint8_t  scale     = 0;
+	uint64_t frequency = KernelGetTscFrequencyNative();
+	constexpr uint64_t kFexTscMinimum = 1'000'000'000; // FEXCore::Context::TSC_SCALE_MAXIMUM
+	while (frequency != 0 && frequency < kFexTscMinimum) {
+		frequency <<= 1u;
+		scale++;
+	}
+	return scale;
+}
+
 static uint64_t MakeGuestReadTsc(bool since_start) {
 	std::vector<uint8_t> code = {
-	    0x0F, 0x31,             // rdtsc
-	    0x48, 0xC1, 0xE2, 0x20, // shl rdx, 32
-	    0x48, 0x09, 0xD0,       // or rax, rdx
+	    0x0F, 0x31,                     // rdtsc
+	    0x48, 0xC1, 0xE2, 0x20,         // shl rdx, 32
+	    0x48, 0x09, 0xD0,               // or rax, rdx
+	    0x48, 0xC1, 0xE8, FexTscScale(), // shr rax, scale
 	};
 	if (since_start) {
 		const uint64_t initial = KernelGetInitialTsc();
