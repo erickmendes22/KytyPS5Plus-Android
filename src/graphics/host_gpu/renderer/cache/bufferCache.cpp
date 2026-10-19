@@ -11,11 +11,13 @@
 #include "graphics/host_gpu/gpuFatal.h"
 #include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/cache/meshEmulationRing.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/meshBoundsCheck.h"
 #include "kernel/memory.h"
 
 #include <algorithm>
@@ -429,6 +431,7 @@ const BufferCache* g_fault_cache = nullptr;
 void DumpFaultNeighbors(vk::Result /*result*/) {
 	if (g_fault_cache != nullptr) {
 		g_fault_cache->DescribeFaultAddresses(ReportedFaultAddresses());
+		g_fault_cache->DumpMeshBoundsLog();
 	}
 }
 
@@ -493,6 +496,10 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	SetVulkanObjectNameF(m_graphics.device, GetBuffer(null_id).Handle(), "Kyty.NullBuffer");
 	g_fault_cache = this;
 	AddGpuFatalHook(DumpFaultNeighbors);
+	if (MeshBoundsCheck::Enabled()) {
+		// Mesh shaders bake the violation log's address in when they compile.
+		GetMeshEmulationRing().EnableBoundsLog();
+	}
 	if (m_graphics.MemoryBudgetEnabled()) {
 		m_budget_mode = true;
 		ApplyBudgetThresholds(m_graphics.MemoryBudget());
@@ -517,6 +524,12 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 void BufferCache::ApplyBudgetThresholds(uint64_t budget) {
 	m_trigger_gc_memory  = GpuBudget::ForBudget(budget).pressure;
 	m_critical_gc_memory = budget;
+}
+
+void BufferCache::DumpMeshBoundsLog() const {
+	if (m_mesh_emulation_ring) {
+		m_mesh_emulation_ring->DumpBoundsLog();
+	}
 }
 
 uint64_t BufferCache::MeshRingCapacity() const noexcept {

@@ -6,6 +6,8 @@
 // - Emulated mesh draws (one indexed record): the mesh compute pass's draw record
 //   (PushData::MeshIndirect*), its VkDispatchIndirectCommand and the VkDrawIndexedIndirectCommand
 //   of the triangle list it writes, laid out as MESH_* below.
+// - Dispatches (mode 2): the guest VkDispatchIndirectCommand clamped to maxComputeWorkGroupCount
+//   (a larger count is undefined behaviour on the host); the feedback word is set if it clamped.
 #version 450
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
@@ -33,15 +35,17 @@ layout(push_constant, std430) uniform Params {
     uint     max_count;
     uint     index_limit;  // INDEX_BUFFER_SIZE (indexed draws)
     uint     indexed;
-    uint     mesh;         // 1: emulated mesh outputs
+    uint     mode;         // 0: draws, 1: emulated mesh outputs, 2: dispatch clamp
     uint     element_bytes;
     uint     primitive_size;
     uint     primitive_step;
     uint     primitives_per_group;
     uint     indices_per_group; // triangle-list indices one workgroup slot owns
     uint     max_slots;         // reserved workgroup slots (groups x instances)
-    uint     max_groups;        // host workgroup count limits along x and y
+    uint     max_groups;        // host workgroup count limits along x, y and z
     uint     max_instances;
+    uint     max_z;
+    uint     padding;
 } params;
 
 // Word offsets of the mesh outputs.
@@ -97,13 +101,32 @@ void EmitMesh() {
     destination.words[MESH_DRAW + 4u] = 0u;
 }
 
+void EmitDispatchClamp() {
+    GuestWords source      = GuestWords(params.source);
+    HostWords  destination = HostWords(params.destination);
+    const uint limits[3]   = uint[3](params.max_groups, params.max_instances, params.max_z);
+    bool       clamped     = false;
+    for (uint axis = 0u; axis < 3u; axis++) {
+        const uint groups = source.words[axis];
+        clamped = clamped || groups > limits[axis];
+        destination.words[axis] = min(groups, limits[axis]);
+    }
+    if (params.feedback != 0ul && clamped) {
+        FeedbackWord(params.feedback).word = 1u;
+    }
+}
+
 void main() {
     const uint draw = gl_GlobalInvocationID.x;
     if (draw >= params.max_count) {
         return;
     }
-    if (params.mesh != 0u) {
+    if (params.mode == 1u) {
         EmitMesh();
+        return;
+    }
+    if (params.mode == 2u) {
+        EmitDispatchClamp();
         return;
     }
     uint count = params.max_count;

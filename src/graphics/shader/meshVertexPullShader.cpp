@@ -4,6 +4,7 @@
 #include "graphics/shader/recompiler/backend/spirv/SpirvBuilder.h"
 
 #include <array>
+#include <spirv/unified1/GLSL.std.450.h>
 #include <bit>
 #include <utility>
 
@@ -29,6 +30,7 @@ public:
 		builder.RequireCapability(spv::CapabilityShader);
 		builder.RequireCapability(spv::CapabilityInt64);
 		builder.RequireCapability(spv::CapabilityPhysicalStorageBufferAddresses);
+		glsl_std450 = builder.Import("GLSL.std.450");
 
 		void_type  = builder.Type(spv::OpTypeVoid);
 		int_type   = builder.Type(spv::OpTypeInt, 32u, 1u);
@@ -51,7 +53,7 @@ public:
 		builder.AddFunction(spv::OpLabel, builder.AllocateId());
 		LoadRecordBase();
 		Store(Access(Pointer(spv::StorageClassOutput, vec4_type), per_vertex, Int(0)),
-		      LoadVec4(StageOutputKind::Position, 0));
+		      CheckPosition(LoadVec4(StageOutputKind::Position, 0)));
 		StoreDistances(StageOutputKind::ClipDistance, clip_member, layout.clip_distance_count);
 		StoreDistances(StageOutputKind::CullDistance, cull_member, layout.cull_distance_count);
 		if (layer_out != 0) {
@@ -181,6 +183,73 @@ private:
 		record_base     = Result(spv::OpIMul, uint_type, safe, Uint(layout.stride_dwords));
 	}
 
+	// Counts positions the rasterizer may not take well (counter words 1..3: a NaN/Inf component,
+	// a component beyond kHugePosition, |w| below kTinyW with x, y or z non-zero). With
+	// sanitize_positions (KYTY_MESH_CULL_BAD=1) such a position becomes one outside
+	// the near plane (0, 0, -1, 1), so it never reaches the rasterizer: the compute stage already
+	// culls triangles using it, but a culled slot's degenerate triangle may still name it.
+	static constexpr float kHugePosition = 1.0e10f;
+	static constexpr float kTinyW        = 1.0e-30f;
+
+	void CountIf(uint32_t condition, uint32_t word) {
+		const auto counter_address = PushAddress(3);
+		const auto count_it        = Result(spv::OpLogicalAnd, bool_type, condition,
+		                                    Result(spv::OpINotEqual, bool_type, counter_address,
+		                                           builder.Constant(spv::OpConstant, u64_type, 0u, 0u)));
+		const auto then_label  = builder.AllocateId();
+		const auto merge_label = builder.AllocateId();
+		builder.AddFunction(spv::OpSelectionMerge, merge_label, spv::SelectionControlMaskNone);
+		builder.AddFunction(spv::OpBranchConditional, count_it, then_label, merge_label);
+		builder.AddFunction(spv::OpLabel, then_label);
+		const auto address = Result(spv::OpIAdd, u64_type, counter_address,
+		                            builder.Constant(spv::OpConstant, u64_type, word * 4u, 0u));
+		const auto counter = Result(spv::OpConvertUToPtr, word_pointer_type, address);
+		Result(spv::OpAtomicIIncrement, uint_type, counter, Uint(spv::ScopeDevice),
+		       Uint(spv::MemorySemanticsMaskNone));
+		builder.AddFunction(spv::OpBranch, merge_label);
+		builder.AddFunction(spv::OpLabel, merge_label);
+	}
+
+	uint32_t CheckPosition(uint32_t position) {
+		const auto bvec4_type = builder.Type(spv::OpTypeVector, bool_type, 4u);
+		const auto nonfinite  = Result(
+		    spv::OpAny, bool_type,
+		    Result(spv::OpLogicalOr, bvec4_type, Result(spv::OpIsNan, bvec4_type, position),
+		           Result(spv::OpIsInf, bvec4_type, position)));
+		const auto magnitude = Result(spv::OpExtInst, vec4_type, glsl_std450, GLSLstd450FAbs, position);
+		const auto huge      = Result(
+		    spv::OpAny, bool_type,
+		    Result(spv::OpFOrdGreaterThan, bvec4_type, magnitude,
+		           builder.Constant(spv::OpConstantComposite, vec4_type, Float(kHugePosition),
+		                            Float(kHugePosition), Float(kHugePosition), Float(kHugePosition))));
+		const auto w      = Result(spv::OpCompositeExtract, float_type, magnitude, 3u);
+		const auto xyz_on = Result(
+		    spv::OpLogicalOr, bool_type,
+		    Result(spv::OpLogicalOr, bool_type,
+		           Result(spv::OpFOrdGreaterThan, bool_type,
+		                  Result(spv::OpCompositeExtract, float_type, magnitude, 0u), Float(0.0f)),
+		           Result(spv::OpFOrdGreaterThan, bool_type,
+		                  Result(spv::OpCompositeExtract, float_type, magnitude, 1u), Float(0.0f))),
+		    Result(spv::OpFOrdGreaterThan, bool_type,
+		           Result(spv::OpCompositeExtract, float_type, magnitude, 2u), Float(0.0f)));
+		const auto tiny_w = Result(spv::OpLogicalAnd, bool_type,
+		                           Result(spv::OpFOrdLessThan, bool_type, w, Float(kTinyW)), xyz_on);
+		CountIf(nonfinite, 1);
+		CountIf(Result(spv::OpLogicalAnd, bool_type, huge,
+		               Result(spv::OpLogicalNot, bool_type, nonfinite)),
+		        2);
+		CountIf(tiny_w, 3);
+		if (!stage.sanitize_positions) {
+			return position;
+		}
+		const auto bad = Result(spv::OpLogicalOr, bool_type, nonfinite,
+		                        Result(spv::OpLogicalOr, bool_type, huge, tiny_w));
+		const auto outside = builder.Constant(spv::OpConstantComposite, vec4_type, Float(0.0f),
+		                                      Float(0.0f), Float(-1.0f), Float(1.0f));
+		const auto bvec_bad = Result(spv::OpCompositeConstruct, bvec4_type, bad, bad, bad, bad);
+		return Result(spv::OpSelect, vec4_type, bvec_bad, outside, position);
+	}
+
 	uint32_t LoadWord(uint32_t offset) {
 		const auto element = Result(spv::OpIAdd, uint_type, record_base, Uint(offset));
 		const auto pointer = Access(word_pointer_type, records, Int(0), element);
@@ -278,6 +347,7 @@ private:
 	uint32_t vec4_type            = 0;
 	uint32_t uvec2_type           = 0;
 	uint32_t bool_type            = 0;
+	uint32_t glsl_std450          = 0;
 	uint32_t records_pointer_type = 0;
 	uint32_t word_pointer_type    = 0;
 	uint32_t vertex_index         = 0;

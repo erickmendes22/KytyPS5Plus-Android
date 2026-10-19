@@ -6,8 +6,10 @@
 #include "common/perfWaits.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/shader/meshBoundsCheck.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cinttypes>
 #include <chrono>
@@ -88,9 +90,9 @@ vk::DeviceAddress MeshEmulationRing::OutOfRangeCounterAddress() {
 		    m_graphics, m_scheduler, MemoryUsage::Download, 0,
 		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
 		    256);
-		EXIT_IF(m_out_of_range->Mapped().size() < sizeof(uint32_t));
-		std::memset(m_out_of_range->Mapped().data(), 0, sizeof(uint32_t));
-		m_out_of_range->Flush(0, sizeof(uint32_t));
+		EXIT_IF(m_out_of_range->Mapped().size() < 4 * sizeof(uint32_t));
+		std::memset(m_out_of_range->Mapped().data(), 0, 4 * sizeof(uint32_t));
+		m_out_of_range->Flush(0, 4 * sizeof(uint32_t));
 	}
 	return m_out_of_range->BufferDeviceAddress();
 }
@@ -106,13 +108,84 @@ void MeshEmulationRing::PollOutOfRangeCounter(bool force) {
 		return;
 	}
 	m_out_of_range_polled_ms = now_ms;
-	m_out_of_range->Invalidate(0, sizeof(uint32_t));
-	uint32_t count = 0;
-	std::memcpy(&count, m_out_of_range->Mapped().data(), sizeof(count));
-	if (count != m_out_of_range_logged || force) {
-		LOGF("%s: %u out-of-range vertex indices so far (clamped to record 0)\n", m_name, count);
-		m_out_of_range_logged = count;
+	m_out_of_range->Invalidate(0, 4 * sizeof(uint32_t));
+	std::array<uint32_t, 4> counts {};
+	std::memcpy(counts.data(), m_out_of_range->Mapped().data(), sizeof(counts));
+	if (counts != m_out_of_range_logged || force) {
+		LOGF("%s: vertex pull so far: %u out-of-range indices (clamped to record 0), positions: "
+		     "%u non-finite, %u huge, %u tiny-w\n",
+		     m_name, counts[0], counts[1], counts[2], counts[3]);
+		m_out_of_range_logged = counts;
 	}
+}
+
+void MeshEmulationRing::EnableBoundsLog() {
+	if (m_bounds_log) {
+		return;
+	}
+	m_bounds_log = std::make_unique<Buffer>(
+	    m_graphics, m_scheduler, MemoryUsage::Download, 0,
+	    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+	    MeshBoundsCheck::kLogBytes);
+	EXIT_IF(m_bounds_log->Mapped().size() < MeshBoundsCheck::kLogBytes);
+	std::memset(m_bounds_log->Mapped().data(), 0, MeshBoundsCheck::kLogBytes);
+	m_bounds_log->Flush(0, MeshBoundsCheck::kLogBytes);
+	MeshBoundsCheck::SetLogAddress(m_bounds_log->BufferDeviceAddress());
+	LOGF("%s: KYTY_MESH_BOUNDS=1, violation log at 0x%016" PRIx64 "\n", m_name,
+	     m_bounds_log->BufferDeviceAddress());
+}
+
+namespace {
+
+void LogBoundsEntries(const char* name, const uint32_t* words, uint32_t from, uint32_t count) {
+	const auto stored = std::min(count, MeshBoundsCheck::kMaxEntries);
+	for (uint32_t entry = from; entry < stored; entry++) {
+		const auto* e = words + MeshBoundsCheck::kHeaderDwords + entry * MeshBoundsCheck::kEntryDwords;
+		LOGF("[mesh-bounds] %s #%u MS=0x%08x%08x %s value=%u limit=%u group=%u\n", name, entry,
+		     e[1], e[0], MeshBoundsCheck::KindName(e[2]), e[3], e[4], e[5]);
+	}
+}
+
+} // namespace
+
+void MeshEmulationRing::PollBoundsLog(bool force) {
+	if (!m_bounds_log) {
+		return;
+	}
+	const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                        std::chrono::steady_clock::now().time_since_epoch())
+	                        .count();
+	if (!force && now_ms - m_bounds_polled_ms < 1000) {
+		return;
+	}
+	m_bounds_polled_ms = now_ms;
+	m_bounds_log->Invalidate(0, MeshBoundsCheck::kLogBytes);
+	const auto* words = reinterpret_cast<const uint32_t*>(m_bounds_log->Mapped().data());
+	const auto  count = words[0];
+	if (count != m_bounds_logged || force) {
+		LOGF("[mesh-bounds] %s: %u violations so far\n", m_name, count);
+		LogBoundsEntries(m_name, words, std::min(m_bounds_logged, MeshBoundsCheck::kMaxEntries),
+		                 count);
+		m_bounds_logged = count;
+	}
+}
+
+void MeshEmulationRing::DumpBoundsLog() const {
+	if (m_out_of_range) {
+		m_out_of_range->Invalidate(0, 4 * sizeof(uint32_t));
+		std::array<uint32_t, 4> counts {};
+		std::memcpy(counts.data(), m_out_of_range->Mapped().data(), sizeof(counts));
+		LOGF("%s at GPU fatal: vertex pull: %u out-of-range indices, positions: %u non-finite, %u "
+		     "huge, %u tiny-w\n",
+		     m_name, counts[0], counts[1], counts[2], counts[3]);
+	}
+	if (!m_bounds_log) {
+		return;
+	}
+	m_bounds_log->Invalidate(0, MeshBoundsCheck::kLogBytes);
+	const auto* words = reinterpret_cast<const uint32_t*>(m_bounds_log->Mapped().data());
+	LOGF("[mesh-bounds] %s at GPU fatal: %u violations\n", m_name, words[0]);
+	LogBoundsEntries(m_name, words, 0, words[0]);
 }
 
 void MeshEmulationRing::DescribeFaultAddresses(std::span<const uint64_t> addresses) const {

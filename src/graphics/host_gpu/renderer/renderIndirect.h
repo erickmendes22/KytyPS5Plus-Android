@@ -72,6 +72,16 @@ public:
 	// The same for an emulated mesh draw (one indexed record).
 	[[nodiscard]] MeshRecords RecordMesh(CommandBuffer& buffer, const IndirectDrawArgs& args,
 	                                     const Sources& sources, const MeshShape& shape);
+	// A guest VkDispatchIndirectCommand the GPU wrote, clamped to the host workgroup limits
+	// (maxComputeWorkGroupCount) into a host record; a clamp drops work and is logged once the
+	// feedback arrives. `site` is the guest record address (for the log).
+	struct DispatchRecord {
+		vk::Buffer buffer = nullptr;
+		uint64_t   offset = 0;
+	};
+	[[nodiscard]] DispatchRecord RecordDispatchClamp(CommandBuffer& buffer, vk::DeviceAddress args,
+	                                                 const std::array<uint32_t, 3>& limits,
+	                                                 uint64_t site);
 	// Records the draw itself inside the open render pass.
 	void Draw(vk::CommandBuffer pass, const Records& records, bool indexed) const;
 
@@ -103,6 +113,7 @@ private:
 		uint64_t site     = 0; // guest record address
 		uint32_t reserved = 0; // mesh: reserved workgroup slots, 0 for draws
 		bool     mesh     = false;
+		bool     dispatch = false; // RecordDispatchClamp: the word is 1 if it clamped
 	};
 	static constexpr uint32_t FeedbackSlots = 64;
 
@@ -111,7 +122,8 @@ private:
 	void PollFeedback();
 	// A zeroed host-visible word for the next fix-up's feedback, or 0 if none is free.
 	[[nodiscard]] vk::DeviceAddress AcquireFeedback(uint32_t& slot);
-	void CommitFeedback(uint32_t slot, uint64_t site, bool mesh, uint32_t reserved);
+	void CommitFeedback(uint32_t slot, uint64_t site, bool mesh, uint32_t reserved,
+	                    bool dispatch = false);
 
 	RenderContext&                         m_context;
 	vk::PipelineLayout                     m_layout     = nullptr;

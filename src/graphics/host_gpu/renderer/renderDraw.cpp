@@ -1559,6 +1559,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	} else {
 		PrepareBindingWrites(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
 	}
+	if (mesh_emulated &&
+	    LiveKnobs::SkipMeshDraw(state.vertex_info[0].stage.program->shader_hash)) {
+		// KYTY_LIVE_KNOBS mesh-skip-draw=: the compute stage above wrote the ring; no draw. The
+		// render targets were acquired but no pass begins and they are not marked written
+		// (acceptable for a diagnostic; the caller resets the bindings).
+		return;
+	}
 
 	LogDrawPhase(draw.Name(), "BeginRendering");
 	if (!draw.IsIndexed()) {
