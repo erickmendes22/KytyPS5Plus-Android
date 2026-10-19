@@ -47,7 +47,16 @@ static bool DccAlphaOnMsb(const HW::ColorInfo& info) {
 static void ComputeColorTargetDesc(const HW::RenderTarget& rt, uint32_t rt_slot, uint32_t mask,
                                    uint32_t render_target_slice_offset, RenderColorInfo& r) {
 	const auto samples = render_sample_count(rt.attrib.num_fragments);
-	if (samples == 0 || rt.attrib.num_samples != rt.attrib.num_fragments) {
+	// TODO(PPSA24156): Replace this 2x MSAA approximation with proper 4-coverage/2-fragment EQAA.
+	const bool approximate_eqaa = rt.attrib.num_samples == 2 && rt.attrib.num_fragments == 1;
+	if (approximate_eqaa) {
+		static std::atomic_bool logged = false;
+		if (!logged.exchange(true, std::memory_order_relaxed)) {
+			Log::WriteToConsoleAndLog(
+			    "Warning: approximating 4-coverage/2-fragment EQAA with 2x MSAA.\n");
+		}
+	}
+	if (samples == 0 || (rt.attrib.num_samples != rt.attrib.num_fragments && !approximate_eqaa)) {
 		EXIT("unsupported render-target sample configuration: samples=%u fragments=%u\n",
 		     rt.attrib.num_samples, rt.attrib.num_fragments);
 	}
