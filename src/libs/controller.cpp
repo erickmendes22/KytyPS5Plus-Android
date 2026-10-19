@@ -1109,6 +1109,8 @@ void RunPadScript(std::vector<PadScript::Step> steps) {
 		}
 		SetAxis(id, Axis::LeftX, step.left_x);
 		SetAxis(id, Axis::LeftY, step.left_y);
+		SetAxis(id, Axis::RightX, step.right_x);
+		SetAxis(id, Axis::RightY, step.right_y);
 		ApplyScriptButtons(id, held, step.buttons);
 		held = step.buttons;
 		std::this_thread::sleep_for(std::chrono::milliseconds(step.ms));
@@ -1118,6 +1120,8 @@ void RunPadScript(std::vector<PadScript::Step> steps) {
 		ApplyScriptButtons(id, held, 0);
 		SetAxis(id, Axis::LeftX, 128);
 		SetAxis(id, Axis::LeftY, 128);
+		SetAxis(id, Axis::RightX, 128);
+		SetAxis(id, Axis::RightY, 128);
 	}
 	g_script_running = false;
 }

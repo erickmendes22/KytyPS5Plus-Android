@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
@@ -61,6 +62,7 @@ private:
 
 	void   BuildKey(const SrtRuntime& runtime);
 	void   TraceMiss() const;
+	void   TraceContent(const ResourceSnapshot& snapshot);
 	// A free slot: a new one below the limit, else the clock's choice (unindexed first).
 	uint32_t Victim();
 	void     Forget(uint32_t index);
@@ -74,6 +76,9 @@ private:
 	std::vector<uint32_t>  m_key;
 	uint64_t               m_hash  = 0;
 	SrtReadLog             m_log;
+	// KYTY_SRT_MEMO_TRACE only: read-content hash -> result hash, and result hashes seen.
+	std::unordered_map<uint64_t, uint64_t> m_trace_content;
+	std::unordered_set<uint64_t>           m_trace_results;
 };
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

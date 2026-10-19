@@ -15,10 +15,11 @@
 // Timed pad input for unattended runs (KYTY_LIVE_KNOBS pad=...): on-screen touch controls cannot
 // hold a stick and press a button at the same time through `adb shell input`.
 //
-//   <step>;<step>;...      step = <ms>:<left x>,<left y>[,<button>+<button>...]
+//   <step>;<step>;...      step = <ms>:<left x>,<left y>[,<button>+<button>...][,R=<x>/<y>]
 //
-// Each step holds the left stick (0-255, 128 = centre, y 0 = up) and the named buttons for <ms>,
-// e.g. "3000:128,0;400:128,0,cross;2000:128,0" walks forward, jumps, keeps walking.
+// Each step holds the left stick (0-255, 128 = centre, y 0 = up), the right stick (R=, default
+// centred) and the named buttons for <ms>, e.g. "3000:128,0;400:128,0,cross;2000:128,0" walks
+// forward, jumps, keeps walking; "1500:128,128,R=255/128" turns the camera right.
 // Buttons: cross circle square triangle up down left right l1 r1 l2 r2 l3 r3 options touchpad.
 namespace Libs::Controller::PadScript {
 
@@ -27,6 +28,8 @@ struct Step {
 	int      left_x  = 128;
 	int      left_y  = 128;
 	uint32_t buttons = 0;
+	int      right_x = 128;
+	int      right_y = 128;
 };
 
 constexpr size_t MAX_STEPS    = 64;
@@ -112,14 +115,41 @@ inline std::optional<Step> ParseStep(std::string_view text) {
 	}
 	const auto x = ParseInt(rest.substr(0, c1), 0, 255);
 	rest.remove_prefix(c1 + 1);
-	const auto c2      = rest.find(',');
-	const auto y       = ParseInt(rest.substr(0, std::min(c2, rest.size())), 0, 255);
-	const auto buttons = c2 == std::string_view::npos ? std::optional<uint32_t>(0)
-	                                                  : ParseButtons(rest.substr(c2 + 1));
-	if (!x || !y || !buttons) {
+	const auto c2 = rest.find(',');
+	const auto y  = ParseInt(rest.substr(0, std::min(c2, rest.size())), 0, 255);
+	if (!x || !y) {
 		return std::nullopt;
 	}
-	return Step {*ms, *x, *y, *buttons};
+	Step step {*ms, *x, *y, 0};
+	// Optional fields: buttons (one field, '+' separated, may be empty) and R=<x>/<y>.
+	rest = c2 == std::string_view::npos ? std::string_view {} : rest.substr(c2 + 1);
+	bool has_rest = c2 != std::string_view::npos;
+	while (has_rest) {
+		const auto end   = rest.find(',');
+		const auto field = Trim(rest.substr(0, std::min(end, rest.size())));
+		has_rest         = end != std::string_view::npos;
+		rest             = has_rest ? rest.substr(end + 1) : std::string_view {};
+		if (field.size() >= 2 && field[0] == 'R' && field[1] == '=') {
+			const auto slash = field.find('/');
+			if (slash == std::string_view::npos) {
+				return std::nullopt;
+			}
+			const auto rx = ParseInt(field.substr(2, slash - 2), 0, 255);
+			const auto ry = ParseInt(field.substr(slash + 1), 0, 255);
+			if (!rx || !ry) {
+				return std::nullopt;
+			}
+			step.right_x = *rx;
+			step.right_y = *ry;
+			continue;
+		}
+		const auto buttons = ParseButtons(field);
+		if (!buttons) {
+			return std::nullopt;
+		}
+		step.buttons |= *buttons;
+	}
+	return step;
 }
 
 } // namespace Detail

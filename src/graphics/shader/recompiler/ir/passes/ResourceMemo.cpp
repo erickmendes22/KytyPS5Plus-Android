@@ -25,6 +25,37 @@ std::atomic<uint64_t> g_evicted {0};
 constexpr size_t TraceSlots = 67;
 std::array<std::atomic<uint64_t>, TraceSlots> g_trace_words {};
 std::array<std::atomic<uint64_t>, 5>          g_trace_distance {}; // 1, 2, 3, 4-7, 8+ words
+// Walks that a content-keyed memo could have answered (KYTY_SRT_MEMO_TRACE): walks whose read
+// bytes (kinds, sizes and values, not addresses) equal an earlier walk of the same source, and of
+// those, how many also produced the same resources.
+std::atomic<uint64_t> g_trace_walks {0};
+std::atomic<uint64_t> g_trace_same_content {0};
+std::atomic<uint64_t> g_trace_same_content_result {0};
+std::atomic<uint64_t> g_trace_same_result {0};
+
+uint64_t HashBytes(uint64_t hash, const void* data, size_t size) {
+	const auto* bytes = static_cast<const uint8_t*>(data);
+	for (size_t i = 0; i < size; ++i) hash = (hash ^ bytes[i]) * 0x100000001b3ull;
+	return hash;
+}
+
+uint64_t ContentHash(const SrtReadLog& log) {
+	uint64_t hash = 0xcbf29ce484222325ull;
+	for (const auto& entry: log.entries) {
+		const uint32_t shape[2] = {static_cast<uint32_t>(entry.kind) | (entry.ok ? 0x100u : 0u), entry.bytes};
+		hash = HashBytes(hash, shape, sizeof(shape));
+	}
+	return HashBytes(hash, log.values.data(), log.values.size());
+}
+
+uint64_t ResultHash(const ResourceSnapshot& snapshot) {
+	uint64_t hash = 0xcbf29ce484222325ull;
+	for (const auto* list: {&snapshot.buffers, &snapshot.images, &snapshot.samplers}) {
+		for (const auto& value: *list) hash = HashBytes(hash, value.dwords.data(), value.dword_count * 4u);
+		hash = HashBytes(hash, "|", 1);
+	}
+	return HashBytes(hash, snapshot.flattened_srt.data(), snapshot.flattened_srt.size() * 4u);
+}
 bool TraceEnabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_SRT_MEMO_TRACE");
@@ -108,6 +139,18 @@ std::string ResourceMemo::TakeMissReport() {
 		                   static_cast<unsigned long long>(counts[i].first));
 		report += part;
 	}
+	const auto walks = g_trace_walks.exchange(0, std::memory_order_relaxed);
+	std::snprintf(part, sizeof(part), " | walks=%llu", static_cast<unsigned long long>(walks));
+	report += part;
+	std::snprintf(part, sizeof(part), " same_content=%llu",
+	              static_cast<unsigned long long>(g_trace_same_content.exchange(0, std::memory_order_relaxed)));
+	report += part;
+	std::snprintf(part, sizeof(part), " +same_result=%llu",
+	              static_cast<unsigned long long>(g_trace_same_content_result.exchange(0, std::memory_order_relaxed)));
+	report += part;
+	std::snprintf(part, sizeof(part), " same_result=%llu",
+	              static_cast<unsigned long long>(g_trace_same_result.exchange(0, std::memory_order_relaxed)));
+	report += part;
 	report += " | closest differs in";
 	const char* names[] = {"1", "2", "3", "4-7", "8+"};
 	for (size_t i = 0; i < g_trace_distance.size(); ++i) {
@@ -116,6 +159,20 @@ std::string ResourceMemo::TakeMissReport() {
 		report += part;
 	}
 	return report;
+}
+
+void ResourceMemo::TraceContent(const ResourceSnapshot& snapshot) {
+	g_trace_walks.fetch_add(1, std::memory_order_relaxed);
+	const auto content = ContentHash(m_log);
+	const auto result  = ResultHash(snapshot);
+	if (m_trace_content.size() > 8192) m_trace_content.clear();
+	if (m_trace_results.size() > 8192) m_trace_results.clear();
+	if (const auto found = m_trace_content.find(content); found != m_trace_content.end()) {
+		g_trace_same_content.fetch_add(1, std::memory_order_relaxed);
+		if (found->second == result) g_trace_same_content_result.fetch_add(1, std::memory_order_relaxed);
+	}
+	if (!m_trace_results.insert(result).second) g_trace_same_result.fetch_add(1, std::memory_order_relaxed);
+	m_trace_content[content] = result;
 }
 
 void ResourceMemo::TraceMiss() const {
@@ -235,6 +292,7 @@ bool ResourceMemo::Materialize(const ResourcePlan& plan, const SrtRuntime& runti
 		if (slot != NoSlot) Forget(slot);
 		return true;
 	}
+	if (TraceEnabled()) TraceContent(snapshot);
 	// Keys hold the union of the words read so far: a walk that read a new word starts over.
 	bool grew = false;
 	if (m_user_data_words.size() < m_log.user_data_words.size()) {

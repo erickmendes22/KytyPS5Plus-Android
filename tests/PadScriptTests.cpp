@@ -18,6 +18,14 @@ int main() {
 	Check(!PadScript::Parse("100:128,0,jump"), "unknown button");
 	Check(!PadScript::Parse("30000:128,0;30000:128,0;30000:128,0;30000:128,0;1:128,0"), "total limit");
 	Check(PadScript::Parse(";;100:128,128;").has_value(), "blank steps skipped");
+	auto r = PadScript::Parse("1500:128,128,R=255/0;200:128,0,cross,R=10/20;100:128,128");
+	Check(r && r->size() == 3 && (*r)[0].right_x == 255 && (*r)[0].right_y == 0 && (*r)[0].buttons == 0,
+	      "right stick step");
+	Check((*r)[1].buttons == PAD_BUTTON_CROSS && (*r)[1].right_x == 10 && (*r)[1].right_y == 20,
+	      "buttons and right stick");
+	Check((*r)[2].right_x == 128 && (*r)[2].right_y == 128, "right stick centred by default");
+	Check(!PadScript::Parse("100:128,128,R=256/0"), "right axis range");
+	Check(!PadScript::Parse("100:128,128,R=12"), "right stick needs x/y");
 	std::puts("PadScriptTests: ok");
 	return 0;
 }
