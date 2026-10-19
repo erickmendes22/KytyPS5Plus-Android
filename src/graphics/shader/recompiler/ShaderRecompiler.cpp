@@ -37,8 +37,8 @@ const char* GetDumpLabel(const CompileOptions& options) {
 }
 
 // KYTY_CS_PACK (ShaderComputeInputInfo::pack_groups): two guest workgroups of at most 32 threads
-// run in one 64-lane host workgroup, one per 32-lane half, the guest wave32 of each in its own
-// half (WaveSliced lane masks). Only for programs without LDS, workgroup or subgroup barriers,
+// run in one 64-lane host workgroup, one per 32-lane half, the guest wave (wave32, or a wave64
+// with at most 32 threads) of each in its own half (WaveSliced lane masks). Only for programs without LDS, workgroup or subgroup barriers,
 // compute derivatives or dispatch-thread extents, so the two never interact.
 uint32_t ComputeGroupPack(const IR::Program& ir, const CompileOptions& options) {
 	const auto* cs = options.input_info.compute;
@@ -49,8 +49,9 @@ uint32_t ComputeGroupPack(const IR::Program& ir, const CompileOptions& options) 
 	                         std::max(cs->threads_num[2], 1u);
 	const auto& info = ir.info;
 	const char* reason = nullptr;
-	if (ir.wave_size != 32u || cs->host_subgroup_size != 64u) {
-		reason = "not wave32 on 64-lane subgroups";
+	// A wave64 guest group of at most 32 threads is one wave whose upper 32 lanes never exist.
+	if ((ir.wave_size != 32u && ir.wave_size != 64u) || cs->host_subgroup_size != 64u) {
+		reason = "not on 64-lane subgroups";
 	} else if (threads > 32u) {
 		reason = "more than 32 threads";
 	} else if (info.uses_lds || info.uses_gds || cs->lds_size_dwords != 0u || cs->lds_storage) {

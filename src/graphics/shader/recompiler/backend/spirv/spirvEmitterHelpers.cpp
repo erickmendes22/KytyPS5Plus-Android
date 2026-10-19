@@ -325,14 +325,21 @@ bool WaveSliced(const EmitterState& state) {
 	       state.program.stage != ShaderType::TessellationControl;
 }
 
+// Host lanes per guest wave slice: the guest wave size, or 32 for packed compute groups
+// (KYTY_CS_PACK), whose guest waves (wave32, or wave64 with at most 32 threads) each own a
+// 32-lane half.
+static uint32_t WaveSliceLanes(const EmitterState& state) {
+	return state.program.info.group_pack > 1u ? 32u : state.program.wave_size;
+}
+
 uint32_t EmitWaveLocalLane(EmitterState& state) {
 	return EmitBinaryU32(state, spv::OpBitwiseAnd, EmitSubgroupLocalInvocationId(state),
-	                     ConstantU32(state, state.program.wave_size - 1u));
+	                     ConstantU32(state, WaveSliceLanes(state) - 1u));
 }
 
 uint32_t EmitWaveLaneBase(EmitterState& state) {
 	return EmitBinaryU32(state, spv::OpBitwiseAnd, EmitSubgroupLocalInvocationId(state),
-	                     ConstantU32(state, ~(state.program.wave_size - 1u)));
+	                     ConstantU32(state, ~(WaveSliceLanes(state) - 1u)));
 }
 
 uint32_t EmitWaveBallot(EmitterState& state, uint32_t subgroup_ballot) {
@@ -346,7 +353,8 @@ uint32_t EmitWaveBallot(EmitterState& state, uint32_t subgroup_ballot) {
 	                                      ConstantU32(state, 5));
 	const auto zero = ConstantU32(state, 0);
 	const auto low  = word(first_word);
-	const auto high = state.program.wave_size == 64u
+	// A packed wave64 guest has at most 32 threads: its upper EXEC word is zero.
+	const auto high = WaveSliceLanes(state) == 64u
 	                      ? word(EmitAddU32(state, first_word, ConstantU32(state, 1)))
 	                      : zero;
 	const auto result = state.builder.AllocateId();
@@ -358,7 +366,7 @@ uint32_t EmitWaveBallot(EmitterState& state, uint32_t subgroup_ballot) {
 uint32_t EmitWaveLaneToSubgroupLane(EmitterState& state, uint32_t wave_lane) {
 	return EmitBinaryU32(state, spv::OpBitwiseOr, EmitWaveLaneBase(state),
 	                     EmitBinaryU32(state, spv::OpBitwiseAnd, wave_lane,
-	                                   ConstantU32(state, state.program.wave_size - 1u)));
+	                                   ConstantU32(state, WaveSliceLanes(state) - 1u)));
 }
 
 uint32_t EmitBallotLaneActiveBool(EmitterState& state, uint32_t active_ballot, uint32_t lane) {

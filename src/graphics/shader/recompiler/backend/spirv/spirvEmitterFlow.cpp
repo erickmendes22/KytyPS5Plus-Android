@@ -1058,7 +1058,7 @@ static uint32_t EmitLaneBroadcast(ValueEmitContext& ctx, const IR::Inst& inst, u
 	return result;
 }
 
-// KYTY_CS_PACK with KYTY_LANE_BROADCAST: each 32-lane half is one guest wave32. Its first EXEC lane
+// KYTY_CS_PACK with KYTY_LANE_BROADCAST: each 32-lane half is one guest wave. Its first EXEC lane
 // comes from the half's ballot word, which is subgroup-uniform, so each half reads with one
 // broadcast instead of a shuffle (a rotate loop on ir3).
 static uint32_t EmitPackedReadFirstLane(ValueEmitContext& ctx, const IR::Inst& inst,
@@ -1091,8 +1091,7 @@ static uint32_t EmitPackedReadFirstLane(ValueEmitContext& ctx, const IR::Inst& i
 uint32_t EmitReadFirstLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto ballot = ctx.Ballot(inst.Arg(1));
 	if (WaveSliced(ctx.state) && ctx.state.program.info.group_pack > 1u &&
-	    ctx.state.device_features.constant_lane_broadcast && ctx.other_half == nullptr &&
-	    ctx.state.program.wave_size == 32u) {
+	    ctx.state.device_features.constant_lane_broadcast && ctx.other_half == nullptr) {
 		return EmitPackedReadFirstLane(ctx, inst, ballot);
 	}
 	if (WaveSliced(ctx.state)) {

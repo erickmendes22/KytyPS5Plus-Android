@@ -25758,6 +25758,15 @@ TestCase PackedWave32ComputeGroupsOnGpu() {
   return test;
 }
 
+// The same packing for a wave64 guest of 25 threads: its EXEC high word is zero, so each guest
+// wave fits a 32-lane half.
+TestCase PackedWave64ComputeGroupsOnGpu() {
+  auto test = PackedWave32ComputeGroupsOnGpu();
+  test.name = "PackedWave64ComputeGroupsOnGpu";
+  test.compute_info.wave_size = 64;
+  return test;
+}
+
 TestCase VectorCompareWave32KeepsVccHi() {
   using O = ShaderOpcode;
 
@@ -42260,6 +42269,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(VectorCompareWave32KeepsVccHi);
   AddCase(PackedWave32ComputeGroups);
   AddCase(PackedWave32ComputeGroupsOnGpu);
+  AddCase(PackedWave64ComputeGroupsOnGpu);
   AddCase(IntegerAddSubMul);
   AddCase(BitwiseOps);
   AddCase(Shifts);
