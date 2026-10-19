@@ -401,7 +401,12 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 			const char* value = std::getenv("KYTY_MESH_CULL_BAD");
 			return value != nullptr && std::strcmp(value, "1") == 0;
 		}();
-		mesh_vertex_pull = MeshVertexPullStage {.layout = &*mesh_layout, .sanitize_positions = sanitize};
+		static const bool count = [] {
+			const char* value = std::getenv("KYTY_MESH_POS_COUNT");
+			return value != nullptr && std::strcmp(value, "1") == 0;
+		}();
+		mesh_vertex_pull = MeshVertexPullStage {
+		    .layout = &*mesh_layout, .sanitize_positions = sanitize, .count_positions = count};
 		const auto& features = graphics.optional_features;
 		if (!features.fragment_shader_barycentric && features.geometry_varying_locations != 0) {
 			// The same location vertex shaders mirror layer/viewport into for that stage.

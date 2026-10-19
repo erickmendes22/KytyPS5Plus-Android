@@ -21,6 +21,9 @@ struct MeshVertexPullStage {
 	// KYTY_MESH_CULL_BAD=1: a position the rasterizer cannot take is replaced by one
 	// outside the near plane.
 	bool sanitize_positions = false;
+	// KYTY_MESH_POS_COUNT=1: count non-finite / huge / tiny-w positions (out-of-range counter
+	// words 1..3, logged by MeshEmulationRing). Off: no per-vertex position tests at all.
+	bool count_positions = false;
 };
 
 [[nodiscard]] std::vector<uint32_t> BuildMeshVertexPullShader(const MeshVertexPullStage& stage);

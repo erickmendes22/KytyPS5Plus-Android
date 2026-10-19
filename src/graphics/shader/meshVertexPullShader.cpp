@@ -211,6 +211,11 @@ private:
 	}
 
 	uint32_t CheckPosition(uint32_t position) {
+		// Neither counting nor sanitizing: the position as the vertex shader wrote it, with no
+		// per-vertex tests (the 7d8487a0 vertex-pull stage).
+		if (!stage.count_positions && !stage.sanitize_positions) {
+			return position;
+		}
 		const auto bvec4_type = builder.Type(spv::OpTypeVector, bool_type, 4u);
 		const auto nonfinite  = Result(
 		    spv::OpAny, bool_type,
@@ -234,11 +239,13 @@ private:
 		           Result(spv::OpCompositeExtract, float_type, magnitude, 2u), Float(0.0f)));
 		const auto tiny_w = Result(spv::OpLogicalAnd, bool_type,
 		                           Result(spv::OpFOrdLessThan, bool_type, w, Float(kTinyW)), xyz_on);
-		CountIf(nonfinite, 1);
-		CountIf(Result(spv::OpLogicalAnd, bool_type, huge,
-		               Result(spv::OpLogicalNot, bool_type, nonfinite)),
-		        2);
-		CountIf(tiny_w, 3);
+		if (stage.count_positions) {
+			CountIf(nonfinite, 1);
+			CountIf(Result(spv::OpLogicalAnd, bool_type, huge,
+			               Result(spv::OpLogicalNot, bool_type, nonfinite)),
+			        2);
+			CountIf(tiny_w, 3);
+		}
 		if (!stage.sanitize_positions) {
 			return position;
 		}
