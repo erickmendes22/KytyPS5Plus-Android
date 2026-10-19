@@ -959,6 +959,81 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return read;
 }
 
+// KYTY_SRT_PRECISE_READS (default 1; live knob srt_reads): the SRT evaluator's ordinary reads on the GPU
+// thread skip the page-granular read fault when the bytes they read were not GPU-written: from
+// the backing when their page holds other GPU-written bytes (no wait for those), directly when the
+// page holds none. Bytes the GPU did write still fault and read back, as before.
+static std::atomic<bool> g_srt_precise_reads {true};
+
+void SetSrtPreciseReads(bool enabled) {
+	g_srt_precise_reads.store(enabled, std::memory_order_relaxed);
+}
+
+bool SrtPreciseReadsStartValue() {
+	const char* value = std::getenv("KYTY_SRT_PRECISE_READS");
+	return value == nullptr || value[0] != '0';
+}
+
+bool TryReadGuestPrecise(uint64_t vaddr, void* data, uint64_t size) {
+	constexpr uint64_t kPage = 4096;
+	if (g_gpu_resources == nullptr || !Graphics::GuestGpu::IsGpuThread() || size == 0 ||
+	    (vaddr & (kPage - 1)) + size > kPage || !IsGpuAddressRange(vaddr, size)) {
+		return false;
+	}
+	// KYTY_READBACK_DIFF=1: how these reads resolved, every 8192 reads.
+	enum Outcome { CleanPage, Backing, Sparse, NoBacking, Dirty, Count };
+	thread_local std::array<uint64_t, Count> outcomes {};
+	thread_local uint64_t                    reads = 0;
+	const auto count = [](Outcome outcome) {
+		outcomes[outcome]++;
+		if (++reads % 8192 == 0 && std::getenv("KYTY_READBACK_DIFF") != nullptr) {
+			Common::PerfStats::EmitLine(fmt::format(
+			    "[perf-trace] precise-reads clean_page={} backing={} sparse={} no_backing={} dirty={}",
+			    outcomes[CleanPage], outcomes[Backing], outcomes[Sparse], outcomes[NoBacking], outcomes[Dirty]));
+		}
+	};
+	// Pages seen without GPU-written bytes, valid while the buffer cache's generation holds.
+	thread_local std::array<uint64_t, 8> clean_pages {};
+	thread_local uint64_t                clean_generation = UINT64_MAX;
+	thread_local uint32_t                clean_next       = 0;
+	auto&      buffers    = GetGpuResources().GetBufferCache();
+	const auto generation = buffers.GpuDirtyGeneration();
+	if (generation != clean_generation) {
+		clean_pages.fill(UINT64_MAX);
+		clean_generation = generation;
+	}
+	const auto page = vaddr & ~(kPage - 1);
+	if (std::find(clean_pages.begin(), clean_pages.end(), page) != clean_pages.end()) {
+		count(CleanPage);
+		return false; // no GPU-written byte on the page: a direct read does not fault
+	}
+	if (!buffers.HasGpuDirtyBytes(page, kPage)) {
+		clean_pages[clean_next++ % clean_pages.size()] = page;
+		count(CleanPage);
+		return false;
+	}
+	if (buffers.HasGpuDirtyBytes(vaddr, size)) {
+		count(Dirty);
+		return false; // the GPU wrote these bytes: the read fault reads them back
+	}
+	if (TryReadBacking(vaddr, data, size)) {
+		count(Backing);
+		return true;
+	}
+	if (TryReadSparseBacking(vaddr, data, size)) {
+		count(Sparse);
+		return true;
+	}
+	count(NoBacking);
+	return false;
+}
+
+static void ReadGuestForSrt(uint64_t vaddr, void* data, size_t size) {
+	if (!g_srt_precise_reads.load(std::memory_order_relaxed) || !TryReadGuestPrecise(vaddr, data, size)) {
+		std::memcpy(data, reinterpret_cast<const void*>(vaddr), size);
+	}
+}
+
 bool TryReadCleanBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
 		if (!Graphics::GuestGpu::IsGpuThread() ||
@@ -1018,6 +1093,7 @@ void InvalidateMemory(uint64_t vaddr, uint64_t size) {
 void InstallGpuResources(Graphics::RenderContext* resources) noexcept {
 	EXIT_IF(resources != nullptr && g_gpu_resources != nullptr);
 	g_gpu_resources = resources;
+	Graphics::ShaderRecompiler::IR::SetSrtHostRead(resources != nullptr ? ReadGuestForSrt : nullptr);
 }
 
 // KYTY_FAULT_TRACE: every 4096 handled faults, the 64 KiB blocks that took the most of them

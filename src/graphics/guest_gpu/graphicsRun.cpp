@@ -539,6 +539,8 @@ void GuestGpu::ThreadRun(void* data) {
 		{
 			static const bool range_cache_start = LibKernel::Memory::RangeCacheStartValue();
 			LibKernel::Memory::SetRangeCacheEnabled(LiveKnobs::Int("range_cache", range_cache_start ? 1 : 0) != 0);
+			static const bool srt_reads_start = LibKernel::Memory::SrtPreciseReadsStartValue();
+			LibKernel::Memory::SetSrtPreciseReads(LiveKnobs::Int("srt_reads", srt_reads_start ? 1 : 0) != 0);
 		}
 		if (gpu->m_flush_deferred && !gpu->HasRunnableWork()) {
 			gpu->FlushDeferred();

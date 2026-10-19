@@ -10,6 +10,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -32,6 +33,24 @@ constexpr uint64_t GUEST_MEMORY_MIN = 0x40000;
 const char*& SpecializationTraceSite() {
 	thread_local const char* site = nullptr;
 	return site;
+}
+
+namespace {
+
+std::atomic<SrtHostRead> g_host_read {nullptr};
+
+void HostRead(uint64_t address, void* data, size_t size) {
+	if (const auto read = g_host_read.load(std::memory_order_relaxed); read != nullptr) {
+		read(address, data, size);
+	} else {
+		std::memcpy(data, reinterpret_cast<const void*>(address), size);
+	}
+}
+
+} // namespace
+
+void SetSrtHostRead(SrtHostRead read) {
+	g_host_read.store(read, std::memory_order_relaxed);
 }
 
 SrtRuntime SrtReadCapture::ObservedRuntime() {
@@ -70,7 +89,7 @@ bool SrtReadCapture::ReadOrdinary(void* userdata, uint64_t address, std::span<ui
 		std::ranges::fill(values, 0u);
 		return true;
 	} else {
-		std::memcpy(values.data(), reinterpret_cast<const void*>(address), values.size_bytes());
+		HostRead(address, values.data(), values.size_bytes());
 	}
 	capture.m_ranges.emplace_back(address, values.size_bytes());
 	return true;
@@ -422,9 +441,14 @@ namespace {
 // Mirrors the generated x86 walker: copies one table level in offset order (seeding the evaluator
 // memo for each read), then descends through that level's child pointers.
 bool RunSrtWalkLevel(const SrtWalkLevel& level, const uint8_t* parent, uint32_t* flat,
-                     ResourcePlan::EvaluationContext::Entry* entries, uint64_t generation) {
+                     ResourcePlan::EvaluationContext::Entry* entries, uint64_t generation,
+                     bool parent_is_guest) {
 	uint64_t pointer = 0;
-	std::memcpy(&pointer, parent + level.pointer_offset, sizeof(pointer));
+	if (parent_is_guest) {
+		HostRead(reinterpret_cast<uint64_t>(parent + level.pointer_offset), &pointer, sizeof(pointer));
+	} else {
+		std::memcpy(&pointer, parent + level.pointer_offset, sizeof(pointer));
+	}
 	const uint64_t base = pointer & (AddressMask & ~uint64_t {3});
 	// Tables below guest memory and underflowing reads fall back to the interpreted walk.
 	if (base < GUEST_MEMORY_MIN + static_cast<uint64_t>(-std::min<int64_t>(level.first, 0))) return false;
@@ -432,13 +456,13 @@ bool RunSrtWalkLevel(const SrtWalkLevel& level, const uint8_t* parent, uint32_t*
 	const auto* table = reinterpret_cast<const uint8_t*>(base);
 	for (const auto& read: level.reads) {
 		uint32_t value = 0;
-		std::memcpy(&value, table + read.offset, sizeof(value));
+		HostRead(reinterpret_cast<uint64_t>(table + read.offset), &value, sizeof(value));
 		flat[read.flat_offset]                = value;
 		entries[read.entry_index].value      = value;
 		entries[read.entry_index].generation = generation;
 	}
 	for (const auto& child: level.children) {
-		if (!RunSrtWalkLevel(child, table, flat, entries, generation)) return false;
+		if (!RunSrtWalkLevel(child, table, flat, entries, generation, true)) return false;
 	}
 	return true;
 }
@@ -448,7 +472,8 @@ bool RunSrtWalkProgram(const SrtWalkProgram& walk, const uint32_t* user_data, ui
                        size_t user_data_size) {
 	if (user_data_size < walk.user_data_count) return false;
 	for (const auto& root: walk.roots) {
-		if (!RunSrtWalkLevel(root, reinterpret_cast<const uint8_t*>(user_data), flat, entries, generation)) {
+		if (!RunSrtWalkLevel(root, reinterpret_cast<const uint8_t*>(user_data), flat, entries, generation,
+		                     false)) {
 			return false;
 		}
 	}
@@ -863,7 +888,7 @@ bool SrtWalker::EvaluateRawRead(const Inst& inst, uint64_t& result) {
 	} else {
 		if (vector) return false;
 		if (address >= GUEST_MEMORY_MIN) {
-			std::memcpy(&word, reinterpret_cast<const void*>(address), sizeof(word));
+			HostRead(address, &word, sizeof(word));
 		}
 	}
 	result = word;

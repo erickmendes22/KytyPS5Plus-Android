@@ -126,6 +126,14 @@ bool                   CopySparseMemory(uint64_t vaddr, void* data, uint64_t siz
 [[nodiscard]] uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size);
 // KYTY_RANGE_CACHE (default on): lock-free per-thread cache of committed spans in ClampRangeSize.
 void                   SetRangeCacheEnabled(bool enabled);
+// GPU thread host reads of guest memory that would take a page-granular read fault only because
+// other bytes of their page are GPU-written: copies the (not GPU-written) bytes from the backing
+// and returns true. False: read the guest address directly (no GPU-written byte on the page, or
+// these bytes are GPU-written and the read fault must read them back, or no backing view).
+bool                   TryReadGuestPrecise(uint64_t vaddr, void* data, uint64_t size);
+// KYTY_SRT_PRECISE_READS (default on, 0 = off): byte-precise SRT evaluator reads on the GPU thread.
+void                   SetSrtPreciseReads(bool enabled);
+[[nodiscard]] bool     SrtPreciseReadsStartValue();
 [[nodiscard]] bool     RangeCacheStartValue();
 void                   WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept;
 void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
