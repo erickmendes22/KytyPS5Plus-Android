@@ -221,6 +221,13 @@ static bool IsPrivateCommittedRangeType(VirtualRangeType type) {
 static bool g_test_fail_next_range_replace = false;
 #endif
 
+// KYTY_RANGE_CACHE=0 (live knob range_cache=0) turns the lock-free committed-span cache of
+// VirtualRanges::ClampRangeSize off (every call takes the map lock, as before).
+static std::atomic<bool> g_range_cache {[] {
+	const char* value = std::getenv("KYTY_RANGE_CACHE");
+	return value == nullptr || value[0] != '0';
+}()};
+
 class VirtualRanges {
 public:
 	struct Range {
@@ -237,6 +244,7 @@ public:
 	bool Add(uint64_t start, uint64_t size, uint64_t offset, int protection, int memory_type,
 	         VirtualRangeType type, const char* name, bool disallow_merge = false) {
 		Common::LockGuard lock(m_mutex);
+		Bump();
 
 		if (start == 0 || size == 0 || size > UINT64_MAX - start) {
 			return false;
@@ -267,6 +275,7 @@ public:
 
 	bool Remove(uint64_t start, uint64_t size) {
 		Common::LockGuard lock(m_mutex);
+		Bump();
 
 		auto position = m_ranges.find(start);
 		if (position != m_ranges.end() && position->second.size == size) {
@@ -296,6 +305,7 @@ public:
 
 	bool ReleaseReserved(uint64_t start, uint64_t size) {
 		Common::LockGuard lock(m_mutex);
+		Bump();
 
 		auto position = m_ranges.find(start);
 		if (position != m_ranges.end() && position->second.size == size &&
@@ -309,6 +319,7 @@ public:
 	                 int protection, int memory_type, VirtualRangeType type, const char* name,
 	                 bool disallow_merge = false) {
 		Common::LockGuard lock(m_mutex);
+		Bump();
 
 		if (start == 0 || size == 0 || size > UINT64_MAX - start) {
 			return false;
@@ -355,6 +366,7 @@ public:
 
 	void Rename(uint64_t start, uint64_t size, const char* name) {
 		Common::LockGuard lock(m_mutex);
+		Bump();
 
 		auto position = m_ranges.find(start);
 		if (position != m_ranges.end() && position->second.size == size) {
@@ -367,6 +379,7 @@ public:
 
 	void Protect(uint64_t start, uint64_t size, int protection) {
 		Common::LockGuard lock(m_mutex);
+		Bump();
 
 		EditUnlocked(start, size, [protection](Range* r) { r->protection = protection; });
 	}
@@ -428,20 +441,35 @@ public:
 	}
 
 	uint64_t ClampRangeSize(uint64_t virtual_addr, uint64_t size) {
-		Common::LockGuard lock(m_mutex);
-
 		if (virtual_addr == 0 || size == 0 || size > UINT64_MAX - virtual_addr) {
 			return 0;
 		}
+		// Lock-free hit: a committed span this thread resolved since the last edit of the map
+		// (the GPU thread's SRT walker checks every guest read here, thousands per frame).
+		const auto generation = m_generation.load(std::memory_order_acquire);
+		const bool cached     = g_range_cache.load(std::memory_order_relaxed);
+		for (const auto& span: t_committed_spans) {
+			if (!cached) {
+				break;
+			}
+			if (span.owner == this && span.generation == generation && virtual_addr >= span.begin &&
+			    virtual_addr + size <= span.end) {
+				return size;
+			}
+		}
+
+		Common::LockGuard lock(m_mutex);
 
 		auto vma = FindContaining(virtual_addr);
 		if (vma == m_ranges.end() || !IsCommittedRangeType(vma->second.type)) {
 			return 0;
 		}
-		const auto vma_end = End(vma->second.start, vma->second.size);
+		const auto span_begin = vma->second.start;
+		const auto vma_end    = End(vma->second.start, vma->second.size);
 
 		uint64_t clamped_size = std::min(size, vma_end - virtual_addr);
 		uint64_t expected     = virtual_addr + clamped_size;
+		uint64_t span_end     = vma_end;
 		++vma;
 
 		while (vma != m_ranges.end() && vma->second.start == expected &&
@@ -449,8 +477,12 @@ public:
 			const auto chunk = std::min(size - clamped_size, vma->second.size);
 			clamped_size += chunk;
 			expected += chunk;
+			span_end = End(vma->second.start, vma->second.size);
 			++vma;
 		}
+		// Remember the committed span (most recent first); edits bump the generation under the lock.
+		t_committed_spans[1] = t_committed_spans[0];
+		t_committed_spans[0] = {this, m_generation.load(std::memory_order_relaxed), span_begin, span_end};
 
 		return clamped_size;
 	}
@@ -631,11 +663,25 @@ private:
 		return nullptr;
 	}
 
-	RangeMap      m_ranges;
-	Common::Mutex m_mutex;
-	uint64_t      m_cpu_page_table_entries = 0;
-	uint64_t      m_gpu_page_table_entries = 0;
+	// Every edit of the map, before it starts (under m_mutex): invalidates the threads' span caches.
+	void Bump() { m_generation.fetch_add(1, std::memory_order_acq_rel); }
+
+	struct CommittedSpan {
+		const VirtualRanges* owner      = nullptr;
+		uint64_t             generation = 0;
+		uint64_t             begin      = 0;
+		uint64_t             end        = 0;
+	};
+	static thread_local std::array<CommittedSpan, 2> t_committed_spans;
+
+	RangeMap              m_ranges;
+	Common::Mutex         m_mutex;
+	std::atomic<uint64_t> m_generation {1};
+	uint64_t              m_cpu_page_table_entries = 0;
+	uint64_t              m_gpu_page_table_entries = 0;
 };
+
+thread_local std::array<VirtualRanges::CommittedSpan, 2> VirtualRanges::t_committed_spans {};
 
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 static uint32_t g_test_physical_memory_unmaps_before_failure = UINT32_MAX;
@@ -926,6 +972,15 @@ bool TryReadCleanBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 bool IsMappedRange(uint64_t vaddr, uint64_t size) {
 	return g_virtual_ranges != nullptr && size != 0 &&
 	       g_virtual_ranges->ClampRangeSize(vaddr, size) == size;
+}
+
+void SetRangeCacheEnabled(bool enabled) {
+	g_range_cache.store(enabled, std::memory_order_relaxed);
+}
+
+bool RangeCacheStartValue() {
+	const char* value = std::getenv("KYTY_RANGE_CACHE");
+	return value == nullptr || value[0] != '0';
 }
 
 uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size) {

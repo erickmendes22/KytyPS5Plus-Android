@@ -124,6 +124,9 @@ bool                   TryReadCleanBufferBacking(uint64_t vaddr, void* data, uin
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   CopySparseMemory(uint64_t vaddr, void* data, uint64_t size);
 [[nodiscard]] uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size);
+// KYTY_RANGE_CACHE (default on): lock-free per-thread cache of committed spans in ClampRangeSize.
+void                   SetRangeCacheEnabled(bool enabled);
+[[nodiscard]] bool     RangeCacheStartValue();
 void                   WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept;
 void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
 void                   InstallGpuResources(Graphics::RenderContext* renderer) noexcept;
