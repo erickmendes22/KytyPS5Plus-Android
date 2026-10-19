@@ -867,7 +867,10 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 					size = std::min({size, uint64_t {256} * 1024 * 1024, limit});
 				}
 			}
-			size = Libs::LibKernel::Memory::ClampRangeSize(address, size);
+			// Finite GPU descriptors can span sparse PRT holes; clamp only oversized/sentinel ranges.
+			if (size >= (uint64_t {1} << 30u) || descriptor.NumRecords() == UINT32_MAX) {
+				size = Libs::LibKernel::Memory::ClampRangeSize(address, size);
+			}
 			source = {address, size, cache.FindBuffer(address, size)};
 		}
 	}

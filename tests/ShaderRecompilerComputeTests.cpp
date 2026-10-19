@@ -13631,6 +13631,49 @@ public:
           };
 
       {
+        constexpr uint64_t page = 0x10000;
+        constexpr uint64_t address = base - page;
+        constexpr u32 resident_value = 0x13572468u;
+        void *reservation = reinterpret_cast<void *>(address);
+        Require(name, "sparse descriptor reservation",
+                LibKernel::Memory::KernelReserveVirtualRange(&reservation, page, 0x10, page) == 0,
+                "leading sparse page reservation failed");
+        resources.MapMemory(address, page);
+        LibKernel::Memory::WriteBacking(base, &resident_value, sizeof(resident_value));
+        const auto program = make_buffer_program(ShaderType::Compute, {.read = true});
+        ShaderRecompiler::IR::ResourceSnapshot snapshot;
+        auto &value = snapshot.buffers.emplace_back();
+        value.dword_count = 4;
+        value.dwords = {static_cast<u32>(address), static_cast<u32>(address >> 32), 2u * page};
+        ShaderStageRuntime runtime{&program, &snapshot};
+        PreparedBindings bindings;
+        executor.PrepareBindings(runtime, bindings);
+        std::array<PreparedBindings *, 1> stages{&bindings};
+        executor.FindBuffers(stages);
+        executor.RebindBuffers(bindings);
+        const auto &source = bindings.buffer_sources[0];
+        const auto &owner = resources.GetBufferCache().GetBuffer(source.id);
+        Require(name, "finite sparse descriptor extent",
+                source.address == address && source.size == 2u * page &&
+                    bindings.buffers[0].range == 2u * page,
+                "finite descriptor lost its leading hole or resident tail");
+        auto output = CreateHostBuffer(name, 2u * sizeof(u32), vk::BufferUsageFlagBits::eTransferDst, {});
+        const std::array<vk::BufferCopy, 2> copies{{
+            {owner.Offset(address), 0, sizeof(u32)},
+            {owner.Offset(base), sizeof(u32), sizeof(u32)}}};
+        scheduler.Current().Handle().copyBuffer(owner.Handle(), output.buffer, copies.size(), copies.data());
+        scheduler.Finish();
+        Require(name, "finite sparse descriptor upload",
+                ReadBuffer(name, output, 2) == std::vector<u32>{0u, resident_value},
+                "sparse descriptor upload lost zero-filled holes or resident bytes");
+        DestroyBuffer(&output);
+        resources.UnmapMemory(address, page);
+        Require(name, "sparse descriptor reservation release",
+                LibKernel::Memory::KernelMunmap(address, page) == 0,
+                "leading sparse page reservation release failed");
+      }
+
+      {
         const auto buffer_program = make_buffer_program(ShaderType::Compute, {.read = true});
 
         constexpr uint64_t buffer_address = base + allocation_size - 0x5000;
