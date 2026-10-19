@@ -179,8 +179,14 @@ uint64_t ReadRecords(std::FILE* file, uint64_t file_size, std::vector<ShaderDisk
 } // namespace
 
 uint64_t ShaderDiskCache::Signature(uint64_t options_signature) {
-	const auto text = fmt::format("v{} {} {} vs{} ps{} cs{} opt{:016x}", FormatVersion, ModuleBuildId(),
-	                              KYTY_GIT_REVISION, sizeof(ShaderVertexInputInfo),
+	// KYTY_SHADER_CACHE_BUILD=<name> (development): use <name> instead of the binary's build id and
+	// revision, so test builds that differ outside the shader recompiler share one warm cache.
+	// Wrong (stale translations) if the recompiler or its inputs changed between those builds.
+	const char* build_override = std::getenv("KYTY_SHADER_CACHE_BUILD");
+	const bool  overridden     = build_override != nullptr && build_override[0] != '\0';
+	const auto  text = fmt::format("v{} {} {} vs{} ps{} cs{} opt{:016x}", FormatVersion,
+	                              overridden ? std::string(build_override) : ModuleBuildId(),
+	                              overridden ? "" : KYTY_GIT_REVISION, sizeof(ShaderVertexInputInfo),
 	                              sizeof(ShaderPixelInputInfo), sizeof(ShaderComputeInputInfo),
 	                              options_signature);
 	return XXH3_64bits(text.data(), text.size());
