@@ -246,6 +246,25 @@ void TestResourceMemoKeysOnReadUserData() {
   }
   const auto stats = ResourceMemo::TakeStats();
   Check(stats.misses == 2 && stats.hits == 1, "memo keyed on a user-data word the walk did not read");
+
+  // Two slots, three keys in turn: the clock evicts, and every result still equals a fresh walk.
+  ResourceMemo::SetSlots(2);
+  ResourceMemo small;
+  for (int round = 0; round < 4; ++round) {
+    for (const uint32_t word0 : {0x1000u, 0x2000u, 0x3000u, 0x3000u}) {
+      user_data = {word0, 5u};
+      ResourceSnapshot direct;
+      ResourceSpecialization direct_specialization;
+      Check(MaterializeResources(plan, runtime, direct, direct_specialization) &&
+                small.Materialize(plan, runtime, snapshot, specialization) &&
+                snapshot.buffers == direct.buffers && specialization == direct_specialization,
+            "evicting memo returned a result that differs from a fresh walk");
+    }
+  }
+  const auto evicting = ResourceMemo::TakeStats();
+  Check(small.Size() == 2 && evicting.evicted > 0 && evicting.hits >= 4,
+        "memo did not stay within its slots or did not reuse the repeated key");
+  ResourceMemo::SetSlots(ResourceMemo::SlotsStartValue());
   ResourceMemo::SetEnabled(false);
 }
 

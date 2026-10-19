@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
@@ -13,7 +14,7 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 //
 // A materialization is a pure function of its plan, the user-data words it reads, the shader
 // base, the dispatch inputs and the guest memory it reads (SrtReadLog). A result is reused when
-// those user-data words and inputs are equal (the key) and re-reading every logged access returns
+// those user-data words and inputs are equal (the key, looked up by hash) and re-reading every logged access returns
 // the logged bytes, so a descriptor the guest or the GPU rewrote since is re-read and the walk
 // runs again: there is no invalidation to miss. The re-read goes through the same readers as the
 // walk (GPU-written bytes still read back first), it only skips the evaluation.
@@ -37,7 +38,7 @@ public:
 	static bool  Enabled();
 	// KYTY_SRT_MEMO start value (default off).
 	static bool  StartValue();
-	// Results kept per source: KYTY_SRT_MEMO_SLOTS (default 32), SetSlots (1..1024) overrides.
+	// Results kept per source: KYTY_SRT_MEMO_SLOTS (default 256), SetSlots (1..1024) overrides.
 	static size_t SlotsStartValue();
 	static void   SetSlots(size_t slots);
 	// Counters over every memo since the last call (one thread uses memos: the GPU thread).
@@ -54,19 +55,24 @@ private:
 		SrtReadLog             log;
 		ResourceSnapshot       snapshot;
 		ResourceSpecialization specialization;
-		uint64_t               used = 0;
+		bool                   referenced = false; // hit since the clock hand last passed
 	};
+	static constexpr uint32_t NoSlot = UINT32_MAX;
 
 	void   BuildKey(const SrtRuntime& runtime);
 	void   TraceMiss() const;
-	Entry& Victim();
+	// A free slot: a new one below the limit, else the clock's choice (unindexed first).
+	uint32_t Victim();
+	void     Forget(uint32_t index);
 
 	// Union of the user-data words the walks of this source read; keys hold these words only.
 	std::vector<uint64_t>  m_user_data_words;
 	std::vector<Entry>     m_entries;
+	// Key hash -> slot. A hash collision between two live keys keeps only the newer one.
+	std::unordered_map<uint64_t, uint32_t> m_index;
+	uint32_t               m_hand  = 0;
 	std::vector<uint32_t>  m_key;
 	uint64_t               m_hash  = 0;
-	uint64_t               m_clock = 0;
 	SrtReadLog             m_log;
 };
 

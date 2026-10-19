@@ -37,7 +37,7 @@ void Bump(std::atomic<uint64_t>& counter) {
 	counter.store(counter.load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);
 }
 
-// Results kept per shader source (KYTY_SRT_MEMO_SLOTS / live knob memo_slots, default 32).
+// Results kept per shader source (KYTY_SRT_MEMO_SLOTS / live knob memo_slots, default 256).
 std::atomic<size_t> g_max_entries {0};
 
 size_t MaxEntries() {
@@ -67,7 +67,7 @@ bool ResourceMemo::Enabled() {
 size_t ResourceMemo::SlotsStartValue() {
 	static const size_t slots = [] {
 		const char* value = std::getenv("KYTY_SRT_MEMO_SLOTS");
-		return value != nullptr ? static_cast<size_t>(std::strtoul(value, nullptr, 10)) : size_t {32};
+		return value != nullptr ? static_cast<size_t>(std::strtoul(value, nullptr, 10)) : size_t {256};
 	}();
 	return std::clamp<size_t>(slots, 1, 1024);
 }
@@ -132,7 +132,7 @@ void ResourceMemo::TraceMiss() const {
 	const Entry* closest = nullptr;
 	size_t       best    = SIZE_MAX;
 	for (const auto& entry: m_entries) {
-		if (entry.key.size() != m_key.size()) continue;
+		if (entry.key.size() != m_key.size()) continue; // also skips forgotten entries
 		size_t differ = 0;
 		for (size_t i = 0; i < m_key.size(); ++i) differ += entry.key[i] != m_key[i] ? 1u : 0u;
 		if (differ < best) {
@@ -168,12 +168,33 @@ void ResourceMemo::BuildKey(const SrtRuntime& runtime) {
 	m_hash = HashWords(m_key);
 }
 
-ResourceMemo::Entry& ResourceMemo::Victim() {
+uint32_t ResourceMemo::Victim() {
 	if (m_entries.size() < MaxEntries()) {
-		return m_entries.emplace_back();
+		m_entries.emplace_back();
+		return static_cast<uint32_t>(m_entries.size() - 1u);
 	}
+	// Clock (second chance): an entry hit since the hand last passed it stays one more round.
 	Bump(g_evicted);
-	return *std::ranges::min_element(m_entries, {}, &Entry::used);
+	for (;;) {
+		if (m_hand >= m_entries.size()) m_hand = 0;
+		auto& entry = m_entries[m_hand];
+		const auto index = m_hand++;
+		if (entry.referenced) {
+			entry.referenced = false;
+			continue;
+		}
+		Forget(index);
+		return index;
+	}
+}
+
+void ResourceMemo::Forget(uint32_t index) {
+	auto& entry = m_entries[index];
+	if (const auto found = m_index.find(entry.hash); found != m_index.end() && found->second == index) {
+		m_index.erase(found);
+	}
+	entry.key.clear();
+	entry.referenced = false;
 }
 
 bool ResourceMemo::Materialize(const ResourcePlan& plan, const SrtRuntime& runtime,
@@ -184,20 +205,18 @@ bool ResourceMemo::Materialize(const ResourcePlan& plan, const SrtRuntime& runti
 		return MaterializeResources(plan, runtime, snapshot, specialization);
 	}
 	BuildKey(runtime);
-	auto slot = m_entries.end();
-	for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
-		if (it->hash == m_hash && it->key == m_key) {
-			slot = it;
-			break;
-		}
+	uint32_t slot = NoSlot;
+	if (const auto found = m_index.find(m_hash); found != m_index.end() && m_entries[found->second].key == m_key) {
+		slot = found->second;
 	}
-	if (slot != m_entries.end()) {
-		if (SrtReadLogMatches(slot->log, runtime)) {
-			snapshot       = slot->snapshot;
-			specialization = slot->specialization;
+	if (slot != NoSlot) {
+		auto& entry = m_entries[slot];
+		if (SrtReadLogMatches(entry.log, runtime)) {
+			snapshot       = entry.snapshot;
+			specialization = entry.specialization;
 			// The snapshot carries all user data, including words the walk did not read.
 			snapshot.user_data.assign(runtime.user_data.begin(), runtime.user_data.end());
-			slot->used = ++m_clock;
+			entry.referenced = true;
 			Bump(g_hits);
 			return true;
 		}
@@ -213,7 +232,7 @@ bool ResourceMemo::Materialize(const ResourcePlan& plan, const SrtRuntime& runti
 	}
 	if (!ok) return false;
 	if (!m_log.complete) {
-		if (slot != m_entries.end()) m_entries.erase(slot);
+		if (slot != NoSlot) Forget(slot);
 		return true;
 	}
 	// Keys hold the union of the words read so far: a walk that read a new word starts over.
@@ -227,16 +246,24 @@ bool ResourceMemo::Materialize(const ResourcePlan& plan, const SrtRuntime& runti
 	}
 	if (grew) {
 		m_entries.clear();
-		slot = m_entries.end();
+		m_index.clear();
+		m_hand = 0;
+		slot   = NoSlot;
 		BuildKey(runtime);
 	}
-	auto& entry = slot != m_entries.end() ? *slot : Victim();
+	if (slot == NoSlot) {
+		slot = Victim();
+		// A different key with the same hash loses its index entry (it can no longer be found).
+		if (const auto found = m_index.find(m_hash); found != m_index.end()) Forget(found->second);
+		m_index[m_hash] = slot;
+	}
+	auto& entry = m_entries[slot];
 	entry.hash  = m_hash;
 	entry.key   = m_key;
 	std::swap(entry.log, m_log);
 	entry.snapshot       = snapshot;
 	entry.specialization = specialization;
-	entry.used           = ++m_clock;
+	entry.referenced     = false;
 	return true;
 }
 
