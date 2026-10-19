@@ -16,6 +16,7 @@
 #include "graphics/host_gpu/renderer/sync.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
+#include "graphics/shader/recompiler/ir/passes/ResourceMemo.h"
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
 #include "kernel/threadPlacement.h"
@@ -521,6 +522,31 @@ void GuestGpu::WaitForIdle() {
 	}
 }
 
+// KYTY_SRT_MEMO / live knob srt_memo, and with --perf-stats one "[perf-memo]" line a second.
+static void PollSrtMemo() {
+	using ShaderRecompiler::IR::ResourceMemo;
+	static const bool start = ResourceMemo::StartValue();
+	ResourceMemo::SetEnabled(LiveKnobs::Int("srt_memo", start ? 1 : 0) != 0);
+	ResourceMemo::SetSlots(static_cast<size_t>(
+	    std::max<int64_t>(LiveKnobs::Int("memo_slots", static_cast<int64_t>(ResourceMemo::SlotsStartValue())), 1)));
+	if (!Common::PerfStats::Enabled()) return;
+	static int64_t last_ns = 0;
+	const auto     now_ns  = Common::PerfStats::Detail::MonotonicNs();
+	if (now_ns - last_ns < 1'000'000'000) return;
+	last_ns          = now_ns;
+	const auto stats = ResourceMemo::TakeStats();
+	char       line[192];
+	std::snprintf(line, sizeof(line),
+	              "[perf-memo] per second: on=%d hits=%llu misses=%llu stale=%llu uncached=%llu evicted=%llu",
+	              ResourceMemo::Enabled() ? 1 : 0, static_cast<unsigned long long>(stats.hits),
+	              static_cast<unsigned long long>(stats.misses), static_cast<unsigned long long>(stats.stale),
+	              static_cast<unsigned long long>(stats.uncached), static_cast<unsigned long long>(stats.evicted));
+	Common::PerfStats::EmitLine(line);
+	if (const auto report = ResourceMemo::TakeMissReport(); !report.empty()) {
+		Common::PerfStats::EmitLine("[perf-memo] misses " + report);
+	}
+}
+
 void GuestGpu::ThreadRun(void* data) {
 	auto* gpu = static_cast<GuestGpu*>(data);
 	EXIT_IF(gpu == nullptr);
@@ -544,6 +570,7 @@ void GuestGpu::ThreadRun(void* data) {
 			LibKernel::Memory::SetRangeCacheEnabled(LiveKnobs::Int("range_cache", range_cache_start ? 1 : 0) != 0);
 			static const bool srt_reads_start = LibKernel::Memory::SrtPreciseReadsStartValue();
 			LibKernel::Memory::SetSrtPreciseReads(LiveKnobs::Int("srt_reads", srt_reads_start ? 1 : 0) != 0);
+			PollSrtMemo();
 		}
 		if (gpu->m_flush_deferred && !gpu->HasRunnableWork()) {
 			gpu->FlushDeferred();

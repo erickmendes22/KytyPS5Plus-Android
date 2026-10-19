@@ -1,6 +1,8 @@
+#include "common/hostArch.h"
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
+#include "graphics/shader/recompiler/ir/passes/ResourceMemo.h"
 
 #include <bit>
 #include <cstdio>
@@ -181,6 +183,72 @@ UndefinedFormatImageProgram(uint32_t format) {
   return program;
 }
 
+bool g_memo_mapped = true;
+
+// ResourceMemo reuses a result only while the user-data words the walk read and every memory
+// access it made (values and mapping probes) are unchanged.
+void TestResourceMemoRereadsMemory() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  std::array<uint32_t, 2> memory{0x11111111u, 0x22222222u};
+  const auto plan = ExtractResourcePlan(SrtProgram(reinterpret_cast<uint64_t>(memory.data())));
+  Check(plan.srt_code == nullptr, "memo test expects the interpreted walk");
+  const std::array<uint32_t, 2> user_data{7u, 9u};
+  const SrtRuntime runtime{.user_data = user_data,
+                           .mapped = +[](uint64_t, uint64_t) { return g_memo_mapped; }};
+  ResourceMemo::SetEnabled(true);
+  (void)ResourceMemo::TakeStats();
+  ResourceMemo memo;
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization;
+  const auto materialize = [&](uint32_t expected, const char *text) {
+    Check(memo.Materialize(plan, runtime, snapshot, specialization) &&
+              snapshot.flattened_srt == std::vector<uint32_t>{expected},
+          text);
+  };
+  materialize(memory[0], "memo first walk");
+  materialize(memory[0], "memo reuse");
+  auto stats = ResourceMemo::TakeStats();
+  Check(stats.misses == 1 && stats.hits == 1 && stats.stale == 0, "memo did not reuse an unchanged walk");
+  memory[0] = 0x33333333u;
+  materialize(memory[0], "memo kept a stale value after the memory changed");
+  stats = ResourceMemo::TakeStats();
+  Check(stats.stale == 1 && stats.hits == 0, "memo did not notice the changed memory");
+  materialize(memory[0], "memo reuse after a re-walk");
+  g_memo_mapped = false;
+  materialize(0u, "memo reused a read of memory that is no longer mapped");
+  stats = ResourceMemo::TakeStats();
+  Check(stats.hits == 1 && stats.stale == 1, "memo did not re-probe the mapping");
+  g_memo_mapped = true;
+  ResourceMemo::SetEnabled(false);
+  materialize(memory[0], "disabled memo did not walk");
+  Check(ResourceMemo::TakeStats().uncached == 1, "disabled memo was used");
+}
+
+void TestResourceMemoKeysOnReadUserData() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  const auto plan = UserDataBufferPlan();
+  std::array<uint32_t, 2> user_data{0x1000u, 5u};
+  const SrtRuntime runtime{.user_data = user_data};
+  ResourceMemo::SetEnabled(true);
+  (void)ResourceMemo::TakeStats();
+  ResourceMemo memo;
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization;
+  for (const auto [word0, word1] : {std::pair{0x1000u, 5u}, std::pair{0x1000u, 6u}, std::pair{0x2000u, 6u}}) {
+    user_data = {word0, word1};
+    ResourceSnapshot direct;
+    ResourceSpecialization direct_specialization;
+    Check(MaterializeResources(plan, runtime, direct, direct_specialization), "direct walk failed");
+    Check(memo.Materialize(plan, runtime, snapshot, specialization), "memo walk failed");
+    Check(snapshot.buffers == direct.buffers && snapshot.user_data == direct.user_data &&
+              specialization == direct_specialization,
+          "memo result differs from a fresh walk");
+  }
+  const auto stats = ResourceMemo::TakeStats();
+  Check(stats.misses == 2 && stats.hits == 1, "memo keyed on a user-data word the walk did not read");
+  ResourceMemo::SetEnabled(false);
+}
+
 void TestMappedSrtUsesDirectReaderByDefault() {
   using namespace Libs::Graphics::ShaderRecompiler::IR;
   const uint32_t dword = 0x12345678;
@@ -279,6 +347,27 @@ void TestNativeNestedSrtRefresh() {
                   std::vector<uint32_t>{(*data)[1], table[0], table[1], (*data)[2]},
           "native SRT refresh lost pointer masking, alignment, or current values");
   }
+#if !KYTY_HOST_X86
+  {
+    // The ARM walk program logs its reads: a memo re-reads the nested table, not just the root.
+    ResourceMemo::SetEnabled(true);
+    (void)ResourceMemo::TakeStats();
+    ResourceMemo memo;
+    table = pointer_words(first.data());
+    for (const uint32_t value : {first[1], first[1], first[1] ^ 0x5au}) {
+      first[1] = value;
+      Check(memo.Materialize(plan, runtime, snapshot, specialization) &&
+                snapshot.flattened_srt ==
+                    std::vector<uint32_t>{first[1], table[0], table[1], first[2]},
+            "memoized native SRT walk returned a stale nested value");
+    }
+    const auto stats = ResourceMemo::TakeStats();
+    Check(stats.misses == 1 && stats.hits == 1 && stats.stale == 1,
+          "memoized native SRT walk did not log its nested reads");
+    first[1] ^= 0x5au;
+    ResourceMemo::SetEnabled(false);
+  }
+#endif
   table = pointer_words(nullptr);
   Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
             snapshot.flattened_srt == std::vector<uint32_t>{0u, table[0], table[1], 0u},
@@ -1443,6 +1532,8 @@ int main() {
   TestSignedStorageSpecialization();
   for (const bool mixed : {false, true}) TestIndirectImageSamplerClasses(mixed);
   TestUndefinedImageFormatBindsNullImage();
+  TestResourceMemoRereadsMemory();
+  TestResourceMemoKeysOnReadUserData();
   std::puts("ResourceMaterializationTests: all cases passed");
   return 0;
 }

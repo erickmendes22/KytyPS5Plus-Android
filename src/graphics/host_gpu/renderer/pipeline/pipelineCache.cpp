@@ -24,6 +24,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
+#include "graphics/shader/recompiler/ir/passes/ResourceMemo.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "kernel/memory.h"
 #include "loader/systemContent.h"
@@ -344,8 +345,12 @@ struct PipelineCache::ProgramCache {
 		template <bool HasCalls>
 		Permutation* FindPermutation(const ShaderRecompiler::IR::SrtRuntime& runtime,
 		                             uint32_t push_data_cursor) {
-			EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(
-			    resource_plan, runtime, resources, specialization));
+			if constexpr (HasCalls) {
+				EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(
+				    resource_plan, runtime, resources, specialization));
+			} else {
+				EXIT_IF(!memo.Materialize(resource_plan, runtime, resources, specialization));
+			}
 			for (auto& candidate: permutations) {
 				const auto& layout = candidate.program.bindings;
 				if (layout.push_data_start_dword != ShaderRecompiler::IR::PushData::StartFor(
@@ -375,6 +380,8 @@ struct PipelineCache::ProgramCache {
 		ShaderRecompiler::IR::ResourcePlan           resource_plan;
 		ShaderRecompiler::IR::ResourceSnapshot       resources;
 		ShaderRecompiler::IR::ResourceSpecialization specialization;
+		// Per-draw materializations of this source (KYTY_SRT_MEMO).
+		ShaderRecompiler::IR::ResourceMemo           memo;
 		// Draws, pipeline jobs and the stage runtimes keep pointers to installed permutations:
 		// a deque never moves them.
 		std::deque<Permutation>                      permutations;

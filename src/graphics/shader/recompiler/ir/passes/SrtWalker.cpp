@@ -39,7 +39,50 @@ namespace {
 
 std::atomic<SrtHostRead> g_host_read {nullptr};
 
-void HostRead(uint64_t address, void* data, size_t size) {
+// The read log of the materialization running on this thread (ScopedSrtReadLog), and the
+// runtime whose readers the logging wrappers forward to.
+thread_local SrtReadLog*       t_read_log    = nullptr;
+thread_local const SrtRuntime* t_read_source = nullptr;
+
+constexpr uint32_t NoEntry  = UINT32_MAX;
+constexpr uint64_t LogPage  = 4096;
+
+// Appends one access, or extends the last successful access of the same kind when this one
+// continues it on the same 4 KiB page (one re-read per table row instead of one per dword).
+void LogAccess(SrtReadLog::Kind kind, uint64_t address, const void* data, size_t bytes, bool ok) {
+	auto* log = t_read_log;
+	if (log == nullptr || !log->complete) return;
+	const bool has_values = ok && kind != SrtReadLog::Kind::Mapped;
+	if (bytes == 0 || bytes > UINT32_MAX || (has_values && log->values.size() + bytes > SrtReadLog::MaxValueBytes)) {
+		log->complete = false;
+		return;
+	}
+	auto& last = log->last_entry[static_cast<size_t>(kind)];
+	if (ok && last != NoEntry) {
+		auto& entry = log->entries[last];
+		const bool contiguous = entry.ok && entry.address + entry.bytes == address &&
+		                        entry.address / LogPage == (address + bytes - 1) / LogPage;
+		const bool values_at_end = !has_values || entry.value_offset + entry.bytes == log->values.size();
+		if (contiguous && values_at_end) {
+			if (has_values) {
+				const auto* begin = static_cast<const uint8_t*>(data);
+				log->values.insert(log->values.end(), begin, begin + bytes);
+			}
+			entry.bytes += static_cast<uint32_t>(bytes);
+			return;
+		}
+	}
+	SrtReadLog::Entry entry {.address = address, .bytes = static_cast<uint32_t>(bytes),
+	                         .value_offset = static_cast<uint32_t>(log->values.size()), .kind = kind, .ok = ok};
+	if (has_values) {
+		const auto* begin = static_cast<const uint8_t*>(data);
+		log->values.insert(log->values.end(), begin, begin + bytes);
+	}
+	last = static_cast<uint32_t>(log->entries.size());
+	log->entries.push_back(entry);
+}
+
+void HostReadUnlogged(uint64_t address, void* data, size_t size) {
 	if (const auto read = g_host_read.load(std::memory_order_relaxed); read != nullptr) {
 		read(address, data, size);
 	} else {
@@ -47,7 +90,105 @@ void HostRead(uint64_t address, void* data, size_t size) {
 	}
 }
 
+void HostRead(uint64_t address, void* data, size_t size) {
+	HostReadUnlogged(address, data, size);
+	if (t_read_log != nullptr) LogAccess(SrtReadLog::Kind::Host, address, data, size, true);
+}
+
+void NoteUserDataRead(size_t index) {
+	if (t_read_log != nullptr) t_read_log->NoteUserData(index);
+}
+
+bool LoggedSpecRead(void* userdata, uint64_t address, std::span<uint32_t> values) {
+	EXIT_IF(t_read_source == nullptr);
+	const bool ok = t_read_source->read_specialization_memory(userdata, address, values);
+	LogAccess(SrtReadLog::Kind::Spec, address, values.data(), values.size_bytes(), ok);
+	return ok;
+}
+
+bool LoggedBranchRead(void* userdata, uint64_t address, std::span<uint32_t> values) {
+	EXIT_IF(t_read_source == nullptr);
+	const bool ok = t_read_source->read_branch_memory(userdata, address, values);
+	LogAccess(SrtReadLog::Kind::Branch, address, values.data(), values.size_bytes(), ok);
+	return ok;
+}
+
+bool LoggedMapped(uint64_t address, uint64_t size) {
+	EXIT_IF(t_read_source == nullptr);
+	const bool ok = t_read_source->mapped(address, size);
+	LogAccess(SrtReadLog::Kind::Mapped, address, nullptr, size, ok);
+	return ok;
+}
+
 } // namespace
+
+void SrtReadLog::Clear() {
+	entries.clear();
+	values.clear();
+	user_data_words.clear();
+	last_entry.fill(NoEntry);
+	complete = true;
+}
+
+void SrtReadLog::NoteUserData(size_t index) {
+	const auto word = index / 64u;
+	if (word >= user_data_words.size()) user_data_words.resize(word + 1u, 0u);
+	user_data_words[word] |= uint64_t {1} << (index % 64u);
+}
+
+ScopedSrtReadLog::ScopedSrtReadLog(SrtReadLog& log, const SrtRuntime& source)
+    : m_previous_log(t_read_log), m_previous_source(t_read_source), m_source(source) {
+	log.Clear();
+	// An ordinary reader of the caller's would be an unlogged input.
+	if (source.read_memory != nullptr) log.complete = false;
+	t_read_log    = &log;
+	t_read_source = &m_source;
+}
+
+ScopedSrtReadLog::~ScopedSrtReadLog() {
+	t_read_log    = m_previous_log;
+	t_read_source = m_previous_source;
+}
+
+SrtRuntime ScopedSrtReadLog::Runtime() const {
+	auto runtime = m_source;
+	if (runtime.read_specialization_memory != nullptr) runtime.read_specialization_memory = LoggedSpecRead;
+	if (runtime.read_branch_memory != nullptr) runtime.read_branch_memory = LoggedBranchRead;
+	if (runtime.mapped != nullptr) runtime.mapped = LoggedMapped;
+	return runtime;
+}
+
+bool SrtReadLogMatches(const SrtReadLog& log, const SrtRuntime& runtime) {
+	if (!log.complete) return false;
+	thread_local std::vector<uint32_t> scratch;
+	for (const auto& entry: log.entries) {
+		if (entry.kind == SrtReadLog::Kind::Mapped) {
+			if (runtime.mapped == nullptr || runtime.mapped(entry.address, entry.bytes) != entry.ok) return false;
+			continue;
+		}
+		scratch.resize((entry.bytes + 3u) / 4u);
+		bool ok = true;
+		switch (entry.kind) {
+			case SrtReadLog::Kind::Host: HostReadUnlogged(entry.address, scratch.data(), entry.bytes); break;
+			case SrtReadLog::Kind::Spec:
+				if (runtime.read_specialization_memory == nullptr || (entry.bytes & 3u) != 0u) return false;
+				ok = runtime.read_specialization_memory(runtime.userdata, entry.address,
+				                                        std::span(scratch).first(entry.bytes / 4u));
+				break;
+			case SrtReadLog::Kind::Branch:
+				if (runtime.read_branch_memory == nullptr || (entry.bytes & 3u) != 0u) return false;
+				ok = runtime.read_branch_memory(runtime.userdata, entry.address,
+				                                std::span(scratch).first(entry.bytes / 4u));
+				break;
+			case SrtReadLog::Kind::Mapped: break;
+		}
+		if (ok != entry.ok) return false;
+		if (ok && std::memcmp(scratch.data(), log.values.data() + entry.value_offset, entry.bytes) != 0) {
+			return false;
+		}
+	}
+	return true;
+}
 
 void SetSrtHostRead(SrtHostRead read) {
 	g_host_read.store(read, std::memory_order_relaxed);
@@ -472,6 +613,13 @@ bool RunSrtWalkProgram(const SrtWalkProgram& walk, const uint32_t* user_data, ui
                        size_t user_data_size) {
 	if (user_data_size < walk.user_data_count) return false;
 	for (const auto& root: walk.roots) {
+		// The root pointer is the 64-bit user-data pair at its byte offset.
+		if (root.pointer_offset < 0 || static_cast<size_t>(root.pointer_offset) + 8u > user_data_size * 4u) {
+			if (t_read_log != nullptr) t_read_log->complete = false;
+		} else {
+			NoteUserDataRead(static_cast<size_t>(root.pointer_offset) / 4u);
+			NoteUserDataRead((static_cast<size_t>(root.pointer_offset) + 7u) / 4u);
+		}
 		if (!RunSrtWalkLevel(root, reinterpret_cast<const uint8_t*>(user_data), flat, entries, generation,
 		                     false)) {
 			return false;
@@ -911,6 +1059,7 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 				return false;
 			}
 			result = m_runtime.user_data[reg - m_program.user_data_base];
+			NoteUserDataRead(reg - m_program.user_data_base);
 			return true;
 		}
 		case ValueOpcode::GetShaderBase: result = m_runtime.shader_base; return true;
@@ -1307,6 +1456,8 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		m_program.active_sources.clear();
 		m_context.values.resize(m_program.evaluation_value_count);
 #if KYTY_HOST_X86
+		// The generated walker reads guest memory itself, past the read log.
+		if (t_read_log != nullptr) t_read_log->complete = false;
 		using Walker = bool KYTY_SYSV_ABI (*)(const uint32_t*, uint32_t*,
 		    ResourcePlan::EvaluationContext::Entry*, uint64_t, size_t);
 		if (m_program.srt_code->getCode<Walker>()(m_runtime.user_data.data(), flat.data(),

@@ -4,6 +4,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <algorithm>
+#include <array>
 #include <span>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
@@ -51,6 +52,55 @@ struct SrtRuntime {
 	SrtMemoryReader           read_branch_memory         = nullptr;
 	uint64_t                  indirect_args_address = 0;
 };
+
+// Every input one resource materialization took from outside its plan, in order: guest memory
+// accesses (host reads, the runtime's readers and mapping probes, each with its result) and the
+// user-data words it used. The walk is a pure function of these, so a later materialization with
+// equal user-data words whose re-reads all return the logged values would produce the same
+// resources (pipeline/resourceMemo.h). Reads are recorded on the walking thread only.
+struct SrtReadLog {
+	enum class Kind : uint8_t { Host, Spec, Branch, Mapped };
+	struct Entry {
+		uint64_t address      = 0;
+		uint32_t bytes        = 0;
+		uint32_t value_offset = 0; // into values (Host/Spec/Branch with ok)
+		Kind     kind         = Kind::Host;
+		bool     ok           = true;
+	};
+	static constexpr size_t MaxValueBytes = 16 * 1024;
+
+	std::vector<Entry>    entries;
+	std::vector<uint8_t>  values;
+	std::vector<uint64_t> user_data_words; // bit i: user data word i was read
+	bool                  complete = true;  // false: too large to keep (nothing can be reused)
+	// Per kind: the entry a contiguous access extends (logging scratch).
+	std::array<uint32_t, 4> last_entry {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+
+	void Clear();
+	void NoteUserData(size_t index);
+};
+
+// Records the current thread's SRT accesses into `log` while alive. Readers of the runtime only
+// log when they come from LoggingRuntime().
+class ScopedSrtReadLog {
+public:
+	ScopedSrtReadLog(SrtReadLog& log, const SrtRuntime& source);
+	~ScopedSrtReadLog();
+	ScopedSrtReadLog(const ScopedSrtReadLog&)            = delete;
+	ScopedSrtReadLog& operator=(const ScopedSrtReadLog&) = delete;
+
+	// `source` with its readers and mapping probe replaced by logging wrappers around them.
+	[[nodiscard]] SrtRuntime Runtime() const;
+
+private:
+	SrtReadLog*       m_previous_log;
+	const SrtRuntime* m_previous_source;
+	SrtRuntime        m_source;
+};
+
+// Re-reads every logged access, in order, through `runtime` (the unwrapped runtime of the logged
+// walk) and the SRT host read. True when each one returns what the log holds.
+[[nodiscard]] bool SrtReadLogMatches(const SrtReadLog& log, const SrtRuntime& runtime);
 
 class SrtReadCapture {
 public:
