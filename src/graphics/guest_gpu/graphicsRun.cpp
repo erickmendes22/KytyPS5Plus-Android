@@ -527,6 +527,8 @@ static void PollSrtMemo() {
 	using ShaderRecompiler::IR::ResourceMemo;
 	static const bool start = ResourceMemo::StartValue();
 	ResourceMemo::SetEnabled(LiveKnobs::Int("srt_memo", start ? 1 : 0) != 0);
+	static const bool rebase_start = ResourceMemo::RebaseStartValue();
+	ResourceMemo::SetRebase(LiveKnobs::Int("memo_rebase", rebase_start ? 1 : 0) != 0);
 	ResourceMemo::SetSlots(static_cast<size_t>(
 	    std::max<int64_t>(LiveKnobs::Int("memo_slots", static_cast<int64_t>(ResourceMemo::SlotsStartValue())), 1)));
 	if (!Common::PerfStats::Enabled()) return;
@@ -535,12 +537,13 @@ static void PollSrtMemo() {
 	if (now_ns - last_ns < 1'000'000'000) return;
 	last_ns          = now_ns;
 	const auto stats = ResourceMemo::TakeStats();
-	char       line[192];
+	char       line[256];
 	std::snprintf(line, sizeof(line),
-	              "[perf-memo] per second: on=%d hits=%llu misses=%llu stale=%llu uncached=%llu evicted=%llu",
+	              "[perf-memo] per second: on=%d hits=%llu misses=%llu stale=%llu uncached=%llu evicted=%llu rebased=%llu rebase_fail=%llu",
 	              ResourceMemo::Enabled() ? 1 : 0, static_cast<unsigned long long>(stats.hits),
 	              static_cast<unsigned long long>(stats.misses), static_cast<unsigned long long>(stats.stale),
-	              static_cast<unsigned long long>(stats.uncached), static_cast<unsigned long long>(stats.evicted));
+	              static_cast<unsigned long long>(stats.uncached), static_cast<unsigned long long>(stats.evicted),
+	              static_cast<unsigned long long>(stats.rebased), static_cast<unsigned long long>(stats.rebase_fail));
 	Common::PerfStats::EmitLine(line);
 	if (const auto report = ResourceMemo::TakeMissReport(); !report.empty()) {
 		Common::PerfStats::EmitLine("[perf-memo] misses " + report);

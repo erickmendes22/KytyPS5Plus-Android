@@ -230,6 +230,7 @@ void TestResourceMemoKeysOnReadUserData() {
   std::array<uint32_t, 2> user_data{0x1000u, 5u};
   const SrtRuntime runtime{.user_data = user_data};
   ResourceMemo::SetEnabled(true);
+  ResourceMemo::SetRebase(false); // word 0 stays keyed (it is a value word: see the rebase test)
   (void)ResourceMemo::TakeStats();
   ResourceMemo memo;
   ResourceSnapshot snapshot;
@@ -265,7 +266,59 @@ void TestResourceMemoKeysOnReadUserData() {
   Check(small.Size() == 2 && evicting.evicted > 0 && evicting.hits >= 4,
         "memo did not stay within its slots or did not reuse the repeated key");
   ResourceMemo::SetSlots(ResourceMemo::SlotsStartValue());
+  ResourceMemo::SetRebase(true);
   ResourceMemo::SetEnabled(false);
+}
+
+// Rebased hits: a user-data word that only feeds a buffer base is left out of the key; a hit
+// patches the base, and every result equals a fresh walk.
+void TestResourceMemoRebasesValueWords() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  const auto plan = UserDataBufferPlan();
+  const auto classes = ClassifyUserData(plan);
+  Check(classes.IsValueWord(0) && classes.value_sources == std::vector<uint32_t>{0},
+        "buffer base user data not classified as a value word");
+  std::array<uint32_t, 1> user_data{0x1000u};
+  const SrtRuntime runtime{.user_data = user_data};
+  ResourceMemo::SetEnabled(true);
+  ResourceMemo::SetRebase(true);
+  (void)ResourceMemo::TakeStats();
+  ResourceMemo memo;
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization;
+  for (const uint32_t base : {0x1000u, 0x2000u, 0x3000u, 0x3000u, 0x1004u, 0x2004u, 0u, 0x4000u}) {
+    user_data = {base};
+    ResourceSnapshot direct;
+    ResourceSpecialization direct_specialization;
+    Check(MaterializeResources(plan, runtime, direct, direct_specialization), "direct walk failed");
+    Check(memo.Materialize(plan, runtime, snapshot, specialization), "memo walk failed");
+    Check(snapshot.buffers == direct.buffers && snapshot.user_data == direct.user_data &&
+              snapshot.flattened_srt == direct.flattened_srt && specialization == direct_specialization,
+          "rebased memo result differs from a fresh walk");
+  }
+  const auto stats = ResourceMemo::TakeStats();
+  // 0x1000 walks; 0x2000/0x3000/0x3000 hit, rebased from the kept 0x1000; 0x1004 changes the
+  // 16-byte alignment and 0 the null-ness: both walk; 0x2004 rebases from 0x1004; 0x4000 walks
+  // after the null base.
+  Check(stats.misses == 1 && stats.hits == 4 && stats.rebased == 4 && stats.rebase_fail == 3,
+        "rebase counts unexpected");
+  ResourceMemo::SetEnabled(false);
+}
+
+void TestAddressUserDataIsNotAValueWord() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  std::array<uint32_t, 2> memory{0x11111111u, 0x22222222u};
+  auto program = SrtProgram(0u);
+  auto &block = *program.blocks[0];
+  const auto low = Value(&block.AppendNewInst(ValueOpcode::GetUserData, {Value(ScalarReg(0))}));
+  const auto high = Value(&block.AppendNewInst(ValueOpcode::GetUserData, {Value(ScalarReg(1))}));
+  program.srt_reads[0].value.Instruction()->Arg(0).Instruction()->SetArg(0, low);
+  program.srt_reads[0].value.Instruction()->Arg(0).Instruction()->SetArg(1, high);
+  const auto plan = ExtractResourcePlan(program);
+  const auto classes = ClassifyUserData(plan);
+  Check(!classes.IsValueWord(0) && !classes.IsValueWord(1) && classes.value_sources.empty(),
+        "a user-data pointer that is read through was classified as a value word");
+  (void)memory;
 }
 
 void TestMappedSrtUsesDirectReaderByDefault() {
@@ -1553,6 +1606,8 @@ int main() {
   TestUndefinedImageFormatBindsNullImage();
   TestResourceMemoRereadsMemory();
   TestResourceMemoKeysOnReadUserData();
+  TestResourceMemoRebasesValueWords();
+  TestAddressUserDataIsNotAValueWord();
   std::puts("ResourceMaterializationTests: all cases passed");
   return 0;
 }

@@ -1,4 +1,5 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceMemo.h"
+#include "graphics/shader/recompiler/ir/passes/ResourceMemoRebase.h"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +20,9 @@ std::atomic<uint64_t> g_misses {0};
 std::atomic<uint64_t> g_stale {0};
 std::atomic<uint64_t> g_uncached {0};
 std::atomic<uint64_t> g_evicted {0};
+std::atomic<uint64_t> g_rebased {0};     // hits whose value sources changed (bases patched)
+std::atomic<uint64_t> g_rebase_fail {0}; // hits that could not be rebased: walked
+std::atomic<bool>     g_rebase {true};
 
 // KYTY_SRT_MEMO_TRACE: per differing key word (user data 0..63, 64 = shader base, 65 = dispatch
 // inputs, 66 = user-data size) how many misses differed there from the closest entry.
@@ -138,6 +142,15 @@ void ResourceMemo::SetSlots(size_t slots) {
 	g_max_entries.store(std::clamp<size_t>(slots, 1, 1024), std::memory_order_relaxed);
 }
 
+void ResourceMemo::SetRebase(bool enabled) {
+	g_rebase.store(enabled, std::memory_order_relaxed);
+}
+
+bool ResourceMemo::RebaseStartValue() {
+	const char* value = std::getenv("KYTY_SRT_MEMO_REBASE");
+	return value == nullptr || value[0] != '0';
+}
+
 bool ResourceMemo::StartValue() {
 	const char* value = std::getenv("KYTY_SRT_MEMO");
 	return value != nullptr && value[0] == '1';
@@ -148,7 +161,9 @@ ResourceMemo::Stats ResourceMemo::TakeStats() {
 	        .misses   = g_misses.exchange(0, std::memory_order_relaxed),
 	        .stale    = g_stale.exchange(0, std::memory_order_relaxed),
 	        .uncached = g_uncached.exchange(0, std::memory_order_relaxed),
-	        .evicted  = g_evicted.exchange(0, std::memory_order_relaxed)};
+	        .evicted  = g_evicted.exchange(0, std::memory_order_relaxed),
+	        .rebased  = g_rebased.exchange(0, std::memory_order_relaxed),
+	        .rebase_fail = g_rebase_fail.exchange(0, std::memory_order_relaxed)};
 }
 
 std::string ResourceMemo::TakeMissReport() {
@@ -225,7 +240,9 @@ void ResourceMemo::TraceMiss() const {
 	slots.push_back(66);
 	for (size_t word = 0; word < m_user_data_words.size(); ++word) {
 		for (auto bits = m_user_data_words[word]; bits != 0u; bits &= bits - 1u) {
-			slots.push_back(std::min<size_t>(word * 64u + static_cast<size_t>(std::countr_zero(bits)), 63u));
+			const auto index = word * 64u + static_cast<size_t>(std::countr_zero(bits));
+			if (m_classes.IsValueWord(index)) continue;
+			slots.push_back(std::min<size_t>(index, 63u));
 		}
 	}
 	slots.push_back(64);
@@ -257,6 +274,7 @@ void ResourceMemo::BuildKey(const SrtRuntime& runtime) {
 	for (size_t word = 0; word < m_user_data_words.size(); ++word) {
 		for (auto bits = m_user_data_words[word]; bits != 0u; bits &= bits - 1u) {
 			const auto index = word * 64u + static_cast<size_t>(std::countr_zero(bits));
+			if (m_classes.IsValueWord(index)) continue; // rebased on a hit instead
 			m_key.push_back(index < runtime.user_data.size() ? runtime.user_data[index] : 0u);
 		}
 	}
@@ -305,6 +323,16 @@ bool ResourceMemo::Materialize(const ResourcePlan& plan, const SrtRuntime& runti
 		Bump(g_uncached);
 		return MaterializeResources(plan, runtime, snapshot, specialization);
 	}
+	// Rebase on/off changes the key layout: start over when it flips.
+	const bool rebase = g_rebase.load(std::memory_order_relaxed);
+	if (!m_classified || rebase != m_rebase) {
+		m_classes    = rebase ? ClassifyUserData(plan) : UserDataClasses {};
+		m_classified = true;
+		m_rebase     = rebase;
+		m_entries.clear();
+		m_index.clear();
+		m_hand = 0;
+	}
 	BuildKey(runtime);
 	uint32_t slot = NoSlot;
 	if (const auto found = m_index.find(m_hash); found != m_index.end() && m_entries[found->second].key == m_key) {
@@ -317,11 +345,17 @@ bool ResourceMemo::Materialize(const ResourcePlan& plan, const SrtRuntime& runti
 			specialization = entry.specialization;
 			// The snapshot carries all user data, including words the walk did not read.
 			snapshot.user_data.assign(runtime.user_data.begin(), runtime.user_data.end());
-			entry.referenced = true;
-			Bump(g_hits);
-			return true;
+			const auto rebased = Rebase(plan, runtime, entry, snapshot);
+			if (rebased != RebaseResult::Failed) {
+				entry.referenced = true;
+				Bump(g_hits);
+				if (rebased == RebaseResult::Patched) Bump(g_rebased);
+				return true;
+			}
+			Bump(g_rebase_fail);
+		} else {
+			Bump(g_stale);
 		}
-		Bump(g_stale);
 	} else {
 		Bump(g_misses);
 		if (TraceEnabled() && !m_entries.empty()) TraceMiss();
@@ -366,7 +400,26 @@ bool ResourceMemo::Materialize(const ResourcePlan& plan, const SrtRuntime& runti
 	entry.snapshot       = snapshot;
 	entry.specialization = specialization;
 	entry.referenced     = false;
+	if (!m_classes.Empty()) {
+		// The raw values of the value sources this walk produced, to rebase from on a hit.
+		entry.value_active.assign(plan.active_sources.begin(), plan.active_sources.end());
+		if (!EvaluateValueSources(plan, runtime, m_classes.value_sources, entry.value_active, entry.value_raw)) {
+			Forget(slot);
+		}
+	}
 	return true;
+}
+
+ResourceMemo::RebaseResult ResourceMemo::Rebase(const ResourcePlan& plan, const SrtRuntime& runtime,
+                                                const Entry& entry, ResourceSnapshot& snapshot) {
+	if (m_classes.Empty()) return RebaseResult::Same;
+	if (!EvaluateValueSources(plan, runtime, m_classes.value_sources, entry.value_active, m_current)) {
+		return RebaseResult::Failed;
+	}
+	if (m_current == entry.value_raw) return RebaseResult::Same;
+	return RebaseSnapshot(plan, m_classes.value_sources, entry.value_raw, m_current, snapshot)
+	           ? RebaseResult::Patched
+	           : RebaseResult::Failed;
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

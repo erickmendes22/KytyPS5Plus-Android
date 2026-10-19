@@ -2,6 +2,7 @@
 #define EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_RECOMPILER_RESOURCEMEMO_H_
 
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
+#include "graphics/shader/recompiler/ir/passes/ResourceMemoRebase.h"
 
 #include <cstdint>
 #include <string>
@@ -27,6 +28,8 @@ public:
 		uint64_t stale    = 0; // entry for the key, but a re-read differed: walked
 		uint64_t uncached = 0; // memo off, or an input the log cannot hold: walked, not kept
 		uint64_t evicted  = 0; // entries replaced by a new key (slots full)
+		uint64_t rebased  = 0; // hits whose base addresses were patched (ResourceMemoRebase.h)
+		uint64_t rebase_fail = 0; // hits that could not be rebased: walked
 	};
 
 	// Same contract as MaterializeResources.
@@ -42,6 +45,10 @@ public:
 	// Results kept per source: KYTY_SRT_MEMO_SLOTS (default 256), SetSlots (1..1024) overrides.
 	static size_t SlotsStartValue();
 	static void   SetSlots(size_t slots);
+	// KYTY_SRT_MEMO_REBASE (default on; live knob memo_rebase): key only on user-data words
+	// that reach addresses or branches, and patch base addresses on a hit.
+	static void   SetRebase(bool enabled);
+	static bool   RebaseStartValue();
 	// Counters over every memo since the last call (one thread uses memos: the GPU thread).
 	static Stats TakeStats();
 	// KYTY_SRT_MEMO_TRACE=1: why keys miss. For each miss with entries present, the user-data
@@ -57,7 +64,12 @@ private:
 		ResourceSnapshot       snapshot;
 		ResourceSpecialization specialization;
 		bool                   referenced = false; // hit since the clock hand last passed
+		std::vector<DescriptorValue> value_raw;    // raw values of the value sources
+		std::vector<uint8_t>         value_active; // active sources of the walk (empty = all)
 	};
+	enum class RebaseResult { Same, Patched, Failed };
+	RebaseResult Rebase(const ResourcePlan& plan, const SrtRuntime& runtime, const Entry& entry,
+	                    ResourceSnapshot& snapshot);
 	static constexpr uint32_t NoSlot = UINT32_MAX;
 
 	void   BuildKey(const SrtRuntime& runtime);
@@ -76,6 +88,10 @@ private:
 	std::vector<uint32_t>  m_key;
 	uint64_t               m_hash  = 0;
 	SrtReadLog             m_log;
+	UserDataClasses        m_classes;
+	bool                   m_classified = false;
+	bool                   m_rebase     = false;
+	std::vector<DescriptorValue> m_current;
 	// KYTY_SRT_MEMO_TRACE only: read-content hash -> result hash, and result hashes seen.
 	std::unordered_map<uint64_t, uint64_t> m_trace_content;
 	std::unordered_set<uint64_t>           m_trace_results;
