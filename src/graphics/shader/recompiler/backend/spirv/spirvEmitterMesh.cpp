@@ -1,6 +1,10 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 #include "graphics/shader/meshBoundsCheck.h"
 
+#include <bit>
+#include <cstdlib>
+#include <cstring>
+
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 namespace {
 
@@ -140,6 +144,51 @@ void MeshEmulationStoreVertex(EmitterState& state, uint32_t buffer, uint32_t rec
 	}
 }
 
+// KYTY_MESH_CULL_BAD=1 (opt-in; see EmitMeshEmulationStores).
+bool MeshBadVertexCullEnabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_MESH_CULL_BAD");
+		return value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	return enabled;
+}
+
+// A clip-space position the rasterizer cannot take: a NaN/Inf component, |w| < 1e-30 with
+// x, y or z non-zero (a point at infinity), or a component beyond 1e10. Mirrors the vertex-pull
+// stage's check (meshVertexPullShader.cpp).
+uint32_t BadClipPosition(EmitterState& state, uint32_t position) {
+	const auto bvec4     = state.builder.Type(spv::OpTypeVector, TypeBool(state), 4u);
+	const auto vec4      = TypeF32Vector(state, 4);
+	const auto nonfinite = Unary(state, spv::OpAny, TypeBool(state),
+	                             Binary(state, spv::OpLogicalOr, bvec4,
+	                                    Unary(state, spv::OpIsNan, bvec4, position),
+	                                    Unary(state, spv::OpIsInf, bvec4, position)));
+	const auto magnitude = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpExtInst, vec4, magnitude, GlslStd450(state),
+	                          static_cast<uint32_t>(GLSLstd450FAbs), position);
+	const auto component = [&](uint32_t index) {
+		const auto id = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), id, magnitude, index);
+		return id;
+	};
+	const auto greater = [&](uint32_t value, float limit) {
+		return Binary(state, spv::OpFOrdGreaterThan, TypeBool(state), value,
+		              ConstantF32(state, std::bit_cast<uint32_t>(limit)));
+	};
+	const auto any = [&](uint32_t a, uint32_t b) {
+		return Binary(state, spv::OpLogicalOr, TypeBool(state), a, b);
+	};
+	const auto x = component(0), y = component(1), z = component(2), w = component(3);
+	const auto xyz_on = any(any(greater(x, 0.0f), greater(y, 0.0f)), greater(z, 0.0f));
+	const auto tiny_w = Binary(state, spv::OpLogicalAnd, TypeBool(state),
+	                           Binary(state, spv::OpFOrdLessThan, TypeBool(state), w,
+	                                  ConstantF32(state, std::bit_cast<uint32_t>(1.0e-30f))),
+	                           xyz_on);
+	const auto huge = any(any(greater(x, 1.0e10f), greater(y, 1.0e10f)),
+	                      any(greater(z, 1.0e10f), greater(w, 1.0e10f)));
+	return any(nonfinite, any(tiny_w, huge));
+}
+
 // The compute form of SetMeshOutputs and the output stores. Unused and culled triangle slots
 // repeat the slot's first vertex; triangles naming a vertex past the allocation are culled.
 void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t primitives) {
@@ -182,15 +231,48 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 	}
 	const std::array<uint32_t, 3> degenerate {first_vertex, first_vertex, first_vertex};
 	const auto rounds = (mesh.max_primitives + threads - 1u) / threads;
-	for (uint32_t half = 0; half < state.lane_count; half++) {
-		state.lane_half = half;
+	// KYTY_MESH_CULL_BAD=1: a triangle with a vertex whose clip-space position the rasterizer may
+	// not take (BadClipPosition: NaN/Inf, a point at infinity, beyond 1e10) is culled (the guest
+	// GPU's clipper is assumed to discard it). Astro Bot's crash-landing cinematic draws such
+	// vertices before the Adreno 830 device loss, but with the cull it still lost 2 of 5 runs
+	// (round 10), so it is not the fix and stays opt-in. Each vertex's verdict goes through workgroup memory, so
+	// all vertices are stored first.
+	const bool cull_bad  = MeshBadVertexCullEnabled();
+	uint32_t   vertex_ok = 0;
+	const auto position  = std::ranges::find_if(state.outputs, [](const OutputBinding& output) {
+        return output.kind == IR::StageOutputKind::Position && output.index == 0;
+    });
+	if (cull_bad) {
+		vertex_ok = MeshArray(state, spv::StorageClassWorkgroup, TypeU32(state), mesh.max_vertices);
+	}
+	const auto store_vertices = [&](uint32_t half) {
+		state.lane_half  = half;
 		const auto index = EmitLocalInvocationIndex(state);
 		EmitIfCondition(state, Binary(state, spv::OpULessThan, TypeBool(state), index, vertex_count),
 		                [&] {
 			                MeshEmulationStoreVertex(state, vertex_buffer,
 			                                         EmitAddU32(state, first_vertex, index), index,
 			                                         half, limits);
+			                if (!cull_bad) {
+				                return;
+			                }
+			                uint32_t ok = ConstantBool(state, true);
+			                if (position != state.outputs.end()) {
+				                const auto value =
+				                    MeshLoad(state, position->mesh_data_variable, spv::StorageClassPrivate,
+				                             TypeF32Vector(state, 4), ConstantU32(state, half));
+				                ok = Unary(state, spv::OpLogicalNot, TypeBool(state),
+				                           BadClipPosition(state, value));
+			                }
+			                state.builder.AddFunction(
+			                    spv::OpStore,
+			                    MeshElement(state, vertex_ok, spv::StorageClassWorkgroup, TypeU32(state), index),
+			                    Select(state, TypeU32(state), ok, ConstantU32(state, 1), ConstantU32(state, 0)));
 		                });
+	};
+	const auto store_triangles = [&](uint32_t half) {
+		state.lane_half  = half;
+		const auto index = EmitLocalInvocationIndex(state);
 		const auto primitive_slot = Binary(state, spv::OpULessThan, TypeBool(state), index,
 		                                   ConstantU32(state, mesh.max_primitives));
 		EmitIfCondition(state, primitive_slot, [&] {
@@ -211,6 +293,15 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 				live = Binary(state, spv::OpLogicalAnd, TypeBool(state), live,
 				              Binary(state, spv::OpULessThan, TypeBool(state), vertex[corner],
 				                     vertex_count));
+				if (cull_bad) {
+					const auto slot = EmitGlsl<GLSLstd450UMin, IR::Type::U32>(
+					    state, vertex[corner], ConstantU32(state, mesh.max_vertices - 1u));
+					const auto ok = MeshLoad(state, vertex_ok, spv::StorageClassWorkgroup,
+					                         TypeU32(state), slot);
+					live = Binary(state, spv::OpLogicalAnd, TypeBool(state), live,
+					              Binary(state, spv::OpINotEqual, TypeBool(state), ok,
+					                     ConstantU32(state, 0)));
+				}
 			}
 			for (uint32_t corner = 0; corner < 3; corner++) {
 				vertex[corner] = Select(state, TypeU32(state), live,
@@ -231,6 +322,24 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 				                    state, index_buffer, EmitAddU32(state, first_primitive, primitive),
 				                    degenerate, limits);
 			                });
+		}
+	};
+	if (cull_bad) {
+		for (uint32_t half = 0; half < state.lane_count; half++) {
+			store_vertices(half);
+		}
+		state.builder.AddFunction(
+		    spv::OpControlBarrier, ConstantU32(state, spv::ScopeWorkgroup),
+		    ConstantU32(state, spv::ScopeWorkgroup),
+		    ConstantU32(state, spv::MemorySemanticsAcquireReleaseMask |
+		                           spv::MemorySemanticsWorkgroupMemoryMask));
+		for (uint32_t half = 0; half < state.lane_count; half++) {
+			store_triangles(half);
+		}
+	} else {
+		for (uint32_t half = 0; half < state.lane_count; half++) {
+			store_vertices(half);
+			store_triangles(half);
 		}
 	}
 }

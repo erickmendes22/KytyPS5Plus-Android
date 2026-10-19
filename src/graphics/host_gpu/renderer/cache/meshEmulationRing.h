@@ -5,6 +5,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -82,7 +83,7 @@ private:
 	uint64_t                                              m_offset = 0;
 	uint64_t m_forced_growth = ConfiguredForcedGrowth();
 	std::unique_ptr<Buffer>                               m_out_of_range;
-	uint32_t                                              m_out_of_range_logged = 0;
+	std::array<uint32_t, 4>                               m_out_of_range_logged {};
 	int64_t                                               m_out_of_range_polled_ms = 0;
 	std::unique_ptr<Buffer>                               m_bounds_log;
 	uint32_t                                              m_bounds_logged = 0;

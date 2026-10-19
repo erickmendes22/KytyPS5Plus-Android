@@ -9,6 +9,7 @@
 #include "graphics/shader/meshBoundsCheck.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cinttypes>
 #include <chrono>
@@ -89,9 +90,9 @@ vk::DeviceAddress MeshEmulationRing::OutOfRangeCounterAddress() {
 		    m_graphics, m_scheduler, MemoryUsage::Download, 0,
 		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
 		    256);
-		EXIT_IF(m_out_of_range->Mapped().size() < sizeof(uint32_t));
-		std::memset(m_out_of_range->Mapped().data(), 0, sizeof(uint32_t));
-		m_out_of_range->Flush(0, sizeof(uint32_t));
+		EXIT_IF(m_out_of_range->Mapped().size() < 4 * sizeof(uint32_t));
+		std::memset(m_out_of_range->Mapped().data(), 0, 4 * sizeof(uint32_t));
+		m_out_of_range->Flush(0, 4 * sizeof(uint32_t));
 	}
 	return m_out_of_range->BufferDeviceAddress();
 }
@@ -107,12 +108,14 @@ void MeshEmulationRing::PollOutOfRangeCounter(bool force) {
 		return;
 	}
 	m_out_of_range_polled_ms = now_ms;
-	m_out_of_range->Invalidate(0, sizeof(uint32_t));
-	uint32_t count = 0;
-	std::memcpy(&count, m_out_of_range->Mapped().data(), sizeof(count));
-	if (count != m_out_of_range_logged || force) {
-		LOGF("%s: %u out-of-range vertex indices so far (clamped to record 0)\n", m_name, count);
-		m_out_of_range_logged = count;
+	m_out_of_range->Invalidate(0, 4 * sizeof(uint32_t));
+	std::array<uint32_t, 4> counts {};
+	std::memcpy(counts.data(), m_out_of_range->Mapped().data(), sizeof(counts));
+	if (counts != m_out_of_range_logged || force) {
+		LOGF("%s: vertex pull so far: %u out-of-range indices (clamped to record 0), positions: "
+		     "%u non-finite, %u huge, %u tiny-w\n",
+		     m_name, counts[0], counts[1], counts[2], counts[3]);
+		m_out_of_range_logged = counts;
 	}
 }
 
@@ -168,6 +171,14 @@ void MeshEmulationRing::PollBoundsLog(bool force) {
 }
 
 void MeshEmulationRing::DumpBoundsLog() const {
+	if (m_out_of_range) {
+		m_out_of_range->Invalidate(0, 4 * sizeof(uint32_t));
+		std::array<uint32_t, 4> counts {};
+		std::memcpy(counts.data(), m_out_of_range->Mapped().data(), sizeof(counts));
+		LOGF("%s at GPU fatal: vertex pull: %u out-of-range indices, positions: %u non-finite, %u "
+		     "huge, %u tiny-w\n",
+		     m_name, counts[0], counts[1], counts[2], counts[3]);
+	}
 	if (!m_bounds_log) {
 		return;
 	}

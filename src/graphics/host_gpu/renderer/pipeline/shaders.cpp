@@ -27,6 +27,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <bit>
 #include <limits>
 #include <optional>
@@ -395,7 +397,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		mesh_layout = ShaderRecompiler::IR::BuildMeshEmulationLayout(
 		    std::span<const ShaderRecompiler::IR::StageOutput>(
 		        vs_input_info.stage.program->info.outputs));
-		mesh_vertex_pull = MeshVertexPullStage {.layout = &*mesh_layout};
+		static const bool sanitize = [] {
+			const char* value = std::getenv("KYTY_MESH_CULL_BAD");
+			return value != nullptr && std::strcmp(value, "1") == 0;
+		}();
+		mesh_vertex_pull = MeshVertexPullStage {.layout = &*mesh_layout, .sanitize_positions = sanitize};
 		const auto& features = graphics.optional_features;
 		if (!features.fragment_shader_barycentric && features.geometry_varying_locations != 0) {
 			// The same location vertex shaders mirror layer/viewport into for that stage.
