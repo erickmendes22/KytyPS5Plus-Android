@@ -828,6 +828,12 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[resource]);
 			const auto address = Kernel::AddressFold::Fold(descriptor.Base48());
 			auto size = descriptor.GetSize();
+			if (size != 0 && descriptor.Stride() == 0 && descriptor.OutOfBounds() == 2 &&
+			    !metadata.scalar) {
+				// OOB_SELECT=2 only tests NumRecords != 0; a zero-stride fetch
+				// still needs its full payload when NumRecords is smaller than it.
+				size = std::max(size, uint64_t {metadata.max_byte_extent});
+			}
 			if (address == 0 || size == 0) {
 				source = {};
 				continue;
