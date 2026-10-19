@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
 #include "common/alignment.h"
@@ -32,6 +33,7 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <bit>
 #include <fmt/format.h>
@@ -1088,12 +1090,55 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			}
 		}
 	}
-	for (const auto* reader: prepared_bindings) {
-		for (const auto [address, size]: reader->runtime->resources->specialization_reads) {
-			for (const auto& written: written_ranges) {
-				if (ImageRangeOverlaps(address, size, written.address, written.size)) {
-					EXIT(written.buffer ? "scalar resource reads overlap a shader buffer write\n"
-					                    : "scalar resource reads overlap an image or attachment write\n");
+	// KYTY_OVERLAP_SORT=0 (live knob overlap_sort=0): the previous all-pairs scan.
+	static const int64_t overlap_sort_start = [] {
+		const char* value = std::getenv("KYTY_OVERLAP_SORT");
+		return value != nullptr && value[0] == '0' ? int64_t {0} : int64_t {1};
+	}();
+	if (!written_ranges.empty() && LiveKnobs::Int("overlap_sort", overlap_sort_start) == 0) {
+		for (const auto* reader: prepared_bindings) {
+			for (const auto [address, size]: reader->runtime->resources->specialization_reads) {
+				for (const auto& written: written_ranges) {
+					if (ImageRangeOverlaps(address, size, written.address, written.size)) {
+						EXIT(written.buffer ? "scalar resource reads overlap a shader buffer write\n"
+						                    : "scalar resource reads overlap an image or attachment write\n");
+					}
+				}
+			}
+		}
+	} else if (!written_ranges.empty()) {
+		// Sorted by start with a running maximum of the ends, each read checks only the ranges
+		// that start before its end and can still reach it (the all-pairs scan was ~3% of the GPU
+		// thread in Astro Bot gameplay). Same exits as ImageRangeOverlaps on every pair.
+		std::sort(written_ranges.begin(), written_ranges.end(),
+		          [](const WrittenRange& a, const WrittenRange& b) { return a.address < b.address; });
+		auto& max_end = m_written_max_end;
+		max_end.resize(written_ranges.size());
+		uint64_t running = 0;
+		for (size_t i = 0; i < written_ranges.size(); i++) {
+			const auto& written = written_ranges[i];
+			if (written.size == 0 || written.address > UINT64_MAX - written.size) {
+				EXIT("invalid image overlap range\n");
+			}
+			running    = std::max(running, written.address + written.size);
+			max_end[i] = running;
+		}
+		for (const auto* reader: prepared_bindings) {
+			for (const auto [address, size]: reader->runtime->resources->specialization_reads) {
+				if (size == 0 || address > UINT64_MAX - size) {
+					EXIT("invalid image overlap range\n");
+				}
+				const auto end   = address + size;
+				auto       index = static_cast<size_t>(
+                    std::lower_bound(written_ranges.begin(), written_ranges.end(), end,
+                                     [](const WrittenRange& w, uint64_t value) { return w.address < value; }) -
+                    written_ranges.begin());
+				while (index > 0 && max_end[index - 1] > address) {
+					const auto& written = written_ranges[--index];
+					if (written.address + written.size > address) {
+						EXIT(written.buffer ? "scalar resource reads overlap a shader buffer write\n"
+						                    : "scalar resource reads overlap an image or attachment write\n");
+					}
 				}
 			}
 		}
