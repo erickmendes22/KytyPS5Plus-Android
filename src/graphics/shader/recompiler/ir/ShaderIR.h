@@ -678,6 +678,9 @@ struct ShaderInfo {
 	bool                            buffer_u16                    = false;
 	bool                            shared_int64_atomics          = false;
 	bool                            coherent_buffers              = false;
+	// Compute: guest workgroups per host workgroup (ShaderComputeInputInfo::pack_groups, set by
+	// the recompiler when the program allows it; 1 = one guest workgroup per host workgroup).
+	uint32_t                        group_pack                    = 1;
 	bool                            float64                       = false;
 	// Filled by the SPIR-V emitter: a Mesh stage emitted as a compute shader (mesh emulation).
 	bool                            mesh_emulation                = false;

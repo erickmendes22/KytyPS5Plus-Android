@@ -209,10 +209,30 @@ uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uin
 	                          TypePointer(state, spv::StorageClassInput, TypeU32(state)), pointer,
 	                          variable, ConstantU32(state, component));
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, pointer);
+	const bool packed = state.program.info.group_pack > 1u && component == 0u;
 	if (kind == IR::StageInputKind::WorkgroupId && component < 3u) {
-		return EmitAddU32(state, value, EmitGroupBaseU32(state, component));
+		// Packed: host group x holds guest groups 2x (lanes 0-31) and 2x+1 (lanes 32-63).
+		const auto group = packed ? EmitAddU32(state,
+		                                       EmitBinaryU32(state, spv::OpShiftLeftLogical, value,
+		                                                     ConstantU32(state, 1u)),
+		                                       EmitPackedGroupHalf(state))
+		                          : value;
+		return EmitAddU32(state, group, EmitGroupBaseU32(state, component));
+	}
+	if (kind == IR::StageInputKind::NumWorkgroups && packed) {
+		return EmitBinaryU32(state, spv::OpShiftLeftLogical, value, ConstantU32(state, 1u));
 	}
 	return value;
+}
+
+uint32_t EmitPackedGroupHalf(EmitterState& state) {
+	const auto variable = InputVariableForKind(state, IR::StageInputKind::LocalInvocationIndex);
+	if (variable == 0) {
+		EXIT("packed compute groups need gl_LocalInvocationIndex\n");
+	}
+	const auto value = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, variable);
+	return EmitBinaryU32(state, spv::OpShiftRightLogical, value, ConstantU32(state, 5u));
 }
 
 uint32_t EmitGroupBaseU32(EmitterState& state, uint32_t component) {
@@ -230,6 +250,10 @@ uint32_t EmitLocalInvocationIndex(EmitterState& state) {
 	}
 	const auto value = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, variable);
+	if (state.program.info.group_pack > 1u) {
+		// Each 32-lane half of the host workgroup is one guest workgroup.
+		return EmitBinaryU32(state, spv::OpBitwiseAnd, value, ConstantU32(state, 31u));
+	}
 	if (state.lane_count == 2) {
 		const auto wave_base =
 		    EmitBinaryU32(state, spv::OpBitwiseAnd, value, ConstantU32(state, ~31u));
@@ -295,7 +319,9 @@ uint32_t EmitSubgroupLaneActiveBool(EmitterState& state, uint32_t lane) {
 	                                lane);
 }
 bool WaveSliced(const EmitterState& state) {
-	return state.device_features.wave_slices && !state.subgroup_isolated && state.lane_count == 1u &&
+	// Packed compute groups (KYTY_CS_PACK) put one guest wave in each 32-lane half.
+	return (state.device_features.wave_slices || state.program.info.group_pack > 1u) &&
+	       !state.subgroup_isolated && state.lane_count == 1u &&
 	       state.program.stage != ShaderType::TessellationControl;
 }
 

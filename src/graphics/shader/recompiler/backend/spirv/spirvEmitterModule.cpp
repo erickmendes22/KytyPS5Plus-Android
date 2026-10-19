@@ -653,7 +653,7 @@ void DefineInputs(EmitterState& state) {
 			add_builtin(IR::StageInputKind::NumWorkgroups, 3, "gl_NumWorkGroups");
 		}
 	}
-	if (state.lane_count == 2) {
+	if (state.lane_count == 2 || state.program.info.group_pack > 1u) {
 		add_builtin(IR::StageInputKind::LocalInvocationIndex, 1, "gl_LocalInvocationIndex");
 		if (std::ranges::any_of(state.inputs, [](const InputBinding& input) {
 			    return input.kind == IR::StageInputKind::GlobalInvocationId;
@@ -1184,6 +1184,11 @@ void DefineModule(EmitterState& state) {
 				local_y = local_x / 2u;
 				local_x = 2u;
 			}
+		}
+		if (state.program.info.group_pack > 1u) {
+			// KYTY_CS_PACK: one 32-lane half per guest workgroup.
+			local_x = 32u * state.program.info.group_pack;
+			local_y = local_z = 1u;
 		}
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeLocalSize, local_x,
 		                               local_y, local_z);

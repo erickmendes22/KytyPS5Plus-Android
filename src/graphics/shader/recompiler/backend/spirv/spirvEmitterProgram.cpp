@@ -25,6 +25,30 @@ void EmitKillIfBoolFalse(EmitterState& state, uint32_t active) {
 	EmitLabel(state, merge_label);
 }
 
+// KYTY_CS_PACK: lanes past the guest workgroup's thread count in each 32-lane half return, so
+// the guest wave's EXEC (and every ballot) holds only the guest's threads.
+void EmitPackedGroupGuard(EmitterState& state) {
+	if (state.program.info.group_pack <= 1u) {
+		return;
+	}
+	const auto* cs      = ShaderWorkgroupInput(state.program.stage, state.input_info);
+	const auto  threads = std::max(cs->threads_num[0], 1u) * std::max(cs->threads_num[1], 1u) *
+	                     std::max(cs->threads_num[2], 1u);
+	if (threads >= 32u) {
+		return;
+	}
+	const auto inactive    = state.builder.AllocateId();
+	const auto exit_label  = state.builder.AllocateId();
+	const auto merge_label = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpUGreaterThanEqual, TypeBool(state), inactive,
+	                          EmitLocalInvocationIndex(state), ConstantU32(state, threads));
+	state.builder.AddFunction(spv::OpSelectionMerge, merge_label, spv::SelectionControlMaskNone);
+	state.builder.AddFunction(spv::OpBranchConditional, inactive, exit_label, merge_label);
+	EmitLabel(state, exit_label);
+	state.builder.AddFunction(spv::OpReturn);
+	EmitLabel(state, merge_label);
+}
+
 void EmitKillIfPixelValidMaskInactive(EmitterState& state) {
 	if (state.pixel_valid_mask_variable == 0) {
 		return;
@@ -754,6 +778,7 @@ void EmitProgram(EmitterState& state) {
 		                                     ConstantU32(state, LdsDwordCount(state)));
 	}
 	EmitMemoryOffsets(state);
+	EmitPackedGroupGuard(state);
 	if (program.blocks.empty()) {
 		EmitReturn(ctx);
 	} else if (state.program.dispatcher_fallback) {

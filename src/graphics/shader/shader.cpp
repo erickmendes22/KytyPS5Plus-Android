@@ -410,7 +410,9 @@ static void ShaderGetStaticInputInfoCS(const HW::ComputeShaderInfo& regs,
 	const auto host_subgroup_size         = info.host_subgroup_size;
 	const auto workgroup_counts           = std::to_array(info.workgroup_counts);
 	const auto indirect_args_address      = info.indirect_args_address;
+	const auto pack_groups                = info.pack_groups;
 	info                                  = {};
+	info.pack_groups                      = pack_groups;
 	info.async_compute                    = async_compute;
 	info.dispatch_thread_dimensions       = dispatch_thread_dimensions;
 	info.host_subgroup_size               = host_subgroup_size;
@@ -556,7 +558,7 @@ void BuildStageStaticKey(const ShaderComputeInputInfo& info, std::vector<uint32_
 		key.push_back(info.threads_num[i]);
 		key.push_back(static_cast<uint32_t>(info.group_id[i]));
 	}
-	key.push_back(static_cast<uint32_t>(info.tg_size_en));
+	key.push_back(static_cast<uint32_t>(info.tg_size_en) | (uint32_t {info.pack_groups} << 8u));
 }
 
 ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context& context,

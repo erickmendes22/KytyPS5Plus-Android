@@ -36,6 +36,51 @@ const char* GetDumpLabel(const CompileOptions& options) {
 	return options.dump_label != nullptr ? options.dump_label : "ShaderRecompiler";
 }
 
+// KYTY_CS_PACK (ShaderComputeInputInfo::pack_groups): two guest workgroups of at most 32 threads
+// run in one 64-lane host workgroup, one per 32-lane half, the guest wave32 of each in its own
+// half (WaveSliced lane masks). Only for programs without LDS, workgroup or subgroup barriers,
+// compute derivatives or dispatch-thread extents, so the two never interact.
+uint32_t ComputeGroupPack(const IR::Program& ir, const CompileOptions& options) {
+	const auto* cs = options.input_info.compute;
+	if (ir.stage != ShaderType::Compute || cs == nullptr || cs->pack_groups != 2u) {
+		return 1u;
+	}
+	const uint32_t threads = std::max(cs->threads_num[0], 1u) * std::max(cs->threads_num[1], 1u) *
+	                         std::max(cs->threads_num[2], 1u);
+	const auto& info = ir.info;
+	const char* reason = nullptr;
+	if (ir.wave_size != 32u || cs->host_subgroup_size != 64u) {
+		reason = "not wave32 on 64-lane subgroups";
+	} else if (threads > 32u) {
+		reason = "more than 32 threads";
+	} else if (info.uses_lds || info.uses_gds || cs->lds_size_dwords != 0u || cs->lds_storage) {
+		reason = "LDS/GDS";
+	} else if (info.subgroup_barrier || info.compute_derivatives || info.uses_dispatch_threads ||
+	           info.function_lds) {
+		reason = "subgroup barrier, derivatives or dispatch-thread extents";
+	} else {
+		for (const auto* block: ir.blocks) {
+			for (const auto& inst: *block) {
+				switch (inst.GetOpcode()) {
+					case IR::ValueOpcode::Barrier: reason = "workgroup barrier"; break;
+					// Cross-lane ops without wave-sliced lowering would mix the two halves.
+					case IR::ValueOpcode::SubgroupUMinU32:
+					case IR::ValueOpcode::Permlane16U32:
+					case IR::ValueOpcode::PermuteU32:
+					case IR::ValueOpcode::SwizzleU32:
+					case IR::ValueOpcode::DppMoveU32:
+					case IR::ValueOpcode::DppUpdateU32: reason = "cross-lane op"; break;
+					default: break;
+				}
+			}
+		}
+	}
+	LOGF("%s compute group packing %s: hash=0x%016" PRIx64 " threads=%u%s%s\n",
+	     GetDumpLabel(options), reason == nullptr ? "on" : "off", ir.shader_hash, threads,
+	     reason == nullptr ? "" : " reason=", reason == nullptr ? "" : reason);
+	return reason == nullptr ? 2u : 1u;
+}
+
 std::string MakeIrDump(std::string_view cfg, const IR::Program& ir) {
 	std::string dump = "CFG:\n";
 	dump += cfg;
@@ -964,6 +1009,7 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 
 	IR::CollectShaderInfo(ir, options.input_info, native_barycentrics || emulate_barycentrics);
 	ir.info.barycentric_emulation = {.enabled = emulate_barycentrics};
+	ir.info.group_pack            = ComputeGroupPack(ir, options);
 	if (emulate_barycentrics) {
 		LOGF("%s barycentrics emulated through a geometry stage: hash=0x%016" PRIx64 "\n",
 		     GetDumpLabel(options), ir.shader_hash);

@@ -254,10 +254,13 @@ static bool LdsInStorage(const ShaderRecompiler::IR::CompiledShaderInfo& program
 // which the translated shader adds to gl_WorkGroupID / gl_GlobalInvocationID. The
 // LDS-in-storage-buffer fallback indexes its per-group slot with the piece's gl_NumWorkGroups:
 // unique within a piece, not across pieces, so its pieces are serialized.
+// groups counts host workgroups; a packed program (KYTY_CS_PACK, IR::ShaderInfo::group_pack) runs
+// group_pack guest workgroups along X in each, so the pieces' bases are scaled back to guest groups.
 static void RecordGuestDispatch(vk::CommandBuffer command, const DispatchGroups& limits,
                                 const DispatchGroups&                           groups,
                                 const ShaderRecompiler::IR::CompiledShaderInfo& program,
                                 const PipelineCache::Pipeline&                  pipeline) {
+	const uint32_t pack = std::max(program.info.group_pack, 1u);
 	if (DispatchFits(groups, limits)) {
 		command.dispatch(groups[0], groups[1], groups[2]);
 		return;
@@ -290,8 +293,10 @@ static void RecordGuestDispatch(vk::CommandBuffer command, const DispatchGroups&
                                     nullptr, 0, nullptr);
         }
         if (reads_ids) {
+            DispatchGroups base = piece.base;
+            base[0] *= pack;
             command.pushConstants(pipeline.pipeline_layout, pipeline.push_constant_stages,
-                                  base_offset, sizeof(piece.base), piece.base.data());
+                                  base_offset, sizeof(base), base.data());
         }
         command.dispatch(piece.count[0], piece.count[1], piece.count[2]);
         recorded++;
@@ -311,6 +316,28 @@ static void RecordGuestDispatch(vk::CommandBuffer command, const DispatchGroups&
 		     limits[2], pieces, reads_ids ? " (group base in push data)" : " (ids unused)",
 		     lds_in_storage ? " (serialized: LDS in storage buffer)" : "");
 	}
+}
+
+// KYTY_CS_PACK=1 runs two guest wave32 workgroups of at most 32 threads in one 64-lane host
+// workgroup (the recompiler decides per program: ShaderRecompiler.cpp ComputeGroupPack). Off by
+// default; with KYTY_LIVE_KNOBS=1 the live key cs_pack=0/1 overrides it (in-run A/B; each setting
+// is its own pipeline).
+static bool ComputeGroupPackEnabled() {
+	static const bool env_on = [] {
+		const char* value = std::getenv("KYTY_CS_PACK");
+		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
+		if (on) {
+			LOGF("KYTY_CS_PACK=1: packing small compute workgroups in pairs\n");
+		}
+		return on;
+	}();
+	return LiveKnobs::Int("cs_pack", env_on ? 1 : 0) != 0;
+}
+
+static bool ComputeGroupPackCandidate(const ShaderComputeInputInfo& input_info, uint32_t threads,
+                                      uint32_t groups_x) {
+	return ComputeGroupPackEnabled() && !input_info.dispatch_thread_dimensions && threads <= 32u &&
+	       groups_x >= 2u && groups_x % 2u == 0u;
 }
 
 // KYTY_INDIRECT_DISPATCH_CLAMP=0 dispatches GPU-written indirect arguments unclamped (A/B).
@@ -393,6 +420,14 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			const auto size = std::max(group_sizes[axis], 1u);
 			const auto threads = input_info.workgroup_counts[axis];
 			input_info.workgroup_counts[axis] = threads / size + (threads % size != 0u);
+		}
+	}
+	{
+		const uint32_t threads = std::max(cs_regs.cs_regs.num_thread_x, 1u) *
+		                         std::max(cs_regs.cs_regs.num_thread_y, 1u) *
+		                         std::max(cs_regs.cs_regs.num_thread_z, 1u);
+		if (ComputeGroupPackCandidate(input_info, threads, thread_group_x)) {
+			input_info.pack_groups = 2;
 		}
 	}
 	const auto compute_program =
@@ -539,8 +574,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	buffer.MarkGpu("misc");
 	{
 		const ScopedDebugLabel label(vk_buffer, "cs", program.shader_hash);
+		// A packed program runs group_pack guest groups along X per host group (x is even).
+		const uint32_t host_x = thread_group_x / std::max(program.info.group_pack, 1u);
 		RecordGuestDispatch(vk_buffer, ComputeGroupLimits(m_context.GetGraphics()),
-		                    {thread_group_x, thread_group_y, thread_group_z}, program, pipeline);
+		                    {host_x, thread_group_y, thread_group_z}, program, pipeline);
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();

@@ -204,6 +204,10 @@ struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
 	int                thread_ids_num             = 0;
 	int                workgroup_register         = 0;
 	bool               tg_size_en                 = false;
+	// KYTY_CS_PACK: the renderer asks for two guest workgroups of at most 32 threads (one guest
+	// wave32 each) per 64-lane host workgroup; 2 = requested, else 0. The program's
+	// ShaderInfo::group_pack says whether the recompiler did it.
+	uint8_t            pack_groups                = 0;
 	ShaderStageRuntime stage;
 };
 
