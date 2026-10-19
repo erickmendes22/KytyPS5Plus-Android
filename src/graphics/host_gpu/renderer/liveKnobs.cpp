@@ -127,11 +127,9 @@ void Poll() {
 	for (const auto& [name, number]: snapshot->ints) {
 		ints += fmt::format(" {}={}", name, number);
 	}
-	LOGF("Live knobs: skip=[%s] mesh-skip-draw=[%s] mesh-skip-cs=[%s] marks=%d shake=%d%s
-", skip.c_str(),
+	LOGF("Live knobs: skip=[%s] mesh-skip-draw=[%s] mesh-skip-cs=[%s] marks=%d shake=%d%s\n", skip.c_str(),
 	     skip_draw.c_str(), skip_cs.c_str(), snapshot->draw_marks ? 1 : 0, snapshot->shake_seconds, ints.c_str());
-	std::fprintf(stderr, "[live-knobs] skip=[%s] mesh-skip-draw=[%s] mesh-skip-cs=[%s] marks=%d shake=%d%s
-",
+	std::fprintf(stderr, "[live-knobs] skip=[%s] mesh-skip-draw=[%s] mesh-skip-cs=[%s] marks=%d shake=%d%s\n",
 	             skip.c_str(), skip_draw.c_str(), skip_cs.c_str(), snapshot->draw_marks ? 1 : 0,
 	             snapshot->shake_seconds, ints.c_str());
 	// Also in the perf log, so per-second [perf] lines can be split by knob phase.
