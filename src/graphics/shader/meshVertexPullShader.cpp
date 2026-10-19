@@ -185,7 +185,7 @@ private:
 
 	// Counts positions the rasterizer may not take well (counter words 1..3: a NaN/Inf component,
 	// a component beyond kHugePosition, |w| below kTinyW with x, y or z non-zero). With
-	// sanitize_positions (KYTY_MESH_CULL_BAD=1) such a position becomes one outside
+	// sanitize_positions (KYTY_MESH_CULL_BAD, default on) such a position becomes one outside
 	// the near plane (0, 0, -1, 1), so it never reaches the rasterizer: the compute stage already
 	// culls triangles using it, but a culled slot's degenerate triangle may still name it.
 	static constexpr float kHugePosition = 1.0e10f;

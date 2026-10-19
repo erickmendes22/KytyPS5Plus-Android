@@ -18,7 +18,7 @@ struct MeshVertexPullStage {
 	// With a layer field and an emulated-barycentric geometry stage after it, a flat uvec2
 	// (layer, viewport index 0) is also written here, as vertex shaders do for that stage.
 	uint32_t layer_viewport_location = UINT32_MAX;
-	// KYTY_MESH_CULL_BAD=1: a position the rasterizer cannot take is replaced by one
+	// KYTY_MESH_CULL_BAD (default on): a position the rasterizer cannot take is replaced by one
 	// outside the near plane.
 	bool sanitize_positions = false;
 	// KYTY_MESH_POS_COUNT=1: count non-finite / huge / tiny-w positions (out-of-range counter

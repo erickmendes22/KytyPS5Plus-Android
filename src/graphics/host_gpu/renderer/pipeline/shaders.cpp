@@ -399,7 +399,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		        vs_input_info.stage.program->info.outputs));
 		static const bool sanitize = [] {
 			const char* value = std::getenv("KYTY_MESH_CULL_BAD");
-			return value != nullptr && std::strcmp(value, "1") == 0;
+			return value == nullptr || std::strcmp(value, "0") != 0;
 		}();
 		static const bool count = [] {
 			const char* value = std::getenv("KYTY_MESH_POS_COUNT");

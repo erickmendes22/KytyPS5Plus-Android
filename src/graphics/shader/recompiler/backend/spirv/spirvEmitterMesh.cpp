@@ -144,11 +144,11 @@ void MeshEmulationStoreVertex(EmitterState& state, uint32_t buffer, uint32_t rec
 	}
 }
 
-// KYTY_MESH_CULL_BAD=1 (opt-in; see EmitMeshEmulationStores).
+// KYTY_MESH_CULL_BAD (default on, 0 disables; see EmitMeshEmulationStores).
 bool MeshBadVertexCullEnabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_MESH_CULL_BAD");
-		return value != nullptr && std::strcmp(value, "1") == 0;
+		return value == nullptr || std::strcmp(value, "0") != 0;
 	}();
 	return enabled;
 }
@@ -187,6 +187,20 @@ uint32_t BadClipPosition(EmitterState& state, uint32_t position) {
 	const auto huge = any(any(greater(x, 1.0e10f), greater(y, 1.0e10f)),
 	                      any(greater(z, 1.0e10f), greater(w, 1.0e10f)));
 	return any(nonfinite, any(tiny_w, huge));
+}
+
+// KYTY_MESH_DEFINED_OUTPUTS=0 restores the old behaviour (A/B): no defaults for unexported
+// outputs, no null vertex for workgroups without vertices.
+bool MeshDefinedOutputs() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_MESH_DEFINED_OUTPUTS");
+		return value == nullptr || std::strcmp(value, "0") != 0;
+	}();
+	return enabled;
+}
+
+bool KeepNullVertex() {
+	return MeshDefinedOutputs();
 }
 
 // The compute form of SetMeshOutputs and the output stores. Unused and culled triangle slots
@@ -231,12 +245,13 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 	}
 	const std::array<uint32_t, 3> degenerate {first_vertex, first_vertex, first_vertex};
 	const auto rounds = (mesh.max_primitives + threads - 1u) / threads;
-	// KYTY_MESH_CULL_BAD=1: a triangle with a vertex whose clip-space position the rasterizer may
-	// not take (BadClipPosition: NaN/Inf, a point at infinity, beyond 1e10) is culled (the guest
-	// GPU's clipper is assumed to discard it). Astro Bot's crash-landing cinematic draws such
-	// vertices before the Adreno 830 device loss, but with the cull it still lost 2 of 5 runs
-	// (round 10), so it is not the fix and stays opt-in. Each vertex's verdict goes through workgroup memory, so
-	// all vertices are stored first.
+	// KYTY_MESH_CULL_BAD (default on): a triangle with a vertex whose clip-space position the
+	// rasterizer may not take (BadClipPosition: NaN/Inf, a point at infinity, beyond 1e10) is
+	// culled, as the guest GPU's primitive assembly discards a NaN-position primitive (guest
+	// particle shaders appear to write NaN positions for dead particles). On its own it still lost 2 of 5
+	// Astro Bot cinematic runs (round 10); together with the defined outputs below it is the
+	// candidate fix for the Adreno 830 device loss. Each vertex's verdict goes through workgroup
+	// memory, so all vertices are stored first.
 	const bool cull_bad  = MeshBadVertexCullEnabled();
 	uint32_t   vertex_ok = 0;
 	const auto position  = std::ranges::find_if(state.outputs, [](const OutputBinding& output) {
@@ -245,9 +260,39 @@ void EmitMeshEmulationStores(EmitterState& state, uint32_t vertices, uint32_t pr
 	if (cull_bad) {
 		vertex_ok = MeshArray(state, spv::StorageClassWorkgroup, TypeU32(state), mesh.max_vertices);
 	}
+	// Unused and culled triangle slots name the slot's first vertex. A workgroup that allocated no
+	// vertices writes none, so invocation 0 gives that record a defined position (0, 0, 0, 1): a
+	// zero-area triangle instead of whatever an earlier use of the ring range left there.
+	const auto* position_field =
+	    state.mesh_emulation_layout.Find(IR::StageOutputKind::Position, 0);
+	const auto store_null_vertex = [&](uint32_t index) {
+		if (position_field == nullptr) {
+			return;
+		}
+		const auto none = Binary(state, spv::OpLogicalAnd, TypeBool(state),
+		                         Binary(state, spv::OpIEqual, TypeBool(state), index,
+		                                ConstantU32(state, 0)),
+		                         Binary(state, spv::OpIEqual, TypeBool(state), vertex_count,
+		                                ConstantU32(state, 0)));
+		EmitIfCondition(state, none, [&] {
+			const auto base = EmitBinaryU32(state, spv::OpIMul, first_vertex,
+			                                ConstantU32(state, state.mesh_emulation_layout.stride_dwords));
+			for (uint32_t component = 0; component < position_field->components; component++) {
+				const auto value = component == 3u ? std::bit_cast<uint32_t>(1.0f) : 0u;
+				MeshEmulationStore(
+				    state, vertex_buffer,
+				    EmitAddU32(state, base, ConstantU32(state, position_field->offset + component)),
+				    ConstantU32(state, value), limits.vertex_dwords, MeshBoundsCheck::Kind::VertexStore,
+				    limits.group);
+			}
+		});
+	};
 	const auto store_vertices = [&](uint32_t half) {
 		state.lane_half  = half;
 		const auto index = EmitLocalInvocationIndex(state);
+		if (half == 0 && KeepNullVertex()) {
+			store_null_vertex(index);
+		}
 		EmitIfCondition(state, Binary(state, spv::OpULessThan, TypeBool(state), index, vertex_count),
 		                [&] {
 			                MeshEmulationStoreVertex(state, vertex_buffer,
@@ -500,10 +545,56 @@ void EmitMeshAllocate(ValueEmitContext& ctx, const IR::Inst& inst) {
 	});
 }
 
+// Emulated mesh stage: outputs the guest never writes are defined instead of whatever the
+// invocation's private memory or the workgroup's shared memory held. No GS_ALLOC_REQ means no
+// vertices and no primitives; a primitive slot the guest does not export is culled; an
+// unexported vertex output is zero.
+void EmitMeshEmulationDefaults(EmitterState& state) {
+	for (uint32_t half = 0; half < state.lane_count; half++) {
+		for (const auto& output: state.outputs) {
+			if (output.kind == IR::StageOutputKind::Layer) {
+				continue; // Shared, read only through vertices the guest allocated.
+			}
+			const auto type  = MeshOutputType(state, output.kind);
+			const auto zero  = type == TypeF32(state) ? ConstantF32(state, 0u)
+			                   : type == TypeU32(state) ? ConstantU32(state, 0)
+			                                            : state.builder.Constant(
+			                                                  spv::OpConstantNull, type);
+			state.builder.AddFunction(spv::OpStore,
+			                          MeshElement(state, output.mesh_data_variable,
+			                                      spv::StorageClassPrivate, type,
+			                                      ConstantU32(state, half)),
+			                          zero);
+		}
+		state.builder.AddFunction(spv::OpStore,
+		                          MeshElement(state, state.mesh_primitive_data,
+		                                      spv::StorageClassPrivate, TypeU32(state),
+		                                      ConstantU32(state, half)),
+		                          ConstantU32(state, 0x80000000u));
+	}
+	// The invocation that runs GS_ALLOC_REQ (EmitMeshAllocate) clears the allocation first, so
+	// program order alone orders the two stores; the others read it after the barrier.
+	state.lane_half  = 0;
+	const auto first = Binary(state, spv::OpIEqual, TypeBool(state), EmitLocalInvocationIndex(state),
+	                          ConstantU32(state, 0));
+	EmitIfCondition(state, first, [&] {
+		for (uint32_t field = 0; field < 2; field++) {
+			state.builder.AddFunction(spv::OpStore,
+			                          MeshElement(state, state.mesh_allocation,
+			                                      spv::StorageClassWorkgroup, TypeU32(state),
+			                                      ConstantU32(state, field)),
+			                          ConstantU32(state, 0));
+		}
+	});
+}
+
 void EmitMeshEntryPoint(EmitterState& state) {
 	state.builder.AddFunction(spv::OpFunction, TypeVoid(state), state.main_func,
 	                          spv::FunctionControlMaskNone, TypeFunction(state));
 	EmitLabel(state, state.builder.AllocateId());
+	if (MeshEmulated(state) && MeshDefinedOutputs()) {
+		EmitMeshEmulationDefaults(state);
+	}
 	state.builder.AddFunction(spv::OpFunctionCall, TypeVoid(state), state.builder.AllocateId(),
 	                          state.mesh_guest_func);
 	// All guest waves finish before the uniform Vulkan allocation and output stores.
