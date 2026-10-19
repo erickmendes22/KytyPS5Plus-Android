@@ -3,6 +3,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
+#include "common/hostFaultAccess.h"
 #include "common/logging/log.h"
 #include "common/perfWaits.h"
 #include "common/profiler.h"
@@ -18,6 +19,9 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#endif
 #include <array>
 #include <atomic>
 #include <cinttypes>
@@ -626,11 +630,32 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 			const auto at16 = (vaddr - diff_base) & ~uint64_t {15};
 			const bool changed16 = std::memcmp(diff_before.data() + at16, after.data() + at16, 16) != 0;
 			const bool changed64 = diff_before != after;
+			// The faulting host code of a read fault the GPU thread took itself (a pm4 reader): pc
+			// and lr as module offsets. Registers only, never dereferenced (a stale frame pointer
+			// would fault in here).
+			std::string where;
+#if !defined(_WIN32)
+			if (GuestGpu::IsGpuThread() && reader != Common::PerfStats::kReaderGuestRead &&
+			    reader != Common::PerfStats::kReaderGuestWrite) {
+				unsigned long long pc = 0, lr = 0, fp = 0;
+				Common::HostException::LastFaultRegisters(&pc, &lr, &fp);
+				for (const auto frame: {pc, lr}) {
+					Dl_info info {};
+					if (frame != 0 && dladdr(reinterpret_cast<const void*>(frame), &info) != 0 &&
+					    info.dli_fbase != nullptr) {
+						where += fmt::format(" +0x{:x}", frame - reinterpret_cast<uint64_t>(info.dli_fbase));
+					} else {
+						where += fmt::format(" 0x{:x}", frame);
+					}
+				}
+			}
+#endif
 			Common::PerfStats::EmitLine(fmt::format(
 			    "[perf-trace] rbdiff reader=0x{:x} addr=0x{:x} downloaded={} in_range={} range=0x{:x}+0x{:x} "
-			    "page_gpu_bytes={} changed16={} changed64={}",
+			    "page_gpu_bytes={} changed16={} changed64={} at{}",
 			    reader, vaddr, downloaded ? 1 : 0, diff_range_end != 0 ? 1 : 0, diff_range_begin,
-			    diff_range_end - diff_range_begin, diff_page_gpu_bytes, changed16 ? 1 : 0, changed64 ? 1 : 0));
+			    diff_range_end - diff_range_begin, diff_page_gpu_bytes, changed16 ? 1 : 0, changed64 ? 1 : 0,
+			    where));
 			diff_logged++;
 		}
 		if (downloaded) {

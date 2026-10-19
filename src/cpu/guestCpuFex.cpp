@@ -101,6 +101,7 @@ bool HostSigsegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/, vo
 	}
 	const auto* si       = static_cast<const siginfo_t*>(info);
 	const bool  is_write = Common::HostException::IsWriteFault(ucontext);
+	Common::HostException::RecordFaultRegisters(ucontext);
 	return handler(reinterpret_cast<uintptr_t>(si->si_addr), is_write);
 }
 
