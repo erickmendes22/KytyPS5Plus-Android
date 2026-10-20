@@ -25,7 +25,8 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 	if (kind == IR::StageInputKind::LocalInvocationIndex) {
 		return EmitLocalInvocationIndex(state);
 	}
-	if (kind == IR::StageInputKind::GlobalInvocationId && state.lane_count != 2 &&
+	const bool packed = state.program.info.group_pack > 1u;
+	if (kind == IR::StageInputKind::GlobalInvocationId && state.lane_count != 2 && !packed &&
 	    state.program.bindings.group_base_dword != IR::PushData::NoStart && component < 3u) {
 		// Split dispatches (RecordGuestDispatch): the piece's first group along this axis.
 		const auto* cs   = ShaderWorkgroupInput(state.program.stage, state.input_info);
@@ -34,8 +35,9 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 		                  EmitBinaryU32(state, spv::OpIMul, EmitGroupBaseU32(state, component),
 		                                ConstantU32(state, size)));
 	}
-	if (state.lane_count == 2 && (kind == IR::StageInputKind::LocalInvocationId ||
-	                              kind == IR::StageInputKind::GlobalInvocationId)) {
+	// Two-lane waves and packed groups derive the guest ids from the guest local index.
+	if ((state.lane_count == 2 || packed) && (kind == IR::StageInputKind::LocalInvocationId ||
+	                                          kind == IR::StageInputKind::GlobalInvocationId)) {
 		const auto* cs      = ShaderWorkgroupInput(state.program.stage, state.input_info);
 		uint32_t    divisor = 1;
 		for (uint32_t axis = 0; axis < component; axis++) {
@@ -1056,8 +1058,42 @@ static uint32_t EmitLaneBroadcast(ValueEmitContext& ctx, const IR::Inst& inst, u
 	return result;
 }
 
+// KYTY_CS_PACK with KYTY_LANE_BROADCAST: each 32-lane half is one guest wave. Its first EXEC lane
+// comes from the half's ballot word, which is subgroup-uniform, so each half reads with one
+// broadcast instead of a shuffle (a rotate loop on ir3).
+static uint32_t EmitPackedReadFirstLane(ValueEmitContext& ctx, const IR::Inst& inst,
+                                        uint32_t ballot) {
+	auto&      state = ctx.state;
+	const auto word  = [&](uint32_t index) {
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), result, ballot, index);
+		return result;
+	};
+	const auto first = [&](uint32_t index) {
+		// FindILsb(0) is ~0: an empty half reads lane 31 or 63, a value no lane uses.
+		const auto lsb = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpExtInst, TypeU32(state), lsb, GlslStd450(state),
+		                          GLSLstd450FindILsb, word(index));
+		const auto lane = EmitBinaryU32(state, spv::OpBitwiseAnd, lsb, ConstantU32(state, 31u));
+		return index == 0u ? lane : EmitAddU32(state, lane, ConstantU32(state, 32u));
+	};
+	const auto low  = EmitLaneBroadcast(ctx, inst, first(0u), false);
+	const auto high = EmitLaneBroadcast(ctx, inst, first(1u), false);
+	const auto upper = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpUGreaterThanEqual, TypeBool(state), upper,
+	                          EmitSubgroupLocalInvocationId(state), ConstantU32(state, 32u));
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpSelect, TypeId(state, inst.Arg(0).GetType()), result, upper,
+	                          high, low);
+	return result;
+}
+
 uint32_t EmitReadFirstLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto ballot = ctx.Ballot(inst.Arg(1));
+	if (WaveSliced(ctx.state) && ctx.state.program.info.group_pack > 1u &&
+	    ctx.state.device_features.constant_lane_broadcast && ctx.other_half == nullptr) {
+		return EmitPackedReadFirstLane(ctx, inst, ballot);
+	}
 	if (WaveSliced(ctx.state)) {
 		const auto first = ctx.FirstLane(EmitWaveBallot(ctx.state, ballot));
 		return ctx.Shuffle(inst, 0, EmitWaveLaneToSubgroupLane(ctx.state, first));

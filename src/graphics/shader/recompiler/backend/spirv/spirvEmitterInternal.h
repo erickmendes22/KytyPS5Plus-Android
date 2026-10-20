@@ -475,6 +475,8 @@ uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uin
 uint32_t EmitGroupBaseU32(EmitterState& state, uint32_t component);
 
 uint32_t EmitLocalInvocationIndex(EmitterState& state);
+// KYTY_CS_PACK: which guest workgroup (0 or 1) of the packed host workgroup the invocation runs.
+uint32_t EmitPackedGroupHalf(EmitterState& state);
 
 // Host lane `lane` (a subgroup invocation id) is set in a subgroup ballot.
 uint32_t EmitBallotLaneActiveBool(EmitterState& state, uint32_t ballot, uint32_t lane);

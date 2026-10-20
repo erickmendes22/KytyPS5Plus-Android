@@ -254,10 +254,13 @@ static bool LdsInStorage(const ShaderRecompiler::IR::CompiledShaderInfo& program
 // which the translated shader adds to gl_WorkGroupID / gl_GlobalInvocationID. The
 // LDS-in-storage-buffer fallback indexes its per-group slot with the piece's gl_NumWorkGroups:
 // unique within a piece, not across pieces, so its pieces are serialized.
+// groups counts host workgroups; a packed program (KYTY_CS_PACK, IR::ShaderInfo::group_pack) runs
+// group_pack guest workgroups along X in each, so the pieces' bases are scaled back to guest groups.
 static void RecordGuestDispatch(vk::CommandBuffer command, const DispatchGroups& limits,
                                 const DispatchGroups&                           groups,
                                 const ShaderRecompiler::IR::CompiledShaderInfo& program,
                                 const PipelineCache::Pipeline&                  pipeline) {
+	const uint32_t pack = std::max(program.info.group_pack, 1u);
 	if (DispatchFits(groups, limits)) {
 		command.dispatch(groups[0], groups[1], groups[2]);
 		return;
@@ -290,8 +293,10 @@ static void RecordGuestDispatch(vk::CommandBuffer command, const DispatchGroups&
                                     nullptr, 0, nullptr);
         }
         if (reads_ids) {
+            DispatchGroups base = piece.base;
+            base[0] *= pack;
             command.pushConstants(pipeline.pipeline_layout, pipeline.push_constant_stages,
-                                  base_offset, sizeof(piece.base), piece.base.data());
+                                  base_offset, sizeof(base), base.data());
         }
         command.dispatch(piece.count[0], piece.count[1], piece.count[2]);
         recorded++;
@@ -311,6 +316,34 @@ static void RecordGuestDispatch(vk::CommandBuffer command, const DispatchGroups&
 		     limits[2], pieces, reads_ids ? " (group base in push data)" : " (ids unused)",
 		     lds_in_storage ? " (serialized: LDS in storage buffer)" : "");
 	}
+}
+
+// KYTY_CS_PACK runs two guest workgroups of at most 32 threads in one 64-lane host workgroup (the
+// recompiler decides per program: ShaderRecompiler.cpp ComputeGroupPack). Default on with Mesa
+// Turnip (Astro Bot: 74.8 -> 66.7 GPU ms/frame, research/clock_policy.md), off elsewhere;
+// KYTY_CS_PACK=0/1 overrides, and with KYTY_LIVE_KNOBS=1 the live key cs_pack=0/1 overrides both
+// (in-run A/B; each setting is its own pipeline).
+static bool ComputeGroupPackEnabled(bool turnip) {
+	static const bool default_on = [turnip] {
+		const char* value = std::getenv("KYTY_CS_PACK");
+		const bool  on    = value != nullptr && value[0] != '\0' ? std::strcmp(value, "0") != 0 : turnip;
+		LOGF("KYTY_CS_PACK: packing small compute workgroups in pairs %s\n", on ? "on" : "off");
+		return on;
+	}();
+	return LiveKnobs::Int("cs_pack", default_on ? 1 : 0) != 0;
+}
+
+// KYTY_LIVE_KNOBS bvh_opt=<0..31>: BVH emulation bits for programs compiled from now on
+// (ShaderComputeInputInfo::bvh_live); absent keeps KYTY_BVH_OPT / KYTY_BVH_VEC.
+static uint8_t LiveBvhOptions() {
+	const auto value = LiveKnobs::Int("bvh_opt", -1);
+	return value < 0 ? uint8_t {0} : static_cast<uint8_t>(0x80u | (static_cast<uint32_t>(value) & 0x1fu));
+}
+
+static bool ComputeGroupPackCandidate(const ShaderComputeInputInfo& input_info, uint32_t threads,
+                                      uint32_t groups_x, bool turnip) {
+	return ComputeGroupPackEnabled(turnip) && !input_info.dispatch_thread_dimensions && threads <= 32u &&
+	       groups_x >= 2u && groups_x % 2u == 0u;
 }
 
 // KYTY_INDIRECT_DISPATCH_CLAMP=0 dispatches GPU-written indirect arguments unclamped (A/B).
@@ -381,6 +414,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	ShaderComputeInputInfo input_info {};
 	input_info.async_compute = async_compute;
+	input_info.bvh_live      = LiveBvhOptions();
 	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
 	input_info.dispatch_thread_dimensions = use_thread_dimensions;
 	input_info.workgroup_counts[0] = thread_group_x;
@@ -393,6 +427,15 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			const auto size = std::max(group_sizes[axis], 1u);
 			const auto threads = input_info.workgroup_counts[axis];
 			input_info.workgroup_counts[axis] = threads / size + (threads % size != 0u);
+		}
+	}
+	{
+		const uint32_t threads = std::max(cs_regs.cs_regs.num_thread_x, 1u) *
+		                         std::max(cs_regs.cs_regs.num_thread_y, 1u) *
+		                         std::max(cs_regs.cs_regs.num_thread_z, 1u);
+		if (ComputeGroupPackCandidate(input_info, threads, thread_group_x,
+		                              m_context.GetGraphics().IsMesaTurnip())) {
+			input_info.pack_groups = 2;
 		}
 	}
 	const auto compute_program =
@@ -539,8 +582,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	buffer.MarkGpu("misc");
 	{
 		const ScopedDebugLabel label(vk_buffer, "cs", program.shader_hash);
+		// A packed program runs group_pack guest groups along X per host group (x is even).
+		const uint32_t host_x = thread_group_x / std::max(program.info.group_pack, 1u);
 		RecordGuestDispatch(vk_buffer, ComputeGroupLimits(m_context.GetGraphics()),
-		                    {thread_group_x, thread_group_y, thread_group_z}, program, pipeline);
+		                    {host_x, thread_group_y, thread_group_z}, program, pipeline);
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();
@@ -577,6 +622,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	ShaderComputeInputInfo input_info {};
 	input_info.async_compute = async_compute;
 	input_info.indirect_args_address = args_addr;
+	input_info.bvh_live              = LiveBvhOptions();
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);
 	if (input_info.stage.program != nullptr &&

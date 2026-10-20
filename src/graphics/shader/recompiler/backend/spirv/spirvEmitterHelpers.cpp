@@ -209,10 +209,30 @@ uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uin
 	                          TypePointer(state, spv::StorageClassInput, TypeU32(state)), pointer,
 	                          variable, ConstantU32(state, component));
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, pointer);
+	const bool packed = state.program.info.group_pack > 1u && component == 0u;
 	if (kind == IR::StageInputKind::WorkgroupId && component < 3u) {
-		return EmitAddU32(state, value, EmitGroupBaseU32(state, component));
+		// Packed: host group x holds guest groups 2x (lanes 0-31) and 2x+1 (lanes 32-63).
+		const auto group = packed ? EmitAddU32(state,
+		                                       EmitBinaryU32(state, spv::OpShiftLeftLogical, value,
+		                                                     ConstantU32(state, 1u)),
+		                                       EmitPackedGroupHalf(state))
+		                          : value;
+		return EmitAddU32(state, group, EmitGroupBaseU32(state, component));
+	}
+	if (kind == IR::StageInputKind::NumWorkgroups && packed) {
+		return EmitBinaryU32(state, spv::OpShiftLeftLogical, value, ConstantU32(state, 1u));
 	}
 	return value;
+}
+
+uint32_t EmitPackedGroupHalf(EmitterState& state) {
+	const auto variable = InputVariableForKind(state, IR::StageInputKind::LocalInvocationIndex);
+	if (variable == 0) {
+		EXIT("packed compute groups need gl_LocalInvocationIndex\n");
+	}
+	const auto value = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, variable);
+	return EmitBinaryU32(state, spv::OpShiftRightLogical, value, ConstantU32(state, 5u));
 }
 
 uint32_t EmitGroupBaseU32(EmitterState& state, uint32_t component) {
@@ -230,6 +250,10 @@ uint32_t EmitLocalInvocationIndex(EmitterState& state) {
 	}
 	const auto value = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, variable);
+	if (state.program.info.group_pack > 1u) {
+		// Each 32-lane half of the host workgroup is one guest workgroup.
+		return EmitBinaryU32(state, spv::OpBitwiseAnd, value, ConstantU32(state, 31u));
+	}
 	if (state.lane_count == 2) {
 		const auto wave_base =
 		    EmitBinaryU32(state, spv::OpBitwiseAnd, value, ConstantU32(state, ~31u));
@@ -295,18 +319,27 @@ uint32_t EmitSubgroupLaneActiveBool(EmitterState& state, uint32_t lane) {
 	                                lane);
 }
 bool WaveSliced(const EmitterState& state) {
-	return state.device_features.wave_slices && !state.subgroup_isolated && state.lane_count == 1u &&
+	// Packed compute groups (KYTY_CS_PACK) put one guest wave in each 32-lane half.
+	return (state.device_features.wave_slices || state.program.info.group_pack > 1u) &&
+	       !state.subgroup_isolated && state.lane_count == 1u &&
 	       state.program.stage != ShaderType::TessellationControl;
+}
+
+// Host lanes per guest wave slice: the guest wave size, or 32 for packed compute groups
+// (KYTY_CS_PACK), whose guest waves (wave32, or wave64 with at most 32 threads) each own a
+// 32-lane half.
+static uint32_t WaveSliceLanes(const EmitterState& state) {
+	return state.program.info.group_pack > 1u ? 32u : state.program.wave_size;
 }
 
 uint32_t EmitWaveLocalLane(EmitterState& state) {
 	return EmitBinaryU32(state, spv::OpBitwiseAnd, EmitSubgroupLocalInvocationId(state),
-	                     ConstantU32(state, state.program.wave_size - 1u));
+	                     ConstantU32(state, WaveSliceLanes(state) - 1u));
 }
 
 uint32_t EmitWaveLaneBase(EmitterState& state) {
 	return EmitBinaryU32(state, spv::OpBitwiseAnd, EmitSubgroupLocalInvocationId(state),
-	                     ConstantU32(state, ~(state.program.wave_size - 1u)));
+	                     ConstantU32(state, ~(WaveSliceLanes(state) - 1u)));
 }
 
 uint32_t EmitWaveBallot(EmitterState& state, uint32_t subgroup_ballot) {
@@ -320,7 +353,8 @@ uint32_t EmitWaveBallot(EmitterState& state, uint32_t subgroup_ballot) {
 	                                      ConstantU32(state, 5));
 	const auto zero = ConstantU32(state, 0);
 	const auto low  = word(first_word);
-	const auto high = state.program.wave_size == 64u
+	// A packed wave64 guest has at most 32 threads: its upper EXEC word is zero.
+	const auto high = WaveSliceLanes(state) == 64u
 	                      ? word(EmitAddU32(state, first_word, ConstantU32(state, 1)))
 	                      : zero;
 	const auto result = state.builder.AllocateId();
@@ -332,7 +366,7 @@ uint32_t EmitWaveBallot(EmitterState& state, uint32_t subgroup_ballot) {
 uint32_t EmitWaveLaneToSubgroupLane(EmitterState& state, uint32_t wave_lane) {
 	return EmitBinaryU32(state, spv::OpBitwiseOr, EmitWaveLaneBase(state),
 	                     EmitBinaryU32(state, spv::OpBitwiseAnd, wave_lane,
-	                                   ConstantU32(state, state.program.wave_size - 1u)));
+	                                   ConstantU32(state, WaveSliceLanes(state) - 1u)));
 }
 
 uint32_t EmitBallotLaneActiveBool(EmitterState& state, uint32_t active_ballot, uint32_t lane) {

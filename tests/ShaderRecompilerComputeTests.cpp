@@ -17337,7 +17337,9 @@ public:
       cmd.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
                         sizeof(push_data), push_data.dwords.data());
     }
-    cmd.dispatch(test.dispatch_x, test.dispatch_y, test.dispatch_z);
+    // A packed program (KYTY_CS_PACK) runs group_pack guest groups along X per host group.
+    cmd.dispatch(test.dispatch_x / std::max(compiled.program.info.group_pack, 1u),
+                 test.dispatch_y, test.dispatch_z);
 
     if (Count(Kind::Buffers) != 0) {
       vk::BufferMemoryBarrier barrier{};
@@ -25672,6 +25674,96 @@ TestCase VectorSubrevCoCiU32ExactRawOnGpu() {
   test.compute_info.thread_ids_num = 1;
   test.compute_info.workgroup_register = 0;
   test.has_compute_info = true;
+  return test;
+}
+
+// KYTY_CS_PACK: a 25-thread wave32 group (no LDS, no barriers) packs two guest groups into one
+// 64-lane host group: LocalSize 64, guest local index = host index & 31, guest group x =
+// host x * 2 + (host index >> 5), and lanes past the guest's 25 threads return first.
+TestCase PackedWave32ComputeGroups() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  code.push_back(EncodeVop1(0x01, 1, 0));        // v_mov_b32 v1, s0 (group id x)
+  code.push_back(EncodeVop1(0x02, 2, Vgpr(1)));  // v_readfirstlane_b32 s2, v1
+  code.push_back(EncodeVop1(0x01, 3, 2));        // v_mov_b32 v3, s2
+  code.push_back(EncodeVop2(0x1a, 4, InlineU32(2), 0)); // v_lshlrev_b32 v4, 2, v0
+  AppendBufferStoreDword(&code, 3, 4);
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "PackedWave32ComputeGroups";
+  test.code = code;
+  test.expected = std::vector<u32>(32, 0u);
+  test.opcodes = {O::V_MOV_B32, O::V_READFIRSTLANE_B32, O::V_LSHLREV_B32,
+                  O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.required_spirv = {"LocalSize 64 1 1", "OpUGreaterThanEqual", "LocalInvocationIndex"};
+  test.compute_info.threads_num[0] = 25;
+  test.compute_info.threads_num[1] = 1;
+  test.compute_info.threads_num[2] = 1;
+  test.compute_info.group_id[0] = true;
+  test.compute_info.wave_size = 32;
+  test.compute_info.thread_ids_num = 1;
+  test.compute_info.workgroup_register = 0;
+  test.compute_info.lds_size_dwords = 0;
+  test.compute_info.pack_groups = 2;
+  test.has_compute_info = true;
+  test.dispatch_x = 2;
+  test.compile_only = true;
+  return test;
+}
+
+// KYTY_CS_PACK on the GPU: 4 guest groups of 25 threads in 2 host groups. Thread t of group g
+// stores (g << 16) | readfirstlane(t + 0x100 * g) at dword 32 g + t: the first lane must be the
+// group's own lane 0, and lanes 25-31 of each half store nothing.
+TestCase PackedWave32ComputeGroupsOnGpu() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  code.push_back(EncodeVop1(0x01, 1, 0));                       // v_mov_b32 v1, s0 (group id)
+  code.push_back(EncodeVop2(0x1a, 2, InlineU32(8), 1));         // v_lshlrev_b32 v2, 8, v1
+  code.push_back(EncodeVop2(0x25, 2, Vgpr(0), 2));              // v_add_nc_u32 v2, v0, v2
+  code.push_back(EncodeVop1(0x02, 3, Vgpr(2)));                 // v_readfirstlane_b32 s3, v2
+  code.push_back(EncodeVop2(0x1a, 5, InlineU32(16), 1));        // v_lshlrev_b32 v5, 16, v1
+  code.push_back(EncodeVop2(0x1c, 5, 3, 5));                    // v_or_b32 v5, s3, v5
+  code.push_back(EncodeVop2(0x1a, 6, InlineU32(5), 1));         // v_lshlrev_b32 v6, 5, v1
+  code.push_back(EncodeVop2(0x25, 6, Vgpr(0), 6));              // v_add_nc_u32 v6, v0, v6
+  code.push_back(EncodeVop2(0x1a, 4, InlineU32(2), 6));         // v_lshlrev_b32 v4, 2, v6
+  AppendBufferStoreDword(&code, 5, 4);
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "PackedWave32ComputeGroupsOnGpu";
+  test.code = code;
+  test.initial = std::vector<u32>(128, 0xcdcdcdcdu);
+  test.expected = test.initial;
+  for (u32 g = 0; g < 4; g++) {
+    for (u32 t = 0; t < 25; t++) {
+      test.expected[32 * g + t] = (g << 16) | (0x100u * g);
+    }
+  }
+  test.opcodes = {O::V_MOV_B32, O::V_LSHLREV_B32, O::V_ADD_NC_U32, O::V_READFIRSTLANE_B32,
+                  O::V_OR_B32, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.compute_info.threads_num[0] = 25;
+  test.compute_info.threads_num[1] = 1;
+  test.compute_info.threads_num[2] = 1;
+  test.compute_info.group_id[0] = true;
+  test.compute_info.wave_size = 32;
+  test.compute_info.thread_ids_num = 1;
+  test.compute_info.workgroup_register = 0;
+  test.compute_info.lds_size_dwords = 0;
+  test.compute_info.pack_groups = 2;
+  test.has_compute_info = true;
+  test.dispatch_x = 4;
+  return test;
+}
+
+// The same packing for a wave64 guest of 25 threads: its EXEC high word is zero, so each guest
+// wave fits a 32-lane half.
+TestCase PackedWave64ComputeGroupsOnGpu() {
+  auto test = PackedWave32ComputeGroupsOnGpu();
+  test.name = "PackedWave64ComputeGroupsOnGpu";
+  test.compute_info.wave_size = 64;
   return test;
 }
 
@@ -42175,6 +42267,9 @@ std::vector<TestCase> MakeCases() {
   cases.push_back(BufferWorkgroupPublication(64, false, true));
 
   AddCase(VectorCompareWave32KeepsVccHi);
+  AddCase(PackedWave32ComputeGroups);
+  AddCase(PackedWave32ComputeGroupsOnGpu);
+  AddCase(PackedWave64ComputeGroupsOnGpu);
   AddCase(IntegerAddSubMul);
   AddCase(BitwiseOps);
   AddCase(Shifts);
@@ -48127,7 +48222,9 @@ ShaderDeviceFeatures FastPathFeatures() {
   features.compute_required_subgroup_min = 64;
   features.compute_required_subgroup_max = 128;
   features.first_lane_value_sets = true;
-  features.bvh_emulation = ShaderBvhTriangleWords | ShaderBvhBoxBranch | ShaderBvhOriginCheck;
+  features.bvh_emulation =
+      ShaderBvhTriangleWords | ShaderBvhBoxBranch | ShaderBvhOriginCheck | ShaderBvhSecondPage;
+  features.bvh_vector_loads = true;
   return features;
 }
 
@@ -48240,6 +48337,16 @@ int main(int argc, char **argv) {
     CheckConstantLaneBroadcast();
     CheckFirstLaneMoveRel();
     CompileAllCases(std::strcmp(argv[1], "--compile-only-fast-paths") == 0);
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--pack-only") == 0) {
+    VulkanHarness vulkan;
+    RunCase(&vulkan, PackedWave32ComputeGroups());
+    RunCase(&vulkan, PackedWave32ComputeGroupsOnGpu());
+    auto unpacked = PackedWave32ComputeGroupsOnGpu();
+    unpacked.name = "PackedWave32ComputeGroupsOnGpu/unpacked";
+    unpacked.compute_info.pack_groups = 0;
+    RunCase(&vulkan, unpacked);
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--thread-dimensions-only") == 0) {
