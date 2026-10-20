@@ -3,6 +3,7 @@
 
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -36,9 +37,21 @@ struct UserDataClasses {
                                         std::span<const uint32_t> sources, std::span<const uint8_t> active,
                                         std::vector<DescriptorValue>& values);
 
+// Why RebaseSnapshot refused (counted; TakeRebaseFailures returns and clears the counts).
+enum class RebaseFailure : uint8_t {
+	Normalized,  // the kept resource is not the raw value (zeroed as invalid)
+	NotBaseOnly, // a changed source differs outside the base address bits
+	Null,        // the base became or stopped being null
+	Uniform,     // the uniform-buffer specialization (16-byte alignment) would change
+	Sampler,     // a sampler uses a changed source
+	Evaluate,    // re-evaluating a value source failed
+	Count
+};
+[[nodiscard]] std::array<uint64_t, static_cast<size_t>(RebaseFailure::Count)> TakeRebaseFailures();
+
 // Moves the resources of a kept snapshot from the `cached` raw values of `sources` to `current`.
 // Only base addresses may differ, and only where the specialization cannot see it (same 16-byte
-// buffer alignment, same null-ness); every resource using a changed source must be a direct
+// uniform-buffer specialization, same null-ness); every resource using a changed source must be a direct
 // buffer or image whose kept value is the raw value. False when the snapshot cannot be rebased
 // (the caller walks instead).
 [[nodiscard]] bool RebaseSnapshot(const ResourcePlan& plan, std::span<const uint32_t> sources,

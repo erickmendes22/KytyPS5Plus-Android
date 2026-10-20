@@ -58,6 +58,10 @@ ResourcePlan ExtractResourcePlan(const Program& program);
 bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime,
                           ResourceSnapshot& snapshot, ResourceSpecialization& specialization);
 
+// Whether MaterializeResources would specialize direct buffer `buffer` with raw descriptor `value`
+// as a uniform buffer (ResourceSpecialization::Buffer::uniform; depends on base alignment).
+bool BufferSpecializedAsUniform(const ResourcePlan& program, uint32_t buffer, const DescriptorValue& value);
+
 // Applies an already-derived specialization to native IR before layout and emission.
 void ApplyResourceSpecialization(Program& program, const ResourceSpecialization& specialization);
 

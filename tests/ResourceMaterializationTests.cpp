@@ -297,10 +297,10 @@ void TestResourceMemoRebasesValueWords() {
           "rebased memo result differs from a fresh walk");
   }
   const auto stats = ResourceMemo::TakeStats();
-  // 0x1000 walks; 0x2000/0x3000/0x3000 hit, rebased from the kept 0x1000; 0x1004 changes the
-  // 16-byte alignment and 0 the null-ness: both walk; 0x2004 rebases from 0x1004; 0x4000 walks
-  // after the null base.
-  Check(stats.misses == 1 && stats.hits == 4 && stats.rebased == 4 && stats.rebase_fail == 3,
+  // 0x1000 walks; 0x2000/0x3000/0x3000/0x1004/0x2004 hit, rebased (this plan never specializes a
+  // uniform buffer, so the 16-byte alignment does not matter); 0 changes the null-ness and walks,
+  // and 0x4000 walks again from the null base.
+  Check(stats.misses == 1 && stats.hits == 5 && stats.rebased == 5 && stats.rebase_fail == 2,
         "rebase counts unexpected");
   ResourceMemo::SetEnabled(false);
 }

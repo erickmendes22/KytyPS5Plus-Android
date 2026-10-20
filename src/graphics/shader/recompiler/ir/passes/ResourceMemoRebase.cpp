@@ -2,6 +2,8 @@
 
 #include "graphics/shader/recompiler/ir/Reg.h"
 
+#include <array>
+#include <atomic>
 #include <unordered_set>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
@@ -118,7 +120,20 @@ bool SameExceptBase(const DescriptorValue& a, const DescriptorValue& b, uint32_t
 	return true;
 }
 
+std::array<std::atomic<uint64_t>, static_cast<size_t>(RebaseFailure::Count)> g_failures {};
+
+bool Fail(RebaseFailure why) {
+	g_failures[static_cast<size_t>(why)].fetch_add(1, std::memory_order_relaxed);
+	return false;
+}
+
 } // namespace
+
+std::array<uint64_t, static_cast<size_t>(RebaseFailure::Count)> TakeRebaseFailures() {
+	std::array<uint64_t, static_cast<size_t>(RebaseFailure::Count)> counts {};
+	for (size_t i = 0; i < counts.size(); ++i) counts[i] = g_failures[i].exchange(0, std::memory_order_relaxed);
+	return counts;
+}
 
 UserDataClasses ClassifyUserData(const ResourcePlan& plan) {
 	UserDataClasses classes;
@@ -207,27 +222,25 @@ bool RebaseSnapshot(const ResourcePlan& plan, std::span<const uint32_t> sources,
 		for (size_t i = 0; i < plan.info.buffers.size() && i < snapshot.buffers.size(); ++i) {
 			if (plan.info.buffers[i].source != source) continue;
 			auto& kept = snapshot.buffers[i];
-			const auto old_base = BufferBase(cached[k]);
-			const auto new_base = BufferBase(current[k]);
-			if (kept != cached[k] || !SameExceptBase(cached[k], current[k], 0xffffu) ||
-			    (old_base & 15u) != (new_base & 15u) || (old_base == 0u) != (new_base == 0u)) {
-				return false;
-			}
+			if (kept != cached[k]) return Fail(RebaseFailure::Normalized);
+			if (!SameExceptBase(cached[k], current[k], 0xffffu)) return Fail(RebaseFailure::NotBaseOnly);
+			if ((BufferBase(cached[k]) == 0u) != (BufferBase(current[k]) == 0u)) return Fail(RebaseFailure::Null);
+			// The only base-dependent specialization field of a buffer: uniform (16-byte alignment).
+			const auto index = static_cast<uint32_t>(i);
+			if (BufferSpecializedAsUniform(plan, index, cached[k]) != BufferSpecializedAsUniform(plan, index, current[k]))
+				return Fail(RebaseFailure::Uniform);
 			kept = current[k];
 		}
 		for (size_t i = 0; i < plan.info.images.size() && i < snapshot.images.size(); ++i) {
 			if (plan.info.images[i].source != source) continue;
 			auto& kept = snapshot.images[i];
-			const auto old_base = ImageBase(cached[k]);
-			const auto new_base = ImageBase(current[k]);
-			if (kept != cached[k] || !SameExceptBase(cached[k], current[k], 0xffu) ||
-			    (old_base == 0u) != (new_base == 0u)) {
-				return false;
-			}
+			if (kept != cached[k]) return Fail(RebaseFailure::Normalized);
+			if (!SameExceptBase(cached[k], current[k], 0xffu)) return Fail(RebaseFailure::NotBaseOnly);
+			if ((ImageBase(cached[k]) == 0u) != (ImageBase(current[k]) == 0u)) return Fail(RebaseFailure::Null);
 			kept = current[k];
 		}
 		for (const auto& sampler: plan.info.samplers) {
-			if (sampler.source == source) return false;
+			if (sampler.source == source) return Fail(RebaseFailure::Sampler);
 		}
 	}
 	return true;

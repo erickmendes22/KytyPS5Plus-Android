@@ -414,7 +414,7 @@ ResourceMemo::RebaseResult ResourceMemo::Rebase(const ResourcePlan& plan, const 
                                                 const Entry& entry, ResourceSnapshot& snapshot) {
 	if (m_classes.Empty()) return RebaseResult::Same;
 	if (!EvaluateValueSources(plan, runtime, m_classes.value_sources, entry.value_active, m_current)) {
-		return RebaseResult::Failed;
+		return RebaseResult::Failed; // counted as rebase_fail; rare (the reads were just validated)
 	}
 	if (m_current == entry.value_raw) return RebaseResult::Same;
 	return RebaseSnapshot(plan, m_classes.value_sources, entry.value_raw, m_current, snapshot)

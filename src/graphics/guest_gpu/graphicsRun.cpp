@@ -545,6 +545,15 @@ static void PollSrtMemo() {
 	              static_cast<unsigned long long>(stats.uncached), static_cast<unsigned long long>(stats.evicted),
 	              static_cast<unsigned long long>(stats.rebased), static_cast<unsigned long long>(stats.rebase_fail));
 	Common::PerfStats::EmitLine(line);
+	if (stats.rebase_fail != 0) {
+		const auto why = ShaderRecompiler::IR::TakeRebaseFailures();
+		std::snprintf(line, sizeof(line),
+		              "[perf-memo] rebase_fail by reason: normalized=%llu not_base=%llu null=%llu uniform=%llu sampler=%llu",
+		              static_cast<unsigned long long>(why[0]), static_cast<unsigned long long>(why[1]),
+		              static_cast<unsigned long long>(why[2]), static_cast<unsigned long long>(why[3]),
+		              static_cast<unsigned long long>(why[4]));
+		Common::PerfStats::EmitLine(line);
+	}
 	if (const auto report = ResourceMemo::TakeMissReport(); !report.empty()) {
 		Common::PerfStats::EmitLine("[perf-memo] misses " + report);
 	}

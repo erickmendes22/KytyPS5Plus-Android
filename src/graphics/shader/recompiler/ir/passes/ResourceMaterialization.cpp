@@ -1315,6 +1315,12 @@ bool UniformConstantBuffer(const ResourcePlan& program, const BufferResource& ba
 
 } // namespace
 
+bool BufferSpecializedAsUniform(const ResourcePlan& program, uint32_t buffer, const DescriptorValue& value) {
+	ShaderBufferResource descriptor;
+	return buffer < program.info.buffers.size() && DecodeBufferDescriptor(value, descriptor) &&
+	       descriptor.Type() == 0 && UniformConstantBuffer(program, program.info.buffers[buffer], descriptor);
+}
+
 ResourcePlan ExtractResourcePlan(const Program& program) {
 	ResourcePlan plan;
 	plan.stage                      = program.stage;
