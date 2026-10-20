@@ -182,6 +182,8 @@ struct ShaderVertexInputInfo {
 	int                     buffers_num         = 0;
 	uint32_t                wave_size           = 64;
 	uint32_t                scratch_size_dwords = 0;
+	// LDS_SIZE of the GS stage a non-NGG vertex shader runs on; usually zero.
+	uint32_t                lds_size_dwords     = 0;
 	uint32_t                pa_cl_vs_out_cntl    = 0;
 	ShaderClipSpaceTransform clip_space;
 	ShaderMeshInputInfo      mesh;
@@ -249,6 +251,8 @@ struct ShaderPixelInputInfo {
 	// CB round mode per converted export: zero adds half an LSB, one truncates.
 	uint8_t                                        target_round_mode            = 0;
 	uint32_t                                       scratch_size_dwords          = 0;
+	// EXTRA_LDS_SIZE: LDS reserved beyond the interpolants (VGPR spills to LDS).
+	uint32_t                                       lds_size_dwords              = 0;
 	bool                                           ps_pos_x                     = false;
 	bool                                           ps_pos_y                     = false;
 	bool                                           ps_pos_z                     = false;
