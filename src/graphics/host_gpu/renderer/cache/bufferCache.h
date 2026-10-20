@@ -62,8 +62,9 @@ public:
 		return m_memory_tracker.MarkCleanPagesCpuModified(Kernel::AddressFold::Fold(vaddr), size);
 	}
 	void                   ReadMemory(uint64_t vaddr, uint64_t size, bool is_write = false);
-	// KYTY_GUEST_READ_WAIT (live knob guest_rb): a guest thread's read fault waits for the GPU
-	// writer of the page itself, so the GPU thread only copies the bytes (see ReadMemory).
+	// KYTY_GUEST_READ_WAIT (live knob guest_rb; default on for Android, =0 opts out): a guest
+	// thread's read fault waits for the GPU writer of the page itself, so the GPU thread only
+	// copies the bytes (see ReadMemory).
 	static void SetGuestReadWait(bool enabled);
 	[[nodiscard]] static bool GuestReadWaitStartValue();
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }

@@ -602,8 +602,13 @@ void BufferCache::SetGuestReadWait(bool enabled) {
 }
 
 bool BufferCache::GuestReadWaitStartValue() {
+	// Default on for Android (c12_r2_base / c12_r10_k6 / c12_r11_k6on); KYTY_GUEST_READ_WAIT=0 opts out.
 	const char* value = std::getenv("KYTY_GUEST_READ_WAIT");
+#if defined(__ANDROID__)
+	return value == nullptr || value[0] != '0';
+#else
 	return value != nullptr && value[0] == '1';
+#endif
 }
 
 uint64_t BufferCache::PrepareGuestRead(uint64_t vaddr, uint64_t size) {
