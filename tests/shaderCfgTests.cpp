@@ -17,6 +17,7 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/frontend/cfg/ShaderCFG.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
+#include "graphics/shader/recompiler/frontend/translate/LiveVertexExec.h"
 #include "graphics/shader/recompiler/frontend/translate/Translate.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 #include "graphics/shader/recompiler/ir/IREmitter.h"
@@ -4308,6 +4309,56 @@ void TestNewShaderRecompilerScalarB64LaneTranslation() {
       componentwise_u64_values == 0u,
       "architectural B64 lane operations retained vector pack/unpack traffic");
   CheckSpirvBinaryValidates(result.spirv);
+}
+
+void TestLiveVertexExecPrologue() {
+  using namespace ShaderRecompiler;
+  constexpr uint32_t Vcc = 106, Exec = 126, Zero = 128, MinusOne = 193;
+  const auto find = [](std::span<const uint32_t> code) {
+    Decoder::Program decoded;
+    Decoder::DecodeProgram(code, decoded);
+    return Frontend::FindLiveVertexExecPc(decoded, CFG::BuildGraph(decoded));
+  };
+  const uint32_t prologue[] = {
+      EncodeSop2(0x03, Vcc, Zero, 3),        // s_sub_i32 vcc_lo, 0, s3
+      EncodeSopp(0x0c, 0xff0f),              // s_waitcnt
+      EncodeSop2(0x21, Exec, MinusOne, Vcc), // s_lshr_b64 exec, -1, vcc_lo
+      EncodeSopp(0x01),
+  };
+  const auto found = find(prologue);
+  Check(found.has_value() && *found == 8u, "NGG vertex-count EXEC prologue was not recognized");
+
+  const uint32_t clobbered_count[] = {
+      EncodeSMovB32(3, 129),                 // s_mov_b32 s3, 1
+      EncodeSop2(0x03, Vcc, Zero, 3),
+      EncodeSop2(0x21, Exec, MinusOne, Vcc),
+      EncodeSopp(0x01),
+  };
+  Check(!find(clobbered_count), "EXEC from a rewritten s3 was treated as the live-vertex mask");
+
+  const uint32_t clobbered_vcc[] = {
+      EncodeSop2(0x03, Vcc, Zero, 3),
+      EncodeVopc(0x81, 0, 1),                // v_cmp_lt_i32 vcc, s0, v1
+      EncodeSop2(0x21, Exec, MinusOne, Vcc),
+      EncodeSopp(0x01),
+  };
+  Check(!find(clobbered_vcc), "EXEC from a rewritten VCC was treated as the live-vertex mask");
+
+  const uint32_t other_shift[] = {
+      EncodeSop2(0x03, 4, Zero, 3),          // s_sub_i32 s4, 0, s3
+      EncodeSop2(0x21, Exec, MinusOne, 5),   // s_lshr_b64 exec, -1, s5
+      EncodeSopp(0x01),
+  };
+  Check(!find(other_shift), "EXEC shifted by an unrelated register was treated as live");
+
+  const uint32_t sgpr_after_load[] = {
+      EncodeSop2(0x03, 6, Zero, 3),          // s_sub_i32 s6, 0, s3
+      EncodeSMovB32(4, 129),                 // s_mov_b32 s4, 1 (s3 untouched after the sub)
+      EncodeSop2(0x21, Exec, MinusOne, 6),   // s_lshr_b64 exec, -1, s6
+      EncodeSopp(0x01),
+  };
+  const auto sgpr = find(sgpr_after_load);
+  Check(sgpr.has_value() && *sgpr == 8u, "SGPR-held negated vertex count was not followed");
 }
 
 void TestFloatComparisonInputModes() {
@@ -17245,6 +17296,7 @@ int main() {
   TestNewShaderRecompilerIrLookupMissFailsExplicitly();
   TestNewShaderRecompilerInteger64CompareEncodings();
   TestFloatComparisonInputModes();
+  TestLiveVertexExecPrologue();
   TestPsInputCountRegisterDecode();
   TestPixelAncillaryLayerInput();
   TestNewShaderRecompilerUnbasedFlatUsesBda();

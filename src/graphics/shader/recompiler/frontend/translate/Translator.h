@@ -17,6 +17,8 @@ public:
 	      pixel_input(pixel_input) {}
 
 	void TranslateInstruction(const Decoder::Instruction& inst);
+	// Every running invocation is in EXEC (FindLiveVertexExecPc); the EXEC dwords stay as written.
+	void MarkExecLive() { ir.SetExec(IR::U1(IR::Value(true))); }
 	void TranslateEmbeddedFetch(const Decoder::Instruction& inst, uint32_t attribute,
 	                            uint32_t component_count, const ShaderBufferResource& resource);
 	void AddBranchCondition(const CFG::Graph& graph, const CFG::BasicBlock& source,

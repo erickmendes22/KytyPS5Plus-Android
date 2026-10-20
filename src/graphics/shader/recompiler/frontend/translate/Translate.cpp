@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "graphics/shader/recompiler/frontend/translate/LiveVertexExec.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 #include "graphics/shader/shader.h"
 
@@ -1444,6 +1445,10 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 	}
 	const bool flush_f32_inputs = options.stage == ShaderType::Compute &&
 	                              (options.input_info.compute->float_mode & 0x10u) == 0;
+	const auto live_exec_pc = options.live_vertex_exec && options.stage == ShaderType::Vertex
+	                              ? FindLiveVertexExecPc(decoded, cfg)
+	                              : std::nullopt;
+	result.info.live_vertex_exec = live_exec_pc.has_value();
 	for (const auto& cfg_block: cfg.blocks) {
 		auto*      block = blocks_by_id.at(cfg_block.id);
 		Translator translator(result, block, vector_limit, flush_f32_inputs,
@@ -1470,6 +1475,9 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				continue;
 			}
 			translator.TranslateInstruction(instruction);
+			if (live_exec_pc == instruction.pc) {
+				translator.MarkExecLive();
+			}
 		}
 		translator.AddBranchCondition(cfg, cfg_block, *block);
 	}

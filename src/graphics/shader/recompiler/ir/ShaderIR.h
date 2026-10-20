@@ -658,6 +658,7 @@ struct ShaderInfo {
 	bool                            uses_dma                      = false;
 	bool                            uses_swizzle                  = false;
 	bool                            uses_lds                      = false;
+	bool                            live_vertex_exec              = false;
 	bool                            uses_gds                      = false;
 	bool                            uses_flattened_srt            = false;
 	bool                            uses_dispatch_threads         = false;
