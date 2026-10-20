@@ -204,12 +204,13 @@ struct TitleWorkaround {
 	const char* reason;
 };
 
-// Astro Bot (PPSA21567): the crash-landing cinematic loses the device on Adreno 830 / Turnip in
-// about half the runs. Dropping the draw of mesh shader 2b3be82b (the falling ship's particle
-// trail; its compute stage still runs) avoids it; the shader is not used in gameplay, so the
-// visual cost is that trail during that one cinematic.
+// Astro Bot (PPSA21567): the crash-landing cinematic loses the device on Adreno 830 / Turnip.
+// Mesh shader 2b3be82b (the falling ship's particle trail) is skipped entirely, compute and draw:
+// dropping only its draw still lost the device once at scale 1.0 (c13_r7_mksave_devlost, its
+// compute was the last region of the faulting buffer), and its compute alone leaves stale ring
+// data for nobody. It is not used in gameplay, so the cost is that trail in that one cinematic.
 constexpr TitleWorkaround kTitleWorkarounds[] = {
-    {"PPSA21567", "mesh-skip-draw=2b3be82b",
+    {"PPSA21567", "skip=2b3be82b",
      "Astro Bot: VK_ERROR_DEVICE_LOST in the crash-landing cinematic on Adreno 830"},
 };
 
