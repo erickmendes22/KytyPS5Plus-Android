@@ -117,6 +117,7 @@ void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
 	std::lock_guard lock(m_mapped_ranges_mutex);
 	m_mapped_ranges.Add(vaddr, size);
 	m_buffer_cache.QueueBdaSync(vaddr, size);
+	m_buffer_cache.NoteMappedEnd(vaddr, size);
 	LogMappedSpread(vaddr, size);
 }
 
@@ -193,6 +194,8 @@ void RenderContext::PrepareBda() {
 		Log::WriteToConsoleAndLog("GPU: using buffer device address (BDA) shader memory access.\n");
 		m_bda_logged = true;
 	}
+	// Grow the sized page table to the mapped high-water before this draw prepares its bindings.
+	m_buffer_cache.GrowBdaTableToMapped();
 	std::shared_lock lock(m_mapped_ranges_mutex);
 	m_buffer_cache.SynchronizeBda(m_mapped_ranges);
 	m_fault_process_pending = true;

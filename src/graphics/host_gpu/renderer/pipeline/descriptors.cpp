@@ -1357,6 +1357,12 @@ void RenderExecutor::RecordBindings(vk::CommandBuffer              target,
 
 	if (!m_descriptor_writes.empty()) {
 		EXIT_IF(pipeline.descriptor_set_layout == nullptr);
+		// KYTY_BDA_TABLE: a buffer registered after PrepareBindingWrites may have grown (replaced)
+		// the page table; bind the current one (BdaPagetable writes point at m_address_buffers[0]).
+		if (const auto* table = m_context.GetBufferCache().GetBdaPageTableBuffer();
+		    m_address_buffers[0].buffer != nullptr && m_address_buffers[0].buffer != table->Handle()) {
+			m_address_buffers[0] = vk::DescriptorBufferInfo {table->Handle(), 0, table->Size()};
+		}
 		if (pipeline.uses_push_descriptors) {
 			target.pushDescriptorSetKHR(pipeline_bind_point, pipeline.pipeline_layout, 0,
 			                            static_cast<uint32_t>(m_descriptor_writes.size()),
