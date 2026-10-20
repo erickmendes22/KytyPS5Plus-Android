@@ -141,3 +141,31 @@ Without the memo (current default), 83.8 ms/frame of thread time:
    stay assigned in B's order.
 8. **Coordination with C2:** the walker must be callable from A (thread affinity, the memo's
    tables). Interface: the walker plus one read-callback hook; no walker internals change.
+
+## 6. Results so far (opus-gpupipe, scale 1.0, v32, no turbo, clock policy)
+
+Sizing probe (b4_probe1, `pipe:` section, window of 34 s): 670 items/frame, 92 k SRT walker reads/frame.
+Simulated drains per frame with a 64-item window: 4.6 guest sync commands, 0 hazard reads of
+queued writes, 0 reads of GPU-dirty memory, 0 CPU-read indirect args. Blocked WAIT_REG_MEM: 10/frame
+(the ring suspends; not a drain). BDA *writers*: 0 in the title phase (b4_probe2, thermal void
+before gameplay). b4_probe1 counted every `uses_dma` program (44/frame, mesh/BVH *readers*) as a
+writer; fixed. Register snapshot: HW::Context 2672 + UserConfig 148 + Shader 1224 bytes per item
+(~2.6 MB/frame); materialized resources ~1.6–2.2 MB/frame; the record path accessed the live
+register blocks ~4.3 times per item, all through CommandBuffer's three accessors (covered by the
+snapshot).
+
+Two-stage pipeline, `gpu_pipe` live A/B (3 interleaved pairs, every phase at full clock):
+
+| run | gpu_pipe=0 fps | gpu_pipe=1 fps | process ms/f (0 / 1) | pipe_drain | pipe_rec | pipe_walk |
+|---|---|---|---|---|---|---|
+| b4_pipe1 | 12.66 / 12.62 / 12.55 | 11.47 / 11.28 / 11.24 | 79.7 / 88.7 | 5.1 | – | – |
+| b4_pipe3 | 10.77 / 11.04 / 10.61 | 10.11 / 9.94 / 9.51 | 92.9 / 102.2 | 5.8 | 1.7 | 1.7 |
+
+Both A/Bs measured a mis-gated pipeline: PrefetchDraw sent every draw with CB_COLOR_CONTROL.MODE
+!= 0 inline, which includes MODE = 1 (normal), i.e. nearly every draw. Only ~2 ms/frame of record
+work actually ran on the record thread; the rest drained per draw, so the slowdown is the
+handoff overhead. Fixed (only fast-clear elimination, resolve and FMASK/DCC decompression, plus
+depth copies at MODE 0, go inline). Not re-measured: the frame is GPU-bound at ~71 ms with the
+SRT memo (C2's c13_r13_memo: GPU-thread process ~55 ms), so the pipeline cannot move fps until GPU
+time drops below that. Still opt-in (`KYTY_GPU_PIPELINE=1` / live `gpu_pipe=1`). Not yet run: the
+core+sync validation run and the Vampire Survivors run with the pipeline on.

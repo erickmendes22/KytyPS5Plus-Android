@@ -1166,13 +1166,16 @@ GpuPipeline::Prefetch RenderExecutor::PrefetchDraw(CommandBuffer& buffer, bool i
 	if (count == 0 || instance_count == 0) {
 		return Prefetch::NoWalk;
 	}
-	const auto& hw = buffer.GetRegisters();
-	if (hw.GetColorControl().mode != 0) {
-		return Prefetch::Inline;
+	const auto& hw   = buffer.GetRegisters();
+	const auto  mode = hw.GetColorControl().mode;
+	if (mode != static_cast<uint8_t>(CbColorMode::Disable) &&
+	    mode != static_cast<uint8_t>(CbColorMode::Normal)) {
+		return Prefetch::Inline; // fast-clear elimination, resolve, FMASK/DCC decompression
 	}
 	const auto& override = hw.GetDepthRenderOverride();
-	if ((override.force_z_dirty && override.force_z_valid) ||
-	    (override.force_stencil_dirty && override.force_stencil_valid)) {
+	if (mode == static_cast<uint8_t>(CbColorMode::Disable) &&
+	    ((override.force_z_dirty && override.force_z_valid) ||
+	     (override.force_stencil_dirty && override.force_stencil_valid))) {
 		return Prefetch::Inline; // a possible DepthStencilCopy
 	}
 	if (!DrawHasValidVertexShader(buffer.GetShaders())) {
