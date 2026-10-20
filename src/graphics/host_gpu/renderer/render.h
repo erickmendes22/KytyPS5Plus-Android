@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "graphics/host_gpu/renderer/pipelineProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/passEnd.h"
@@ -161,9 +162,18 @@ public:
 	[[nodiscard]] vk::CommandBuffer PassHandle() const;
 	[[nodiscard]] GraphicContext&   GetGraphics() const noexcept { return m_graphics; }
 	[[nodiscard]] RenderContext&    GetContext() const noexcept { return m_context; }
-	[[nodiscard]] HW::Context&      GetRegisters() const noexcept { return *m_registers; }
-	[[nodiscard]] HW::UserConfig&   GetUserConfig() const noexcept { return *m_user_config; }
-	[[nodiscard]] HW::Shader&       GetShaders() const noexcept { return *m_shaders; }
+	[[nodiscard]] HW::Context& GetRegisters() const noexcept {
+		PipelineProbe::OnRegisterBlockAccess();
+		return *m_registers;
+	}
+	[[nodiscard]] HW::UserConfig& GetUserConfig() const noexcept {
+		PipelineProbe::OnRegisterBlockAccess();
+		return *m_user_config;
+	}
+	[[nodiscard]] HW::Shader& GetShaders() const noexcept {
+		PipelineProbe::OnRegisterBlockAccess();
+		return *m_shaders;
+	}
 
 private:
 	explicit CommandBuffer(CommandScheduler& scheduler);

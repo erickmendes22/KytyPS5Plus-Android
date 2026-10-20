@@ -1122,10 +1122,23 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 	if (draw.IsIndexed()) {
 		LogDrawPhase(draw.Name(), "GetGraphicsPrograms");
 	}
+	PipelineProbe::BeginItem();
 	state.programs = pipeline_cache.GetGraphicsPrograms(
 	    vertex_shader_info, pixel_shader_info, shader_regs, ctx, buffer.GetUserConfig(),
 	    target_export_mapping, state.ps_active, state.vertex_info, state.ps_input_info,
 	    state.indirect);
+	if (state.programs.ready && Common::PerfStats::Enabled()) {
+		bool   dma   = false;
+		size_t bytes = 0;
+		const auto note = [&](const ShaderStageRuntime& stage) {
+			if (stage.program != nullptr) dma = dma || stage.program->info.uses_dma;
+			bytes += PipelineProbe::ResourceBytes(stage.resources);
+		};
+		for (uint32_t i = 0; i < state.programs.VertexStageCount(); i++) note(state.vertex_info[i].stage);
+		if (state.ps_active) note(state.ps_input_info.stage);
+		if (dma) PipelineProbe::MarkDmaWriter();
+		PipelineProbe::AddResourceBytes(bytes);
+	}
 }
 
 bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCallInfo& draw,
@@ -1397,6 +1410,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                                          const DrawIndexBufferSource& index_source,
 	                                     bool primitive_restart_enable,
 	                                     const IndirectDrawArgs* indirect) {
+	const PipelineProbe::ScopedRecordPhase record_phase;
 	auto& ucfg = buffer.GetUserConfig();
 	if (CopyDepthToColor(buffer, draw, emit, state)) {
 		return;

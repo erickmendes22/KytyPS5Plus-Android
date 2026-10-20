@@ -318,6 +318,20 @@ static void RecordGuestDispatch(vk::CommandBuffer command, const DispatchGroups&
 	}
 }
 
+// Two-stage GPU thread sizing (pipelineProbe.h): BDA users and the materialized resource bytes.
+static void NoteComputeItem(const ShaderComputeInputInfo& input_info) {
+	if (!Common::PerfStats::Enabled() || input_info.stage.program == nullptr) return;
+	static const bool logged = [] {
+		LOGF("[pipe-probe] register snapshot candidates: HW::Context=%zu HW::UserConfig=%zu "
+		     "HW::Shader=%zu bytes\n",
+		     sizeof(HW::Context), sizeof(HW::UserConfig), sizeof(HW::Shader));
+		return true;
+	}();
+	(void)logged;
+	if (input_info.stage.program->info.uses_dma) PipelineProbe::MarkDmaWriter();
+	PipelineProbe::AddResourceBytes(PipelineProbe::ResourceBytes(input_info.stage.resources));
+}
+
 // KYTY_CS_PACK runs two guest workgroups of at most 32 threads in one 64-lane host workgroup (the
 // recompiler decides per program: ShaderRecompiler.cpp ComputeGroupPack). Default on with Mesa
 // Turnip (Astro Bot: 74.8 -> 66.7 GPU ms/frame, research/clock_policy.md), off elsewhere;
@@ -438,8 +452,11 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			input_info.pack_groups = 2;
 		}
 	}
+	PipelineProbe::BeginItem();
 	const auto compute_program =
 	    m_context.GetPipelineCache().GetComputeProgram(cs_regs, sh_regs, input_info);
+	NoteComputeItem(input_info);
+	const PipelineProbe::ScopedRecordPhase record_phase;
 	if (use_thread_dimensions) {
 		input_info.dispatch_threads_num[0]    = thread_group_x;
 		input_info.dispatch_threads_num[1]    = thread_group_y;
@@ -623,8 +640,11 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	input_info.async_compute = async_compute;
 	input_info.indirect_args_address = args_addr;
 	input_info.bvh_live              = LiveBvhOptions();
+	PipelineProbe::BeginItem();
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);
+	NoteComputeItem(input_info);
+	const PipelineProbe::ScopedRecordPhase record_phase;
 	if (input_info.stage.program != nullptr &&
 	    LiveKnobs::SkipShader(input_info.stage.program->shader_hash)) {
 		return;

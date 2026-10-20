@@ -1,4 +1,5 @@
 #include "graphics/guest_gpu/graphicsRun.h"
+#include "graphics/host_gpu/renderer/pipelineProbe.h"
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
@@ -125,6 +126,7 @@ void GuestGpu::ProcessCommands() {
 			EXIT_IF(m_pending_commands.fetch_sub(1, std::memory_order_acq_rel) == 0);
 		}
 		const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GpuSyncCommand);
+		PipelineProbe::OnDrain(PipelineProbe::Drain::SyncCommand);
 		command();
 	}
 }
@@ -344,6 +346,7 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 
 	(void)poll;
 	if (!TestWaitRegMemValue(*addr, ref, mask, func)) {
+		PipelineProbe::OnWaitRegMemBlocked();
 		SuspendPm4();
 	}
 }
@@ -1085,6 +1088,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		return;
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::IndirectDrawsCpu);
+	PipelineProbe::OnDrain(PipelineProbe::Drain::IndirectCpu);
 	m_pending_instances = {};
 
 	uint32_t draw_count = max_count_or_count;

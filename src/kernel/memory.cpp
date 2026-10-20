@@ -8,6 +8,7 @@
 #include "common/threads.h"
 #include "common/virtualMemory.h"
 #include "graphics/guest_gpu/graphicsRun.h"
+#include "graphics/host_gpu/renderer/pipelineProbe.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "cpu/guestCpu.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
@@ -1068,6 +1069,13 @@ bool TryReadGuestPrecise(uint64_t vaddr, void* data, uint64_t size) {
 }
 
 static void ReadGuestForSrt(uint64_t vaddr, void* data, size_t size) {
+	if (Common::PerfStats::Enabled() && g_gpu_resources != nullptr && Graphics::GuestGpu::IsGpuThread()) {
+		// Two-stage GPU thread sizing: would a front stage have to wait for this read?
+		const auto folded = Kernel::AddressFold::Fold(vaddr);
+		const bool dirty  = IsGpuAddressRange(folded, size) &&
+		                   GetGpuResources().GetBufferCache().HasGpuDirtyBytes(folded, size);
+		Graphics::PipelineProbe::OnSrtRead(folded, size, dirty);
+	}
 	if (!g_srt_precise_reads.load(std::memory_order_relaxed) || !TryReadGuestPrecise(vaddr, data, size)) {
 		std::memcpy(data, reinterpret_cast<const void*>(vaddr), size);
 	}

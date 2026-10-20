@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/pipelineProbe.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -348,6 +349,7 @@ BufferCache::ReadBackInPlace(Buffer& buffer, const std::vector<std::pair<uint64_
 }
 
 void BufferCache::MarkWritten(uint64_t vaddr, uint64_t size) {
+	PipelineProbe::OnGpuWrite(vaddr, size);
 	if (!m_targeted_readback && !Common::PerfStats::Enabled()) {
 		return;
 	}

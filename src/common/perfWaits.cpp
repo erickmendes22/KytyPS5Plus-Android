@@ -393,6 +393,20 @@ std::string TakeWaitSummary(double seconds, uint64_t flips) {
 	    static_cast<double>(TakeCounter(Counter::RenderScaleUpBlits)) * per_frame,
 	    static_cast<double>(TakeCounter(Counter::RenderScaleDownBlits)) * per_frame);
 	std::string line = head;
+	{
+		const auto take = [&](Counter c) { return static_cast<double>(TakeCounter(c)) * per_frame; };
+		char pipe[512];
+		std::snprintf(pipe, sizeof(pipe),
+		              " pipe: items=%.0f dma_items=%.0f srt_reads=%.0f drains: write=%.1f dma=%.1f "
+		              "dirty=%.1f sync=%.1f indirect=%.1f regmem_blocked=%.1f rec_reg_access=%.0f "
+		              "res_kb=%.0f",
+		              take(Counter::PipeItems), take(Counter::PipeDmaItems), take(Counter::PipeSrtReads),
+		              take(Counter::PipeDrainSrtWrite), take(Counter::PipeDrainSrtDma),
+		              take(Counter::PipeDrainSrtDirty), take(Counter::PipeDrainSync),
+		              take(Counter::PipeDrainIndirect), take(Counter::PipeWaitRegMemBlocked),
+		              take(Counter::PipeRecordRegAccess), take(Counter::PipeResourceBytes) / 1024.0);
+		line += pipe;
+	}
 	AppendWaits(line, "gpu-thread", Wait::GpuIdle, Wait::TimelineQuery, per_frame);
 	AppendWaits(line, "sem", Wait::SemFinish, Wait::SemOther, per_frame);
 	AppendWaits(line, "guest", Wait::GuestFault, Wait::GuestIdle, per_frame);
