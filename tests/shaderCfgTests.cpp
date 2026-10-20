@@ -17283,6 +17283,7 @@ int main() {
   using namespace Libs::Graphics;
 
   EnsureConfigInitialized();
+  TestLiveVertexExecPrologue();
   TestRayTracingInstructions();
   TestResourceDescriptorClassification();
   TestShaderBufferResourceSize();
@@ -17336,7 +17337,6 @@ int main() {
   TestNewShaderRecompilerIrLookupMissFailsExplicitly();
   TestNewShaderRecompilerInteger64CompareEncodings();
   TestFloatComparisonInputModes();
-  TestLiveVertexExecPrologue();
   TestPsInputCountRegisterDecode();
   TestPixelAncillaryLayerInput();
   TestNewShaderRecompilerUnbasedFlatUsesBda();
