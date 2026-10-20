@@ -40,7 +40,7 @@ constexpr const char* kCauseNames[kCauses] = {"sync", "packet", "suspend", "end"
 
 void AppendReport(std::string& out, double per_frame) {
 	char part[160];
-	out += " drains:";
+	out += " pdrain:";
 	for (size_t i = 0; i < kCauses; i++) {
 		const auto n  = g_drains[i].exchange(0, std::memory_order_relaxed);
 		const auto ns = g_drain_ns[i].exchange(0, std::memory_order_relaxed);
@@ -69,8 +69,8 @@ void AppendReport(std::string& out, double per_frame) {
 	              take(Outcome::Memo), take(Outcome::NoContext), take(Outcome::Mismatch),
 	              take(Outcome::Rerequest));
 	out += part;
-	std::snprintf(part, sizeof(part), " stolen=%.1f shadow_diff=%.1f workers=%u",
-	              static_cast<double>(WalkFan::TakeStolen()) * per_frame,
+	std::snprintf(part, sizeof(part), " reused=%.1f stolen=%.1f shadow_diff=%.1f workers=%u",
+	              take(Outcome::Reused), static_cast<double>(WalkFan::TakeStolen()) * per_frame,
 	              static_cast<double>(WalkFan::TakeShadowMismatch()) * per_frame, WalkFan::Pool().Workers());
 	out += part;
 }

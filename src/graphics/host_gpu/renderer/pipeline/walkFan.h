@@ -59,6 +59,7 @@ enum class Outcome : uint8_t {
 	NoContext,         // no WalkContext installed
 	Mismatch,          // the recorder's request did not match the front's (other entry or stage)
 	Rerequest,         // a second request for the same draw (mesh path switch, packed varyings)
+	Reused,            // ...of an entry this item already materialized: no walk at all
 	Count
 };
 
@@ -115,8 +116,21 @@ public:
 	// The recorder's next request: the job (or nullptr with the reason it is inline).
 	std::shared_ptr<WalkJob> Next(Outcome& reason);
 	[[nodiscard]] size_t Size() const { return m_jobs.size(); }
+	// Entries this item materialized (recorder): a re-request of one of them for the same draw
+	// has the same inputs, so its resources are already in the entry.
+	void NoteWalked(const void* entry) {
+		if (m_walked_count < m_walked.size()) m_walked[m_walked_count++] = entry;
+	}
+	[[nodiscard]] bool Walked(const void* entry) const {
+		for (size_t i = 0; i < m_walked_count; i++) {
+			if (m_walked[i] == entry) return true;
+		}
+		return false;
+	}
 
 private:
+	std::array<const void*, 8> m_walked {};
+	size_t                     m_walked_count = 0;
 	struct Slot {
 		std::shared_ptr<WalkJob> job;
 		Outcome                  reason = Outcome::Count;

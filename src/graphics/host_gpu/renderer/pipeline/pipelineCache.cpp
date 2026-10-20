@@ -694,10 +694,19 @@ struct PipelineCache::ProgramCache {
 			if (cached.call_source) {
 				source_changed = cached.RefreshCallSource(runtime);
 				if (!source_changed) permutation = cached.FindPermutation<true>(runtime, push_data_cursor);
-			} else if (prewalk && TakePrewalk(cached, *prewalk, runtime)) {
+			} else if (auto* list = WalkFan::t_prewalk;
+			           list != nullptr && prewalk_reason == WalkFan::Outcome::Rerequest &&
+			           list->Walked(&cached)) {
+				// KYTY_GPU_FAN: the same draw's re-request of an entry it already materialized.
+				WalkFan::Count(WalkFan::Outcome::Reused);
 				permutation = cached.MatchPermutation<false>(push_data_cursor);
 			} else {
-				permutation = cached.FindPermutation<false>(runtime, push_data_cursor);
+				if (prewalk && TakePrewalk(cached, *prewalk, runtime)) {
+					permutation = cached.MatchPermutation<false>(push_data_cursor);
+				} else {
+					permutation = cached.FindPermutation<false>(runtime, push_data_cursor);
+				}
+				if (auto* list = WalkFan::t_prewalk; list != nullptr) list->NoteWalked(&cached);
 			}
 			if (permutation != nullptr) {
 				input_info.stage = {.program = &permutation->program, .resources = &entry->second.resources};
@@ -886,6 +895,50 @@ struct PipelineCache::ProgramCache {
 		sink.Push(std::move(job));
 	}
 
+	// fan_shadow: what differs between the worker's walk (in `entry`) and this thread's (first 32).
+	static void LogShadowMismatch(const WalkFan::WalkJob& job, bool walked,
+	                              const ShaderRecompiler::IR::ResourceSnapshot&       mine,
+	                              const ShaderRecompiler::IR::ResourceSpecialization& mine_spec,
+	                              const SourceEntry&                                  entry) {
+		static std::atomic<uint32_t> logged {0};
+		if (logged.fetch_add(1) >= 32) return;
+		const auto& theirs = entry.resources;
+		std::string diff;
+		const auto first_diff = [&](const char* name, const auto& a, const auto& b) {
+			if (a == b) return;
+			size_t i = 0;
+			while (i < a.size() && i < b.size() && a[i] == b[i]) i++;
+			diff += fmt::format(" {}[{}/{}vs{}]", name, i, a.size(), b.size());
+		};
+		first_diff("buffers", theirs.buffers, mine.buffers);
+		first_diff("images", theirs.images, mine.images);
+		first_diff("samplers", theirs.samplers, mine.samplers);
+		first_diff("flat", theirs.flattened_srt, mine.flattened_srt);
+		for (size_t i = 0; i < theirs.flattened_srt.size() && i < mine.flattened_srt.size(); i++) {
+			if (theirs.flattened_srt[i] != mine.flattened_srt[i]) {
+				diff += fmt::format(" flat{}=0x{:08x}/0x{:08x}", i, theirs.flattened_srt[i], mine.flattened_srt[i]);
+				break;
+			}
+		}
+		for (size_t i = 0; i < theirs.buffers.size() && i < mine.buffers.size(); i++) {
+			if (!(theirs.buffers[i] == mine.buffers[i])) {
+				diff += fmt::format(" buf{}=0x{:08x}{:08x}/0x{:08x}{:08x}", i, theirs.buffers[i].dwords[1],
+				                    theirs.buffers[i].dwords[0], mine.buffers[i].dwords[1], mine.buffers[i].dwords[0]);
+				break;
+			}
+		}
+		first_diff("user", theirs.user_data, mine.user_data);
+		first_diff("spec_reads", theirs.specialization_reads, mine.specialization_reads);
+		if (!(theirs.uniform_fill == mine.uniform_fill)) diff += " uniform_fill";
+		if (!(entry.specialization == mine_spec)) diff += " specialization";
+		uint64_t read_bytes = 0;
+		for (const auto& range: job.reads.ranges) read_bytes += range.end - range.begin;
+		LOGF("[fan-shadow] stage=%u gt_walk=%s view_gen=%" PRIu64 " reads=%zu (%" PRIu64
+		     " B, %u calls)%s\n",
+		     job.stage, walked ? "ok" : "FAILED", job.view_generation, job.reads.ranges.size(),
+		     read_bytes, job.reads.reads, diff.c_str());
+	}
+
 	// KYTY_GPU_FAN recorder: waits for (or runs) the front's walk of this request and, when the
 	// pickup rule accepts it, moves its result into the entry. False: walk here as before.
 	bool TakePrewalk(SourceEntry& entry, WalkFan::WalkJob& job,
@@ -912,12 +965,16 @@ struct PipelineCache::ProgramCache {
 			// fan_shadow: walk here as well; on a difference keep this thread's result.
 			ShaderRecompiler::IR::ResourceSnapshot       resources;
 			ShaderRecompiler::IR::ResourceSpecialization specialization;
-			EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(entry.resource_plan, runtime, resources,
-			                                                     specialization));
-			if (!WalkFan::SameResult(resources, specialization, entry.resources, entry.specialization)) {
+			const bool walked = ShaderRecompiler::IR::MaterializeResources(entry.resource_plan, runtime,
+			                                                               resources, specialization);
+			if (!walked || !WalkFan::SameResult(resources, specialization, entry.resources,
+			                                    entry.specialization)) {
 				WalkFan::CountShadowMismatch();
-				std::swap(entry.resources, resources);
-				std::swap(entry.specialization, specialization);
+				LogShadowMismatch(job, walked, resources, specialization, entry);
+				if (walked) {
+					std::swap(entry.resources, resources);
+					std::swap(entry.specialization, specialization);
+				}
 			}
 		}
 		return true;
