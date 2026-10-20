@@ -27,7 +27,7 @@ thread_local bool t_on_back = false;
 constexpr size_t kCauses = static_cast<size_t>(DrainCause::Count);
 std::array<std::atomic<uint64_t>, kCauses> g_drains {};
 std::array<std::atomic<uint64_t>, kCauses> g_drain_ns {};
-std::array<std::atomic<uint64_t>, 256>     g_drain_ops {};
+std::array<std::atomic<uint64_t>, 512>     g_drain_ops {}; // opcode, or 256 + R of a custom NOP
 
 uint64_t NowNs() {
 	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -49,12 +49,18 @@ void AppendReport(std::string& out, double per_frame) {
 		              static_cast<double>(n) * per_frame, static_cast<double>(ns) / 1e6 * per_frame);
 		out += part;
 	}
-	std::array<std::pair<uint64_t, uint32_t>, 256> ops {};
-	for (uint32_t op = 0; op < 256; op++) ops[op] = {g_drain_ops[op].exchange(0, std::memory_order_relaxed), op};
-	std::partial_sort(ops.begin(), ops.begin() + 4, ops.end(), [](auto& a, auto& b) { return a.first > b.first; });
+	std::array<std::pair<uint64_t, uint32_t>, 512> ops {};
+	for (uint32_t op = 0; op < 512; op++) ops[op] = {g_drain_ops[op].exchange(0, std::memory_order_relaxed), op};
+	std::partial_sort(ops.begin(), ops.begin() + 6, ops.end(), [](auto& a, auto& b) { return a.first > b.first; });
 	out += " drain_ops:";
-	for (size_t i = 0; i < 4 && ops[i].first != 0; i++) {
-		std::snprintf(part, sizeof(part), " 0x%02x=%.1f", ops[i].second, static_cast<double>(ops[i].first) * per_frame);
+	for (size_t i = 0; i < 6 && ops[i].first != 0; i++) {
+		if (ops[i].second >= 256u) {
+			std::snprintf(part, sizeof(part), " nop.r%02x=%.1f", ops[i].second - 256u,
+			              static_cast<double>(ops[i].first) * per_frame);
+		} else {
+			std::snprintf(part, sizeof(part), " 0x%02x=%.1f", ops[i].second,
+			              static_cast<double>(ops[i].first) * per_frame);
+		}
 		out += part;
 	}
 	using WalkFan::Outcome;
@@ -179,7 +185,7 @@ void DrainForFront(DrainCause cause, uint32_t opcode) {
 		const auto index = static_cast<size_t>(cause);
 		g_drains[index].fetch_add(1, std::memory_order_relaxed);
 		g_drain_ns[index].fetch_add(NowNs() - start, std::memory_order_relaxed);
-		if (cause == DrainCause::Packet) g_drain_ops[opcode & 0xffu].fetch_add(1, std::memory_order_relaxed);
+		if (cause == DrainCause::Packet) g_drain_ops[opcode & 0x1ffu].fetch_add(1, std::memory_order_relaxed);
 	}
 }
 

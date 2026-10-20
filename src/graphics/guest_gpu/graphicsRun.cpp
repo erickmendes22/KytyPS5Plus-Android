@@ -834,6 +834,11 @@ static bool IsPipelinedPacket(uint32_t opcode, uint32_t r) {
 		case Pm4::IT_SET_SH_REG:
 		case Pm4::IT_SET_UCONFIG_REG:
 		case Pm4::IT_SET_UCONFIG_REG_INDEX:
+		// Register lists read from guest memory at parse time, through the same per-register
+		// functions as the direct packets (b6_fan2: 0x64 167/frame and 0x9f 54/frame drained).
+		case Pm4::IT_SET_CONTEXT_REG_INDIRECT:
+		case Pm4::IT_SET_SH_REG_INDIRECT:
+		case Pm4::IT_SET_UCONFIG_REG_INDIRECT:
 		case Pm4::IT_INDEX_BASE:
 		case Pm4::IT_INDEX_BUFFER_SIZE:
 		case Pm4::IT_INDEX_TYPE:
@@ -976,7 +981,8 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		if (inline_packet) {
 			// The record thread is idle from here until the next queued item: stamp what it and
 			// the previous inline packet acquired, as the unpipelined loop does per packet.
-			GpuPipeline::DrainForFront(GpuPipeline::DrainCause::Packet, opcode);
+			GpuPipeline::DrainForFront(GpuPipeline::DrainCause::Packet,
+			                           opcode == Pm4::IT_NOP ? 256u + (KYTY_PM4_R(packet_header) & 0xffu) : opcode);
 			buffer_cache.StampPendingWrites();
 		}
 		Common::PerfStats::SetPm4Opcode(
