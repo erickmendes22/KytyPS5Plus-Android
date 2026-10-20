@@ -1199,9 +1199,9 @@ void KYTY_SYSV_ABI RecordLoopCallback(const Ngs2VoiceCallbackInfo* info) {
 	}
 }
 
-void TestLoopCallbacksAndExit() {
+void TestLoopCallbacksAndExit(Ngs2RackType type) {
 	const int16_t pcm[] = {8192, 16384, 24576};
-	Fixture       f(48000);
+	Fixture       f(48000, 1, type);
 	LoopCallbacks log;
 	f.voice.callback       = reinterpret_cast<uintptr_t>(GuestFunctionPointer<RecordLoopCallback>("ngs2_test.RecordLoopCallback"));
 	f.voice.callback_data  = reinterpret_cast<uintptr_t>(&log);
@@ -1212,7 +1212,7 @@ void TestLoopCallbacksAndExit() {
 	      "loop and completion callbacks lost the completed repeat count");
 	Check(f.voice.blocks.empty(), "finite loop did not complete");
 
-	Fixture active(48000);
+	Fixture active(48000, 1, type);
 	log.events.clear();
 	log.pause                   = true;
 	active.voice.callback       = reinterpret_cast<uintptr_t>(GuestFunctionPointer<RecordLoopCallback>("ngs2_test.RecordLoopCallback"));
@@ -1224,7 +1224,8 @@ void TestLoopCallbacksAndExit() {
 	Check(log.events.size() == 1 && active.voice.decoded_samples == 2 &&
 	          active.voice.blocks.front().cursor == 0 && active.voice.samples[2] == 0,
 	      "loop callback pause consumed another iteration");
-	Ngs2VoiceParamHeader exit_loop {sizeof(Ngs2VoiceParamHeader), 0, 0x10000004};
+	Ngs2VoiceParamHeader exit_loop {sizeof(Ngs2VoiceParamHeader), 0,
+	                                type == Ngs2RackType::Sampler ? 0x10000004u : 0x40010004u};
 	Ngs2VoiceControl(reinterpret_cast<uintptr_t>(&active.voice), &exit_loop);
 	active.voice.SetEvent(32);
 	active.Render(5);
@@ -1232,7 +1233,7 @@ void TestLoopCallbacksAndExit() {
 	          active.voice.blocks.empty() && log.events.size() == 1,
 	      "exiting infinite loop lost its final iteration or ignored callback flags");
 
-	Fixture pending(48000);
+	Fixture pending(48000, 1, type);
 	pending.Queue(pcm, 1, 1);
 	pending.Queue(pcm + 1, 1, 1, UINT32_MAX);
 	pending.Queue(pcm + 2, 1, 0);
@@ -1839,7 +1840,8 @@ int main() {
 	TestResamplingPhaseAfterStarvation();
 	TestSamplerReuseResetsRouting();
 	TestDeferredSamplerSetup();
-	TestLoopCallbacksAndExit();
+	TestLoopCallbacksAndExit(Ngs2RackType::Sampler);
+	TestLoopCallbacksAndExit(Ngs2RackType::CustomSampler);
 	TestAtrac9Looping();
 	TestAtrac9WaveformJoining();
 	TestWaveformReadAddress();

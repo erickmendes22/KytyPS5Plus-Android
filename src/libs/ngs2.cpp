@@ -703,7 +703,6 @@ struct Ngs2VoiceInternal {
 				info.num_skip_samples = 0;
 				info.num_samples      = 0;
 			}
-			EXIT_NOT_IMPLEMENTED(info.num_repeats != 0 && rack->type != Ngs2RackType::Sampler);
 			EXIT_NOT_IMPLEMENTED(decoder == nullptr &&
 			                     (uint64_t(info.num_skip_samples) + info.num_samples) *
 			                             channels * sizeof(int16_t) >
@@ -2671,7 +2670,6 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						break;
 					}
 					case 4: {
-						EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::Sampler);
 						for (auto& block: voice->blocks) {
 							if (block.info.num_repeats != 0) {
 								block.info.num_repeats = 0;
