@@ -569,9 +569,10 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 	const auto  descriptor_bytes = read_dwords * sizeof(uint32_t);
 	const auto& sources = indirect.sources;
 	const auto* selector = indirect.selector ? &*indirect.selector : nullptr;
+	auto& scratch = clean.WalkScratch();
 	auto* selector_keys = selector != nullptr
-	    ? &program.selector_keys[program.selector_groups[source_index]] : nullptr;
-	auto& keys = selector_keys != nullptr ? selector_keys->values : program.material_keys;
+	    ? &scratch.selector_keys[program.selector_groups[source_index]] : nullptr;
+	auto& keys = selector_keys != nullptr ? selector_keys->values : scratch.material_keys;
 	const auto children_begin = descriptors.size();
 	const auto root_resource = specializations[resource_index];
 	const auto intern_candidate = [&](const DescriptorValue& candidate, uint32_t& ordinal) {
@@ -1542,12 +1543,21 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 	if (capture_indirect_reads || !plan.source_reads.empty())
 		plan.resource_tracking_complete &= !program.has_address_writes;
 	CompileSrtWalker(plan);
+	// Every memo slot now, so walks only read the indices (they may run concurrently).
+	for (const auto& inst: plan.value_storage) (void)inst.EvaluationIndex(plan.evaluation_value_count);
 	return plan;
 }
 
 bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime,
                           ResourceSnapshot& snapshot, ResourceSpecialization& specialization) {
-	for (auto& keys: program.selector_keys) keys.resolved = false;
+	return MaterializeResources(program, program.scratch, runtime, snapshot, specialization);
+}
+
+bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& scratch,
+                          const SrtRuntime& runtime, ResourceSnapshot& snapshot,
+                          ResourceSpecialization& specialization) {
+	if (scratch.selector_keys.size() != program.selector_keys.size()) scratch.selector_keys = program.selector_keys;
+	for (auto& keys: scratch.selector_keys) keys.resolved = false;
 	if (!program.resource_tracking_complete ||
 	    ((program.requires_specialization_memory || !program.source_reads.empty()) &&
 	     runtime.read_specialization_memory == nullptr)) {
@@ -1563,15 +1573,15 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	reads = program.source_reads;
 	SrtReadCapture capture {runtime, reads};
 	auto observed = capture_reads ? capture.ObservedRuntime() : runtime;
-	SrtWalker clean(program, CleanRuntime(observed));
-	SrtWalker walker(program, observed,
+	SrtWalker clean(program, scratch, CleanRuntime(observed));
+	SrtWalker walker(program, scratch, observed,
 	                 capture_reads || program.requires_specialization_memory ? &clean : nullptr);
 	const ScopedSpecializationSite site("materialize");
 	if (!walker.RefreshFlatBuffer(snapshot.flattened_srt)) {
 		return SpecializationFail(fmt::format("SRT refresh complete={} reads={} user_data={}",
 		    program.srt_plan_complete, program.srt_reads.size(), runtime.user_data.size()));
 	}
-	const auto active = std::span<const uint8_t>(program.active_sources);
+	const auto active = std::span<const uint8_t>(scratch.active_sources);
 	std::array<uint32_t, 3> workgroup_counts {};
 	if (runtime.indirect_args_address != 0u) {
 		for (uint32_t source = 0; source < program.descriptor_sources.size(); ++source) {

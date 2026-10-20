@@ -4,7 +4,11 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMemo.h"
 
+#include <atomic>
 #include <bit>
+#include <cstring>
+#include <thread>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -319,6 +323,85 @@ void TestAddressUserDataIsNotAValueWord() {
   Check(!classes.IsValueWord(0) && !classes.IsValueWord(1) && classes.value_sources.empty(),
         "a user-data pointer that is read through was classified as a value word");
   (void)memory;
+}
+
+// Concurrent walks: one plan, several threads, each with its own scratch, outputs, tables and user
+// data (ResourcePlan::Scratch); a thread reader (ScopedSrtThreadReader) that refuses an address
+// makes the guard report the failure.
+void TestConcurrentWalksOfOnePlan() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  const auto pointer_words = [](const void *pointer) {
+    const auto address = reinterpret_cast<uint64_t>(pointer);
+    return std::array<uint32_t, 2>{static_cast<uint32_t>(address), static_cast<uint32_t>(address >> 32u)};
+  };
+  auto program = SrtProgram(0u);
+  program.user_data_base = 4;
+  program.user_data_count = 2;
+  auto &block = *program.blocks[0];
+  const auto emit = [&](ValueOpcode opcode, std::initializer_list<Value> args) {
+    return Value(&block.AppendNewInst(opcode, args));
+  };
+  const auto low = emit(ValueOpcode::GetUserData, {Value(ScalarReg(4))});
+  const auto high = emit(ValueOpcode::GetUserData, {Value(ScalarReg(5))});
+  const auto root = emit(ValueOpcode::GetAddressResource, {low, high});
+  const auto read = [&](Value address, uint32_t offset) {
+    const auto value = emit(ValueOpcode::LoadAddressU32, {address, Value(offset), Value(0u), Value(true)});
+    value.Instruction()->SetFlags(MemoryFlags{.index = 0});
+    program.srt_reads.push_back({value, static_cast<uint32_t>(program.srt_reads.size())});
+    return value;
+  };
+  const auto pointer_low = read(root, 0u);
+  const auto pointer_high = read(root, 4u);
+  auto *leaf = program.srt_reads[0].value.Instruction();
+  leaf->Arg(0).Instruction()->SetArg(0, pointer_low);
+  leaf->Arg(0).Instruction()->SetArg(1, pointer_high);
+  leaf->SetArg(1, Value(4u));
+  read(leaf->Arg(0), 8u);
+  const auto plan = ExtractResourcePlan(program);
+  const auto slots = plan.evaluation_value_count;
+  constexpr int kThreads = 4;
+  constexpr int kIterations = 3000;
+  std::atomic<int> mismatches{0};
+  std::atomic<int> refused{0};
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&, t] {
+      std::array<uint32_t, 3> leaf_table{0u, 0u, 0u};
+      std::array<uint32_t, 2> root_table = pointer_words(leaf_table.data());
+      const auto user_data = pointer_words(root_table.data());
+      ResourcePlan::Scratch scratch;
+      ResourceSnapshot snapshot;
+      ResourceSpecialization specialization;
+      const SrtRuntime runtime{.user_data = user_data};
+      for (int i = 0; i < kIterations; ++i) {
+        leaf_table[1] = static_cast<uint32_t>(t * 100000 + i);
+        leaf_table[2] = static_cast<uint32_t>(~leaf_table[1]);
+        if (i % 7 == 3) {
+          // A reader that refuses the leaf table: the walk must report it, not use stale data.
+          struct Refuse { const void* table; } refuse{leaf_table.data()};
+          const ScopedSrtThreadReader reader(
+              +[](void *userdata, uint64_t address, void *data, size_t size) {
+                const auto *table = static_cast<const uint8_t *>(static_cast<Refuse *>(userdata)->table);
+                if (address >= reinterpret_cast<uint64_t>(table) && address < reinterpret_cast<uint64_t>(table) + 12u)
+                  return false;
+                std::memcpy(data, reinterpret_cast<const void *>(address), size);
+                return true;
+              },
+              &refuse);
+          (void)MaterializeResources(plan, scratch, runtime, snapshot, specialization);
+          if (reader.Failed()) refused.fetch_add(1);
+          continue;
+        }
+        const bool ok = MaterializeResources(plan, scratch, runtime, snapshot, specialization);
+        const std::vector<uint32_t> expected{leaf_table[1], root_table[0], root_table[1], leaf_table[2]};
+        if (!ok || snapshot.flattened_srt != expected) mismatches.fetch_add(1);
+      }
+    });
+  }
+  for (auto &thread : threads) thread.join();
+  Check(mismatches.load() == 0, "a concurrent walk returned another thread's or a stale value");
+  Check(refused.load() == kThreads * ((kIterations + 3) / 7), "a refused thread read was not reported");
+  Check(plan.evaluation_value_count == slots, "a walk assigned a memo slot (not thread-safe)");
 }
 
 void TestMappedSrtUsesDirectReaderByDefault() {
@@ -912,7 +995,7 @@ void TestSharedControlPredicates() {
             "shared predicate changed its uniform factor or cached runtime values");
       std::vector<uint32_t> flat;
       Check(walker.RefreshFlatBuffer(flat) &&
-                plan.visited_blocks == (known
+                plan.scratch.visited_blocks == (known
                     ? (conjunction ? std::vector<uint8_t>{1, 1, 0, 1}
                                    : std::vector<uint8_t>{1, 0, 1, 0})
                     : std::vector<uint8_t>{1, 1, 1, 1}),
@@ -1243,7 +1326,7 @@ void TestCyclicControlPredicatesRemainUnknown() {
             !walker.Evaluate(plan.control_flow[2].condition, value),
         "cyclic varying control acquired an unsupported uniform value");
   std::vector<uint32_t> flat;
-  Check(walker.RefreshFlatBuffer(flat) && plan.visited_blocks == std::vector<uint8_t>({1, 1, 1, 1}),
+  Check(walker.RefreshFlatBuffer(flat) && plan.scratch.visited_blocks == std::vector<uint8_t>({1, 1, 1, 1}),
         "cyclic control lost a possible branch during reachability");
 }
 
@@ -1608,6 +1691,7 @@ int main() {
   TestResourceMemoKeysOnReadUserData();
   TestResourceMemoRebasesValueWords();
   TestAddressUserDataIsNotAValueWord();
+  TestConcurrentWalksOfOnePlan();
   std::puts("ResourceMaterializationTests: all cases passed");
   return 0;
 }

@@ -82,7 +82,18 @@ void LogAccess(SrtReadLog::Kind kind, uint64_t address, const void* data, size_t
 	log->entries.push_back(entry);
 }
 
+thread_local SrtThreadReader t_thread_reader   = nullptr;
+thread_local void*           t_thread_userdata = nullptr;
+thread_local bool            t_thread_failed   = false;
+
 void HostReadUnlogged(uint64_t address, void* data, size_t size) {
+	if (t_thread_reader != nullptr) {
+		if (!t_thread_reader(t_thread_userdata, address, data, size)) {
+			std::memset(data, 0, size);
+			t_thread_failed = true;
+		}
+		return;
+	}
 	if (const auto read = g_host_read.load(std::memory_order_relaxed); read != nullptr) {
 		read(address, data, size);
 	} else {
@@ -121,6 +132,23 @@ bool LoggedMapped(uint64_t address, uint64_t size) {
 }
 
 } // namespace
+
+ScopedSrtThreadReader::ScopedSrtThreadReader(SrtThreadReader reader, void* userdata)
+    : m_previous_reader(t_thread_reader), m_previous_userdata(t_thread_userdata), m_previous_failed(t_thread_failed) {
+	t_thread_reader   = reader;
+	t_thread_userdata = userdata;
+	t_thread_failed   = false;
+}
+
+ScopedSrtThreadReader::~ScopedSrtThreadReader() {
+	t_thread_reader   = m_previous_reader;
+	t_thread_userdata = m_previous_userdata;
+	t_thread_failed   = m_previous_failed;
+}
+
+bool ScopedSrtThreadReader::Failed() const {
+	return t_thread_failed;
+}
 
 void SrtReadLog::Clear() {
 	entries.clear();
@@ -783,13 +811,18 @@ void CompileSrtWalker(ResourcePlan& program) {
 
 SrtWalker::SrtWalker(const ResourcePlan& program, const SrtRuntime& runtime,
                      SrtWalker* clean_evaluator)
-    : m_program(program), m_runtime(runtime), m_clean_evaluator(clean_evaluator),
+    : SrtWalker(program, program.scratch, runtime, clean_evaluator) {}
+
+SrtWalker::SrtWalker(const ResourcePlan& program, ResourcePlan::Scratch& scratch, const SrtRuntime& runtime,
+                     SrtWalker* clean_evaluator)
+    : m_program(program), m_scratch(scratch), m_runtime(runtime), m_clean_evaluator(clean_evaluator),
       m_session(this),
       m_read_policy(clean_evaluator != nullptr ? 2u : 0u), m_context(AcquireContext()) {}
 
 SrtWalker::SrtWalker(SrtWalker& parent, Value active_mask, bool clean,
                      SrtWalker* clean_evaluator)
-    : m_program(parent.m_program), m_runtime(clean ? CleanRuntime(parent.m_runtime) : parent.m_runtime),
+    : m_program(parent.m_program), m_scratch(parent.m_scratch),
+      m_runtime(clean ? CleanRuntime(parent.m_runtime) : parent.m_runtime),
       m_clean_evaluator(clean_evaluator), m_active_mask(active_mask.Resolve()),
       m_reachable_blocks(parent.m_reachable_blocks), m_session(parent.m_session),
       m_read_policy((parent.m_read_policy & 1u) | (clean ? 1u : 0u) |
@@ -797,7 +830,7 @@ SrtWalker::SrtWalker(SrtWalker& parent, Value active_mask, bool clean,
 
 SrtWalker::~SrtWalker() {
 	if (m_session != this) return;
-	for (auto& context: m_program.evaluation_contexts)
+	for (auto& context: m_scratch.evaluation_contexts)
 		if (context.session == this) context.session = nullptr;
 }
 
@@ -812,12 +845,12 @@ bool SrtWalker::Evaluate(Value value, uint32_t& result) {
 
 ResourcePlan::EvaluationContext& SrtWalker::AcquireContext() {
 	ResourcePlan::EvaluationContext* unused = nullptr;
-	for (auto& context: m_program.evaluation_contexts) {
+	for (auto& context: m_scratch.evaluation_contexts) {
 		if (context.session == m_session && context.active_mask == m_active_mask &&
 		    context.read_policy == m_read_policy) return context;
 		if (context.session == nullptr && unused == nullptr) unused = &context;
 	}
-	auto& context = unused != nullptr ? *unused : m_program.evaluation_contexts.emplace_back();
+	auto& context = unused != nullptr ? *unused : m_scratch.evaluation_contexts.emplace_back();
 	context.session = m_session;
 	context.active_mask = m_active_mask;
 	context.read_policy = m_read_policy;
@@ -826,7 +859,7 @@ ResourcePlan::EvaluationContext& SrtWalker::AcquireContext() {
 }
 
 void SrtWalker::ResetUnknowns() {
-	for (auto& context: m_program.evaluation_contexts) {
+	for (auto& context: m_scratch.evaluation_contexts) {
 		if (context.session != m_session) continue;
 		for (auto& entry: context.values)
 			if (entry.generation == (context.generation | 2u)) entry.generation = 0;
@@ -1451,9 +1484,10 @@ bool SrtWalker::EvaluateDescriptor(uint32_t source, DescriptorValue& result) {
 
 bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 	if (!m_program.srt_plan_complete) return false;
-	if (m_program.srt_code && m_runtime.read_memory == nullptr) {
+	// The x86 code walker reads memory itself, past a thread reader (ScopedSrtThreadReader).
+	if (m_program.srt_code && m_runtime.read_memory == nullptr && (!KYTY_HOST_X86 || t_thread_reader == nullptr)) {
 		flat.resize(m_program.srt_reads.size());
-		m_program.active_sources.clear();
+		m_scratch.active_sources.clear();
 		m_context.values.resize(m_program.evaluation_value_count);
 #if KYTY_HOST_X86
 		// The generated walker reads guest memory itself, past the read log.
@@ -1485,7 +1519,7 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		const ScopedSpecializationSite site(clean ? "srt-clean" : "srt");
 		return read.flat_offset < flat.size() && evaluator.Evaluate(read.value, flat[read.flat_offset]);
 	};
-	auto& active = m_program.active_sources;
+	auto& active = m_scratch.active_sources;
 	if (m_program.control_flow.empty()) {
 		active.clear();
 		flat.resize(m_program.srt_reads.size());
@@ -1494,9 +1528,9 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		}
 		return true;
 	}
-	auto& visited = m_program.visited_blocks;
-	auto& reachable = m_program.reachable_blocks;
-	auto& pending = m_program.pending_blocks;
+	auto& visited = m_scratch.visited_blocks;
+	auto& reachable = m_scratch.reachable_blocks;
+	auto& pending = m_scratch.pending_blocks;
 	visited.assign(m_program.control_flow.size(), 1u);
 	ResetUnknowns();
 	m_reachable_blocks = &visited;

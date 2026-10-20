@@ -57,6 +57,12 @@ ResourcePlan ExtractResourcePlan(const Program& program);
 // Refreshes cached resources and specialization in place. A failed refresh must not be used.
 bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime,
                           ResourceSnapshot& snapshot, ResourceSpecialization& specialization);
+// The same on caller-owned walk state: walks of one plan may run on several threads at once when
+// each has its own scratch and outputs and the runtime's readers (and the SRT host read) are safe
+// on that thread. The plan itself is only read.
+bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& scratch,
+                          const SrtRuntime& runtime, ResourceSnapshot& snapshot,
+                          ResourceSpecialization& specialization);
 
 // Whether MaterializeResources would specialize direct buffer `buffer` with raw descriptor `value`
 // as a uniform buffer (ResourceSpecialization::Buffer::uniform; depends on base alignment).

@@ -32,6 +32,11 @@ using SrtMemoryReader = bool (*)(void* userdata, uint64_t address, std::span<uin
 // memcpy from the guest address (a read fault on a GPU-written page reads back the whole page).
 using SrtHostRead = void (*)(uint64_t address, void* data, size_t size);
 void SetSrtHostRead(SrtHostRead read);
+// A walk thread's own host read (ScopedSrtThreadReader): false when the bytes cannot be read safely
+// on this thread (e.g. GPU-written, needing the GPU thread's readback); the walk then reads zeros
+// and the guard reports the failure, so the caller materializes on the GPU thread instead.
+using SrtThreadReader = bool (*)(void* userdata, uint64_t address, void* data, size_t size);
+
 // Reports whether [address, address + size) is mapped guest memory.
 using SrtAddressProbe = bool (*)(uint64_t address, uint64_t size);
 
@@ -101,6 +106,23 @@ private:
 // Re-reads every logged access, in order, through `runtime` (the unwrapped runtime of the logged
 // walk) and the SRT host read. True when each one returns what the log holds.
 [[nodiscard]] bool SrtReadLogMatches(const SrtReadLog& log, const SrtRuntime& runtime);
+
+// Routes this thread's SRT host reads (native walk, ordinary raw reads) through `reader` while
+// alive, instead of SetSrtHostRead's process-wide reader.
+class ScopedSrtThreadReader {
+public:
+	ScopedSrtThreadReader(SrtThreadReader reader, void* userdata);
+	~ScopedSrtThreadReader();
+	ScopedSrtThreadReader(const ScopedSrtThreadReader&)            = delete;
+	ScopedSrtThreadReader& operator=(const ScopedSrtThreadReader&) = delete;
+	// Whether a read through `reader` failed since the guard was created.
+	[[nodiscard]] bool Failed() const;
+
+private:
+	SrtThreadReader m_previous_reader;
+	void*           m_previous_userdata;
+	bool            m_previous_failed;
+};
 
 class SrtReadCapture {
 public:
@@ -186,6 +208,9 @@ class SrtWalker {
 public:
 	SrtWalker(const ResourcePlan& program, const SrtRuntime& runtime,
 	          SrtWalker* clean_evaluator = nullptr);
+	// A session on `scratch` instead of the plan's own (concurrent walks of one plan).
+	SrtWalker(const ResourcePlan& program, ResourcePlan::Scratch& scratch, const SrtRuntime& runtime,
+	          SrtWalker* clean_evaluator = nullptr);
 	~SrtWalker();
 	SrtWalker(const SrtWalker&)            = delete;
 	SrtWalker& operator=(const SrtWalker&) = delete;
@@ -194,6 +219,7 @@ public:
 	bool EvaluateDescriptor(uint32_t source, DescriptorValue& result);
 	// Refreshes reachable scalar reads and active descriptor sources in one walk.
 	bool RefreshFlatBuffer(std::vector<uint32_t>& flat);
+	[[nodiscard]] ResourcePlan::Scratch& WalkScratch() const { return m_scratch; }
 
 private:
 	SrtWalker(SrtWalker& parent, Value active_mask, bool clean = false,
@@ -209,6 +235,7 @@ private:
 	bool EvaluateInst(const Inst& inst, uint64_t& result);
 
 	const ResourcePlan&              m_program;
+	ResourcePlan::Scratch&           m_scratch;
 	SrtRuntime                      m_runtime;
 	SrtWalker*                      m_clean_evaluator = nullptr;
 	Value                           m_active_mask;

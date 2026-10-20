@@ -867,15 +867,26 @@ struct ResourcePlan {
 #else
 	std::unique_ptr<SrtWalkProgram>       srt_code;
 #endif
-	// GPU-thread scratch for nested clean/EXEC memos, activity and material keys.
-	mutable std::deque<EvaluationContext> evaluation_contexts;
+	// Mutable state of one materialization (nested clean/EXEC memos, block reachability, activity
+	// and material keys). A walk uses the plan's own `scratch` unless given another one: concurrent
+	// walks of one plan each need their own (MaterializeResources' scratch overload).
+	struct Scratch {
+		std::deque<EvaluationContext> evaluation_contexts;
+		std::vector<uint8_t>          active_sources;
+		std::vector<uint8_t>          visited_blocks;
+		std::vector<uint8_t>          reachable_blocks;
+		std::vector<uint32_t>         pending_blocks;
+		std::vector<uint32_t>         material_keys;
+		std::vector<SelectorKeys>     selector_keys; // copies of the plan's groups (sources), per walk
+	};
+	// Evaluation memo slots: every planning value gets its index when the plan is built
+	// (ExtractResourcePlan), so walks never assign one (they may run concurrently).
 	mutable uint32_t                       evaluation_value_count = 0;
-	mutable std::vector<uint8_t>            active_sources;
-	mutable std::vector<uint8_t>            visited_blocks;
-	mutable std::vector<uint8_t>            reachable_blocks;
-	mutable std::vector<uint32_t>           pending_blocks;
-	mutable std::vector<uint32_t>           material_keys;
-	mutable std::vector<SelectorKeys>       selector_keys;
+	// Selector groups (their sources); per-walk state lives in Scratch::selector_keys.
+	std::vector<SelectorKeys>              selector_keys;
+	mutable Scratch                        scratch;
+	// The GPU thread's scratch, for callers that read a walk's activity afterwards.
+	const std::vector<uint8_t>& active_sources() const { return scratch.active_sources; }
 };
 
 struct Program: ResourcePlan {
