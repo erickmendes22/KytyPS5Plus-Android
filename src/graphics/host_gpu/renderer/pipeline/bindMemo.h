@@ -11,6 +11,8 @@ namespace Libs::Graphics::BindMemo {
 enum Bit : uint32_t {
 	// ResolveTexture's descriptor -> ImageDesc translation, per program image slot (TextureDescMemo).
 	TextureDesc = 1u << 0u,
+	// ResolveRenderColorTarget's register -> description translation, per slot (ColorTargetMemo).
+	RenderTargetDesc = 1u << 1u,
 	// TextureCache::MaterializeColorClear: word-wise uniformity test of color metadata slices.
 	ColorClearScan = 1u << 3u,
 };

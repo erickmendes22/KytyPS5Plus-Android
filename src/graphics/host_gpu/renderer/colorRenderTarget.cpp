@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
+#include "graphics/host_gpu/renderer/pipeline/bindMemo.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
@@ -40,38 +41,11 @@ static bool DccAlphaOnMsb(const HW::ColorInfo& info) {
 	       info.channel_order == Prospero::ChannelOrder::kAlt;
 }
 
+// The register -> RenderColorInfo half of ResolveRenderColorTarget (everything but the image):
+// a pure function of the slot's CB registers and the slice offset (ColorTargetMemo).
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColorInfo& r,
-                                              uint32_t         render_target_slice_offset,
-                                              uint32_t rt_slot, bool ignore_target_mask,
-                                              bool exact_format) {
-	KYTY_PROFILER_FUNCTION();
-	const auto& hw = buffer.GetRegisters();
-
-	const auto& rt      = hw.GetRenderTarget(rt_slot);
-	auto        mask    = render_target_mask_slot(hw.GetRenderTargetMask(), rt_slot);
-	if (ignore_target_mask && rt.base.addr != 0 && mask == 0) {
-		mask = 0x0f;
-	}
-
-	r             = {};
-	r.target_slot = rt_slot;
-
-	if (rt.base.addr == 0 || mask == 0) {
-		if (graphics_debug_dump_enabled()) {
-			static std::atomic_uint log_count = 0;
-			const auto              log_id    = log_count.fetch_add(1, std::memory_order_relaxed);
-			if (log_id < 128) {
-				LOGF("RenderColorTarget: no color output slot=%" PRIu32 " base=0x%010" PRIx64
-				     " slot_mask=0x%01" PRIx32 " target_mask=0x%08" PRIx32
-				     " rt_slice_offset=%" PRIu32 "\n",
-				     rt_slot, rt.base.addr, mask, hw.GetRenderTargetMask(),
-				     render_target_slice_offset);
-			}
-		}
-
-		return;
-	}
+static void ComputeColorTargetDesc(const HW::RenderTarget& rt, uint32_t rt_slot, uint32_t mask,
+                                   uint32_t render_target_slice_offset, RenderColorInfo& r) {
 	const auto samples = render_sample_count(rt.attrib.num_fragments);
 	if (samples == 0 || rt.attrib.num_samples != rt.attrib.num_fragments) {
 		EXIT("unsupported render-target sample configuration: samples=%u fragments=%u\n",
@@ -256,11 +230,57 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	desc.view_info.base_layer  = view.base_layer;
 	desc.view_info.layer_count = view.layer_count;
 	desc.view_info.usage       = vk::ImageUsageFlagBits::eColorAttachment;
-	auto& texture_cache        = m_context.GetTextureCache();
-	r.guest_mip_level          = rt.view.current_mip_level;
-	r.guest_array_layer        = view.base_layer;
-	r.image_id                 = texture_cache.FindImage(r.desc, exact_format);
-	r.export_mapping           = target_format.export_mapping;
+	r.guest_mip_level   = rt.view.current_mip_level;
+	r.guest_array_layer = view.base_layer;
+	r.export_mapping    = target_format.export_mapping;
+}
+
+void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColorInfo& r,
+                                              uint32_t         render_target_slice_offset,
+                                              uint32_t rt_slot, bool ignore_target_mask,
+                                              bool exact_format) {
+	KYTY_PROFILER_FUNCTION();
+	const auto& hw = buffer.GetRegisters();
+
+	const auto& rt      = hw.GetRenderTarget(rt_slot);
+	auto        mask    = render_target_mask_slot(hw.GetRenderTargetMask(), rt_slot);
+	if (ignore_target_mask && rt.base.addr != 0 && mask == 0) {
+		mask = 0x0f;
+	}
+
+	r             = {};
+	r.target_slot = rt_slot;
+
+	if (rt.base.addr == 0 || mask == 0) {
+		if (graphics_debug_dump_enabled()) {
+			static std::atomic_uint log_count = 0;
+			const auto              log_id    = log_count.fetch_add(1, std::memory_order_relaxed);
+			if (log_id < 128) {
+				LOGF("RenderColorTarget: no color output slot=%" PRIu32 " base=0x%010" PRIx64
+				     " slot_mask=0x%01" PRIx32 " target_mask=0x%08" PRIx32
+				     " rt_slice_offset=%" PRIu32 "\n",
+				     rt_slot, rt.base.addr, mask, hw.GetRenderTargetMask(),
+				     render_target_slice_offset);
+			}
+		}
+
+		return;
+	}
+	// bind-memo bit RenderTargetDesc (not with debug dumps: the translation logs its registers).
+	const bool memo = (BindMemo::Bits() & BindMemo::RenderTargetDesc) != 0 && !graphics_debug_dump_enabled();
+	if (const auto* known = memo ? m_color_target_memo.Find(rt_slot, rt, render_target_slice_offset) : nullptr) {
+		r.desc              = known->desc;
+		r.guest_mip_level   = known->guest_mip_level;
+		r.guest_array_layer = known->guest_array_layer;
+		r.export_mapping    = known->export_mapping;
+	} else {
+		ComputeColorTargetDesc(rt, rt_slot, mask, render_target_slice_offset, r);
+		if (memo) {
+			m_color_target_memo.Store(rt_slot, rt, render_target_slice_offset, r);
+		}
+	}
+	auto& texture_cache = m_context.GetTextureCache();
+	r.image_id          = texture_cache.FindImage(r.desc, exact_format);
 	BindRenderTarget(r.image_id);
 }
 
