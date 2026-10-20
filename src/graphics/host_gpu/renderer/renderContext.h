@@ -78,6 +78,12 @@ private:
 	TextureCache              m_texture_cache;
 	mutable std::shared_mutex m_mapped_ranges_mutex;
 	RangeSet                  m_mapped_ranges;
+	// LogMappedSpread (under m_mapped_ranges_mutex).
+	void     LogMappedSpread(uint64_t vaddr, uint64_t size);
+	uint64_t m_mapped_lower_high = 0;
+	uint64_t m_mapped_ext_low    = 0;
+	uint64_t m_mapped_ext_high   = 0;
+	uint64_t m_mapped_bytes      = 0;
 	std::unique_ptr<GuestGpu> m_gpu;
 	VideoOut::VideoOutDriver* m_video_out = nullptr;
 	bool                      m_fault_process_pending = false;

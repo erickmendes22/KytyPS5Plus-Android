@@ -475,6 +475,20 @@ void BufferCache::DescribeFaultAddresses(std::span<const uint64_t> addresses) co
 	}
 }
 
+// KYTY_STAGING_MIB: the upload ring. Larger uploads than the ring take a temporary buffer
+// (UploadMemory), so the ring only has to hold a frame or two of streaming uploads; Android
+// defaults to 128 MiB (tablet memory pressure: c13_t1_evict), other hosts keep 512 MiB.
+static uint64_t StagingBufferSize() {
+#if defined(__ANDROID__)
+	constexpr uint64_t kDefaultMib = 128;
+#else
+	constexpr uint64_t kDefaultMib = 512;
+#endif
+	const char* value = std::getenv("KYTY_STAGING_MIB");
+	const auto  mib   = value != nullptr ? std::strtoull(value, nullptr, 10) : kDefaultMib;
+	return std::clamp<uint64_t>(mib, 16, 2048) * 1024 * 1024;
+}
+
 BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
                          PageManager& page_manager, TextureCache& texture_cache)
     : m_graphics(graphics), m_scheduler(scheduler), m_fault_manager(graphics, scheduler, *this),
@@ -482,7 +496,7 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_bda_pagetable_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 0, AllFlags,
                              BDA_PAGETABLE_SIZE),
       m_memory_tracker(page_manager),
-      m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 512 * MiB),
+      m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, StagingBufferSize()),
       m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
