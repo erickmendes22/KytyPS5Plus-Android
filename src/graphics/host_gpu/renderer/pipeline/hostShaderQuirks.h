@@ -48,6 +48,8 @@ struct ShaderFastPaths {
 	// (KYTY_UBO_CONSTANTS; needs robustBufferAccess2 for uniform buffers). 0: off.
 	uint32_t uniform_constant_buffer_bytes = 0;
 	uint32_t uniform_buffers_per_stage     = 0;
+	// KYTY_UBO_CONSTANTS=cs: compute programs only; the other stages keep storage buffers.
+	bool uniform_constants_compute_only = false;
 };
 [[nodiscard]] ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics);
 

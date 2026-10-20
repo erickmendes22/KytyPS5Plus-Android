@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <fmt/format.h>
 #include <string>
 #include <vector>
@@ -87,19 +88,22 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 			paths.uniform_constant_buffer_bytes = static_cast<uint32_t>(range - (align - 1u));
 			paths.uniform_buffers_per_stage =
 			    std::min<uint32_t>(limits.maxPerStageDescriptorUniformBuffers / 4u, 8u);
+			const char* stages = std::getenv("KYTY_UBO_CONSTANTS");
+			paths.uniform_constants_compute_only = stages != nullptr && std::strcmp(stages, "cs") == 0;
 		}
 	}
 	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: native_float_min_max={} "
 	                                      "robust_buffer_loads={} lane_exec_branches={} "
 	                                      "wqm_entry_lane_fold={} wave_slices={} quad_dpp={} "
 	                                      "bvh_vec={} packed_interp={} drop_carried={} select_fold={} alias_slots={} lane_broadcast={} first_lane_sets={} bvh_opt={} "
-	                                      "ubo_constants={}B x{}\n",
+	                                      "ubo_constants={}B x{}{}\n",
 	                                      paths.native_float_min_max, paths.robust_buffer_loads,
 	                                      paths.lane_exec_branches, paths.wqm_entry_lane_fold,
 	                                      paths.wave_slices, paths.quad_dpp, paths.bvh_vector_loads, paths.packed_interp, paths.drop_carried, paths.select_fold, paths.alias_slots,
 	                                      paths.lane_broadcast, paths.first_lane_sets, paths.bvh_emulation,
 	                                      paths.uniform_constant_buffer_bytes,
-	                                      paths.uniform_buffers_per_stage));
+	                                      paths.uniform_buffers_per_stage,
+	                                      paths.uniform_constants_compute_only ? " (compute only)" : ""));
 	return paths;
 }
 
