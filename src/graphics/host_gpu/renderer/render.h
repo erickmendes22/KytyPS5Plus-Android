@@ -5,6 +5,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
+#include "graphics/host_gpu/renderer/registerOverride.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/passEnd.h"
@@ -23,6 +24,7 @@ namespace HW {
 class Context;
 class UserConfig;
 class Shader;
+struct ComputeShaderInfo;
 } // namespace HW
 
 struct GraphicContext;
@@ -118,6 +120,7 @@ struct SubmitInfo {
 };
 
 
+
 class CommandBuffer {
 public:
 	~CommandBuffer() = default;
@@ -162,18 +165,24 @@ public:
 	[[nodiscard]] vk::CommandBuffer PassHandle() const;
 	[[nodiscard]] GraphicContext&   GetGraphics() const noexcept { return m_graphics; }
 	[[nodiscard]] RenderContext&    GetContext() const noexcept { return m_context; }
+	// KYTY_GPU_PIPELINE: a record-thread job reads the registers of its item's snapshot, never the
+	// live blocks the front keeps writing (RegisterSnapshotScope).
 	[[nodiscard]] HW::Context& GetRegisters() const noexcept {
 		PipelineProbe::OnRegisterBlockAccess();
-		return *m_registers;
+		return PickRegisters(t_register_override.context, *m_registers);
 	}
 	[[nodiscard]] HW::UserConfig& GetUserConfig() const noexcept {
 		PipelineProbe::OnRegisterBlockAccess();
-		return *m_user_config;
+		return PickRegisters(t_register_override.user_config, *m_user_config);
 	}
 	[[nodiscard]] HW::Shader& GetShaders() const noexcept {
 		PipelineProbe::OnRegisterBlockAccess();
-		return *m_shaders;
+		return PickRegisters(t_register_override.shaders, *m_shaders);
 	}
+	// The live register blocks (the front copies them for a queued item).
+	[[nodiscard]] const HW::Context&    LiveRegisters() const noexcept { return *m_registers; }
+	[[nodiscard]] const HW::UserConfig& LiveUserConfig() const noexcept { return *m_user_config; }
+	[[nodiscard]] const HW::Shader&     LiveShaders() const noexcept { return *m_shaders; }
 
 private:
 	explicit CommandBuffer(CommandScheduler& scheduler);
@@ -218,6 +227,17 @@ private:
 	friend class CommandScheduler;
 };
 
+namespace GpuPipeline {
+struct PreparedDrawShaders;
+struct PreparedComputeProgram;
+// What the front did for an item (KYTY_GPU_PIPELINE).
+enum class Prefetch : uint8_t {
+	Prepared, // walked: the record job takes the prepared result
+	NoWalk,   // the record job returns before any SRT walk: queue it as is
+	Inline,   // the item must run on the front after a drain (it may walk on the record thread)
+};
+} // namespace GpuPipeline
+
 class RenderExecutor {
 public:
 	explicit RenderExecutor(RenderContext& context);
@@ -228,6 +248,14 @@ public:
 	                    uint32_t thread_group_y, uint32_t thread_group_z, uint32_t mode, bool async_compute);
 	void DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer, uint64_t args_addr,
 	                      uint32_t mode, bool async_compute);
+	// KYTY_GPU_PIPELINE front side of DispatchDirect / DrawIndex / DrawAuto (gpuPipeline.h).
+	GpuPipeline::Prefetch PrefetchDispatchDirect(CommandBuffer& buffer, uint32_t thread_group_x,
+	                                             uint32_t thread_group_y, uint32_t thread_group_z,
+	                                             uint32_t mode, bool async_compute,
+	                                             GpuPipeline::PreparedComputeProgram& out);
+	GpuPipeline::Prefetch PrefetchDraw(CommandBuffer& buffer, bool indexed, uint32_t count,
+	                                   uint32_t instance_count,
+	                                   GpuPipeline::PreparedDrawShaders& out);
 
 	void PrepareBindings(const ShaderStageRuntime& runtime, PreparedBindings& prepared);
 	void                           FindBuffers(std::span<PreparedBindings* const> stages);
@@ -247,6 +275,10 @@ public:
 	                    std::span<PreparedBindings* const> bindings);
 
 private:
+	ShaderComputeInputInfo DirectDispatchInputInfo(const HW::ComputeShaderInfo& cs_regs,
+	                                               uint32_t thread_group_x, uint32_t thread_group_y,
+	                                               uint32_t thread_group_z, uint32_t mode,
+	                                               bool async_compute);
 	void DrawIndex(uint64_t submit_id, CommandBuffer& buffer, const DrawIndexArgs& args);
 	void DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const DrawAutoArgs& args);
 	// --gpu-indirect. False, before anything was recorded or any guest memory read, when the draw

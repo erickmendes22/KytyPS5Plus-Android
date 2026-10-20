@@ -1,4 +1,6 @@
 #include "graphics/guest_gpu/graphicsRun.h"
+#include "graphics/host_gpu/renderer/gpuPipeline.h"
+#include "graphics/host_gpu/renderer/gpuPipelineItems.h"
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
 
 #include "common/assert.h"
@@ -116,6 +118,9 @@ void GuestGpu::SendCommand(Common::UniqueFunction<void>&& command) {
 
 void GuestGpu::ProcessCommands() {
 	EXIT_IF(!IsGpuThread());
+	if (m_pending_commands.load(std::memory_order_acquire) != 0) {
+		GpuPipeline::DrainForFront(); // sync commands read back what queued jobs record
+	}
 	while (m_pending_commands.load(std::memory_order_acquire) != 0) {
 		Common::UniqueFunction<void> command;
 		{
@@ -817,19 +822,49 @@ void CommandProcessor::SuspendPm4() {
 	g_current_execution->m_suspended = true;
 }
 
+// KYTY_GPU_PIPELINE: packets the front handles without draining the record thread. They only
+// update the command processor's own state (registers, index state, buffer chaining) or queue a
+// draw/dispatch record job; anything else may touch renderer state the record thread owns.
+static bool IsPipelinedPacket(uint32_t opcode, uint32_t r) {
+	switch (opcode) {
+		case Pm4::IT_NOP: return r == 0; // custom ops (flips, markers, release_mem, ...) drain
+		case Pm4::IT_SET_CONTEXT_REG:
+		case Pm4::IT_SET_SH_REG:
+		case Pm4::IT_SET_UCONFIG_REG:
+		case Pm4::IT_SET_UCONFIG_REG_INDEX:
+		case Pm4::IT_INDEX_BASE:
+		case Pm4::IT_INDEX_BUFFER_SIZE:
+		case Pm4::IT_INDEX_TYPE:
+		case Pm4::IT_NUM_INSTANCES:
+		case Pm4::IT_DRAW_INDEX_2:
+		case Pm4::IT_DRAW_INDEX_OFFSET_2:
+		case Pm4::IT_DRAW_INDEX_AUTO:
+		case Pm4::IT_DISPATCH_DIRECT:
+		case Pm4::IT_INDIRECT_BUFFER: return true;
+		default: return false;
+	}
+}
+
 void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 	auto&      buffer_cache = m_renderer.GetBufferCache();
 	const bool idle_submit  = Config::IdleSubmitEnabled();
 	// Small enough to refill an idle GPU quickly, large enough that a submit's fixed cost
 	// (a few ms of driver time on Turnip/KGSL, on the submit thread) stays amortised.
 	constexpr uint32_t kIdleSubmitMinWork = 16;
+	// KYTY_GPU_PIPELINE: draws and dispatches are recorded by the record thread; every other packet
+	// drains it first (gpuPipeline.h), and so does leaving this function.
+	m_pipe_on = GpuPipeline::Enabled();
 	while (!execution.m_buffer_stack.empty()) {
 		// Every GPU write the previous packet acquired is recorded by now: give those writes
 		// their command buffer's tick before anything (a sync command) reads them back.
-		buffer_cache.StampPendingWrites();
-		if (idle_submit && GetScheduler().Active() && GetScheduler().GpuStarved(kIdleSubmitMinWork)) {
-			Common::PerfStats::Count(Common::PerfStats::Counter::IdleSubmits);
-			BufferFlush();
+		// (Pipelined: the record thread does both after each job.)
+		if (!m_pipe_on) {
+			buffer_cache.StampPendingWrites();
+			if (idle_submit && GetScheduler().Active() &&
+			    GetScheduler().GpuStarved(kIdleSubmitMinWork)) {
+				Common::PerfStats::Count(Common::PerfStats::Counter::IdleSubmits);
+				BufferFlush();
+			}
 		}
 		if (g_gpu_state != nullptr) {
 			g_gpu_state->ProcessCommands();
@@ -919,6 +954,12 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			     total_dw - remaining_dw, packet_header);
 		}
 
+		if (m_pipe_on && !IsPipelinedPacket(opcode, KYTY_PM4_R(packet_header))) {
+			// The record thread is idle from here until the next queued item: stamp what it and
+			// the previous inline packet acquired, as the unpipelined loop does per packet.
+			GpuPipeline::DrainForFront();
+			buffer_cache.StampPendingWrites();
+		}
 		Common::PerfStats::SetPm4Opcode(
 		    opcode == Pm4::IT_NOP ? opcode | (KYTY_PM4_R(packet_header) << 8u) : opcode);
 		const auto packet_dw =
@@ -926,6 +967,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		Common::PerfStats::SetPm4Opcode(0);
 		EXIT_IF(packet_dw > remaining_dw);
 		if (execution.m_suspended) {
+			GpuPipeline::DrainForFront();
 			buffer_cache.StampPendingWrites();
 			return;
 		}
@@ -941,6 +983,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			execution.m_next_buffer = {};
 		}
 	}
+	GpuPipeline::DrainForFront();
 	buffer_cache.StampPendingWrites();
 }
 
@@ -1034,7 +1077,39 @@ void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 		LOGF("\t draw indexed offsets: base_vertex = %" PRId32 ", first_instance = %" PRIu32 "\n",
 		     args.base_vertex, args.first_instance);
 	}
+	if (m_pipe_on) {
+		auto item = std::make_shared<GpuPipeline::DrawItem>(CurrentBuffer());
+		const auto prefetch = m_renderer.GetRenderExecutor().PrefetchDraw(
+		    CurrentBuffer(), true, args.index_count, args.instance_count, item->shaders);
+		if (prefetch != GpuPipeline::Prefetch::Inline) {
+			item->prepared = prefetch == GpuPipeline::Prefetch::Prepared;
+			QueueRecord([this, item, args, submit_id = m_submit_id](CommandBuffer& buffer) {
+				const GpuPipeline::RegisterSnapshotScope registers(item->registers);
+				GpuPipeline::t_prepared_draw = item->prepared ? &item->shaders : nullptr;
+				m_renderer.GetRenderExecutor().DrawIndex(submit_id, buffer, args);
+				GpuPipeline::t_prepared_draw = nullptr;
+			});
+			return;
+		}
+		GpuPipeline::DrainForFront();
+	}
 	m_renderer.GetRenderExecutor().DrawIndex(m_submit_id, CurrentBuffer(), args);
+}
+
+// KYTY_GPU_PIPELINE: queues a record job for the current item, then lets the record thread stamp
+// the writes it acquired and run the idle-submit check, as ProcessPm4 does per packet otherwise.
+void CommandProcessor::QueueRecord(Common::UniqueFunction<void, CommandBuffer&>&& record) {
+	GpuPipeline::Back().Enqueue([this, record = std::move(record)]() mutable {
+		auto& scheduler = GetScheduler();
+		record(scheduler.Current());
+		m_renderer.GetBufferCache().StampPendingWrites();
+		constexpr uint32_t kIdleSubmitMinWork = 16;
+		if (Config::IdleSubmitEnabled() && scheduler.Active() &&
+		    scheduler.GpuStarved(kIdleSubmitMinWork)) {
+			Common::PerfStats::Count(Common::PerfStats::Counter::IdleSubmits);
+			scheduler.Flush();
+		}
+	});
 }
 
 void CommandProcessor::DrawIndexOffset(uint32_t index_offset, uint32_t index_count) {
@@ -1214,8 +1289,26 @@ void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_g
 			}
 		}
 
+		const bool async_compute = IsAsyncComputeQueue();
+		if (m_pipe_on) {
+			auto item = std::make_shared<GpuPipeline::DispatchItem>(CurrentBuffer());
+			const auto prefetch = m_renderer.GetRenderExecutor().PrefetchDispatchDirect(
+			    CurrentBuffer(), thread_group_x, thread_group_y, thread_group_z, mode,
+			    async_compute, item->compute);
+			item->prepared = prefetch == GpuPipeline::Prefetch::Prepared;
+			QueueRecord([this, item, thread_group_x, thread_group_y, thread_group_z, mode,
+			             async_compute, submit_id = m_submit_id](CommandBuffer& buffer) {
+				const GpuPipeline::RegisterSnapshotScope registers(item->registers);
+				GpuPipeline::t_prepared_compute = item->prepared ? &item->compute : nullptr;
+				m_renderer.GetRenderExecutor().DispatchDirect(submit_id, buffer, thread_group_x,
+				                                              thread_group_y, thread_group_z, mode,
+				                                              async_compute);
+				GpuPipeline::t_prepared_compute = nullptr;
+			});
+			return;
+		}
 		m_renderer.GetRenderExecutor().DispatchDirect(m_submit_id, CurrentBuffer(), thread_group_x,
-		                                              thread_group_y, thread_group_z, mode, IsAsyncComputeQueue());
+		                                              thread_group_y, thread_group_z, mode, async_compute);
 	}
 }
 
@@ -1234,6 +1327,22 @@ void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 	if (args.instance_count == 0) {
 		args.instance_count = NumInstances();
+	}
+	if (m_pipe_on) {
+		auto item = std::make_shared<GpuPipeline::DrawItem>(CurrentBuffer());
+		const auto prefetch = m_renderer.GetRenderExecutor().PrefetchDraw(
+		    CurrentBuffer(), false, args.vertex_count, args.instance_count, item->shaders);
+		if (prefetch != GpuPipeline::Prefetch::Inline) {
+			item->prepared = prefetch == GpuPipeline::Prefetch::Prepared;
+			QueueRecord([this, item, args, submit_id = m_submit_id](CommandBuffer& buffer) {
+				const GpuPipeline::RegisterSnapshotScope registers(item->registers);
+				GpuPipeline::t_prepared_draw = item->prepared ? &item->shaders : nullptr;
+				m_renderer.GetRenderExecutor().DrawAuto(submit_id, buffer, args);
+				GpuPipeline::t_prepared_draw = nullptr;
+			});
+			return;
+		}
+		GpuPipeline::DrainForFront();
 	}
 	m_renderer.GetRenderExecutor().DrawAuto(m_submit_id, CurrentBuffer(), args);
 }
@@ -1632,6 +1741,11 @@ void CommandProcessor::SynchronizeGpu() {
 
 bool GuestGpu::IsGpuThread() noexcept {
 	return g_gpu_thread;
+}
+
+void GuestGpu::MarkGpuHelperThread() noexcept {
+	g_gpu_thread = true;
+	Common::PerfStats::SetGpuThread();
 }
 
 } // namespace Libs::Graphics

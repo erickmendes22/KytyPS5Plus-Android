@@ -574,6 +574,9 @@ target_include_directories(dispatch_split_tests PRIVATE ${inc_headers})
 add_executable(pipeline_probe_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PipelineProbeTests.cpp")
 target_include_directories(pipeline_probe_tests PRIVATE ${inc_headers})
 
+add_executable(register_override_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/RegisterOverrideTests.cpp")
+target_include_directories(register_override_tests PRIVATE ${inc_headers})
+
 add_executable(gpu_diagnostics_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/GpuDiagnosticsTests.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineStats.cpp"
@@ -808,6 +811,7 @@ if(BUILD_TESTING)
 	add_test(NAME controller_settings COMMAND $<TARGET_FILE:controller_settings_tests>)
 	add_test(NAME pad_script COMMAND $<TARGET_FILE:pad_script_tests>)
 	add_test(NAME pipeline_probe COMMAND $<TARGET_FILE:pipeline_probe_tests>)
+	add_test(NAME register_override COMMAND $<TARGET_FILE:register_override_tests>)
 	add_test(NAME host_input COMMAND $<TARGET_FILE:host_input_tests>)
 	add_test(NAME save_data_memory COMMAND $<TARGET_FILE:save_data_memory_tests>)
 	add_test(NAME png_enc COMMAND $<TARGET_FILE:png_enc_tests>)

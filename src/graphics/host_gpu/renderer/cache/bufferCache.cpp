@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
 
 #include "common/alignment.h"
@@ -190,7 +191,10 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 			    // Keep packed ranges on separate cache lines, as in shadPS4.
 			    total_size += Common::AlignUp(end - start, 64);
 		    });
-		    m_gpu_modified_ranges.Subtract(address, bytes);
+		    {
+			    const std::unique_lock lock(m_gpu_modified_mutex);
+			    m_gpu_modified_ranges.Subtract(address, bytes);
+		    }
 	    });
 	if (copies.empty()) {
 		return false;
@@ -640,6 +644,7 @@ uint64_t BufferCache::PrepareGuestRead(uint64_t vaddr, uint64_t size) {
 }
 
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
+	GpuPipeline::DrainForFront(); // a readback waits for what queued record jobs write
 	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
@@ -957,8 +962,11 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	TouchBuffer(buffer);
 	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer);
 	if (is_written) {
-		m_gpu_modified_ranges.Add(vaddr, size);
-		m_gpu_dirty_generation++;
+		{
+			const std::unique_lock lock(m_gpu_modified_mutex);
+			m_gpu_modified_ranges.Add(vaddr, size);
+		}
+		m_gpu_dirty_generation.fetch_add(1, std::memory_order_release);
 		MarkWritten(vaddr, size);
 	}
 	return {&buffer, buffer.Offset(vaddr)};
@@ -1080,6 +1088,7 @@ bool BufferCache::IsRegionGpuModified(uint64_t vaddr, uint64_t size) {
 
 bool BufferCache::HasGpuDirtyBytes(uint64_t vaddr, uint64_t size) {
 	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
+	const std::shared_lock lock(m_gpu_modified_mutex);
 	return m_gpu_modified_ranges.Intersects(vaddr, size);
 }
 

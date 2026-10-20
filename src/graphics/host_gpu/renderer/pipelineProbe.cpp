@@ -2,6 +2,7 @@
 
 #include "common/perfWaits.h"
 #include "graphics/guest_gpu/graphicsRun.h"
+#include "graphics/host_gpu/renderer/gpuPipeline.h"
 
 namespace Libs::Graphics::PipelineProbe {
 
@@ -16,7 +17,8 @@ Model& GpuModel() {
 
 
 bool Active() {
-	return PS::Enabled() && GuestGpu::IsGpuThread();
+	// The model is the front's (the GPU thread's); KYTY_GPU_PIPELINE's record thread does not feed it.
+	return PS::Enabled() && GuestGpu::IsGpuThread() && !GpuPipeline::OnBack();
 }
 
 constexpr PS::Counter DrainCounter(Drain cause) {

@@ -44,6 +44,9 @@ public:
 	[[nodiscard]] int GetFrameNum() const;
 
 	[[nodiscard]] static bool IsGpuThread() noexcept;
+	// KYTY_GPU_PIPELINE's record thread runs renderer work for the GPU thread: it is a GPU thread
+	// for IsGpuThread() (it takes faults inline) but processes no guest submissions.
+	static void MarkGpuHelperThread() noexcept;
 
 private:
 	static constexpr uint32_t ComputePipeCount     = 7;

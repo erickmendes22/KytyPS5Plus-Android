@@ -2,6 +2,7 @@
 #define GRAPHICS_GUEST_GPU_COMMAND_PROCESSOR_COMMAND_PROCESSOR_H
 
 #include "common/assert.h"
+#include "common/uniqueFunction.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -170,6 +171,8 @@ private:
 	[[nodiscard]] uint32_t NumInstances();
 	CommandScheduler&   GetScheduler() const { return m_renderer.GetCommandScheduler(); }
 	CommandBuffer&      CurrentBuffer() { return GetScheduler().Current(); }
+	void                QueueRecord(Common::UniqueFunction<void, CommandBuffer&>&& record);
+	bool                m_pipe_on = false; // KYTY_GPU_PIPELINE for the packets being processed
 
 	RenderContext&   m_renderer;
 	HW::Context      m_ctx;

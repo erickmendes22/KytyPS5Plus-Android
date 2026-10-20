@@ -15,7 +15,9 @@
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
+#include <atomic>
 #include <map>
+#include <shared_mutex>
 #include <memory>
 #include <span>
 #include <utility>
@@ -102,7 +104,9 @@ public:
 	[[nodiscard]] bool HasGpuDirtyBytes(uint64_t vaddr, uint64_t size);
 	// Bumped whenever bytes become GPU-written (GPU thread): a page seen without GPU-written
 	// bytes stays so while this is unchanged.
-	[[nodiscard]] uint64_t GpuDirtyGeneration() const { return m_gpu_dirty_generation; }
+	[[nodiscard]] uint64_t GpuDirtyGeneration() const {
+		return m_gpu_dirty_generation.load(std::memory_order_acquire);
+	}
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	void               ProcessFaultBuffer();
@@ -191,8 +195,11 @@ private:
 	Common::LeastRecentlyUsedCache<BufferId, uint64_t> m_lru_cache;
 	BufferMap                                         m_buffers;
 	PageTable                                         m_page_table;
+	// KYTY_GPU_PIPELINE: the front's SRT walk queries these while the record thread adds to them;
+	// changes take the lock exclusively, the front's queries shared (record-thread reads need none).
 	RangeSet                                          m_gpu_modified_ranges;
-	uint64_t                                          m_gpu_dirty_generation = 0;
+	std::atomic<uint64_t>                             m_gpu_dirty_generation {0};
+	mutable std::shared_mutex                         m_gpu_modified_mutex;
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;
