@@ -12,7 +12,8 @@
 // points where it would have to stop and wait for the back stage to catch up ("drains"):
 //   - a walker read of guest memory that an item still in the window writes on the GPU,
 //   - a walker read while an item in the window may write through raw device addresses (BDA),
-//   - a walker read of GPU-dirty memory (in-place readback with a semaphore wait),
+//   - a walker read of GPU-dirty memory (in-place readback with a semaphore wait; the hook passes
+//     false for now, such reads fault into a synchronous readback that is counted as sync),
 //   - a synchronous command from a guest thread (fault readbacks, SendCommandSync),
 //   - indirect draw arguments read on the CPU.
 // It also counts accesses to the live register blocks during the record phase (what a register

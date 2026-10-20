@@ -1131,7 +1131,7 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 		bool   dma   = false;
 		size_t bytes = 0;
 		const auto note = [&](const ShaderStageRuntime& stage) {
-			if (stage.program != nullptr) dma = dma || stage.program->info.uses_dma;
+			if (stage.program != nullptr) dma = dma || stage.program->has_address_writes;
 			bytes += PipelineProbe::ResourceBytes(stage.resources);
 		};
 		for (uint32_t i = 0; i < state.programs.VertexStageCount(); i++) note(state.vertex_info[i].stage);

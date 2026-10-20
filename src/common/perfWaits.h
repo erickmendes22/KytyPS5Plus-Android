@@ -106,7 +106,7 @@ enum class Counter : uint8_t {
 	IndirectDrawsCpuEmpty, // ...of IndirectDrawsCpu: predicted empty (see IndirectDrawFixup)
 	// Two-stage GPU thread sizing (graphics/host_gpu/renderer/pipelineProbe.h).
 	PipeItems,             // draws and dispatches prepared
-	PipeDmaItems,          // ...whose programs may access memory through raw device addresses
+	PipeDmaItems,          // ...whose programs write memory through raw device addresses
 	PipeSrtReads,          // SRT walker host reads
 	PipeDrainSrtWrite,     // walker read of memory an unrecorded item in the window writes
 	PipeDrainSrtDma,       // walker read while an unrecorded item in the window may write via BDA

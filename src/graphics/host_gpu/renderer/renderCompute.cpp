@@ -328,7 +328,7 @@ static void NoteComputeItem(const ShaderComputeInputInfo& input_info) {
 		return true;
 	}();
 	(void)logged;
-	if (input_info.stage.program->info.uses_dma) PipelineProbe::MarkDmaWriter();
+	if (input_info.stage.program->has_address_writes) PipelineProbe::MarkDmaWriter();
 	PipelineProbe::AddResourceBytes(PipelineProbe::ResourceBytes(input_info.stage.resources));
 }
 

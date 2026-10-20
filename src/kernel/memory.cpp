@@ -1071,10 +1071,9 @@ bool TryReadGuestPrecise(uint64_t vaddr, void* data, uint64_t size) {
 static void ReadGuestForSrt(uint64_t vaddr, void* data, size_t size) {
 	if (Common::PerfStats::Enabled() && g_gpu_resources != nullptr && Graphics::GuestGpu::IsGpuThread()) {
 		// Two-stage GPU thread sizing: would a front stage have to wait for this read?
-		const auto folded = Kernel::AddressFold::Fold(vaddr);
-		const bool dirty  = IsGpuAddressRange(folded, size) &&
-		                   GetGpuResources().GetBufferCache().HasGpuDirtyBytes(folded, size);
-		Graphics::PipelineProbe::OnSrtRead(folded, size, dirty);
+		// GPU-dirty reads are not checked here (an interval query per read cost ~20 ms/frame in
+		// b4_probe1, which found none); they fault into a synchronous readback instead.
+		Graphics::PipelineProbe::OnSrtRead(Kernel::AddressFold::Fold(vaddr), size, false);
 	}
 	if (!g_srt_precise_reads.load(std::memory_order_relaxed) || !TryReadGuestPrecise(vaddr, data, size)) {
 		std::memcpy(data, reinterpret_cast<const void*>(vaddr), size);
