@@ -84,6 +84,8 @@ private:
 	uint64_t m_mapped_ext_low    = 0;
 	uint64_t m_mapped_ext_high   = 0;
 	uint64_t m_mapped_bytes      = 0;
+	uint64_t m_logged_lower_mib  = UINT64_MAX;
+	uint64_t m_logged_ext_mib    = UINT64_MAX;
 	std::unique_ptr<GuestGpu> m_gpu;
 	VideoOut::VideoOutDriver* m_video_out = nullptr;
 	bool                      m_fault_process_pending = false;

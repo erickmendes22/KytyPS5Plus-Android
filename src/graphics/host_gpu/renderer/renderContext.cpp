@@ -121,7 +121,8 @@ void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
 }
 
 // How much of the dense BDA page table (one entry per 16 KiB page of the lower window plus the
-// extended window) the guest's GPU mappings actually reach: logged when a high-water mark moves.
+// extended window) the guest's GPU mappings actually reach: logged when a high-water mark moves
+// by a whole MiB of table (UE5 titles move it by 64 KiB a few hundred times while booting).
 void RenderContext::LogMappedSpread(uint64_t vaddr, uint64_t size) {
 	const auto end      = vaddr + size;
 	const bool extended = vaddr >= LibKernel::Memory::kExtendedMemoryBase;
@@ -139,12 +140,15 @@ void RenderContext::LogMappedSpread(uint64_t vaddr, uint64_t size) {
 		m_mapped_ext_high = end;
 		moved             = true;
 	}
-	if (moved) {
+	const auto table_mib = [](uint64_t bytes) { return (bytes >> BufferCache::CACHING_PAGEBITS) * 8u >> 20u; };
+	const auto lower_mib = table_mib(m_mapped_lower_high);
+	const auto ext_mib   = table_mib(m_mapped_ext_high - m_mapped_ext_low);
+	if (moved && (lower_mib != m_logged_lower_mib || ext_mib != m_logged_ext_mib || m_logged_lower_mib == UINT64_MAX)) {
+		m_logged_lower_mib = lower_mib;
+		m_logged_ext_mib   = ext_mib;
 		LOGF("GPU mapped spread: lower high=0x%010" PRIx64 " (%" PRIu64 " MiB of table) extended=[0x%010" PRIx64
 		     ", 0x%010" PRIx64 ") (%" PRIu64 " MiB of table) mapped %" PRIu64 " MiB in %zu ranges\n",
-		     m_mapped_lower_high, (m_mapped_lower_high >> BufferCache::CACHING_PAGEBITS) * 8u >> 20u,
-		     m_mapped_ext_low, m_mapped_ext_high,
-		     ((m_mapped_ext_high - m_mapped_ext_low) >> BufferCache::CACHING_PAGEBITS) * 8u >> 20u,
+		     m_mapped_lower_high, lower_mib, m_mapped_ext_low, m_mapped_ext_high, ext_mib,
 		     m_mapped_bytes >> 20u, [&] {
 			     size_t count = 0;
 			     m_mapped_ranges.ForEach([&](uint64_t, uint64_t) { ++count; });
