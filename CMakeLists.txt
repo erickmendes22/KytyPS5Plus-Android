@@ -570,6 +570,13 @@ add_executable(gpu_memory_budget_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/GpuMe
 target_include_directories(gpu_memory_budget_tests PRIVATE ${inc_headers})
 
 add_executable(dispatch_split_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/DispatchSplitTests.cpp")
+
+add_executable(texture_desc_memo_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/TextureDescMemoTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/textureDescMemo.cpp"
+)
+target_link_libraries(texture_desc_memo_tests Vulkan::Headers fmt::fmt common)
+target_include_directories(texture_desc_memo_tests PRIVATE ${inc_headers})
 target_include_directories(dispatch_split_tests PRIVATE ${inc_headers})
 
 add_executable(gpu_diagnostics_tests EXCLUDE_FROM_ALL

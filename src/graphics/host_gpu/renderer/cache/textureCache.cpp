@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/pipeline/bindMemo.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -1155,6 +1156,25 @@ void TextureCache::InitializeImage(ImageId id) {
 	}
 }
 
+// Whether every byte of data equals code, comparing eight bytes at a time.
+static bool UniformBytes(const uint8_t* data, size_t size, uint8_t code) {
+	const uint64_t pattern = uint64_t {code} * 0x0101010101010101ull;
+	size_t         i       = 0;
+	for (; i + sizeof(uint64_t) <= size; i += sizeof(uint64_t)) {
+		uint64_t word = 0;
+		std::memcpy(&word, data + i, sizeof(word));
+		if (word != pattern) {
+			return false;
+		}
+	}
+	for (; i < size; i++) {
+		if (data[i] != code) {
+			return false;
+		}
+	}
+	return true;
+}
+
 void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
                                        uint32_t metadata_base_layer) {
 	if (desc.info.metadata.kind != ImageMetadataKind::Dcc &&
@@ -1212,7 +1232,12 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 		if (!LibKernel::Memory::TryReadBacking(address, bytes.data(), bytes.size())) {
 			EXIT("TextureCache: failed to read color metadata slice\n");
 		}
-		if (!std::all_of(bytes.begin(), bytes.end(), [code](uint8_t byte) { return byte == code; })) {
+		// bind-memo bit ColorClearScan: the same test eight bytes at a time.
+		const bool uniform =
+		    (BindMemo::Bits() & BindMemo::ColorClearScan) != 0
+		        ? UniformBytes(bytes.data(), bytes.size(), code)
+		        : std::all_of(bytes.begin(), bytes.end(), [code](uint8_t byte) { return byte == code; });
+		if (!uniform) {
 			continue;
 		}
 		{

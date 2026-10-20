@@ -4,6 +4,7 @@
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "graphics/host_gpu/renderer/pipeline/textureDescMemo.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/passEnd.h"
@@ -253,8 +254,10 @@ private:
 		std::optional<PreparedBindings> pixel;
 	};
 
+	// slot: the program's TextureDescMemo slot for this image (bind-memo bit TextureDesc), or null.
 	[[nodiscard]] TextureBinding ResolveTexture(const ShaderRecompiler::IR::ImageResource& resource,
-	                                            const ShaderRecompiler::IR::DescriptorValue& value);
+	                                            const ShaderRecompiler::IR::DescriptorValue& value,
+	                                            TextureDescMemo::Slot* slot = nullptr);
 	void PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
 	                             std::span<RenderColorInfo> colors);
 	// --render-scale: moves image views that a later SetScaled left on the other-size backing
@@ -343,6 +346,7 @@ private:
 	GraphicsBindings                     m_graphics_bindings;
 	PreparedBindings                     m_compute_bindings;
 	std::vector<ImageId>                  m_bound_images;
+	TextureDescMemo                       m_texture_desc_memo;
 	// PrepareBindingWrites scratch: ranges the current draw writes (images, attachments, buffers).
 	struct WrittenRange {
 		uint64_t address;
