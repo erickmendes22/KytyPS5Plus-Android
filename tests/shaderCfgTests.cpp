@@ -13927,7 +13927,6 @@ void TestUnreachableEqualityPropagation() {
   Program program;
   program.block_storage.push_back(std::make_unique<Block>());
   program.blocks.push_back(program.block_storage.back().get());
-  program.block_info.emplace_back();
   IREmitter ir(program.blocks.front());
   // An M0 index scaled from a loop counter: any value, but a multiple of four below 256.
   const auto lane = ir.Emit(ValueOpcode::LaneId);
