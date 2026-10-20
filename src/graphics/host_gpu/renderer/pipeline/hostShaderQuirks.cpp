@@ -73,7 +73,7 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	                     !graphics.optional_features.fragment_shader_barycentric,
 	    .drop_carried         = EnvToggle("KYTY_DROP_CARRIED", turnip),
 	    .select_fold          = EnvToggle("KYTY_SELECT_FOLD", turnip),
-	    .vs_live_exec         = EnvToggle("KYTY_VS_LIVE_EXEC", false),
+	    .vs_live_exec         = EnvToggle("KYTY_VS_LIVE_EXEC", turnip),
 	    .alias_slots          = EnvToggle("KYTY_ALIAS_SLOTS", turnip),
 	    .lane_broadcast       = EnvToggle("KYTY_LANE_BROADCAST", turnip),
 	    .first_lane_sets      = EnvToggle("KYTY_FIRSTLANE_SETS", false),

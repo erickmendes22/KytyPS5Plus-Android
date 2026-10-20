@@ -36,7 +36,7 @@ struct ShaderFastPaths {
 	bool drop_carried = false;
 	// ShaderDeviceFeatures::fold_same_condition_selects (KYTY_SELECT_FOLD; default Mesa Turnip).
 	bool select_fold = false;
-	// ShaderDeviceFeatures::vs_live_vertex_exec (KYTY_VS_LIVE_EXEC, default off).
+	// ShaderDeviceFeatures::vs_live_vertex_exec (KYTY_VS_LIVE_EXEC; default Mesa Turnip, =0 opts out).
 	bool vs_live_exec = false;
 	// ShaderDeviceFeatures::single_mode_alias_slots (KYTY_ALIAS_SLOTS; default Mesa Turnip).
 	bool alias_slots = false;

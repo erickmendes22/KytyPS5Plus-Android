@@ -335,7 +335,7 @@ struct ShaderDeviceFeatures {
 	// The NGG vertex prologue's `s_lshr_b64 exec, -1, -s3` gets a lane predicate of true: s3 holds
 	// the host's running-invocation count, so with the running invocations at lanes 0..N-1 the mask
 	// covers each of them and the per-lane EXEC selects fold away (frontend/translate/
-	// LiveVertexExec.h; KYTY_VS_LIVE_EXEC).
+	// LiveVertexExec.h; KYTY_VS_LIVE_EXEC, default on Mesa Turnip).
 	bool vs_live_vertex_exec = false;
 	// Without fragment_shader_barycentric, a pixel parameter slot that a flat and a smooth input
 	// alias (SPI_PS_INPUT_CNTL offsets) stays a native input while the shader uses only one of the
