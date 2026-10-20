@@ -1,11 +1,13 @@
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 
 #include "common/logging/log.h"
+#include "common/perfStats.h"
 #include "common/perfWaits.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 
 #include <cstdlib>
+#include <pthread.h>
 #include <cstring>
 #include <memory>
 
@@ -44,7 +46,10 @@ RecordThread::~RecordThread() {
 
 void RecordThread::Enqueue(Common::UniqueFunction<void>&& job) {
 	std::unique_lock lock(m_mutex);
-	m_done.wait(lock, [this] { return m_jobs.size() < kMaxQueued; });
+	if (m_jobs.size() >= kMaxQueued) {
+		const Common::PerfStats::ScopedWait wait(Common::PerfStats::Wait::GpuPipeFull);
+		m_done.wait(lock, [this] { return m_jobs.size() < kMaxQueued; });
+	}
 	m_jobs.push_back(std::move(job));
 	m_work.notify_one();
 }
@@ -66,6 +71,8 @@ bool RecordThread::Idle() const {
 void RecordThread::Run(const std::stop_token& stop) {
 	GuestGpu::MarkGpuHelperThread();
 	t_on_back = true;
+	pthread_setname_np(pthread_self(), "KytyGpuRecord");
+	Common::PerfStats::SampleThisThreadWallClock(); // --perf-stats wall stacks of both stages
 	for (;;) {
 		Common::UniqueFunction<void> job;
 		{
@@ -79,7 +86,10 @@ void RecordThread::Run(const std::stop_token& stop) {
 			m_jobs.pop_front();
 		}
 		m_done.notify_all(); // a slot is free
-		job();
+		{
+			const Common::PerfStats::ScopedWait busy(Common::PerfStats::Wait::GpuPipeRecord);
+			job();
+		}
 		{
 			std::lock_guard lock(m_mutex);
 			m_busy = false;

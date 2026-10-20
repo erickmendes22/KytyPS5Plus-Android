@@ -26,6 +26,10 @@ enum class Wait : uint8_t {
 	GpuProcess,     // wall time processing guest submissions (includes the waits inside)
 	GpuPriority,    // waiting for the completion thread to run guest-memory callbacks
 	GpuPipeDrain,   // KYTY_GPU_PIPELINE: the front waiting for the record thread to drain
+	GpuPipeFull,    // ... the front waiting for a free slot in the record queue
+	GpuPipeRecord,  // ... the record thread running jobs (busy time, not a stall)
+	GpuPipeWalk,    // ... the front's SRT walk / program lookup of queued items (busy time)
+	GpuPipeCopy,    // ... the front's register and resource copies for queued items (busy time)
 	TimelineQuery,  // vkGetSemaphoreCounterValue on the renderer timeline (any thread)
 	// vkWaitSemaphores on the renderer timeline, by call site (any thread)
 	SemFinish,

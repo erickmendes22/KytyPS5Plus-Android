@@ -8,6 +8,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -172,6 +173,8 @@ private:
 	CommandScheduler&   GetScheduler() const { return m_renderer.GetCommandScheduler(); }
 	CommandBuffer&      CurrentBuffer() { return GetScheduler().Current(); }
 	void                QueueRecord(Common::UniqueFunction<void, CommandBuffer&>&& record);
+	template <typename Item>
+	std::shared_ptr<Item> MakePipeItem();
 	bool                m_pipe_on = false; // KYTY_GPU_PIPELINE for the packets being processed
 
 	RenderContext&   m_renderer;

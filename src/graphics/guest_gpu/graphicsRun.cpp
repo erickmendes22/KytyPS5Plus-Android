@@ -1078,9 +1078,12 @@ void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 		     args.base_vertex, args.first_instance);
 	}
 	if (m_pipe_on) {
-		auto item = std::make_shared<GpuPipeline::DrawItem>(CurrentBuffer());
-		const auto prefetch = m_renderer.GetRenderExecutor().PrefetchDraw(
-		    CurrentBuffer(), true, args.index_count, args.instance_count, item->shaders);
+		auto item = MakePipeItem<GpuPipeline::DrawItem>();
+		const auto prefetch = [&] {
+			const Common::PerfStats::ScopedWait walk(Common::PerfStats::Wait::GpuPipeWalk);
+			return m_renderer.GetRenderExecutor().PrefetchDraw(
+			    CurrentBuffer(), true, args.index_count, args.instance_count, item->shaders);
+		}();
 		if (prefetch != GpuPipeline::Prefetch::Inline) {
 			item->prepared = prefetch == GpuPipeline::Prefetch::Prepared;
 			QueueRecord([this, item, args, submit_id = m_submit_id](CommandBuffer& buffer) {
@@ -1094,6 +1097,13 @@ void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 		GpuPipeline::DrainForFront();
 	}
 	m_renderer.GetRenderExecutor().DrawIndex(m_submit_id, CurrentBuffer(), args);
+}
+
+// KYTY_GPU_PIPELINE: a new queued item with a copy of the live register blocks.
+template <typename Item>
+std::shared_ptr<Item> CommandProcessor::MakePipeItem() {
+	const Common::PerfStats::ScopedWait copy(Common::PerfStats::Wait::GpuPipeCopy);
+	return std::make_shared<Item>(CurrentBuffer());
 }
 
 // KYTY_GPU_PIPELINE: queues a record job for the current item, then lets the record thread stamp
@@ -1291,10 +1301,13 @@ void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_g
 
 		const bool async_compute = IsAsyncComputeQueue();
 		if (m_pipe_on) {
-			auto item = std::make_shared<GpuPipeline::DispatchItem>(CurrentBuffer());
-			const auto prefetch = m_renderer.GetRenderExecutor().PrefetchDispatchDirect(
-			    CurrentBuffer(), thread_group_x, thread_group_y, thread_group_z, mode,
-			    async_compute, item->compute);
+			auto item = MakePipeItem<GpuPipeline::DispatchItem>();
+			const auto prefetch = [&] {
+				const Common::PerfStats::ScopedWait walk(Common::PerfStats::Wait::GpuPipeWalk);
+				return m_renderer.GetRenderExecutor().PrefetchDispatchDirect(
+				    CurrentBuffer(), thread_group_x, thread_group_y, thread_group_z, mode,
+				    async_compute, item->compute);
+			}();
 			item->prepared = prefetch == GpuPipeline::Prefetch::Prepared;
 			QueueRecord([this, item, thread_group_x, thread_group_y, thread_group_z, mode,
 			             async_compute, submit_id = m_submit_id](CommandBuffer& buffer) {
@@ -1329,9 +1342,12 @@ void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 		args.instance_count = NumInstances();
 	}
 	if (m_pipe_on) {
-		auto item = std::make_shared<GpuPipeline::DrawItem>(CurrentBuffer());
-		const auto prefetch = m_renderer.GetRenderExecutor().PrefetchDraw(
-		    CurrentBuffer(), false, args.vertex_count, args.instance_count, item->shaders);
+		auto item = MakePipeItem<GpuPipeline::DrawItem>();
+		const auto prefetch = [&] {
+			const Common::PerfStats::ScopedWait walk(Common::PerfStats::Wait::GpuPipeWalk);
+			return m_renderer.GetRenderExecutor().PrefetchDraw(
+			    CurrentBuffer(), false, args.vertex_count, args.instance_count, item->shaders);
+		}();
 		if (prefetch != GpuPipeline::Prefetch::Inline) {
 			item->prepared = prefetch == GpuPipeline::Prefetch::Prepared;
 			QueueRecord([this, item, args, submit_id = m_submit_id](CommandBuffer& buffer) {
