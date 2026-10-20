@@ -1,6 +1,8 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/gpuPipelineItems.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
+#include "graphics/host_gpu/renderer/pipeline/walkReader.h"
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
 
 #include "common/assert.h"
@@ -119,7 +121,7 @@ void GuestGpu::SendCommand(Common::UniqueFunction<void>&& command) {
 void GuestGpu::ProcessCommands() {
 	EXIT_IF(!IsGpuThread());
 	if (m_pending_commands.load(std::memory_order_acquire) != 0) {
-		GpuPipeline::DrainForFront(); // sync commands read back what queued jobs record
+		GpuPipeline::DrainForFront(GpuPipeline::DrainCause::SyncCommand); // sync commands read back what queued jobs record
 	}
 	while (m_pending_commands.load(std::memory_order_acquire) != 0) {
 		Common::UniqueFunction<void> command;
@@ -853,7 +855,23 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 	constexpr uint32_t kIdleSubmitMinWork = 16;
 	// KYTY_GPU_PIPELINE: draws and dispatches are recorded by the record thread; every other packet
 	// drains it first (gpuPipeline.h), and so does leaving this function.
-	m_pipe_on = GpuPipeline::Enabled();
+	m_fan_on  = WalkFan::Enabled();
+	m_pipe_on = m_fan_on || GpuPipeline::Enabled();
+	if (m_pipe_on) {
+		GpuPipeline::InstallReportSection();
+	}
+	if (m_fan_on) {
+		// KYTY_GPU_FAN: workers walk with the fault-free reader; the recorder notes GPU writes.
+		static const WalkFan::WalkContext context {.memory  = WalkReader::GuestMemory(),
+		                                           .journal = &WalkFan::Journal()};
+		if (WalkFan::Context() == nullptr) {
+			WalkFan::SetJournalActive();
+			buffer_cache.SetWalkJournal(&WalkFan::Journal());
+			WalkFan::SetContext(&context);
+		}
+		WalkFan::PollWorkers();
+		PublishWalkView();
+	}
 	while (!execution.m_buffer_stack.empty()) {
 		// Every GPU write the previous packet acquired is recorded by now: give those writes
 		// their command buffer's tick before anything (a sync command) reads them back.
@@ -954,10 +972,11 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			     total_dw - remaining_dw, packet_header);
 		}
 
-		if (m_pipe_on && !IsPipelinedPacket(opcode, KYTY_PM4_R(packet_header))) {
+		const bool inline_packet = m_pipe_on && !IsPipelinedPacket(opcode, KYTY_PM4_R(packet_header));
+		if (inline_packet) {
 			// The record thread is idle from here until the next queued item: stamp what it and
 			// the previous inline packet acquired, as the unpipelined loop does per packet.
-			GpuPipeline::DrainForFront();
+			GpuPipeline::DrainForFront(GpuPipeline::DrainCause::Packet, opcode);
 			buffer_cache.StampPendingWrites();
 		}
 		Common::PerfStats::SetPm4Opcode(
@@ -966,8 +985,11 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
 		Common::PerfStats::SetPm4Opcode(0);
 		EXIT_IF(packet_dw > remaining_dw);
+		if (inline_packet) {
+			PublishWalkView(); // what the inline packet wrote is in the next jobs' view
+		}
 		if (execution.m_suspended) {
-			GpuPipeline::DrainForFront();
+			GpuPipeline::DrainForFront(GpuPipeline::DrainCause::Suspend);
 			buffer_cache.StampPendingWrites();
 			return;
 		}
@@ -983,8 +1005,23 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			execution.m_next_buffer = {};
 		}
 	}
-	GpuPipeline::DrainForFront();
+	GpuPipeline::DrainForFront(GpuPipeline::DrainCause::EndOfStream);
 	buffer_cache.StampPendingWrites();
+	if (m_fan_on) {
+		// Every job of this stream is consumed: no live view is older than the one published now.
+		PublishWalkView();
+		if (const auto view = WalkFan::Publisher().Current(); view != nullptr) {
+			WalkFan::Journal().Trim(view->generation);
+		}
+	}
+}
+
+// KYTY_GPU_FAN: publishes BufferCache's GPU-modified ranges for the walk jobs submitted next.
+// Called where the record thread is idle (the front after a drain) or on the record thread.
+void CommandProcessor::PublishWalkView() {
+	if (m_fan_on) {
+		m_renderer.GetBufferCache().PublishWalkView(WalkFan::Publisher());
+	}
 }
 
 void CommandProcessor::SetIndexType(uint32_t index_type_and_size) {
@@ -1081,20 +1118,23 @@ void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 		auto item = MakePipeItem<GpuPipeline::DrawItem>();
 		const auto prefetch = [&] {
 			const Common::PerfStats::ScopedWait walk(Common::PerfStats::Wait::GpuPipeWalk);
+			// KYTY_GPU_FAN: program requests submit walk jobs into the item instead of walking.
+			const WalkFan::ScopedList sink(WalkFan::t_walk_sink, m_fan_on ? &item->walks : nullptr);
 			return m_renderer.GetRenderExecutor().PrefetchDraw(
 			    CurrentBuffer(), true, args.index_count, args.instance_count, item->shaders);
 		}();
 		if (prefetch != GpuPipeline::Prefetch::Inline) {
-			item->prepared = prefetch == GpuPipeline::Prefetch::Prepared;
-			QueueRecord([this, item, args, submit_id = m_submit_id](CommandBuffer& buffer) {
+			item->prepared = !m_fan_on && prefetch == GpuPipeline::Prefetch::Prepared;
+			QueueRecord([this, item, args, fan = m_fan_on, submit_id = m_submit_id](CommandBuffer& buffer) {
 				const GpuPipeline::RegisterSnapshotScope registers(item->registers);
+				const WalkFan::ScopedList prewalk(WalkFan::t_prewalk, fan ? &item->walks : nullptr);
 				GpuPipeline::t_prepared_draw = item->prepared ? &item->shaders : nullptr;
 				m_renderer.GetRenderExecutor().DrawIndex(submit_id, buffer, args);
 				GpuPipeline::t_prepared_draw = nullptr;
 			});
 			return;
 		}
-		GpuPipeline::DrainForFront();
+		GpuPipeline::DrainForFront(GpuPipeline::DrainCause::InlineDraw);
 	}
 	m_renderer.GetRenderExecutor().DrawIndex(m_submit_id, CurrentBuffer(), args);
 }
@@ -1103,7 +1143,8 @@ void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 template <typename Item>
 std::shared_ptr<Item> CommandProcessor::MakePipeItem() {
 	const Common::PerfStats::ScopedWait copy(Common::PerfStats::Wait::GpuPipeCopy);
-	return std::make_shared<Item>(CurrentBuffer());
+	static GpuPipeline::RegisterSnapshotCache snapshots; // the GPU thread (front) only
+	return std::make_shared<Item>(snapshots.Take(CurrentBuffer()));
 }
 
 // KYTY_GPU_PIPELINE: queues a record job for the current item, then lets the record thread stamp
@@ -1113,6 +1154,7 @@ void CommandProcessor::QueueRecord(Common::UniqueFunction<void, CommandBuffer&>&
 		auto& scheduler = GetScheduler();
 		record(scheduler.Current());
 		m_renderer.GetBufferCache().StampPendingWrites();
+		PublishWalkView();
 		constexpr uint32_t kIdleSubmitMinWork = 16;
 		if (Config::IdleSubmitEnabled() && scheduler.Active() &&
 		    scheduler.GpuStarved(kIdleSubmitMinWork)) {
@@ -1304,14 +1346,16 @@ void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_g
 			auto item = MakePipeItem<GpuPipeline::DispatchItem>();
 			const auto prefetch = [&] {
 				const Common::PerfStats::ScopedWait walk(Common::PerfStats::Wait::GpuPipeWalk);
+				const WalkFan::ScopedList sink(WalkFan::t_walk_sink, m_fan_on ? &item->walks : nullptr);
 				return m_renderer.GetRenderExecutor().PrefetchDispatchDirect(
 				    CurrentBuffer(), thread_group_x, thread_group_y, thread_group_z, mode,
 				    async_compute, item->compute);
 			}();
-			item->prepared = prefetch == GpuPipeline::Prefetch::Prepared;
+			item->prepared = !m_fan_on && prefetch == GpuPipeline::Prefetch::Prepared;
 			QueueRecord([this, item, thread_group_x, thread_group_y, thread_group_z, mode,
-			             async_compute, submit_id = m_submit_id](CommandBuffer& buffer) {
+			             async_compute, fan = m_fan_on, submit_id = m_submit_id](CommandBuffer& buffer) {
 				const GpuPipeline::RegisterSnapshotScope registers(item->registers);
+				const WalkFan::ScopedList prewalk(WalkFan::t_prewalk, fan ? &item->walks : nullptr);
 				GpuPipeline::t_prepared_compute = item->prepared ? &item->compute : nullptr;
 				m_renderer.GetRenderExecutor().DispatchDirect(submit_id, buffer, thread_group_x,
 				                                              thread_group_y, thread_group_z, mode,
@@ -1345,20 +1389,22 @@ void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 		auto item = MakePipeItem<GpuPipeline::DrawItem>();
 		const auto prefetch = [&] {
 			const Common::PerfStats::ScopedWait walk(Common::PerfStats::Wait::GpuPipeWalk);
+			const WalkFan::ScopedList sink(WalkFan::t_walk_sink, m_fan_on ? &item->walks : nullptr);
 			return m_renderer.GetRenderExecutor().PrefetchDraw(
 			    CurrentBuffer(), false, args.vertex_count, args.instance_count, item->shaders);
 		}();
 		if (prefetch != GpuPipeline::Prefetch::Inline) {
-			item->prepared = prefetch == GpuPipeline::Prefetch::Prepared;
-			QueueRecord([this, item, args, submit_id = m_submit_id](CommandBuffer& buffer) {
+			item->prepared = !m_fan_on && prefetch == GpuPipeline::Prefetch::Prepared;
+			QueueRecord([this, item, args, fan = m_fan_on, submit_id = m_submit_id](CommandBuffer& buffer) {
 				const GpuPipeline::RegisterSnapshotScope registers(item->registers);
+				const WalkFan::ScopedList prewalk(WalkFan::t_prewalk, fan ? &item->walks : nullptr);
 				GpuPipeline::t_prepared_draw = item->prepared ? &item->shaders : nullptr;
 				m_renderer.GetRenderExecutor().DrawAuto(submit_id, buffer, args);
 				GpuPipeline::t_prepared_draw = nullptr;
 			});
 			return;
 		}
-		GpuPipeline::DrainForFront();
+		GpuPipeline::DrainForFront(GpuPipeline::DrainCause::InlineDraw);
 	}
 	m_renderer.GetRenderExecutor().DrawAuto(m_submit_id, CurrentBuffer(), args);
 }

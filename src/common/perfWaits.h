@@ -30,6 +30,8 @@ enum class Wait : uint8_t {
 	GpuPipeRecord,  // ... the record thread running jobs (busy time, not a stall)
 	GpuPipeWalk,    // ... the front's SRT walk / program lookup of queued items (busy time)
 	GpuPipeCopy,    // ... the front's register and resource copies for queued items (busy time)
+	GpuFanWait,     // KYTY_GPU_FAN: the recorder waiting for (or running) a walk job
+	GpuFanWorker,   // ... walk-pool time of the jobs the recorder took from a worker (busy time)
 	TimelineQuery,  // vkGetSemaphoreCounterValue on the renderer timeline (any thread)
 	// vkWaitSemaphores on the renderer timeline, by call site (any thread)
 	SemFinish,
@@ -123,6 +125,11 @@ enum class Counter : uint8_t {
 	PipeResourceBytes,     // materialized resource bytes per item (the per-item copy)
 	Count
 };
+
+// An extra section appended to the "[perf-wait]" line (the renderer's walk fan-out and pipeline
+// drain counters), called once per report with the frames-per-report factor.
+using ReportSection = void (*)(std::string& out, double per_frame);
+void SetReportSection(ReportSection section);
 
 namespace Detail {
 extern std::atomic<uint64_t> g_wait_ns[static_cast<size_t>(Wait::Count)];

@@ -173,9 +173,11 @@ private:
 	CommandScheduler&   GetScheduler() const { return m_renderer.GetCommandScheduler(); }
 	CommandBuffer&      CurrentBuffer() { return GetScheduler().Current(); }
 	void                QueueRecord(Common::UniqueFunction<void, CommandBuffer&>&& record);
+	void                PublishWalkView();
 	template <typename Item>
 	std::shared_ptr<Item> MakePipeItem();
 	bool                m_pipe_on = false; // KYTY_GPU_PIPELINE for the packets being processed
+	bool                m_fan_on  = false; // KYTY_GPU_FAN (implies m_pipe_on): walks fan out to WalkFan workers
 
 	RenderContext&   m_renderer;
 	HW::Context      m_ctx;

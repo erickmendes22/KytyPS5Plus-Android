@@ -3,11 +3,13 @@
 
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/shader/recompiler/ir/ResourceSnapshot.h"
 #include "graphics/shader/shader.h"
 
 #include <array>
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -16,25 +18,52 @@
 namespace Libs::Graphics::GpuPipeline {
 
 // The register blocks of one queued item (CommandBuffer's accessors return them while the item's
-// job runs, RegisterSnapshotScope).
+// job runs, RegisterSnapshotScope). Blocks are shared between consecutive items until the CP
+// changes them (RegisterSnapshotCache): about 670 items/frame, but far fewer register changes.
+// The record path only reads them.
 struct RegisterSnapshot {
-	HW::Context    context;
-	HW::UserConfig user_config;
-	HW::Shader     shaders;
-
-	explicit RegisterSnapshot(const CommandBuffer& buffer)
-	    : context(buffer.LiveRegisters()), user_config(buffer.LiveUserConfig()),
-	      shaders(buffer.LiveShaders()) {}
+	std::shared_ptr<const HW::Context>    context;
+	std::shared_ptr<const HW::UserConfig> user_config;
+	std::shared_ptr<const HW::Shader>     shaders;
 };
 static_assert(std::is_trivially_copyable_v<HW::Context> &&
               std::is_trivially_copyable_v<HW::UserConfig> &&
               std::is_trivially_copyable_v<HW::Shader>);
 
+// The front's last snapshot blocks: a new item reuses a block whose bytes equal the live block
+// (copy on change instead of a copy per item). Front only.
+class RegisterSnapshotCache {
+public:
+	RegisterSnapshot Take(const CommandBuffer& buffer) {
+		return {Reuse(m_last.context, buffer.LiveRegisters()),
+		        Reuse(m_last.user_config, buffer.LiveUserConfig()),
+		        Reuse(m_last.shaders, buffer.LiveShaders())};
+	}
+	[[nodiscard]] uint64_t Copies() const { return m_copies; }
+
+private:
+	template <typename Block>
+	std::shared_ptr<const Block> Reuse(std::shared_ptr<const Block>& last, const Block& live) {
+		if (last == nullptr || std::memcmp(last.get(), &live, sizeof(Block)) != 0) {
+			last = std::make_shared<const Block>(live);
+			m_copies++;
+		}
+		return last;
+	}
+	struct {
+		std::shared_ptr<const HW::Context>    context;
+		std::shared_ptr<const HW::UserConfig> user_config;
+		std::shared_ptr<const HW::Shader>     shaders;
+	} m_last;
+	uint64_t m_copies = 0;
+};
+
 class RegisterSnapshotScope {
 public:
-	explicit RegisterSnapshotScope(RegisterSnapshot& snapshot)
-	    : m_scope(t_register_override,
-	              {&snapshot.context, &snapshot.user_config, &snapshot.shaders}) {}
+	explicit RegisterSnapshotScope(const RegisterSnapshot& snapshot)
+	    : m_scope(t_register_override, {const_cast<HW::Context*>(snapshot.context.get()),
+	                                    const_cast<HW::UserConfig*>(snapshot.user_config.get()),
+	                                    const_cast<HW::Shader*>(snapshot.shaders.get())}) {}
 
 private:
 	BasicOverrideScope<RegisterOverride> m_scope;
@@ -82,17 +111,19 @@ struct PreparedComputeProgram {
 
 // A queued draw: its registers and, when it walks, the front's walk.
 struct DrawItem {
-	explicit DrawItem(const CommandBuffer& buffer): registers(buffer) {}
+	explicit DrawItem(RegisterSnapshot snapshot): registers(std::move(snapshot)) {}
 	RegisterSnapshot    registers;
 	PreparedDrawShaders shaders;
+	WalkFan::PrewalkList walks; // KYTY_GPU_FAN: the front's walk jobs, taken by the recorder
 	bool                prepared = false;
 };
 
 // A queued dispatch.
 struct DispatchItem {
-	explicit DispatchItem(const CommandBuffer& buffer): registers(buffer) {}
+	explicit DispatchItem(RegisterSnapshot snapshot): registers(std::move(snapshot)) {}
 	RegisterSnapshot       registers;
 	PreparedComputeProgram compute;
+	WalkFan::PrewalkList   walks;
 	bool                   prepared = false;
 };
 

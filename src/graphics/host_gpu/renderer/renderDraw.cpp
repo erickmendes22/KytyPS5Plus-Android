@@ -8,6 +8,7 @@
 #include "common/perfWaits.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/gpuPipelineItems.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -1118,7 +1119,8 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 		state.indirect      = prepared->indirect;
 		return;
 	}
-	EXIT_IF(GpuPipeline::OnBack()); // the record thread never walks an SRT
+	// The record thread walks only under KYTY_GPU_FAN (it owns the program cache then).
+	EXIT_IF(GpuPipeline::OnBack() && WalkFan::t_prewalk == nullptr);
 	state.programs      = {};
 	state.ps_input_info = {};
 	std::array<Prospero::ColorComponentMapping, RENDER_COLOR_ATTACHMENTS_MAX>

@@ -16,6 +16,7 @@
 #include "graphics/host_gpu/renderer/dispatchSplit.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/gpuPipelineItems.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
@@ -495,7 +496,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		input_info      = prepared->input_info;
 		compute_program = prepared->program;
 	} else {
-		EXIT_IF(GpuPipeline::OnBack()); // the record thread never walks an SRT
+		EXIT_IF(GpuPipeline::OnBack() && WalkFan::t_prewalk == nullptr); // walks there only with KYTY_GPU_FAN
 		input_info = DirectDispatchInputInfo(cs_regs, thread_group_x, thread_group_y,
 		                                     thread_group_z, mode, async_compute);
 		PipelineProbe::BeginItem();

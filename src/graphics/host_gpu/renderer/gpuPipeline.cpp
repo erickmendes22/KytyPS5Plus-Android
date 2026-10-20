@@ -5,8 +5,15 @@
 #include "common/perfWaits.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <pthread.h>
 #include <cstring>
 #include <memory>
@@ -16,6 +23,57 @@ namespace Libs::Graphics::GpuPipeline {
 namespace {
 
 thread_local bool t_on_back = false;
+
+constexpr size_t kCauses = static_cast<size_t>(DrainCause::Count);
+std::array<std::atomic<uint64_t>, kCauses> g_drains {};
+std::array<std::atomic<uint64_t>, kCauses> g_drain_ns {};
+std::array<std::atomic<uint64_t>, 256>     g_drain_ops {};
+
+uint64_t NowNs() {
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+	                                 std::chrono::steady_clock::now().time_since_epoch())
+	                                 .count());
+}
+
+constexpr const char* kCauseNames[kCauses] = {"sync", "packet", "suspend", "end", "inline_draw",
+                                              "inline_dispatch", "other"};
+
+void AppendReport(std::string& out, double per_frame) {
+	char part[160];
+	out += " drains:";
+	for (size_t i = 0; i < kCauses; i++) {
+		const auto n  = g_drains[i].exchange(0, std::memory_order_relaxed);
+		const auto ns = g_drain_ns[i].exchange(0, std::memory_order_relaxed);
+		if (n == 0) continue;
+		std::snprintf(part, sizeof(part), " %s=%.1f(%.1fms)", kCauseNames[i],
+		              static_cast<double>(n) * per_frame, static_cast<double>(ns) / 1e6 * per_frame);
+		out += part;
+	}
+	std::array<std::pair<uint64_t, uint32_t>, 256> ops {};
+	for (uint32_t op = 0; op < 256; op++) ops[op] = {g_drain_ops[op].exchange(0, std::memory_order_relaxed), op};
+	std::partial_sort(ops.begin(), ops.begin() + 4, ops.end(), [](auto& a, auto& b) { return a.first > b.first; });
+	out += " drain_ops:";
+	for (size_t i = 0; i < 4 && ops[i].first != 0; i++) {
+		std::snprintf(part, sizeof(part), " 0x%02x=%.1f", ops[i].second, static_cast<double>(ops[i].first) * per_frame);
+		out += part;
+	}
+	using WalkFan::Outcome;
+	const auto take = [&](Outcome o) { return static_cast<double>(WalkFan::TakeCount(o)) * per_frame; };
+	std::snprintf(part, sizeof(part), " fan: sub=%.0f ok=%.0f gpu_mod=%.1f no_backing=%.1f invalid=%.1f inval=%.1f",
+	              static_cast<double>(WalkFan::TakeSubmitted()) * per_frame, take(Outcome::Accepted),
+	              take(Outcome::RefusedGpuModified), take(Outcome::RefusedNoBacking),
+	              take(Outcome::RefusedInvalid), take(Outcome::Invalidated));
+	out += part;
+	std::snprintf(part, sizeof(part), " failed=%.1f no_entry=%.1f call=%.1f memo=%.1f no_ctx=%.1f mismatch=%.1f rereq=%.1f",
+	              take(Outcome::Failed), take(Outcome::NoEntry), take(Outcome::CallSource),
+	              take(Outcome::Memo), take(Outcome::NoContext), take(Outcome::Mismatch),
+	              take(Outcome::Rerequest));
+	out += part;
+	std::snprintf(part, sizeof(part), " stolen=%.1f shadow_diff=%.1f workers=%u",
+	              static_cast<double>(WalkFan::TakeStolen()) * per_frame,
+	              static_cast<double>(WalkFan::TakeShadowMismatch()) * per_frame, WalkFan::Pool().Workers());
+	out += part;
+}
 
 std::unique_ptr<RecordThread>& Instance() {
 	static std::unique_ptr<RecordThread> instance;
@@ -110,14 +168,27 @@ bool OnBack() {
 	return t_on_back;
 }
 
-void DrainForFront() {
+void DrainForFront(DrainCause cause, uint32_t opcode) {
 	if (t_on_back) {
 		return;
 	}
 	auto& instance = Instance();
-	if (instance && GuestGpu::IsGpuThread()) {
+	if (instance && GuestGpu::IsGpuThread() && !instance->Idle()) {
+		const auto start = NowNs();
 		instance->Drain();
+		const auto index = static_cast<size_t>(cause);
+		g_drains[index].fetch_add(1, std::memory_order_relaxed);
+		g_drain_ns[index].fetch_add(NowNs() - start, std::memory_order_relaxed);
+		if (cause == DrainCause::Packet) g_drain_ops[opcode & 0xffu].fetch_add(1, std::memory_order_relaxed);
 	}
+}
+
+void InstallReportSection() {
+	static const bool installed = [] {
+		Common::PerfStats::SetReportSection(AppendReport);
+		return true;
+	}();
+	(void)installed;
 }
 
 } // namespace Libs::Graphics::GpuPipeline

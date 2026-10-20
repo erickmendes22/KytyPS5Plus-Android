@@ -21,6 +21,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/meshBoundsCheck.h"
 #include "kernel/addressFold.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "kernel/memory.h"
 
 #include <algorithm>
@@ -280,6 +281,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		for (const auto& copy: copies) {
 			Libs::LibKernel::Memory::WriteBacking(buffer_address + copy.srcOffset,
 			                                      mapped + (copy.dstOffset - offset), copy.size);
+			WalkFan::NoteBackingWrite(Kernel::AddressFold::Fold(buffer_address + copy.srcOffset), copy.size);
 		}
 	};
 	if constexpr (async) {
@@ -344,6 +346,7 @@ BufferCache::ReadBackInPlace(Buffer& buffer, const std::vector<std::pair<uint64_
 	const auto buffer_address = buffer.CpuAddress();
 	for (const auto& [offset, size]: ranges) {
 		Libs::LibKernel::Memory::WriteBacking(buffer_address + offset, view.data() + offset, size);
+		WalkFan::NoteBackingWrite(Kernel::AddressFold::Fold(buffer_address + offset), size);
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::DownloadBytes, bytes);
 	if (mode != ReadbackMode::InPlaceDone) {

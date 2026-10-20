@@ -55,8 +55,24 @@ private:
 RecordThread& Back();
 // True on the record thread.
 [[nodiscard]] bool OnBack();
+// Why the front drains the back stage (--perf-stats "drains:" counts and wait per cause).
+enum class DrainCause : uint8_t {
+	SyncCommand,    // a guest thread's synchronous command (reads back what queued jobs record)
+	Packet,         // a PM4 packet the front runs inline (per opcode: "drain_ops")
+	Suspend,        // the submission suspends (WAIT_REG_MEM, ...)
+	EndOfStream,    // ProcessPm4 returns
+	InlineDraw,     // a draw that runs on the front (metadata, resolve, depth copy)
+	InlineDispatch, // a dispatch that runs on the front
+	Other,
+	Count
+};
+
 // Drains the back stage when called on the front with jobs outstanding; no-op elsewhere.
-void DrainForFront();
+// `opcode`: the PM4 opcode for DrainCause::Packet.
+void DrainForFront(DrainCause cause = DrainCause::Other, uint32_t opcode = 0);
+
+// Installs the "[perf-wait]" section with the drain and walk fan-out counters (once).
+void InstallReportSection();
 
 } // namespace Libs::Graphics::GpuPipeline
 

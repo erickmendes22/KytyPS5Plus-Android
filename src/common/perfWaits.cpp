@@ -37,6 +37,7 @@ int64_t MonotonicNs() {
 
 namespace {
 
+std::atomic<ReportSection> g_report_section {nullptr};
 thread_local Wait     t_wait_site  = Wait::SemOther;
 thread_local bool     t_gpu_thread = false;
 thread_local uint32_t t_pm4_opcode = 0;
@@ -61,7 +62,7 @@ constexpr std::array<const char*, static_cast<size_t>(ReadbackMode::Count)> kRea
 
 constexpr std::array<const char*, static_cast<size_t>(Wait::Count)> kWaitNames = {
     "idle",       "blocked",  "flip_done",   "flip_slot", "sync_cmd", "fault",
-    "submit",     "process",  "prio_wait", "pipe_drain", "pipe_full", "pipe_rec", "pipe_walk", "pipe_copy", "tl_query", "finish",   "flush",       "stream",    "mesh_ring", "download",
+    "submit",     "process",  "prio_wait", "pipe_drain", "pipe_full", "pipe_rec", "pipe_walk", "pipe_copy", "fan_wait", "fan_walk", "tl_query", "finish",   "flush",       "stream",    "mesh_ring", "download",
     "read_fault", "write_fault", "indirect_args", "metadata", "gc",   "fault_buf",
     "swapchain",  "desc",     "prio",        "other",     "fault",    "sync_cmd",
     "suspend",    "flip_done", "wait_idle",
@@ -407,10 +408,17 @@ std::string TakeWaitSummary(double seconds, uint64_t flips) {
 		              take(Counter::PipeRecordRegAccess), take(Counter::PipeResourceBytes) / 1024.0);
 		line += pipe;
 	}
+	if (const auto section = g_report_section.load(std::memory_order_acquire); section != nullptr) {
+		section(line, per_frame);
+	}
 	AppendWaits(line, "gpu-thread", Wait::GpuIdle, Wait::TimelineQuery, per_frame);
 	AppendWaits(line, "sem", Wait::SemFinish, Wait::SemOther, per_frame);
 	AppendWaits(line, "guest", Wait::GuestFault, Wait::GuestIdle, per_frame);
 	return line;
+}
+
+void SetReportSection(ReportSection section) {
+	g_report_section.store(section, std::memory_order_release);
 }
 
 } // namespace Common::PerfStats

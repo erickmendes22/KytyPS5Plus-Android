@@ -1,0 +1,212 @@
+#ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_WALKFAN_H_
+#define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_WALKFAN_H_
+
+#include "graphics/shader/recompiler/ir/ResourceSnapshot.h"
+#include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
+#include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
+#include "graphics/host_gpu/renderer/pipeline/walkReader.h"
+
+#include <array>
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+// Fan-out of the per-draw SRT walk (KYTY_GPU_FAN, research/gputhread_pipeline.md section 7).
+//
+// The front (the GPU-thread loop) parses PM4 and, for every stage of a queued draw or dispatch,
+// submits a WalkJob: the program entry's resource plan, copies of the walk inputs and the current
+// WalkReader::View. WalkPool workers run MaterializeResources on their own scratch into the job's
+// own outputs, reading guest memory only through a WalkReader::WorkerWalk (C2: the backing alias,
+// never a fault; GPU-modified or unbacked bytes are refused).
+// The recorder (the record thread, which owns the program cache) takes the jobs in item order,
+// checks each one with Accept() and moves an accepted result into the program entry; anything
+// else is walked inline on the recorder exactly as before.
+//
+// Nothing here touches the renderer: the program cache, the command processor and BufferCache
+// plug in through WalkContext and the job fields. Unit tests: tests/WalkFanTests.cpp.
+namespace Libs::Graphics::WalkFan {
+
+namespace IR = ShaderRecompiler::IR;
+
+// What workers and the recorder share (installed once by the renderer): how a worker reaches
+// guest memory (WalkReader::GuestMemory(): fold + the backing alias, never a fault) and the
+// journal of GPU writes the recorder notes (BufferCache::SetWalkJournal), used at pickup.
+struct WalkContext {
+	WalkReader::Memory              memory;
+	const WalkReader::WriteJournal* journal = nullptr;
+};
+
+// The installed context, or nullptr: without one the front submits no jobs (every walk inline).
+void                             SetContext(const WalkContext* context);
+[[nodiscard]] const WalkContext* Context();
+
+// Why a walk ran inline on the recorder, or how a job ended (counters, --perf-stats "fan:").
+enum class Outcome : uint8_t {
+	Accepted,          // the job's result was used
+	RefusedGpuModified, // a read touched bytes the GPU modified as of the job's view
+	RefusedNoBacking,  // a read the backing alias cannot serve (flexible memory)
+	RefusedInvalid,    // a read that does not fold to host memory
+	Invalidated,       // GPU writes noted since the job's view overlap what the walk read
+	Failed,            // MaterializeResources failed
+	NoEntry,           // the front found no program entry (first use: the recorder translates)
+	CallSource,        // a source that calls other code (its plan can change per draw)
+	Memo,              // KYTY_SRT_MEMO is on (the memo walks on the recorder)
+	NoContext,         // no WalkContext installed
+	Mismatch,          // the recorder's request did not match the front's (other entry or stage)
+	Rerequest,         // a second request for the same draw (mesh path switch, packed varyings)
+	Count
+};
+
+struct WalkJob {
+	// Inputs (front).
+	const IR::ResourcePlan*                plan  = nullptr;
+	const void*                            entry = nullptr; // identity of the plan's program entry
+	uint32_t                               stage = 0;
+	std::vector<uint32_t>                  user_data;
+	uint64_t                               shader_base           = 0;
+	std::array<uint32_t, 3>                workgroup_counts      {};
+	bool                                   has_workgroup_counts  = false;
+	uint64_t                               indirect_args_address = 0;
+	IR::SrtAddressProbe                    mapped                = nullptr; // thread-safe probe
+	std::shared_ptr<const WalkReader::View> view; // the GPU-modified bytes as of submission
+
+	// Outputs (the walking thread; read after TakeOrWait()).
+	IR::ResourceSnapshot       resources;
+	IR::ResourceSpecialization specialization;
+	WalkReader::Reads          reads;
+	uint64_t                   view_generation = 0;
+	bool                       ok              = false;
+	uint64_t                   walk_ns         = 0;
+
+	// Runs the walk on the calling thread (a worker, or the recorder taking it).
+	void Run(const WalkContext& context);
+	// Recorder: runs the job here if no worker has started it, else waits for it. True when this
+	// thread ran it.
+	bool TakeOrWait(const WalkContext& context);
+	[[nodiscard]] bool Done() const { return m_state.load(std::memory_order_acquire) == State::Done; }
+
+private:
+	friend class WalkPool;
+	enum class State : uint8_t { Queued, Running, Done };
+	bool TryClaim();
+	void Finish();
+
+	std::atomic<State>      m_state {State::Queued};
+	std::mutex              m_mutex;
+	std::condition_variable m_done;
+};
+
+// The recorder's verdict on a finished job (the pickup rule): not ok -> Failed; any refused read
+// -> Refused* by its first reason (even when no range was recorded); otherwise Accepted when no GPU
+// write noted in the journal after the job's view intersects a range it read
+// (WalkReader::StillValid), else Invalidated. No journal -> Invalidated.
+[[nodiscard]] Outcome Accept(const WalkJob& job, const WalkContext& context);
+
+// The jobs of one queued item, in the order the front requested its stages. The recorder takes
+// them in the same order.
+class PrewalkList {
+public:
+	void Push(std::shared_ptr<WalkJob> job, Outcome inline_reason = Outcome::Count);
+	// The recorder's next request: the job (or nullptr with the reason it is inline).
+	std::shared_ptr<WalkJob> Next(Outcome& reason);
+	[[nodiscard]] size_t Size() const { return m_jobs.size(); }
+
+private:
+	struct Slot {
+		std::shared_ptr<WalkJob> job;
+		Outcome                  reason = Outcome::Count;
+	};
+	std::vector<Slot> m_jobs;
+	size_t            m_next = 0;
+};
+
+// The front's sink while it requests the programs of an item (ProgramCache::Get submits jobs
+// instead of walking), and the recorder's list while it records that item.
+inline thread_local PrewalkList* t_walk_sink = nullptr;
+inline thread_local PrewalkList* t_prewalk   = nullptr;
+
+class ScopedList {
+public:
+	ScopedList(PrewalkList*& slot, PrewalkList* list): m_slot(slot), m_previous(slot) { m_slot = list; }
+	~ScopedList() { m_slot = m_previous; }
+	ScopedList(const ScopedList&)            = delete;
+	ScopedList& operator=(const ScopedList&) = delete;
+
+private:
+	PrewalkList*& m_slot;
+	PrewalkList*  m_previous;
+};
+
+// Worker threads walking submitted jobs in submission order.
+class WalkPool {
+public:
+	explicit WalkPool(uint32_t workers);
+	~WalkPool();
+	WalkPool(const WalkPool&)            = delete;
+	WalkPool& operator=(const WalkPool&) = delete;
+
+	void Submit(std::shared_ptr<WalkJob> job);
+	// Keeps `workers` threads (1..kMaxWorkers); call between items.
+	void Resize(uint32_t workers);
+	[[nodiscard]] uint32_t Workers() const;
+	// Waits until every submitted job has finished (shutdown, tests).
+	void Quiesce();
+
+	static constexpr uint32_t kMaxWorkers = 4;
+
+private:
+	void Run(uint32_t index, const std::stop_token& stop);
+
+	mutable std::mutex                    m_mutex;
+	std::condition_variable_any           m_work;
+	std::condition_variable               m_idle;
+	std::deque<std::shared_ptr<WalkJob>>  m_queue;
+	uint32_t                              m_running = 0;
+	std::vector<std::jthread>             m_threads; // Resize's caller only
+	std::atomic<uint32_t>                 m_workers {0};
+};
+
+// The renderer's view publisher (the recorder publishes BufferCache's GPU-modified ranges at item
+// boundaries; the front hands Current() to each job) and write journal (BufferCache notes its GPU
+// writes; NoteBackingWrite the cache writes into guest memory's backing).
+WalkReader::ViewPublisher& Publisher();
+WalkReader::WriteJournal&  Journal();
+// Marks the journal live (once the fan-out was first enabled); before that the hooks are no-ops.
+void SetJournalActive();
+// A recorder-side write into guest memory that is not a BufferCache GPU-modify (downloads,
+// texture write-backs): noted so walks that read the old bytes are invalidated. Host-folded.
+void NoteBackingWrite(uint64_t host_address, uint64_t size);
+
+// The process-wide pool (created on first use with KYTY_GPU_FAN_WORKERS / live fan_workers,
+// default 2).
+WalkPool& Pool();
+
+// KYTY_GPU_FAN=1 (default 0) or live gpu_fan=0/1; read by the front at submission boundaries.
+[[nodiscard]] bool Enabled();
+// Live fan_shadow=1: the recorder also walks every accepted job itself and compares.
+[[nodiscard]] bool Shadow();
+// Applies live fan_workers to the pool (front, at submission boundaries).
+void PollWorkers();
+
+// Counters (--perf-stats "fan:" section; also read by tests).
+void     Count(Outcome outcome);
+void     CountSubmitted();
+void     CountStolen();
+void     CountShadowMismatch();
+uint64_t TakeCount(Outcome outcome);
+uint64_t TakeSubmitted();
+uint64_t TakeStolen();
+uint64_t TakeShadowMismatch();
+
+// Field-by-field equality of two materializations (fan_shadow).
+[[nodiscard]] bool SameResult(const IR::ResourceSnapshot& a, const IR::ResourceSpecialization& as,
+                              const IR::ResourceSnapshot& b, const IR::ResourceSpecialization& bs);
+
+} // namespace Libs::Graphics::WalkFan
+
+#endif // EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_WALKFAN_H_

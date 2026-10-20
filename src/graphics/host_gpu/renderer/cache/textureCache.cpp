@@ -1,4 +1,6 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
+#include "kernel/addressFold.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -1234,6 +1236,7 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 			std::fill(bytes.begin(), bytes.end(), uint8_t {0xff});
 			m_buffer_cache.InvalidateMemory(address, slice_size);
 			LibKernel::Memory::WriteBacking(address, bytes.data(), bytes.size());
+			WalkFan::NoteBackingWrite(Kernel::AddressFold::Fold(address), bytes.size());
 		}
 	}
 }
@@ -1964,6 +1967,7 @@ bool TextureCache::DownloadImageMemory(ImageId id) {
 	m_scheduler.DeferPriorityOperation([&download, range, mapped, offset] {
 		download.Invalidate(offset, range.size);
 		LibKernel::Memory::WriteBacking(range.address, mapped, range.size);
+		WalkFan::NoteBackingWrite(Kernel::AddressFold::Fold(range.address), range.size);
 	});
 	return true;
 }
