@@ -109,6 +109,10 @@ private:
 
 // Routes this thread's SRT host reads (native walk, ordinary raw reads) through `reader` while
 // alive, instead of SetSrtHostRead's process-wide reader.
+// Whether a ScopedSrtThreadReader is active on this thread (a worker walk: failures are expected
+// and reported to the caller, not logged).
+[[nodiscard]] bool SrtThreadReaderActive();
+
 class ScopedSrtThreadReader {
 public:
 	ScopedSrtThreadReader(SrtThreadReader reader, void* userdata);

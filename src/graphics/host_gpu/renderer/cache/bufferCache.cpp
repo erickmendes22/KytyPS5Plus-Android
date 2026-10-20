@@ -1096,6 +1096,8 @@ void BufferCache::PublishWalkView(WalkReader::ViewPublisher& publisher) const {
 	if (m_walk_journal == nullptr) {
 		return;
 	}
+	// The front may publish while the record thread adds or subtracts ranges (under the lock).
+	const std::shared_lock lock(m_gpu_modified_mutex);
 	publisher.Publish(m_walk_journal->Generation(), [&](auto&& visit) {
 		m_gpu_modified_ranges.ForEach([&](uint64_t begin, uint64_t end) { visit(begin, end); });
 	});

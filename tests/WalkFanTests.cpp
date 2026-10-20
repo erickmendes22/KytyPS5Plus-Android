@@ -251,6 +251,13 @@ void TestAcceptRules() {
 	gpu.Write(&word, 4);
 	Check(Fan::Accept(job, context) == Fan::Outcome::Invalidated,
 	      "a GPU write to a read range did not invalidate the walk");
+	// A trimmed journal cannot vouch for an older view, even for unrelated reads.
+	job.reads.Clear();
+	job.reads.Note(at + 64, at + 68);
+	job.view_generation = gpu.journal.Generation() - 1;
+	gpu.journal.Trim(gpu.journal.Generation());
+	Check(Fan::Accept(job, context) == Fan::Outcome::Invalidated,
+	      "a walk whose view is older than the trimmed journal was accepted");
 	const Fan::WalkContext no_journal {.memory = kIdentityMemory};
 	job.view_generation = gpu.journal.Generation();
 	Check(Fan::Accept(job, no_journal) == Fan::Outcome::Invalidated, "a walk was accepted without a journal");

@@ -548,6 +548,7 @@ void TestWorkerWalksWithRecorder() {
   std::atomic<bool> stop{false};
   std::atomic<int> mismatches{0};
   std::atomic<int> walks{0};
+  std::atomic<uint64_t> trimmed{0}; // the journal's dropped watermark (views at or below it are unprovable)
   // Per worker: tables the workers own, plus one shared GPU-written decoy range the recorder touches.
   std::array<std::array<uint32_t, 3>, kWorkers> leaves{};
   std::array<std::array<uint32_t, 2>, kWorkers> roots{};
@@ -559,7 +560,11 @@ void TestWorkerWalksWithRecorder() {
       const auto begin = decoy_begin + 4 * (i % 60);
       journal.Note(begin, begin + 16);
       publisher.Publish(journal.Generation(), [&](auto &&visit) { visit(begin, begin + 16); });
-      if (i % 64 == 0) journal.Trim(journal.Generation() > 32 ? journal.Generation() - 32 : 0);
+      if (i % 64 == 0) {
+        const auto upto = journal.Generation() > 32 ? journal.Generation() - 32 : 0;
+        trimmed.store(upto);
+        journal.Trim(upto);
+      }
     }
   });
   std::vector<std::thread> workers;
@@ -580,9 +585,11 @@ void TestWorkerWalksWithRecorder() {
         }
         const std::vector<uint32_t> expected{leaves[t][1], roots[t][0], roots[t][1], leaves[t][2]};
         const auto reads = worker.TakeReads();
-        // The recorder writes only the decoy, so every walk stays valid and exact.
-        if (reads.Refused() || snapshot.flattened_srt != expected ||
-            !StillValid(reads, worker.Generation(), journal))
+        // The recorder writes only the decoy, so every walk stays valid and exact, except one whose
+        // view the journal no longer covers (trimmed past it): that one must be reported invalid.
+        const bool valid = StillValid(reads, worker.Generation(), journal);
+        const bool covered = worker.Generation() >= trimmed.load();
+        if (reads.Refused() || snapshot.flattened_srt != expected || (covered && !valid))
           mismatches.fetch_add(1);
         walks.fetch_add(1);
       }

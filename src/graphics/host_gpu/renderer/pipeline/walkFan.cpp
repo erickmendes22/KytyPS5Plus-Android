@@ -86,7 +86,7 @@ bool WalkJob::TakeOrWait(const WalkContext& context) {
 }
 
 Outcome Accept(const WalkJob& job, const WalkContext& context) {
-	if (!job.ok) return Outcome::Failed;
+	// A refused read also fails the walk: report the refusal, not the failure.
 	if (job.reads.Refused()) {
 		switch (job.reads.first_refusal) {
 			case WalkReader::Reads::Refusal::GpuModified: return Outcome::RefusedGpuModified;
@@ -94,6 +94,7 @@ Outcome Accept(const WalkJob& job, const WalkContext& context) {
 			default: return Outcome::RefusedInvalid;
 		}
 	}
+	if (!job.ok) return Outcome::Failed;
 	if (context.journal == nullptr) return Outcome::Invalidated;
 	return WalkReader::StillValid(job.reads, job.view_generation, *context.journal) ? Outcome::Accepted
 	                                                                                : Outcome::Invalidated;

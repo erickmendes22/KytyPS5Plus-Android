@@ -20,7 +20,8 @@ namespace Libs::Graphics::GpuPipeline {
 // The register blocks of one queued item (CommandBuffer's accessors return them while the item's
 // job runs, RegisterSnapshotScope). Blocks are shared between consecutive items until the CP
 // changes them (RegisterSnapshotCache): about 670 items/frame, but far fewer register changes.
-// The record path only reads them.
+// The record path only reads them (it gets mutable references through CommandBuffer: a write
+// there would change every item sharing the block).
 struct RegisterSnapshot {
 	std::shared_ptr<const HW::Context>    context;
 	std::shared_ptr<const HW::UserConfig> user_config;
@@ -45,7 +46,7 @@ private:
 	template <typename Block>
 	std::shared_ptr<const Block> Reuse(std::shared_ptr<const Block>& last, const Block& live) {
 		if (last == nullptr || std::memcmp(last.get(), &live, sizeof(Block)) != 0) {
-			last = std::make_shared<const Block>(live);
+			last = std::make_shared<Block>(live); // not a const object: the record path gets T&
 			m_copies++;
 		}
 		return last;

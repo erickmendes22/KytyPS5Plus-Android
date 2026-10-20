@@ -930,6 +930,8 @@ struct PipelineCache::ProgramCache {
 		lookup_key.static_state.reserve(MaxStaticKeyWords);
 	}
 	~ProgramCache() {
+		// Walk jobs whose item was never recorded may still run on the walk pool: they read our plans.
+		WalkFan::Pool().Quiesce();
 		// The pool is stopped before this runs; jobs that never got installed release their own
 		// modules.
 		pending_programs.clear();

@@ -146,6 +146,10 @@ ScopedSrtThreadReader::~ScopedSrtThreadReader() {
 	t_thread_failed   = m_previous_failed;
 }
 
+bool SrtThreadReaderActive() {
+	return t_thread_reader != nullptr;
+}
+
 bool ScopedSrtThreadReader::Failed() const {
 	return t_thread_failed;
 }

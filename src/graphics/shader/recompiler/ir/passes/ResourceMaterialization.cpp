@@ -26,6 +26,7 @@ namespace {
 constexpr uint64_t AddressMask            = 0x0000ffffffffffffull;
 
 bool SpecializationFail(std::string_view message) {
+	if (SrtThreadReaderActive()) return false; // a worker walk: the caller falls back and counts it
 	std::fprintf(stderr, "shader resource specialization failed: %.*s\n",
 	             static_cast<int>(message.size()), message.data());
 	return false;

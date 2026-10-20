@@ -85,6 +85,8 @@ void WriteJournal::Trim(uint64_t generation) {
 	while (!m_entries.empty() && m_entries.front().generation <= generation) {
 		m_entries.pop_front();
 	}
+	// A view older than this can no longer be checked: WrittenSince reports it as written.
+	m_dropped_up_to = std::max(m_dropped_up_to, generation);
 }
 
 size_t WriteJournal::Size() const {
@@ -155,6 +157,10 @@ std::shared_ptr<const View> ViewPublisher::Current() const {
 
 void ViewPublisher::Store(std::shared_ptr<const View> view) {
 	std::lock_guard lock(m_mutex);
+	// Two publishers (front and recorder) may race: never replace a view with an older one.
+	if (m_view != nullptr && m_view->generation > view->generation) {
+		return;
+	}
 	m_view = std::move(view);
 }
 

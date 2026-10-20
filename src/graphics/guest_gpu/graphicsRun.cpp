@@ -985,8 +985,10 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
 		Common::PerfStats::SetPm4Opcode(0);
 		EXIT_IF(packet_dw > remaining_dw);
-		if (inline_packet) {
-			PublishWalkView(); // what the inline packet wrote is in the next jobs' view
+		if (inline_packet && GpuPipeline::Back().Idle()) {
+			// What the inline packet wrote is in the next jobs' view. If its handler queued items
+			// (indirect draws/dispatches), the record thread publishes after each of them instead.
+			PublishWalkView();
 		}
 		if (execution.m_suspended) {
 			GpuPipeline::DrainForFront(GpuPipeline::DrainCause::Suspend);
