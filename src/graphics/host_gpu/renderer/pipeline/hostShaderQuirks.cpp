@@ -79,7 +79,7 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	    .first_lane_sets      = EnvToggle("KYTY_FIRSTLANE_SETS", false),
 	    .bvh_emulation        = EnvBits("KYTY_BVH_OPT", 0u),
 	};
-	if (EnvToggle("KYTY_UBO_CONSTANTS", false) && graphics.optional_features.robust_uniform_buffer_access2) {
+	if (EnvToggle("KYTY_UBO_CONSTANTS", turnip) && graphics.optional_features.robust_uniform_buffer_access2) {
 		const auto& limits = graphics.GetPhysicalDeviceProperties().limits;
 		const auto  range  = std::min<uint64_t>(limits.maxUniformBufferRange,
 		                                        uint64_t {ShaderRecompiler::IR::UniformBufferVec4Count} * 16u);

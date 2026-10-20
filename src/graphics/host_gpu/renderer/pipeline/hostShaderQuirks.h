@@ -47,7 +47,8 @@ struct ShaderFastPaths {
 	// ShaderDeviceFeatures::bvh_emulation (KYTY_BVH_OPT=<bit mask>, ShaderBvhEmulation).
 	uint32_t bvh_emulation = 0;
 	// ShaderDeviceFeatures::uniform_constant_buffer_bytes / uniform_buffers_per_stage
-	// (KYTY_UBO_CONSTANTS; needs robustBufferAccess2 for uniform buffers). 0: off.
+	// (KYTY_UBO_CONSTANTS; default Mesa Turnip, =0 opts out, =cs compute only; needs robustBufferAccess2
+	// for uniform buffers). 0: off.
 	uint32_t uniform_constant_buffer_bytes = 0;
 	uint32_t uniform_buffers_per_stage     = 0;
 	// KYTY_UBO_CONSTANTS=cs: compute programs only; the other stages keep storage buffers.
