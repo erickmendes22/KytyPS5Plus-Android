@@ -30,6 +30,13 @@ inline constexpr std::array<uint32_t, 4> kInputs {0x00000001u, 0x007fffffu, 0x80
 // Results the check writes: results[input * kStride + op index].
 inline constexpr uint32_t kStride = 8;
 
+// Whether the device check runs: KYTY_FTZ32 unset or empty follows `default_on` (Mesa Turnip),
+// "0" turns it off, anything else on.
+[[nodiscard]] constexpr bool Enabled(const char* env, bool default_on) {
+	if (env == nullptr || env[0] == '\0') return default_on;
+	return !(env[0] == '0' && env[1] == '\0');
+}
+
 // The GCN result of operation `op_index` (bit order of Op) for denormal input `input`.
 [[nodiscard]] constexpr uint32_t GcnResult(uint32_t op_index, uint32_t input) {
 	const uint32_t sign = input & 0x80000000u;

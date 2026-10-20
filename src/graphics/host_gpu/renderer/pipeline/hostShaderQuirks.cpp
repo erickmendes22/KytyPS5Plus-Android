@@ -106,7 +106,7 @@ ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 	                                      paths.uniform_constant_buffer_bytes,
 	                                      paths.uniform_buffers_per_stage,
 	                                      paths.uniform_constants_compute_only ? " (compute only)" : ""));
-	paths.ftz32_ops = ProbeFtz32Ops(graphics);
+	paths.ftz32_ops = ProbeFtz32Ops(graphics, turnip);
 	return paths;
 }
 

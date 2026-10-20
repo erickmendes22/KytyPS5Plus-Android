@@ -21,7 +21,7 @@ struct GraphicContext;
 // KYTY_WQM_LANE_FOLD, KYTY_WAVE_SLICES, KYTY_UBO_CONSTANTS, KYTY_QUAD_DPP (1 on, 0 off).
 // Logs the result.
 struct ShaderFastPaths {
-	// KYTY_FTZ32=1: ShaderDeviceFeatures::ftz32_ops from the device check (ftzProbe.h).
+	// KYTY_FTZ32 (default on with Mesa Turnip, =0 opts out): ShaderDeviceFeatures::ftz32_ops from the device check (ftzProbe.h).
 	uint32_t ftz32_ops        = 0;
 	bool native_float_min_max = false;
 	bool robust_buffer_loads  = false;

@@ -60,6 +60,12 @@ int main() {
 	      "execution mode after the entry point");
 	Check(Ftz32::AddDenormFlushToZero32(std::vector<uint32_t>(module.begin(), module.begin() + 10)).empty(),
 	      "a module without an entry point is rejected");
+	// KYTY_FTZ32: unset/empty follows the Turnip default, =0 opts out, =1 opts in elsewhere.
+	Check(Ftz32::Enabled(nullptr, true) && !Ftz32::Enabled(nullptr, false), "unset follows the default");
+	Check(Ftz32::Enabled("", true) && !Ftz32::Enabled("", false), "empty follows the default");
+	Check(!Ftz32::Enabled("0", true), "=0 opts out on Turnip");
+	Check(Ftz32::Enabled("1", false), "=1 opts in elsewhere");
+	Check(Ftz32::Enabled("01", false), "only a lone 0 opts out");
 	std::puts("Ftz32Tests: ok");
 	return 0;
 }

@@ -23,9 +23,8 @@ struct ProbeBuffer {
 
 } // namespace
 
-uint32_t ProbeFtz32Ops(GraphicContext& graphics) {
-	const char* env = std::getenv("KYTY_FTZ32");
-	if (env == nullptr || env[0] != '1') return 0;
+uint32_t ProbeFtz32Ops(GraphicContext& graphics, bool default_on) {
+	if (!Ftz32::Enabled(std::getenv("KYTY_FTZ32"), default_on)) return 0;
 	const auto log = [](const std::string& text) { Log::WriteToConsoleAndLog("KYTY_FTZ32: " + text + "\n"); };
 
 	vk::PhysicalDeviceFloatControlsProperties controls {};
