@@ -25767,6 +25767,70 @@ TestCase PackedWave64ComputeGroupsOnGpu() {
   return test;
 }
 
+// KYTY_DEAD_LANE_FOLD (ir/passes/DeadLaneFold.h). A bounds-check early-out: lanes with
+// v0 >= 5 are switched off by s_and_saveexec and never come back, so the VGPR writes after it
+// need no ExecMerge select. Variants: 0 = the plain early-out (folds); 1 = EXEC restored from
+// the saved mask before a later write and store (must not fold); 2 = a v_readlane of a
+// constant lane reads a written register (its write keeps the select; others fold).
+TestCase DeadLaneEarlyOut(u32 variant) {
+  using O = ShaderOpcode;
+  std::vector<u32> code;
+  code.push_back(EncodeVopc(0xc4, InlineU32(5), 0));   // v_cmp_gt_u32 vcc, 5, v0
+  code.push_back(EncodeSop1(0x24, 10, 106));             // s_and_saveexec_b64 s[10:11], vcc
+  const size_t branch = code.size();
+  code.push_back(EncodeSopp(0x08, 0));                   // s_cbranch_execz end (patched)
+  code.push_back(EncodeVop2(0x25, 1, InlineU32(7), 0));  // v_add_nc_u32 v1, 7, v0
+  code.push_back(EncodeVop2(0x25, 2, InlineU32(3), 1));  // v_add_nc_u32 v2, 3, v1
+  code.push_back(EncodeVop2(0x1a, 3, InlineU32(1), 2));  // v_lshlrev_b32 v3, 1, v2
+  if (variant == 2) {
+    AppendVop3(&code, 0x360, 12, Vgpr(3), InlineU32(9)); // v_readlane_b32 s12, v3, 9
+    code.push_back(EncodeVop1(0x01, 3, 12));             // v_mov_b32 v3, s12
+  }
+  if (variant == 1) {
+    code.push_back(EncodeSop2(0x11, 126, 126, 10));      // s_or_b64 exec, exec, s[10:11]
+  }
+  code.push_back(EncodeVop2(0x1a, 4, InlineU32(2), 0));  // v_lshlrev_b32 v4, 2, v0
+  AppendBufferStoreDword(&code, 3, 4);
+  const size_t end = code.size();
+  code[branch] = EncodeSopp(0x08, static_cast<u32>(end - branch - 1));
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = variant == 0 ? "DeadLaneEarlyOut" : variant == 1 ? "DeadLaneEarlyOutRestored"
+                                                               : "DeadLaneEarlyOutReadLane";
+  test.code = code;
+  test.initial = std::vector<u32>(16, 0u);
+  test.expected = test.initial;
+  test.opcodes = {O::V_CMP_GT_U32, O::S_AND_SAVEEXEC_B64, O::S_CBRANCH_EXECZ, O::V_ADD_NC_U32,
+                  O::V_LSHLREV_B32, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  if (variant == 1) test.opcodes.push_back(O::S_OR_B64);
+  if (variant == 2) test.opcodes.insert(test.opcodes.end(), {O::V_READLANE_B32, O::V_MOV_B32});
+  test.compute_info.threads_num[0] = 16;
+  test.compute_info.threads_num[1] = 1;
+  test.compute_info.threads_num[2] = 1;
+  test.compute_info.thread_ids_num = 1;
+  test.compute_info.wave_size = 64;
+  test.compute_info.lds_size_dwords = 0;
+  test.has_compute_info = true;
+  test.compile_only = true;
+  return test;
+}
+
+uint32_t CountExecMergeSelects(const ShaderRecompiler::IR::Program &program) {
+  uint32_t count = 0;
+  for (const auto *block : program.blocks) {
+    for (const auto &inst : *block) {
+      if (inst.GetOpcode() == ShaderRecompiler::IR::ValueOpcode::SelectU32 &&
+          inst.Flags<ShaderRecompiler::IR::SelectOrigin>() ==
+              ShaderRecompiler::IR::SelectOrigin::ExecMerge) {
+        count++;
+      }
+    }
+  }
+  return count;
+}
+
+
 TestCase VectorCompareWave32KeepsVccHi() {
   using O = ShaderOpcode;
 
@@ -42267,6 +42331,7 @@ std::vector<TestCase> MakeCases() {
   cases.push_back(BufferWorkgroupPublication(64, false, true));
 
   AddCase(VectorCompareWave32KeepsVccHi);
+  for (u32 variant = 0; variant < 3; variant++) cases.push_back(DeadLaneEarlyOut(variant));
   AddCase(PackedWave32ComputeGroups);
   AddCase(PackedWave32ComputeGroupsOnGpu);
   AddCase(PackedWave64ComputeGroupsOnGpu);
@@ -48225,7 +48290,28 @@ ShaderDeviceFeatures FastPathFeatures() {
   features.bvh_emulation =
       ShaderBvhTriangleWords | ShaderBvhBoxBranch | ShaderBvhOriginCheck | ShaderBvhSecondPage;
   features.bvh_vector_loads = true;
+  features.dead_lane_fold = true;
   return features;
+}
+
+// --dead-lane-only: each variant compiled with the fold off and on.
+void CheckDeadLaneFold() {
+  for (u32 variant = 0; variant < 3; variant++) {
+    const auto test = DeadLaneEarlyOut(variant);
+    auto features = FastPathFeatures();
+    features.dead_lane_fold = false;
+    g_features_override = features;
+    const auto off = CountExecMergeSelects(CompileCase(test).program);
+    features.dead_lane_fold = true;
+    g_features_override = features;
+    const auto on = CountExecMergeSelects(CompileCase(test).program);
+    std::printf("[dead-lane] %-28s exec-merge selects off=%u on=%u\n", test.name, off, on);
+    if (variant == 0) Require(test.name, "fold", off >= 3 && on == 0, "early-out selects not folded");
+    if (variant == 1) Require(test.name, "restore", on == off, "folded although EXEC is restored");
+    if (variant == 2) Require(test.name, "cross-lane", on >= 1 && on < off,
+                              "a v_readlane source lost its select, or nothing folded");
+  }
+  g_features_override.reset();
 }
 
 // Waterfall-style M0 from V_READFIRSTLANE of a value written under EXEC: the V_MOVRELS chain
@@ -48347,6 +48433,10 @@ int main(int argc, char **argv) {
     unpacked.name = "PackedWave32ComputeGroupsOnGpu/unpacked";
     unpacked.compute_info.pack_groups = 0;
     RunCase(&vulkan, unpacked);
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--dead-lane-only") == 0) {
+    CheckDeadLaneFold();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--thread-dimensions-only") == 0) {
