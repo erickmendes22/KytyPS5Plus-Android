@@ -97,6 +97,9 @@ were inverted by it (b3_pack1, b3_pack2). For every GPU-side A/B:
 4. `@full` (GPU ms scaled by 4.547 / mean probe) is only a cross-check: it scales memory-bound
    work too, so it under-reads throttled phases by ~5%.
 5. A bench window number from another run is only comparable when both windows are `ok`.
+6. A knob that changes pipeline keys (e.g. `bvh_opt`, which re-keys every compute shader) recompiles
+   on its first phase and stalls for seconds: run each setting once as a throwaway warm-up round,
+   then measure the repeated round (b3_r3_pack1).
 
 ## Saves
 
