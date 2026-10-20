@@ -17,6 +17,7 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/frontend/cfg/ShaderCFG.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
+#include "graphics/shader/recompiler/frontend/translate/LiveVertexExec.h"
 #include "graphics/shader/recompiler/frontend/translate/Translate.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 #include "graphics/shader/recompiler/ir/IREmitter.h"
@@ -4308,6 +4309,97 @@ void TestNewShaderRecompilerScalarB64LaneTranslation() {
       componentwise_u64_values == 0u,
       "architectural B64 lane operations retained vector pack/unpack traffic");
   CheckSpirvBinaryValidates(result.spirv);
+}
+
+void TestLiveVertexExecPrologue() {
+  using namespace ShaderRecompiler;
+  constexpr uint32_t Vcc = 106, VccHi = 107, Exec = 126, Zero = 128, MinusOne = 193;
+  constexpr uint32_t SubI32 = 0x03, SubU32 = 0x01, LshrB32 = 0x20, LshrB64 = 0x21, MovB64 = 0x04;
+  const auto find = [](std::span<const uint32_t> code, uint32_t wave_size = 64u) {
+    Decoder::Program decoded;
+    Decoder::DecodeProgram(code, decoded);
+    return Frontend::FindLiveVertexExecPc(decoded, CFG::BuildGraph(decoded), wave_size);
+  };
+  const auto found_at = [&](std::span<const uint32_t> code, uint32_t pc, uint32_t wave_size = 64u) {
+    const auto found = find(code, wave_size);
+    return found.has_value() && *found == pc;
+  };
+  const uint32_t prologue[] = {
+      EncodeSop2(SubI32, Vcc, Zero, 3),          // s_sub_i32 vcc_lo, 0, s3
+      EncodeSopp(0x0c, 0xff0f),                  // s_waitcnt
+      EncodeSop2(LshrB64, Exec, MinusOne, Vcc),  // s_lshr_b64 exec, -1, vcc_lo
+      EncodeSopp(0x01),
+  };
+  Check(found_at(prologue, 8u), "NGG vertex-count EXEC prologue was not recognized");
+  Check(!find(prologue, 32u), "a 64-bit EXEC shift was folded in wave32");
+
+  const uint32_t unsigned_sub[] = {
+      EncodeSop2(SubU32, Vcc, Zero, 3),
+      EncodeSop2(LshrB64, Exec, MinusOne, Vcc),
+      EncodeSopp(0x01),
+  };
+  Check(found_at(unsigned_sub, 4u), "s_sub_u32 form of the prologue was not recognized");
+
+  const uint32_t wave32[] = {
+      EncodeSop2(SubI32, Vcc, Zero, 3),
+      EncodeSop2(LshrB32, Exec, MinusOne, Vcc),  // s_lshr_b32 exec_lo, -1, vcc_lo
+      EncodeSopp(0x01),
+  };
+  Check(found_at(wave32, 4u, 32u), "wave32 EXEC prologue was not recognized");
+  Check(!find(wave32, 64u), "a 32-bit EXEC shift was folded in wave64");
+
+  const uint32_t self_negated[] = {
+      EncodeSop2(SubI32, 3, Zero, 3),            // s_sub_i32 s3, 0, s3
+      EncodeSop2(LshrB64, Exec, MinusOne, 3),
+      EncodeSopp(0x01),
+  };
+  Check(found_at(self_negated, 4u), "in-place negated vertex count was not followed");
+
+  const uint32_t clobbered_count[] = {
+      EncodeSMovB32(3, 129),                     // s_mov_b32 s3, 1
+      EncodeSop2(SubI32, Vcc, Zero, 3),
+      EncodeSop2(LshrB64, Exec, MinusOne, Vcc),
+      EncodeSopp(0x01),
+  };
+  Check(!find(clobbered_count), "EXEC from a rewritten s3 was treated as the live-vertex mask");
+
+  const uint32_t clobbered_pair[] = {
+      EncodeSop1(MovB64, 2, 129),                // s_mov_b64 s[2:3], 1
+      EncodeSop2(SubI32, Vcc, Zero, 3),
+      EncodeSop2(LshrB64, Exec, MinusOne, Vcc),
+      EncodeSopp(0x01),
+  };
+  Check(!find(clobbered_pair), "EXEC from a 64-bit rewrite of s3 was treated as live");
+
+  const uint32_t clobbered_vcc[] = {
+      EncodeSop2(SubI32, Vcc, Zero, 3),
+      EncodeVopc(0x81, 0, 1),                    // v_cmp_lt_i32 vcc, s0, v1
+      EncodeSop2(LshrB64, Exec, MinusOne, Vcc),
+      EncodeSopp(0x01),
+  };
+  Check(!find(clobbered_vcc), "EXEC from a rewritten VCC was treated as the live-vertex mask");
+
+  const uint32_t other_half[] = {
+      EncodeSop2(SubI32, VccHi, Zero, 3),        // s_sub_i32 vcc_hi, 0, s3
+      EncodeSop2(LshrB64, Exec, MinusOne, Vcc),  // shift by vcc_lo
+      EncodeSopp(0x01),
+  };
+  Check(!find(other_half), "EXEC shifted by the other VCC half was treated as live");
+
+  const uint32_t other_shift[] = {
+      EncodeSop2(SubI32, 4, Zero, 3),            // s_sub_i32 s4, 0, s3
+      EncodeSop2(LshrB64, Exec, MinusOne, 5),    // s_lshr_b64 exec, -1, s5
+      EncodeSopp(0x01),
+  };
+  Check(!find(other_shift), "EXEC shifted by an unrelated register was treated as live");
+
+  const uint32_t sgpr_negated_count[] = {
+      EncodeSop2(SubI32, 6, Zero, 3),            // s_sub_i32 s6, 0, s3
+      EncodeSMovB32(4, 129),                     // s_mov_b32 s4, 1
+      EncodeSop2(LshrB64, Exec, MinusOne, 6),    // s_lshr_b64 exec, -1, s6
+      EncodeSopp(0x01),
+  };
+  Check(found_at(sgpr_negated_count, 8u), "SGPR-held negated vertex count was not followed");
 }
 
 void TestFloatComparisonInputModes() {
@@ -13835,7 +13927,6 @@ void TestUnreachableEqualityPropagation() {
   Program program;
   program.block_storage.push_back(std::make_unique<Block>());
   program.blocks.push_back(program.block_storage.back().get());
-  program.block_info.emplace_back();
   IREmitter ir(program.blocks.front());
   // An M0 index scaled from a loop counter: any value, but a multiple of four below 256.
   const auto lane = ir.Emit(ValueOpcode::LaneId);
@@ -17192,6 +17283,7 @@ int main() {
   using namespace Libs::Graphics;
 
   EnsureConfigInitialized();
+  TestLiveVertexExecPrologue();
   TestRayTracingInstructions();
   TestResourceDescriptorClassification();
   TestShaderBufferResourceSize();

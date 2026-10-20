@@ -29,6 +29,8 @@ struct TranslateOptions {
 	uint32_t                      user_data_count     = 64;
 	ShaderStageInputInfo          input_info;
 	const EmbeddedFetchPlan*      embedded_fetch = nullptr;
+	// ShaderDeviceFeatures::vs_live_vertex_exec (frontend/translate/LiveVertexExec.h).
+	bool                          live_vertex_exec = false;
 };
 
 IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& cfg,

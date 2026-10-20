@@ -36,6 +36,8 @@ struct ShaderFastPaths {
 	bool drop_carried = false;
 	// ShaderDeviceFeatures::fold_same_condition_selects (KYTY_SELECT_FOLD; default Mesa Turnip).
 	bool select_fold = false;
+	// ShaderDeviceFeatures::vs_live_vertex_exec (KYTY_VS_LIVE_EXEC; default Mesa Turnip, =0 opts out).
+	bool vs_live_exec = false;
 	// ShaderDeviceFeatures::single_mode_alias_slots (KYTY_ALIAS_SLOTS; default Mesa Turnip).
 	bool alias_slots = false;
 	// ShaderDeviceFeatures::constant_lane_broadcast (KYTY_LANE_BROADCAST).
@@ -48,6 +50,8 @@ struct ShaderFastPaths {
 	// (KYTY_UBO_CONSTANTS; needs robustBufferAccess2 for uniform buffers). 0: off.
 	uint32_t uniform_constant_buffer_bytes = 0;
 	uint32_t uniform_buffers_per_stage     = 0;
+	// KYTY_UBO_CONSTANTS=cs: compute programs only; the other stages keep storage buffers.
+	bool uniform_constants_compute_only = false;
 };
 [[nodiscard]] ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics);
 

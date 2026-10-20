@@ -837,6 +837,7 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	    .user_data_count  = static_cast<uint32_t>(options.user_data.size()),
 	    .input_info       = options.input_info,
 	    .embedded_fetch   = embedded_fetch.loads.empty() ? nullptr : &embedded_fetch,
+	    .live_vertex_exec = options.device_features.vs_live_vertex_exec,
 	};
 	LOGF("%s phase begin: stage=%s hash=0x%016" PRIx64 " IR TranslateProgram\n",
 	     GetDumpLabel(options), StageName(options.stage), options.shader_hash);
@@ -845,6 +846,9 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	     " elapsed_ms=%" PRIu64 "\n",
 	     GetDumpLabel(options), StageName(options.stage), options.shader_hash,
 	     static_cast<uint64_t>(ir.blocks.size()), phase_ms());
+	if (ir.info.live_vertex_exec) {
+		LOGF("%s live vertex EXEC: prologue lane predicate folded to true\n", GetDumpLabel(options));
+	}
 	{
 		// Half-float usage census (native fp16 candidates): F16 <-> F32 conversions and packs.
 		uint32_t half_ops = 0;
