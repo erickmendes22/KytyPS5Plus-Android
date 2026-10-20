@@ -967,6 +967,9 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 			m_gpu_modified_ranges.Add(vaddr, size);
 		}
 		m_gpu_dirty_generation.fetch_add(1, std::memory_order_release);
+		if (m_walk_journal != nullptr) {
+			m_walk_journal->Note(vaddr, vaddr + size);
+		}
 		MarkWritten(vaddr, size);
 	}
 	return {&buffer, buffer.Offset(vaddr)};
@@ -1084,6 +1087,15 @@ bool BufferCache::IsRegionRegistered(uint64_t vaddr, uint64_t size) {
 bool BufferCache::IsRegionGpuModified(uint64_t vaddr, uint64_t size) {
 	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	return m_memory_tracker.IsRegionGpuModified(vaddr, size);
+}
+
+void BufferCache::PublishWalkView(WalkReader::ViewPublisher& publisher) const {
+	if (m_walk_journal == nullptr) {
+		return;
+	}
+	publisher.Publish(m_walk_journal->Generation(), [&](auto&& visit) {
+		m_gpu_modified_ranges.ForEach([&](uint64_t begin, uint64_t end) { visit(begin, end); });
+	});
 }
 
 bool BufferCache::HasGpuDirtyBytes(uint64_t vaddr, uint64_t size) {

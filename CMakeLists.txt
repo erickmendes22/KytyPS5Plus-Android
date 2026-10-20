@@ -607,6 +607,7 @@ add_executable(resource_materialization_tests EXCLUDE_FROM_ALL
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/ResourceMemo.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/ResourceMemoRebase.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/SrtWalker.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/walkReader.cpp"
 )
 target_link_libraries(resource_materialization_tests fmt::fmt xbyak::xbyak)
 target_include_directories(resource_materialization_tests PRIVATE ${inc_headers})

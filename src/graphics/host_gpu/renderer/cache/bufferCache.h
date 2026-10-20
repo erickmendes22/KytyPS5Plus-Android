@@ -14,6 +14,7 @@
 #include "graphics/host_gpu/renderer/cache/meshEmulationRing.h"
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
+#include "graphics/host_gpu/renderer/pipeline/walkReader.h"
 
 #include <atomic>
 #include <map>
@@ -107,6 +108,11 @@ public:
 	[[nodiscard]] uint64_t GpuDirtyGeneration() const {
 		return m_gpu_dirty_generation.load(std::memory_order_acquire);
 	}
+	// Prepare-worker SRT walks (pipeline/walkReader.h): every range that becomes GPU-written is
+	// also noted in `journal` (null: none). GPU thread.
+	void SetWalkJournal(WalkReader::WriteJournal* journal) { m_walk_journal = journal; }
+	// Publishes the current GPU-modified ranges as a worker view when the journal moved. GPU thread.
+	void PublishWalkView(WalkReader::ViewPublisher& publisher) const;
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	void               ProcessFaultBuffer();
@@ -200,6 +206,7 @@ private:
 	RangeSet                                          m_gpu_modified_ranges;
 	std::atomic<uint64_t>                             m_gpu_dirty_generation {0};
 	mutable std::shared_mutex                         m_gpu_modified_mutex;
+	WalkReader::WriteJournal*                         m_walk_journal         = nullptr;
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;
