@@ -2,6 +2,7 @@
 
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/pipeline/ftzProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
@@ -57,7 +58,7 @@ bool EnvToggle(const char* name, bool default_value) {
 
 } // namespace
 
-ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
+ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 	const bool      turnip = graphics.IsMesaTurnip();
 	ShaderFastPaths paths {
 	    .native_float_min_max = EnvToggle("KYTY_FAST_FMINMAX", turnip),
@@ -105,6 +106,7 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	                                      paths.uniform_constant_buffer_bytes,
 	                                      paths.uniform_buffers_per_stage,
 	                                      paths.uniform_constants_compute_only ? " (compute only)" : ""));
+	paths.ftz32_ops = ProbeFtz32Ops(graphics);
 	return paths;
 }
 

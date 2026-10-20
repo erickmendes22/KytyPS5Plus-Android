@@ -1136,6 +1136,12 @@ void DefineModule(EmitterState& state) {
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve,
 		                               32u);
 	}
+	// KYTY_FTZ32: the device flushes FP32 denormals (the explicit input flushes it was checked to
+	// match are left out, EmitFlushF32DenormInput).
+	if (state.device_features.ftz32_ops != 0u) {
+		state.builder.RequireCapability(spv::CapabilityDenormFlushToZero);
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeDenormFlushToZero, 32u);
+	}
 	// Native F16 arithmetic (IR::LowerNativeFloat16): RDNA2 half math rounds to nearest even and
 	// keeps denormals, signed zero, infinities and NaNs.
 	const bool native_half = std::ranges::any_of(state.program.blocks, [](const IR::Block* block) {

@@ -352,6 +352,7 @@ add_gpu_blit_shader(gpu_blit_color_to_ms_depth gpu_blit_color_to_ms_depth.frag)
 add_gpu_blit_shader(gpu_video_out_overlay gpu_video_out_overlay.frag)
 add_gpu_blit_shader(gpu_imgui_hdr gpu_video_out_overlay.frag -DIMGUI_HDR=1)
 add_gpu_blit_shader(gpu_clock_probe gpu_clock_probe.comp)
+add_gpu_blit_shader(gpu_ftz_probe gpu_ftz_probe.comp)
 list(APPEND kyty_emulator_src ${gpu_blit_shader_headers})
 
 list(APPEND kyty_emulator_src
@@ -654,6 +655,9 @@ add_executable(controller_settings_tests EXCLUDE_FROM_ALL
 target_link_libraries(controller_settings_tests common fmt::fmt SDL3::SDL3-static)
 target_include_directories(controller_settings_tests PRIVATE ${inc_headers})
 
+add_executable(ftz32_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Ftz32Tests.cpp")
+target_include_directories(ftz32_tests PRIVATE ${inc_headers})
+
 add_executable(pad_script_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PadScriptTests.cpp")
 target_link_libraries(pad_script_tests common fmt::fmt)
 target_include_directories(pad_script_tests PRIVATE ${inc_headers})
@@ -804,6 +808,7 @@ if(BUILD_TESTING)
 	add_test(NAME pad_haptics COMMAND $<TARGET_FILE:pad_haptics_tests>)
 	add_test(NAME controller_settings COMMAND $<TARGET_FILE:controller_settings_tests>)
 	add_test(NAME pad_script COMMAND $<TARGET_FILE:pad_script_tests>)
+	add_test(NAME ftz32 COMMAND $<TARGET_FILE:ftz32_tests>)
 	add_test(NAME host_input COMMAND $<TARGET_FILE:host_input_tests>)
 	add_test(NAME save_data_memory COMMAND $<TARGET_FILE:save_data_memory_tests>)
 	add_test(NAME png_enc COMMAND $<TARGET_FILE:png_enc_tests>)
@@ -894,6 +899,7 @@ if(BUILD_TESTING)
 		pad_haptics_tests
 		controller_settings_tests
 		pad_script_tests
+		ftz32_tests
 		host_input_tests
 		save_data_memory_tests
 		png_enc_tests

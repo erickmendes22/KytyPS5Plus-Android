@@ -283,6 +283,9 @@ struct ShaderDeviceFeatures {
 	bool shader_float64                   = true; // Float64 arithmetic
 	bool shader_shared_int64_atomics      = true; // Int64 atomics on Workgroup (LDS) memory
 	bool signed_zero_inf_nan_preserve_f32 = true; // SignedZeroInfNanPreserve at width 32
+	// KYTY_FTZ32 (graphics/shader/ftz32.h): Ftz32::Op bits whose explicit FP32 denormal input
+	// flush is left to the device, with DenormFlushToZero declared at width 32. 0: flush all.
+	uint32_t ftz32_ops                    = 0;
 	// Graphics stages whose invocations may use subgroup ballot and shuffle
 	// (VkPhysicalDeviceVulkan11Properties::subgroupSupportedStages/Operations). In a stage
 	// without them each invocation is emitted as a one-lane wave instead.

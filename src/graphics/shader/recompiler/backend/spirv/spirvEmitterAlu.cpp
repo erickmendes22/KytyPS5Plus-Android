@@ -1,4 +1,5 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
+#include "graphics/shader/ftz32.h"
 
 #include <array>
 
@@ -354,7 +355,7 @@ uint32_t EmitFPMaxTri32(EmitterState& state, uint32_t arg0, uint32_t arg1, uint3
 }
 
 uint32_t EmitFPRecip32(EmitterState& state, uint32_t arg0) {
-	const auto source = EmitFlushF32DenormToSignedZero(state, arg0);
+	const auto source = EmitFlushF32DenormInput(state, arg0, Ftz32::Rcp);
 	return Binary(state, spv::OpFDiv, TypeF32(state), ConstantF32(state, 0x3f800000u), source);
 }
 
@@ -370,22 +371,22 @@ uint32_t EmitFPRecipIFlag32(EmitterState& state, uint32_t arg0) {
 
 uint32_t EmitFPRecipSqrt32(EmitterState& state, uint32_t arg0) {
 	return EmitExt(state, TypeF32(state), GLSLstd450InverseSqrt,
-	               {EmitFlushF32DenormToSignedZero(state, arg0)});
+	               {EmitFlushF32DenormInput(state, arg0, Ftz32::Rsq)});
 }
 
 uint32_t EmitFPSqrt(EmitterState& state, uint32_t arg0) {
 	return EmitExt(state, TypeF32(state), GLSLstd450Sqrt,
-	               {EmitFlushF32DenormToSignedZero(state, arg0)});
+	               {EmitFlushF32DenormInput(state, arg0, Ftz32::Sqrt)});
 }
 
 uint32_t EmitFPExp2(EmitterState& state, uint32_t arg0) {
 	return EmitExt(state, TypeF32(state), GLSLstd450Exp2,
-	               {EmitFlushF32DenormToSignedZero(state, arg0)});
+	               {EmitFlushF32DenormInput(state, arg0, Ftz32::Exp2)});
 }
 
 uint32_t EmitFPLog2(EmitterState& state, uint32_t arg0) {
 	return EmitExt(state, TypeF32(state), GLSLstd450Log2,
-	               {EmitFlushF32DenormToSignedZero(state, arg0)});
+	               {EmitFlushF32DenormInput(state, arg0, Ftz32::Log2)});
 }
 
 uint32_t EmitFPLdexp(EmitterState& state, uint32_t arg0, uint32_t arg1) {

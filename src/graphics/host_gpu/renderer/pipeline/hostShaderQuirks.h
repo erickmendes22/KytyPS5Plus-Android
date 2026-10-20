@@ -21,6 +21,8 @@ struct GraphicContext;
 // KYTY_WQM_LANE_FOLD, KYTY_WAVE_SLICES, KYTY_UBO_CONSTANTS, KYTY_QUAD_DPP (1 on, 0 off).
 // Logs the result.
 struct ShaderFastPaths {
+	// KYTY_FTZ32=1: ShaderDeviceFeatures::ftz32_ops from the device check (ftzProbe.h).
+	uint32_t ftz32_ops        = 0;
 	bool native_float_min_max = false;
 	bool robust_buffer_loads  = false;
 	bool lane_exec_branches   = false;
@@ -54,7 +56,7 @@ struct ShaderFastPaths {
 	// KYTY_UBO_CONSTANTS=cs: compute programs only; the other stages keep storage buffers.
 	bool uniform_constants_compute_only = false;
 };
-[[nodiscard]] ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics);
+[[nodiscard]] ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics);
 
 // Per-shader bisecting of the lane fast paths: <NAME>_ONLY=<hex prefixes> keeps the path only for
 // matching guest hashes, <NAME>_SKIP=<hex prefixes> drops it for them (KYTY_PIPELINE_STATS

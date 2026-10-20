@@ -544,6 +544,7 @@ struct PipelineCache::ProgramCache {
 		         .shader_shared_int64_atomics = graphics.optional_features.shader_shared_int64_atomics,
 		         .signed_zero_inf_nan_preserve_f32 =
 		             graphics.optional_features.shader_signed_zero_inf_nan_preserve_f32,
+		         .ftz32_ops = fast_paths.ftz32_ops,
 		         .subgroup_vertex       = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eVertex),
 		         .subgroup_tessellation =
 		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationControl) &&
@@ -857,7 +858,7 @@ struct PipelineCache::ProgramCache {
             f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp, f.bvh_vector_loads, f.packed_varying_locations, f.drop_carried_vertex_data, f.fold_same_condition_selects, f.vs_live_vertex_exec, f.single_mode_alias_slots, fast_paths.uniform_constants_compute_only,
             f.constant_lane_broadcast, f.subgroup_size_min,
             f.compute_required_subgroup_min, f.compute_required_subgroup_max,
-            f.first_lane_value_sets, f.bvh_emulation);
+            f.first_lane_value_sets, f.bvh_emulation) + fmt::format(" ftz32={}", f.ftz32_ops);
 		return XXH3_64bits(text.data(), text.size());
 	}
 
