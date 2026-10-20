@@ -318,20 +318,19 @@ static void RecordGuestDispatch(vk::CommandBuffer command, const DispatchGroups&
 	}
 }
 
-// KYTY_CS_PACK=1 runs two guest wave32 workgroups of at most 32 threads in one 64-lane host
-// workgroup (the recompiler decides per program: ShaderRecompiler.cpp ComputeGroupPack). Off by
-// default; with KYTY_LIVE_KNOBS=1 the live key cs_pack=0/1 overrides it (in-run A/B; each setting
-// is its own pipeline).
-static bool ComputeGroupPackEnabled() {
-	static const bool env_on = [] {
+// KYTY_CS_PACK runs two guest workgroups of at most 32 threads in one 64-lane host workgroup (the
+// recompiler decides per program: ShaderRecompiler.cpp ComputeGroupPack). Default on with Mesa
+// Turnip (Astro Bot: 74.8 -> 66.7 GPU ms/frame, research/clock_policy.md), off elsewhere;
+// KYTY_CS_PACK=0/1 overrides, and with KYTY_LIVE_KNOBS=1 the live key cs_pack=0/1 overrides both
+// (in-run A/B; each setting is its own pipeline).
+static bool ComputeGroupPackEnabled(bool turnip) {
+	static const bool default_on = [turnip] {
 		const char* value = std::getenv("KYTY_CS_PACK");
-		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
-		if (on) {
-			LOGF("KYTY_CS_PACK=1: packing small compute workgroups in pairs\n");
-		}
+		const bool  on    = value != nullptr && value[0] != '\0' ? std::strcmp(value, "0") != 0 : turnip;
+		LOGF("KYTY_CS_PACK: packing small compute workgroups in pairs %s\n", on ? "on" : "off");
 		return on;
 	}();
-	return LiveKnobs::Int("cs_pack", env_on ? 1 : 0) != 0;
+	return LiveKnobs::Int("cs_pack", default_on ? 1 : 0) != 0;
 }
 
 // KYTY_LIVE_KNOBS bvh_opt=<0..31>: BVH emulation bits for programs compiled from now on
@@ -342,8 +341,8 @@ static uint8_t LiveBvhOptions() {
 }
 
 static bool ComputeGroupPackCandidate(const ShaderComputeInputInfo& input_info, uint32_t threads,
-                                      uint32_t groups_x) {
-	return ComputeGroupPackEnabled() && !input_info.dispatch_thread_dimensions && threads <= 32u &&
+                                      uint32_t groups_x, bool turnip) {
+	return ComputeGroupPackEnabled(turnip) && !input_info.dispatch_thread_dimensions && threads <= 32u &&
 	       groups_x >= 2u && groups_x % 2u == 0u;
 }
 
@@ -434,7 +433,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		const uint32_t threads = std::max(cs_regs.cs_regs.num_thread_x, 1u) *
 		                         std::max(cs_regs.cs_regs.num_thread_y, 1u) *
 		                         std::max(cs_regs.cs_regs.num_thread_z, 1u);
-		if (ComputeGroupPackCandidate(input_info, threads, thread_group_x)) {
+		if (ComputeGroupPackCandidate(input_info, threads, thread_group_x,
+		                              m_context.GetGraphics().IsMesaTurnip())) {
 			input_info.pack_groups = 2;
 		}
 	}
