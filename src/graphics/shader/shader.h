@@ -297,9 +297,9 @@ struct ShaderDeviceFeatures {
 	// DPP quad permutations (quad_perm, row_xmask:1..3) become GroupNonUniformQuad swaps and
 	// broadcasts in pixel and compute shaders instead of an indexed shuffle, which Mesa ir3
 	// lowers to a loop over the distinct lane deltas (KYTY_QUAD_DPP; needs the quad subgroup
-	// feature). Same results: both read the same lane of the quad. Off by default: Astro Bot
-	// desert gameplay (Turnip v32, --gpu-turbo, one back-to-back pair) went from 162 to 159 GPU
-	// ms per frame (fps median 5.80 -> 5.90), within run-to-run noise.
+	// feature; default Mesa Turnip, =0 opts out). Both read the same lane of the quad; the quad
+	// ops also read helper lanes, which the shuffle path gates to 0 / the old value. Astro Bot's
+	// G-buffer and f112e0ba pixel shaders lose their 12 ir3 loops each.
 	bool subgroup_quad_dpp       = false;
 	// IMAGE_BVH(64)_INTERSECT_RAY reads the node's first 64 bytes as four 16-byte loads up front
 	// instead of one 4-byte load per word where it is used (KYTY_BVH_VEC=1, opt-in). ir3 on the

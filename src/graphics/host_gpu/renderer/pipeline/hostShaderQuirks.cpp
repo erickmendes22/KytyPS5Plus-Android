@@ -66,7 +66,7 @@ ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics) {
 	    .lane_exec_branches   = EnvToggle("KYTY_LANE_BRANCHES", false),
 	    .wqm_entry_lane_fold  = EnvToggle("KYTY_WQM_LANE_FOLD", false),
 	    .wave_slices          = EnvToggle("KYTY_WAVE_SLICES", false),
-	    .quad_dpp             = EnvToggle("KYTY_QUAD_DPP", false) &&
+	    .quad_dpp             = EnvToggle("KYTY_QUAD_DPP", turnip) &&
 	                graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eQuad),
 	    .bvh_vector_loads     = EnvToggle("KYTY_BVH_VEC", false),
 	    .packed_interp        = EnvToggle("KYTY_PACKED_INTERP", turnip) &&

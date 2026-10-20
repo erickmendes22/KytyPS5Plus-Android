@@ -26,7 +26,7 @@ struct ShaderFastPaths {
 	bool lane_exec_branches   = false;
 	bool wqm_entry_lane_fold  = false;
 	bool wave_slices          = false;
-	// ShaderDeviceFeatures::subgroup_quad_dpp (KYTY_QUAD_DPP).
+	// ShaderDeviceFeatures::subgroup_quad_dpp (KYTY_QUAD_DPP; default Mesa Turnip, =0 opts out).
 	bool quad_dpp             = false;
 	// ShaderDeviceFeatures::bvh_vector_loads (KYTY_BVH_VEC, default off).
 	bool bvh_vector_loads = false;
