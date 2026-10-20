@@ -64,10 +64,29 @@
 namespace Libs::Graphics {
 namespace {
 
+// KYTY_TEST_KEEP_GOING=1: report a failed check (or exceeded SPIR-V budget, or invalid SPIR-V)
+// and continue, so one run lists every stale expectation; main then exits 1 with the count.
+bool KeepGoing() {
+  static const bool keep_going = [] {
+    const char *value = std::getenv("KYTY_TEST_KEEP_GOING");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+  }();
+  return keep_going;
+}
+
+int g_failures = 0;
+
+void Fail() {
+  if (!KeepGoing()) {
+    std::abort();
+  }
+  g_failures++;
+}
+
 void Check(bool value, const char *text) {
   if (!value) {
     std::fprintf(stderr, "ShaderCfgTests: failed: %s\n", text);
-    std::abort();
+    Fail();
   }
 }
 
@@ -216,7 +235,7 @@ void CheckSpirvBinaryValidates(const std::vector<uint32_t> &binary) {
   if (!tools.Validate(binary)) {
     std::fprintf(stderr, "SPIR-V binary validation failed:\n%s\n",
                  messages.c_str());
-    std::abort();
+    Fail();
   }
 }
 
@@ -579,7 +598,7 @@ void CheckSpirvBudget(const char *name, const std::vector<uint32_t> &binary,
         budget.loop_merges, budget.selection_merges, budget.branches,
         budget.conditional_branches, budget.switches, budget.ballots,
         budget.quad_broadcasts);
-    std::abort();
+    Fail();
   }
 }
 
@@ -17480,5 +17499,9 @@ int main() {
 
   TestNewShaderRecompilerVop3LaneReadDestinationEncoding();
 
+  if (g_failures != 0) {
+    std::fprintf(stderr, "ShaderCfgTests: %d failed checks (KYTY_TEST_KEEP_GOING)\n", g_failures);
+    return 1;
+  }
   return 0;
 }
