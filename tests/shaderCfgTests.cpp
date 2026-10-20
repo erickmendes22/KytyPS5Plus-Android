@@ -6277,6 +6277,10 @@ void TestNewShaderRecompilerImageGatherVariants() {
       EncodeMimg1(76, 0, 1, 20), // image_gather4_c_o
       EncodeMimg0(0x5f, 0x1),
       EncodeMimg1(80, 0, 1, 24), // image_gather4_c_lz_o
+      EncodeMimg0(0xc8, 0x1),
+      EncodeMimg1(84, 0, 1, 28), // image_gather4_c_a
+      EncodeMimg0(0xd8, 0x1),
+      EncodeMimg1(88, 0, 1, 32), // image_gather4_c_o_a
       0xbf810000u,
   };
 
@@ -6312,6 +6316,10 @@ void TestNewShaderRecompilerImageGatherVariants() {
   Check((result.decoded_dump.find("sample_flags=compare|offset|level_zero addr_components=4") != std::string::npos),
         "IMAGE_GATHER4_C_LZ_O did not expose compare+offset+level-zero sample "
         "metadata");
+  Check((result.decoded_dump.find("sample_flags=compare|adjust addr_components=3") != std::string::npos),
+        "PS5 IMAGE_GATHER4_C_A did not expose compare+adjust sample metadata");
+  Check((result.decoded_dump.find("sample_flags=compare|offset|adjust addr_components=4") != std::string::npos),
+        "PS5 IMAGE_GATHER4_C_O_A did not expose compare+offset+adjust sample metadata");
   Check((result.ir_dump.find("ImageGather4 v60") != std::string::npos),
         "IMAGE_GATHER4_LZ did not lower to shared IR ImageGather4");
   Check((result.ir_dump.find("ImageGather4 v64") != std::string::npos),
@@ -6324,6 +6332,10 @@ void TestNewShaderRecompilerImageGatherVariants() {
         "IMAGE_GATHER4_C_O did not lower to shared IR ImageGather4");
   Check((result.ir_dump.find("ImageGather4 v80") != std::string::npos),
         "IMAGE_GATHER4_C_LZ_O did not lower to shared IR ImageGather4");
+  Check((result.ir_dump.find("ImageGather4 v84") != std::string::npos),
+        "IMAGE_GATHER4_C_A did not lower to shared IR ImageGather4");
+  Check((result.ir_dump.find("ImageGather4 v88") != std::string::npos),
+        "IMAGE_GATHER4_C_O_A did not lower to shared IR ImageGather4");
   Check((result.ir_dump.find("data_dwords=4") != std::string::npos),
         "IMAGE_GATHER4 did not preserve four-component result metadata");
   Check((result.ir_dump.find("image_flags=0x30") != std::string::npos),
@@ -6336,6 +6348,10 @@ void TestNewShaderRecompilerImageGatherVariants() {
         "IMAGE_GATHER4_C_O flags did not survive into IR memory metadata");
   Check((result.ir_dump.find("image_flags=0x38") != std::string::npos),
         "IMAGE_GATHER4_C_LZ_O flags did not survive into IR memory metadata");
+  Check((result.ir_dump.find("image_flags=0x408") != std::string::npos),
+        "IMAGE_GATHER4_C_A flags did not survive into IR memory metadata");
+  Check((result.ir_dump.find("image_flags=0x418") != std::string::npos),
+        "IMAGE_GATHER4_C_O_A flags did not survive into IR memory metadata");
   Check(SpirvContainsCapability(result.spirv, 25),
         "SPIR-V binary does not request ImageGatherExtended");
   Check(SpirvContainsOpcode(result.spirv, 96),
