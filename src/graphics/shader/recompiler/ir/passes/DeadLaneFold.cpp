@@ -260,11 +260,18 @@ private:
 				CrossLaneSources(inst, work);
 			}
 		}
+		// A kept ExecMerge select gives a dead lane its previous value, so only that operand's
+		// dead-lane value is observable through it (the written value matters in live lanes only,
+		// and the fold never changes a live lane's value).
 		std::unordered_set<Inst*> seen;
 		while (!work.empty()) {
 			auto* inst = work.back().Resolve().TryInstruction();
 			work.pop_back();
 			if (inst == nullptr || !seen.insert(inst).second) continue;
+			if (IsExecMerge(*inst)) {
+				work.push_back(inst->Arg(2));
+				continue;
+			}
 			for (size_t i = 0; i < inst->NumArgs(); i++) work.push_back(inst->Arg(i));
 		}
 		return seen;
