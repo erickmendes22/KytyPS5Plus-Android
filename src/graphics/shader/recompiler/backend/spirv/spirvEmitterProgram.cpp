@@ -16,10 +16,8 @@ namespace {
 void EmitKillIfBoolFalse(EmitterState& state, uint32_t active) {
 	const auto kill_label  = state.builder.AllocateId();
 	const auto merge_label = state.builder.AllocateId();
-	const auto inactive    = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpLogicalNot, TypeBool(state), inactive, active);
 	state.builder.AddFunction(spv::OpSelectionMerge, merge_label, spv::SelectionControlMaskNone);
-	state.builder.AddFunction(spv::OpBranchConditional, inactive, kill_label, merge_label);
+	state.builder.AddFunction(spv::OpBranchConditional, active, merge_label, kill_label);
 	EmitLabel(state, kill_label);
 	state.builder.AddFunction(spv::OpKill);
 	EmitLabel(state, merge_label);
