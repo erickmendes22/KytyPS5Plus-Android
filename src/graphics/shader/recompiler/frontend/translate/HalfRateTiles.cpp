@@ -881,17 +881,22 @@ void Translator::HalfRateRetraceRemap() {
 	const auto chunk  = ir.GetVectorReg(static_cast<IR::VectorReg>(kRegRetraceChunk));
 	const auto base   = HalfRateRetraceList(group);
 	const auto count  = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {base}));
-	// Lanes 4q..4q+3 take the 4-pixel row run of listed pixel 16 * chunk + q (the guest's quad
-	// derivatives read lanes 1 and 2 of each quad as the next pixels of the run).
-	const auto flat   = HalfRateFlatIndex();
-	const auto sub    = ir.BitwiseAnd(flat, HalfRateConst(3));
-	const auto index  = ir.IAdd(ir.IMul(chunk, HalfRateConst(H::kRetraceChunkPixels)), ir.ShiftRightLogical(flat, HalfRateConst(2)));
+	// The guest's quad derivatives (lanes 1 and 2 minus lane 0) need each host quad to cover a 2x2
+	// pixel block. The quads of an 8x8 group are its 2x2 local-id blocks (c17_rtR7: 4-pixel row
+	// runs on linear quads still came out dark). So local block (lx >> 1, ly >> 1) takes the 2x2
+	// block of listed pixel 16 * chunk + block, and (lx & 1, ly & 1) picks the pixel in it.
+	const auto lx     = HalfRateLocal(0);
+	const auto ly     = HalfRateLocal(1);
+	const auto block  = ir.IAdd(ir.ShiftLeftLogical(ir.ShiftRightLogical(ly, HalfRateConst(1)), HalfRateConst(2)),
+	                            ir.ShiftRightLogical(lx, HalfRateConst(1)));
+	const auto index  = ir.IAdd(ir.IMul(chunk, HalfRateConst(H::kRetraceChunkPixels)), block);
 	const auto safe   = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {index, HalfRateConst(H::kAdaptiveListMax - 1u)}));
 	const auto packed = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {ir.IAdd(ir.IAdd(base, HalfRateConst(4)), safe)}));
 	const auto listed = ir.ULessThan(index, count);
 	const auto outside = HalfRateConst(0xffffffffu);
-	const auto x = ir.IAdd(origin_x, ir.BitwiseOr(ir.BitwiseAnd(packed, HalfRateConst(12)), sub));
-	const auto y = ir.IAdd(origin_y, ir.BitwiseAnd(ir.ShiftRightLogical(packed, HalfRateConst(4)), HalfRateConst(15)));
+	const auto x = ir.IAdd(origin_x, ir.BitwiseOr(ir.BitwiseAnd(packed, HalfRateConst(14)), ir.BitwiseAnd(lx, HalfRateConst(1))));
+	const auto y = ir.IAdd(origin_y, ir.BitwiseOr(ir.BitwiseAnd(ir.ShiftRightLogical(packed, HalfRateConst(4)), HalfRateConst(14)),
+	                                              ir.BitwiseAnd(ly, HalfRateConst(1))));
 	if (std::getenv("KYTY_RT_HALF_RETRACE_SAMPLES") != nullptr) {
 		// Diagnostic: pass 2 re-shades the tile's even/even samples (pass 1 shaded them too), so its
 		// results can be compared with pass 1's.
