@@ -1,4 +1,6 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/gpuPipeline.h"
+#include "graphics/host_gpu/renderer/pipelineProbe.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -18,8 +20,10 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/loopGuard.h"
 #include "graphics/shader/meshBoundsCheck.h"
 #include "kernel/addressFold.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "kernel/memory.h"
 
 #include <algorithm>
@@ -28,6 +32,7 @@
 #endif
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
 #include <cstdlib>
 #include <cstring>
@@ -253,7 +258,10 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 			    // Keep packed ranges on separate cache lines, as in shadPS4.
 			    total_size += Common::AlignUp(end - start, 64);
 		    });
-		    m_gpu_modified_ranges.Subtract(address, bytes);
+		    {
+			    const std::unique_lock lock(m_gpu_modified_mutex);
+			    m_gpu_modified_ranges.Subtract(address, bytes);
+		    }
 	    });
 	if (copies.empty()) {
 		return false;
@@ -339,6 +347,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		for (const auto& copy: copies) {
 			Libs::LibKernel::Memory::WriteBacking(buffer_address + copy.srcOffset,
 			                                      mapped + (copy.dstOffset - offset), copy.size);
+			WalkFan::NoteBackingWrite(Kernel::AddressFold::Fold(buffer_address + copy.srcOffset), copy.size);
 		}
 	};
 	if constexpr (async) {
@@ -403,6 +412,7 @@ BufferCache::ReadBackInPlace(Buffer& buffer, const std::vector<std::pair<uint64_
 	const auto buffer_address = buffer.CpuAddress();
 	for (const auto& [offset, size]: ranges) {
 		Libs::LibKernel::Memory::WriteBacking(buffer_address + offset, view.data() + offset, size);
+		WalkFan::NoteBackingWrite(Kernel::AddressFold::Fold(buffer_address + offset), size);
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::DownloadBytes, bytes);
 	if (mode != ReadbackMode::InPlaceDone) {
@@ -412,6 +422,7 @@ BufferCache::ReadBackInPlace(Buffer& buffer, const std::vector<std::pair<uint64_
 }
 
 void BufferCache::MarkWritten(uint64_t vaddr, uint64_t size) {
+	PipelineProbe::OnGpuWrite(vaddr, size);
 	if (!m_targeted_readback && !Common::PerfStats::Enabled()) {
 		return;
 	}
@@ -581,6 +592,19 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	SetVulkanObjectNameF(m_graphics.device, GetBuffer(null_id).Handle(), "Kyty.NullBuffer");
 	g_fault_cache = this;
 	AddGpuFatalHook(DumpFaultNeighbors);
+	if (LoopGuard::Enabled()) {
+		// Guarded shaders bake the log's address in when they compile.
+		m_loop_guard_log = std::make_unique<Buffer>(
+		    m_graphics, m_scheduler, MemoryUsage::Download, 0,
+		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+		    LoopGuard::kLogBytes);
+		EXIT_IF(m_loop_guard_log->Mapped().size() < LoopGuard::kLogBytes);
+		std::memset(m_loop_guard_log->Mapped().data(), 0, LoopGuard::kLogBytes);
+		m_loop_guard_log->Flush(0, LoopGuard::kLogBytes);
+		LoopGuard::SetLogAddress(m_loop_guard_log->BufferDeviceAddress());
+		LOGF("KYTY_LOOP_GUARD=%s, limit %u, trip log at 0x%016" PRIx64 "\n", LoopGuard::Spec(),
+		     LoopGuard::Limit(), m_loop_guard_log->BufferDeviceAddress());
+	}
 	if (MeshBoundsCheck::Enabled()) {
 		// Mesh shaders bake the violation log's address in when they compile.
 		GetMeshEmulationRing().EnableBoundsLog();
@@ -722,6 +746,7 @@ uint64_t BufferCache::PrepareGuestRead(uint64_t vaddr, uint64_t size) {
 }
 
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
+	GpuPipeline::DrainForFront(); // a readback waits for what queued record jobs write
 	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
@@ -1039,8 +1064,14 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	TouchBuffer(buffer);
 	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer);
 	if (is_written) {
-		m_gpu_modified_ranges.Add(vaddr, size);
-		m_gpu_dirty_generation++;
+		{
+			const std::unique_lock lock(m_gpu_modified_mutex);
+			m_gpu_modified_ranges.Add(vaddr, size);
+		}
+		m_gpu_dirty_generation.fetch_add(1, std::memory_order_release);
+		if (m_walk_journal != nullptr) {
+			m_walk_journal->Note(vaddr, vaddr + size);
+		}
 		MarkWritten(vaddr, size);
 	}
 	return {&buffer, buffer.Offset(vaddr)};
@@ -1160,8 +1191,20 @@ bool BufferCache::IsRegionGpuModified(uint64_t vaddr, uint64_t size) {
 	return m_memory_tracker.IsRegionGpuModified(vaddr, size);
 }
 
+void BufferCache::PublishWalkView(WalkReader::ViewPublisher& publisher) const {
+	if (m_walk_journal == nullptr) {
+		return;
+	}
+	// The front may publish while the record thread adds or subtracts ranges (under the lock).
+	const std::shared_lock lock(m_gpu_modified_mutex);
+	publisher.Publish(m_walk_journal->Generation(), [&](auto&& visit) {
+		m_gpu_modified_ranges.ForEach([&](uint64_t begin, uint64_t end) { visit(begin, end); });
+	});
+}
+
 bool BufferCache::HasGpuDirtyBytes(uint64_t vaddr, uint64_t size) {
 	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
+	const std::shared_lock lock(m_gpu_modified_mutex);
 	return m_gpu_modified_ranges.Intersects(vaddr, size);
 }
 
@@ -1250,6 +1293,38 @@ void BufferCache::RunGarbageCollector() {
 		Unregister(id);
 		m_slot_buffers.erase(id);
 	}
+}
+
+void BufferCache::PollLoopGuardLog(bool force) {
+	if (!m_loop_guard_log) {
+		return;
+	}
+	const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                        std::chrono::steady_clock::now().time_since_epoch())
+	                        .count();
+	if (!force && now_ms - m_loop_guard_polled_ms < 1000) {
+		return;
+	}
+	m_loop_guard_polled_ms = now_ms;
+	m_loop_guard_log->Invalidate(0, LoopGuard::kLogBytes);
+	const auto* words = reinterpret_cast<const uint32_t*>(m_loop_guard_log->Mapped().data());
+	const auto  count = words[0];
+	if (count == m_loop_guard_logged && !force) {
+		return;
+	}
+	LOGF("[loop-guard] %u invocations tripped so far\n", count);
+	const auto stored = std::min(count, LoopGuard::kMaxEntries);
+	for (uint32_t entry = force ? 0u : std::min(m_loop_guard_logged, LoopGuard::kMaxEntries); entry < stored;
+	     entry++) {
+		const auto* e = words + LoopGuard::kHeaderDwords + entry * LoopGuard::kEntryDwords;
+		std::string values;
+		for (uint32_t i = 0; i < LoopGuard::kPhis; i++) {
+			values += fmt::format("{}{:08x}", i == 0 ? "" : ",", e[4 + i]);
+		}
+		LOGF("[loop-guard] #%u shader=0x%08x%08x loop_header=%u iterations=%u phis=%s\n", entry, e[1], e[0],
+		     e[2], e[3], values.c_str());
+	}
+	m_loop_guard_logged = count;
 }
 
 void BufferCache::ProcessFaultBuffer() {

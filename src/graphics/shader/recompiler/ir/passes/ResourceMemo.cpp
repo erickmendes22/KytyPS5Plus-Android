@@ -402,7 +402,7 @@ bool ResourceMemo::Materialize(const ResourcePlan& plan, const SrtRuntime& runti
 	entry.referenced     = false;
 	if (!m_classes.Empty()) {
 		// The raw values of the value sources this walk produced, to rebase from on a hit.
-		entry.value_active.assign(plan.active_sources.begin(), plan.active_sources.end());
+		entry.value_active.assign(plan.active_sources().begin(), plan.active_sources().end());
 		if (!EvaluateValueSources(plan, runtime, m_classes.value_sources, entry.value_active, entry.value_raw)) {
 			Forget(slot);
 		}

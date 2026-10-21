@@ -25,6 +25,13 @@ enum class Wait : uint8_t {
 	QueueSubmit,    // vkQueueSubmit
 	GpuProcess,     // wall time processing guest submissions (includes the waits inside)
 	GpuPriority,    // waiting for the completion thread to run guest-memory callbacks
+	GpuPipeDrain,   // KYTY_GPU_PIPELINE: the front waiting for the record thread to drain
+	GpuPipeFull,    // ... the front waiting for a free slot in the record queue
+	GpuPipeRecord,  // ... the record thread running jobs (busy time, not a stall)
+	GpuPipeWalk,    // ... the front's SRT walk / program lookup of queued items (busy time)
+	GpuPipeCopy,    // ... the front's register and resource copies for queued items (busy time)
+	GpuFanWait,     // KYTY_GPU_FAN: the recorder waiting for (or running) a walk job
+	GpuFanWorker,   // ... walk-pool time of the jobs the recorder took from a worker (busy time)
 	TimelineQuery,  // vkGetSemaphoreCounterValue on the renderer timeline (any thread)
 	// vkWaitSemaphores on the renderer timeline, by call site (any thread)
 	SemFinish,
@@ -104,8 +111,25 @@ enum class Counter : uint8_t {
 	IndirectDrawsGpu,
 	IndirectDrawsCpu,
 	IndirectDrawsCpuEmpty, // ...of IndirectDrawsCpu: predicted empty (see IndirectDrawFixup)
+	// Two-stage GPU thread sizing (graphics/host_gpu/renderer/pipelineProbe.h).
+	PipeItems,             // draws and dispatches prepared
+	PipeDmaItems,          // ...whose programs write memory through raw device addresses
+	PipeSrtReads,          // SRT walker host reads
+	PipeDrainSrtWrite,     // walker read of memory an unrecorded item in the window writes
+	PipeDrainSrtDma,       // walker read while an unrecorded item in the window may write via BDA
+	PipeDrainSrtDirty,     // walker read of GPU-dirty memory (in-place readback)
+	PipeDrainSync,         // synchronous command from a guest thread
+	PipeDrainIndirect,     // indirect draw arguments read on the CPU
+	PipeWaitRegMemBlocked, // WAIT_REG_MEM not satisfied when parsed (the ring suspends)
+	PipeRecordRegAccess,   // live register block accesses while recording
+	PipeResourceBytes,     // materialized resource bytes per item (the per-item copy)
 	Count
 };
+
+// An extra section appended to the "[perf-wait]" line (the renderer's walk fan-out and pipeline
+// drain counters), called once per report with the frames-per-report factor.
+using ReportSection = void (*)(std::string& out, double per_frame);
+void SetReportSection(ReportSection section);
 
 namespace Detail {
 extern std::atomic<uint64_t> g_wait_ns[static_cast<size_t>(Wait::Count)];

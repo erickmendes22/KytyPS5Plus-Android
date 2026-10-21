@@ -14,9 +14,11 @@
 #include "graphics/host_gpu/renderer/cache/meshEmulationRing.h"
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
+#include "graphics/host_gpu/renderer/pipeline/walkReader.h"
 
 #include <atomic>
 #include <map>
+#include <shared_mutex>
 #include <memory>
 #include <span>
 #include <utility>
@@ -110,7 +112,14 @@ public:
 	[[nodiscard]] bool HasGpuDirtyBytes(uint64_t vaddr, uint64_t size);
 	// Bumped whenever bytes become GPU-written (GPU thread): a page seen without GPU-written
 	// bytes stays so while this is unchanged.
-	[[nodiscard]] uint64_t GpuDirtyGeneration() const { return m_gpu_dirty_generation; }
+	[[nodiscard]] uint64_t GpuDirtyGeneration() const {
+		return m_gpu_dirty_generation.load(std::memory_order_acquire);
+	}
+	// Prepare-worker SRT walks (pipeline/walkReader.h): every range that becomes GPU-written is
+	// also noted in `journal` (null: none). GPU thread.
+	void SetWalkJournal(WalkReader::WriteJournal* journal) { m_walk_journal = journal; }
+	// Publishes the current GPU-modified ranges as a worker view when the journal moved. GPU thread.
+	void PublishWalkView(WalkReader::ViewPublisher& publisher) const;
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	void               ProcessFaultBuffer();
@@ -119,6 +128,9 @@ public:
 		m_memory_tracker.QueueBdaSync(Kernel::AddressFold::Fold(vaddr), size);
 	}
 	void               RunGarbageCollector();
+	// KYTY_LOOP_GUARD (graphics/shader/loopGuard.h): logs new "[loop-guard]" trips (at most once
+	// a second unless `force`).
+	void               PollLoopGuardLog(bool force = false);
 	// Bytes of guest-mirroring buffers the cache owns, and the mesh emulation ring (0 if unused).
 	[[nodiscard]] uint64_t TotalUsedMemory() const noexcept { return m_total_used_memory; }
 	[[nodiscard]] uint64_t MeshRingCapacity() const noexcept;
@@ -199,6 +211,9 @@ private:
 	FaultManager                                      m_fault_manager;
 	Buffer                                            m_gds_buffer;
 	std::unique_ptr<Buffer>                           m_bda_pagetable_buffer;
+	std::unique_ptr<Buffer>                           m_loop_guard_log;
+	uint32_t                                          m_loop_guard_logged    = 0;
+	int64_t                                           m_loop_guard_polled_ms = 0;
 	uint64_t                                          m_bda_table_pages = 0;
 	bool                                              m_bda_table_sized = false;
 	std::atomic<uint64_t>                             m_bda_mapped_pages {0};
@@ -206,8 +221,12 @@ private:
 	Common::LeastRecentlyUsedCache<BufferId, uint64_t> m_lru_cache;
 	BufferMap                                         m_buffers;
 	PageTable                                         m_page_table;
+	// KYTY_GPU_PIPELINE: the front's SRT walk queries these while the record thread adds to them;
+	// changes take the lock exclusively, the front's queries shared (record-thread reads need none).
 	RangeSet                                          m_gpu_modified_ranges;
-	uint64_t                                          m_gpu_dirty_generation = 0;
+	std::atomic<uint64_t>                             m_gpu_dirty_generation {0};
+	mutable std::shared_mutex                         m_gpu_modified_mutex;
+	WalkReader::WriteJournal*                         m_walk_journal         = nullptr;
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;

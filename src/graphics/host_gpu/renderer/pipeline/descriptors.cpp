@@ -23,6 +23,7 @@
 #include "graphics/host_gpu/renderer/image/renderScale.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
+#include "graphics/host_gpu/renderer/pipeline/bindMemo.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -538,28 +539,11 @@ static bool ResolveTextureMipView(ImageInfo& info, uint32_t physical_levels, boo
 	return false;
 }
 
-TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   resource,
-                                              const ShaderRecompiler::IR::DescriptorValue& value) {
-	if (resource.atomic64 && !m_context.GetGraphics().shader_image_int64_atomics_enabled) {
-		EXIT("64-bit image atomics require shaderImageInt64Atomics\n");
-	}
-	auto descriptor = DecodeNativeDescriptor<ShaderTextureResource>(value);
+// The descriptor -> ImageDesc half of ResolveTexture: a pure function of the image resource and
+// its descriptor value (TextureDescMemo, bind-memo bit TextureDesc, caches it by exactly those).
+static TextureDescEntry ComputeTextureDesc(const ShaderRecompiler::IR::ImageResource& resource,
+                                           const ShaderTextureResource&               descriptor) {
 	const bool storage = resource.written;
-	if (storage) {
-		ValidateStorageImageResource(resource);
-	}
-
-	auto& texture_cache = m_context.GetTextureCache();
-	if (descriptor.IsNull()) {
-		if (m_context.GetGraphics().optional_features.null_descriptor) {
-			return {.layout = vk::ImageLayout::eGeneral};
-		}
-		auto       desc = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
-		                                                    : TextureCache::BindingType::Texture);
-		const auto id   = texture_cache.FindImage(desc);
-		return {.image_id = id, .desc = std::move(desc), .placeholder = true};
-	}
-
 	const auto address         = Kernel::AddressFold::Fold(descriptor.Base40());
 	const auto width           = static_cast<uint32_t>(descriptor.Width5()) + 1u;
 	const auto height          = static_cast<uint32_t>(descriptor.Height5()) + 1u;
@@ -680,6 +664,44 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	                                 view_levels, desc.info.resources.layers);
 	desc.view_info.base_level = view_base;
 	desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
+	return {.desc = std::move(desc), .shader_conversion = shader_conversion,
+	        .pixel_format = pixel_format, .view_format = view_format};
+}
+
+TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   resource,
+                                              const ShaderRecompiler::IR::DescriptorValue& value,
+                                              TextureDescMemo::Slot*                      slot) {
+	if (resource.atomic64 && !m_context.GetGraphics().shader_image_int64_atomics_enabled) {
+		EXIT("64-bit image atomics require shaderImageInt64Atomics\n");
+	}
+	auto descriptor = DecodeNativeDescriptor<ShaderTextureResource>(value);
+	const bool storage = resource.written;
+	if (storage) {
+		ValidateStorageImageResource(resource);
+	}
+
+	auto& texture_cache = m_context.GetTextureCache();
+	if (descriptor.IsNull()) {
+		if (m_context.GetGraphics().optional_features.null_descriptor) {
+			return {.layout = vk::ImageLayout::eGeneral};
+		}
+		auto       desc = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
+		                                                    : TextureCache::BindingType::Texture);
+		const auto id   = texture_cache.FindImage(desc);
+		return {.image_id = id, .desc = std::move(desc), .placeholder = true};
+	}
+
+	TextureDescEntry        computed;
+	const TextureDescEntry* entry = slot != nullptr ? TextureDescMemo::Find(*slot, resource, value) : nullptr;
+	if (entry == nullptr) {
+		computed = ComputeTextureDesc(resource, descriptor);
+		entry    = slot != nullptr ? &TextureDescMemo::Store(*slot, resource, value, std::move(computed))
+		                           : &computed;
+	}
+	auto       desc               = entry->desc;
+	const bool shader_conversion  = entry->shader_conversion;
+	const auto pixel_format       = entry->pixel_format;
+	const auto view_format        = entry->view_format;
 
 	auto       id                  = texture_cache.FindImage(desc, shader_conversion);
 	auto*      image               = &texture_cache.GetImage(id);
@@ -773,8 +795,12 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	prepared.images.resize(program.info.images.size());
 	prepared.samplers.clear();
 	prepared.shader_data.clear();
+	auto* slots = (BindMemo::Bits() & BindMemo::TextureDesc) != 0
+	                  ? m_texture_desc_memo.SlotsFor(&program, program.info.images.size()).data()
+	                  : nullptr;
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
-		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i]);
+		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i],
+		                              slots != nullptr ? &slots[i] : nullptr);
 		BindImage(binding.image_id, binding.desc.type == TextureCache::BindingType::Storage);
 		binding.mip_views.swap(prepared.images[i].mip_views);
 		binding.mip_views.clear();
@@ -895,7 +921,11 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 			if (old_image != nullptr) {
 				old_image->binding = {};
 			}
-			images[i] = ResolveTexture(program.info.images[i], snapshot.images[i]);
+			auto* slots = (BindMemo::Bits() & BindMemo::TextureDesc) != 0
+			                  ? m_texture_desc_memo.SlotsFor(&program, program.info.images.size()).data()
+			                  : nullptr;
+			images[i] = ResolveTexture(program.info.images[i], snapshot.images[i],
+			                           slots != nullptr ? &slots[i] : nullptr);
 			BindImage(images[i].image_id,
 			          images[i].desc.type == TextureCache::BindingType::Storage);
 		}

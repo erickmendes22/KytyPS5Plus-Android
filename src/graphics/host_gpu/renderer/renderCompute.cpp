@@ -14,6 +14,9 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/host_gpu/renderer/dispatchSplit.h"
+#include "graphics/host_gpu/renderer/gpuPipeline.h"
+#include "graphics/host_gpu/renderer/gpuPipelineItems.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
@@ -318,6 +321,20 @@ static void RecordGuestDispatch(vk::CommandBuffer command, const DispatchGroups&
 	}
 }
 
+// Two-stage GPU thread sizing (pipelineProbe.h): BDA users and the materialized resource bytes.
+static void NoteComputeItem(const ShaderComputeInputInfo& input_info) {
+	if (!Common::PerfStats::Enabled() || input_info.stage.program == nullptr) return;
+	static const bool logged = [] {
+		LOGF("[pipe-probe] register snapshot candidates: HW::Context=%zu HW::UserConfig=%zu "
+		     "HW::Shader=%zu bytes\n",
+		     sizeof(HW::Context), sizeof(HW::UserConfig), sizeof(HW::Shader));
+		return true;
+	}();
+	(void)logged;
+	if (input_info.stage.program->has_address_writes) PipelineProbe::MarkDmaWriter();
+	PipelineProbe::AddResourceBytes(PipelineProbe::ResourceBytes(input_info.stage.resources));
+}
+
 // KYTY_CS_PACK runs two guest workgroups of at most 32 threads in one 64-lane host workgroup (the
 // recompiler decides per program: ShaderRecompiler.cpp ComputeGroupPack). Default on with Mesa
 // Turnip (Astro Bot: 74.8 -> 66.7 GPU ms/frame, research/clock_policy.md), off elsewhere;
@@ -355,6 +372,65 @@ static bool IndirectDispatchClampEnabled() {
 	return enabled;
 }
 
+
+// The input info DispatchDirect compiles its program with (also built by the front for
+// KYTY_GPU_PIPELINE, PrefetchDispatchDirect).
+ShaderComputeInputInfo RenderExecutor::DirectDispatchInputInfo(const HW::ComputeShaderInfo& cs_regs,
+                                                               uint32_t thread_group_x,
+                                                               uint32_t thread_group_y,
+                                                               uint32_t thread_group_z,
+                                                               uint32_t mode, bool async_compute) {
+	constexpr uint32_t DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS = 1u << 5u;
+	ShaderComputeInputInfo input_info {};
+	input_info.async_compute = async_compute;
+	input_info.bvh_live      = LiveBvhOptions();
+	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
+	input_info.dispatch_thread_dimensions = use_thread_dimensions;
+	input_info.workgroup_counts[0] = thread_group_x;
+	input_info.workgroup_counts[1] = thread_group_y;
+	input_info.workgroup_counts[2] = thread_group_z;
+	if (use_thread_dimensions) {
+		const uint32_t group_sizes[] = {cs_regs.cs_regs.num_thread_x, cs_regs.cs_regs.num_thread_y,
+		                                cs_regs.cs_regs.num_thread_z};
+		for (uint32_t axis = 0; axis < 3u; ++axis) {
+			const auto size = std::max(group_sizes[axis], 1u);
+			const auto threads = input_info.workgroup_counts[axis];
+			input_info.workgroup_counts[axis] = threads / size + (threads % size != 0u);
+		}
+	}
+	{
+		const uint32_t threads = std::max(cs_regs.cs_regs.num_thread_x, 1u) *
+		                         std::max(cs_regs.cs_regs.num_thread_y, 1u) *
+		                         std::max(cs_regs.cs_regs.num_thread_z, 1u);
+		if (ComputeGroupPackCandidate(input_info, threads, thread_group_x,
+		                              m_context.GetGraphics().IsMesaTurnip())) {
+			input_info.pack_groups = 2;
+		}
+	}
+	return input_info;
+}
+
+// KYTY_GPU_PIPELINE front: everything DispatchDirect does before recording that reads guest
+// memory through the SRT walker, from the live registers.
+GpuPipeline::Prefetch RenderExecutor::PrefetchDispatchDirect(
+    CommandBuffer& buffer, uint32_t thread_group_x, uint32_t thread_group_y,
+    uint32_t thread_group_z, uint32_t mode, bool async_compute,
+    GpuPipeline::PreparedComputeProgram& out) {
+	const auto& sh_ctx = buffer.GetShaders();
+	if (thread_group_x == 0 || thread_group_y == 0 || thread_group_z == 0 ||
+	    sh_ctx.GetCs().cs_regs.data_addr == 0) {
+		return GpuPipeline::Prefetch::NoWalk; // DispatchDirect returns before its program lookup
+	}
+	const auto& cs_regs = sh_ctx.GetCs();
+	out.input_info = DirectDispatchInputInfo(cs_regs, thread_group_x, thread_group_y,
+	                                         thread_group_z, mode, async_compute);
+	PipelineProbe::BeginItem();
+	out.program = m_context.GetPipelineCache().GetComputeProgram(
+	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), out.input_info);
+	NoteComputeItem(out.input_info);
+	out.copies.Own(out.input_info.stage);
+	return GpuPipeline::Prefetch::Prepared;
+}
 
 void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
                                     uint32_t thread_group_x, uint32_t thread_group_y,
@@ -411,35 +487,24 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	const auto& cs_regs = sh_ctx.GetCs();
 	const auto& sh_regs = ctx.GetShaderRegisters();
+	const bool  use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
 
 	ShaderComputeInputInfo input_info {};
-	input_info.async_compute = async_compute;
-	input_info.bvh_live      = LiveBvhOptions();
-	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
-	input_info.dispatch_thread_dimensions = use_thread_dimensions;
-	input_info.workgroup_counts[0] = thread_group_x;
-	input_info.workgroup_counts[1] = thread_group_y;
-	input_info.workgroup_counts[2] = thread_group_z;
-	if (use_thread_dimensions) {
-		const uint32_t group_sizes[] = {cs_regs.cs_regs.num_thread_x, cs_regs.cs_regs.num_thread_y,
-		                                cs_regs.cs_regs.num_thread_z};
-		for (uint32_t axis = 0; axis < 3u; ++axis) {
-			const auto size = std::max(group_sizes[axis], 1u);
-			const auto threads = input_info.workgroup_counts[axis];
-			input_info.workgroup_counts[axis] = threads / size + (threads % size != 0u);
-		}
+	ShaderProgram          compute_program;
+	if (auto* prepared = GpuPipeline::t_prepared_compute; prepared != nullptr) {
+		// KYTY_GPU_PIPELINE: the front walked this dispatch's SRT (PrefetchDispatchDirect).
+		input_info      = prepared->input_info;
+		compute_program = prepared->program;
+	} else {
+		EXIT_IF(GpuPipeline::OnBack() && WalkFan::t_prewalk == nullptr); // walks there only with KYTY_GPU_FAN
+		input_info = DirectDispatchInputInfo(cs_regs, thread_group_x, thread_group_y,
+		                                     thread_group_z, mode, async_compute);
+		PipelineProbe::BeginItem();
+		compute_program =
+		    m_context.GetPipelineCache().GetComputeProgram(cs_regs, sh_regs, input_info);
+		NoteComputeItem(input_info);
 	}
-	{
-		const uint32_t threads = std::max(cs_regs.cs_regs.num_thread_x, 1u) *
-		                         std::max(cs_regs.cs_regs.num_thread_y, 1u) *
-		                         std::max(cs_regs.cs_regs.num_thread_z, 1u);
-		if (ComputeGroupPackCandidate(input_info, threads, thread_group_x,
-		                              m_context.GetGraphics().IsMesaTurnip())) {
-			input_info.pack_groups = 2;
-		}
-	}
-	const auto compute_program =
-	    m_context.GetPipelineCache().GetComputeProgram(cs_regs, sh_regs, input_info);
+	const PipelineProbe::ScopedRecordPhase record_phase;
 	if (use_thread_dimensions) {
 		input_info.dispatch_threads_num[0]    = thread_group_x;
 		input_info.dispatch_threads_num[1]    = thread_group_y;
@@ -623,8 +688,11 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	input_info.async_compute = async_compute;
 	input_info.indirect_args_address = args_addr;
 	input_info.bvh_live              = LiveBvhOptions();
+	PipelineProbe::BeginItem();
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);
+	NoteComputeItem(input_info);
+	const PipelineProbe::ScopedRecordPhase record_phase;
 	if (input_info.stage.program != nullptr &&
 	    LiveKnobs::SkipShader(input_info.stage.program->shader_hash)) {
 		return;

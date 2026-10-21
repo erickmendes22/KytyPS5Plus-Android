@@ -1,10 +1,15 @@
 #include "common/hostArch.h"
 #include "graphics/guest_gpu/gpu_format.h"
+#include "graphics/host_gpu/renderer/pipeline/walkReader.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMemo.h"
 
+#include <atomic>
 #include <bit>
+#include <cstring>
+#include <thread>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -319,6 +324,282 @@ void TestAddressUserDataIsNotAValueWord() {
   Check(!classes.IsValueWord(0) && !classes.IsValueWord(1) && classes.value_sources.empty(),
         "a user-data pointer that is read through was classified as a value word");
   (void)memory;
+}
+
+// Concurrent walks: one plan, several threads, each with its own scratch, outputs, tables and user
+// data (ResourcePlan::Scratch); a thread reader (ScopedSrtThreadReader) that refuses an address
+// makes the guard report the failure.
+std::array<uint32_t, 2> PointerWords(const void *pointer) {
+  const auto address = reinterpret_cast<uint64_t>(pointer);
+  return std::array<uint32_t, 2>{static_cast<uint32_t>(address), static_cast<uint32_t>(address >> 32u)};
+}
+
+// user data 4..5 -> root table {leaf pointer lo, hi}; the walk reads leaf[1] (resource) and leaf[2].
+// flattened_srt = {leaf[1], root[0], root[1], leaf[2]}.
+Libs::Graphics::ShaderRecompiler::IR::ResourcePlan TwoLevelSrtPlan() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  auto program = SrtProgram(0u);
+  program.user_data_base = 4;
+  program.user_data_count = 2;
+  auto &block = *program.blocks[0];
+  const auto emit = [&](ValueOpcode opcode, std::initializer_list<Value> args) {
+    return Value(&block.AppendNewInst(opcode, args));
+  };
+  const auto low = emit(ValueOpcode::GetUserData, {Value(ScalarReg(4))});
+  const auto high = emit(ValueOpcode::GetUserData, {Value(ScalarReg(5))});
+  const auto root = emit(ValueOpcode::GetAddressResource, {low, high});
+  const auto read = [&](Value address, uint32_t offset) {
+    const auto value = emit(ValueOpcode::LoadAddressU32, {address, Value(offset), Value(0u), Value(true)});
+    value.Instruction()->SetFlags(MemoryFlags{.index = 0});
+    program.srt_reads.push_back({value, static_cast<uint32_t>(program.srt_reads.size())});
+    return value;
+  };
+  const auto pointer_low = read(root, 0u);
+  const auto pointer_high = read(root, 4u);
+  auto *leaf = program.srt_reads[0].value.Instruction();
+  leaf->Arg(0).Instruction()->SetArg(0, pointer_low);
+  leaf->Arg(0).Instruction()->SetArg(1, pointer_high);
+  leaf->SetArg(1, Value(4u));
+  read(leaf->Arg(0), 8u);
+  return ExtractResourcePlan(program);
+}
+
+void TestConcurrentWalksOfOnePlan() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  const auto pointer_words = [](const void *pointer) { return PointerWords(pointer); };
+  const auto plan = TwoLevelSrtPlan();
+  const auto slots = plan.evaluation_value_count;
+  constexpr int kThreads = 4;
+  constexpr int kIterations = 3000;
+  std::atomic<int> mismatches{0};
+  std::atomic<int> refused{0};
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&, t] {
+      std::array<uint32_t, 3> leaf_table{0u, 0u, 0u};
+      std::array<uint32_t, 2> root_table = pointer_words(leaf_table.data());
+      const auto user_data = pointer_words(root_table.data());
+      ResourcePlan::Scratch scratch;
+      ResourceSnapshot snapshot;
+      ResourceSpecialization specialization;
+      const SrtRuntime runtime{.user_data = user_data};
+      for (int i = 0; i < kIterations; ++i) {
+        leaf_table[1] = static_cast<uint32_t>(t * 100000 + i);
+        leaf_table[2] = static_cast<uint32_t>(~leaf_table[1]);
+        if (i % 7 == 3) {
+          // A reader that refuses the leaf table: the walk must report it, not use stale data.
+          struct Refuse { const void* table; } refuse{leaf_table.data()};
+          const ScopedSrtThreadReader reader(
+              +[](void *userdata, uint64_t address, void *data, size_t size) {
+                const auto *table = static_cast<const uint8_t *>(static_cast<Refuse *>(userdata)->table);
+                if (address >= reinterpret_cast<uint64_t>(table) && address < reinterpret_cast<uint64_t>(table) + 12u)
+                  return false;
+                std::memcpy(data, reinterpret_cast<const void *>(address), size);
+                return true;
+              },
+              &refuse);
+          (void)MaterializeResources(plan, scratch, runtime, snapshot, specialization);
+          if (reader.Failed()) refused.fetch_add(1);
+          continue;
+        }
+        const bool ok = MaterializeResources(plan, scratch, runtime, snapshot, specialization);
+        const std::vector<uint32_t> expected{leaf_table[1], root_table[0], root_table[1], leaf_table[2]};
+        if (!ok || snapshot.flattened_srt != expected) mismatches.fetch_add(1);
+      }
+    });
+  }
+  for (auto &thread : threads) thread.join();
+  Check(mismatches.load() == 0, "a concurrent walk returned another thread's or a stale value");
+  Check(refused.load() == kThreads * ((kIterations + 3) / 7), "a refused thread read was not reported");
+  Check(plan.evaluation_value_count == slots, "a walk assigned a memo slot (not thread-safe)");
+}
+
+// Test memory for WalkReader: identity fold, backing = the host bytes (test tables live in host memory).
+Libs::Graphics::WalkReader::Memory TestWalkMemory() {
+  return {.fold = [](uint64_t address, uint64_t size, uint64_t *host) {
+            *host = address;
+            return size != 0;
+          },
+          .read_backing = [](uint64_t address, void *data, uint64_t size) {
+            std::memcpy(data, reinterpret_cast<const void *>(address), size);
+            return true;
+          }};
+}
+
+void TestWalkReaderRanges() {
+  using namespace Libs::Graphics::WalkReader;
+  const std::vector<Range> ranges{{0x100, 0x200}, {0x300, 0x310}};
+  Check(!SortedIntersects(ranges, 0x0, 0x100), "range ending at a modified begin is clean");
+  Check(SortedIntersects(ranges, 0x0, 0x101), "first modified byte is seen");
+  Check(SortedIntersects(ranges, 0x1ff, 0x200), "last modified byte is seen");
+  Check(!SortedIntersects(ranges, 0x200, 0x300), "gap between modified ranges is clean");
+  Check(SortedIntersects(ranges, 0x250, 0x400), "range covering a modified range is seen");
+  Check(!SortedIntersects(ranges, 0x310, 0x1000), "past the last range is clean");
+  Check(!SortedIntersects(ranges, 0x150, 0x150), "empty range is clean");
+  View view{.generation = 3, .gpu_modified = ranges};
+  Check(view.Clean(0x200, 0x100) && !view.Clean(0x30c, 8) && view.Clean(0x150, 0), "View::Clean");
+
+  Reads reads;
+  reads.Note(0x10, 0x18);
+  reads.Note(0x18, 0x20);
+  reads.Note(0x40, 0x44);
+  Check(reads.ranges.size() == 2 && reads.ranges[0].end == 0x20 && reads.reads == 3, "contiguous reads merge");
+  reads.Refuse(Reads::Refusal::NoBacking);
+  reads.Refuse(Reads::Refusal::GpuModified);
+  Check(reads.Refused() && reads.refused == 2 && reads.first_refusal == Reads::Refusal::NoBacking,
+        "first refusal kept");
+
+  WriteJournal journal;
+  journal.Note(0x1000, 0x1010);                 // generation 1
+  const auto view_generation = journal.Generation();
+  journal.Note(0x2000, 0x2004);                 // generation 2
+  journal.Note(0x5, 0x5);                       // empty: ignored
+  Check(journal.Generation() == 2, "empty write does not move the generation");
+  const std::vector<Range> before_write{{0x1000, 0x1010}};
+  const std::vector<Range> after_write{{0x2002, 0x2003}};
+  Check(!journal.WrittenSince(view_generation, before_write), "a write before the view does not invalidate");
+  Check(journal.WrittenSince(view_generation, after_write), "a write after the view invalidates");
+  Check(!journal.WrittenSince(journal.Generation(), after_write), "the current generation is valid");
+  Reads clean;
+  clean.ranges = after_write;
+  Check(!StillValid(clean, view_generation, journal) && StillValid(clean, journal.Generation(), journal),
+        "StillValid follows the journal");
+  clean.Refuse(Reads::Refusal::GpuModified);
+  Check(!StillValid(clean, journal.Generation(), journal), "a refused walk is never valid");
+  journal.Trim(1);
+  Check(journal.Size() == 1 && journal.WrittenSince(view_generation, after_write), "trim keeps later writes");
+  WriteJournal full;
+  for (size_t i = 0; i <= WriteJournal::MaxEntries; ++i) full.Note(0x10 * i + 0x100000, 0x10 * i + 0x100004);
+  Check(full.Size() == WriteJournal::MaxEntries, "journal is bounded");
+  Check(full.WrittenSince(0, std::vector<Range>{{0, 1}}), "dropped writes invalidate older views");
+  Check(!full.WrittenSince(1, std::vector<Range>{{0, 1}}), "views after the dropped writes still check ranges");
+}
+
+void TestWorkerWalkReads() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  using namespace Libs::Graphics::WalkReader;
+  const auto plan = TwoLevelSrtPlan();
+  std::array<uint32_t, 3> leaf_table{0u, 0x1234u, 0x5678u};
+  const auto root_table = PointerWords(leaf_table.data());
+  const auto user_data = PointerWords(root_table.data());
+  const SrtRuntime base{.user_data = user_data};
+  const auto leaf_begin = reinterpret_cast<uint64_t>(leaf_table.data());
+  const auto root_begin = reinterpret_cast<uint64_t>(root_table.data());
+  const std::vector<uint32_t> expected{0x1234u, root_table[0], root_table[1], 0x5678u};
+  const auto walk = [&](std::shared_ptr<const View> view, ResourceSnapshot &snapshot) {
+    WorkerWalk worker(std::move(view), TestWalkMemory());
+    ResourcePlan::Scratch scratch;
+    ResourceSpecialization specialization;
+    const auto reader = worker.ThreadReader();
+    const bool ok = MaterializeResources(plan, scratch, worker.Runtime(base), snapshot, specialization);
+    Check(ok || worker.GetReads().Refused(), "a failed worker walk reports a refusal");
+    return worker.TakeReads();
+  };
+  const auto covers = [](const Reads &reads, uint64_t begin, uint64_t end) {
+    for (const auto &range : reads.ranges)
+      if (range.begin <= begin && end <= range.end) return true;
+    return false;
+  };
+
+  ResourceSnapshot snapshot;
+  const auto reads = walk(std::make_shared<View>(), snapshot);
+  Check(!reads.Refused() && snapshot.flattened_srt == expected, "a clean worker walk matches the GPU-thread walk");
+  Check(covers(reads, root_begin, root_begin + 8) && covers(reads, leaf_begin + 4, leaf_begin + 12),
+        "a worker walk records the root and leaf reads");
+
+  WriteJournal journal;
+  const auto generation = journal.Generation();
+  journal.Note(leaf_begin + 8, leaf_begin + 12);
+  Check(!StillValid(reads, generation, journal), "a GPU write after the view to a read leaf invalidates the walk");
+  WriteJournal other;
+  other.Note(leaf_begin, leaf_begin + 4); // leaf[0]: not read by the walk
+  Check(StillValid(reads, generation, other), "a write next to the read bytes keeps the walk");
+
+  auto dirty = std::make_shared<View>();
+  dirty->gpu_modified = {{leaf_begin + 8, leaf_begin + 12}};
+  ResourceSnapshot refused_snapshot;
+  const auto refused = walk(dirty, refused_snapshot);
+  Check(refused.Refused() && refused.first_refusal == Reads::Refusal::GpuModified,
+        "a worker refuses GPU-modified bytes instead of reading stale ones");
+  Check(!StillValid(refused, journal.Generation(), journal), "a refused walk falls back");
+
+  WorkerWalk unbacked(std::make_shared<View>(),
+                      Memory{.fold = TestWalkMemory().fold,
+                             .read_backing = [](uint64_t, void *, uint64_t) { return false; }});
+  uint32_t word = 0;
+  Check(!unbacked.Read(leaf_begin, &word, 4) && unbacked.GetReads().first_refusal == Reads::Refusal::NoBacking,
+        "bytes without a backing are refused");
+  WorkerWalk no_memory(nullptr, Memory{});
+  Check(!no_memory.Read(leaf_begin, &word, 4) && no_memory.GetReads().first_refusal == Reads::Refusal::Invalid,
+        "a worker without guest memory refuses");
+}
+
+// Workers walk through published views while a recorder thread notes GPU writes and republishes
+// (run under ThreadSanitizer: the views, the journal and the walks must not race).
+void TestWorkerWalksWithRecorder() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  using namespace Libs::Graphics::WalkReader;
+  const auto plan = TwoLevelSrtPlan();
+  constexpr int kWorkers = 4;
+  constexpr int kIterations = 2000;
+  WriteJournal journal;
+  ViewPublisher publisher;
+  publisher.Publish(journal.Generation(), [](auto &&) {});
+  std::atomic<bool> stop{false};
+  std::atomic<int> mismatches{0};
+  std::atomic<int> walks{0};
+  std::atomic<uint64_t> trimmed{0}; // the journal's dropped watermark (views at or below it are unprovable)
+  // Per worker: tables the workers own, plus one shared GPU-written decoy range the recorder touches.
+  std::array<std::array<uint32_t, 3>, kWorkers> leaves{};
+  std::array<std::array<uint32_t, 2>, kWorkers> roots{};
+  std::array<uint32_t, 64> decoy{};
+  for (int t = 0; t < kWorkers; ++t) roots[t] = PointerWords(leaves[t].data());
+  const auto decoy_begin = reinterpret_cast<uint64_t>(decoy.data());
+  std::thread recorder([&] {
+    for (uint32_t i = 0; !stop.load(std::memory_order_relaxed); ++i) {
+      const auto begin = decoy_begin + 4 * (i % 60);
+      journal.Note(begin, begin + 16);
+      publisher.Publish(journal.Generation(), [&](auto &&visit) { visit(begin, begin + 16); });
+      if (i % 64 == 0) {
+        const auto upto = journal.Generation() > 32 ? journal.Generation() - 32 : 0;
+        trimmed.store(upto);
+        journal.Trim(upto);
+      }
+    }
+  });
+  std::vector<std::thread> workers;
+  for (int t = 0; t < kWorkers; ++t) {
+    workers.emplace_back([&, t] {
+      const auto user_data = PointerWords(roots[t].data());
+      const SrtRuntime base{.user_data = user_data};
+      ResourcePlan::Scratch scratch;
+      ResourceSnapshot snapshot;
+      ResourceSpecialization specialization;
+      for (int i = 0; i < kIterations; ++i) {
+        leaves[t][1] = static_cast<uint32_t>(t * 100000 + i);
+        leaves[t][2] = ~leaves[t][1];
+        WorkerWalk worker(publisher.Current(), TestWalkMemory());
+        {
+          const auto reader = worker.ThreadReader();
+          (void)MaterializeResources(plan, scratch, worker.Runtime(base), snapshot, specialization);
+        }
+        const std::vector<uint32_t> expected{leaves[t][1], roots[t][0], roots[t][1], leaves[t][2]};
+        const auto reads = worker.TakeReads();
+        // The recorder writes only the decoy, so every walk stays valid and exact, except one whose
+        // view the journal no longer covers (trimmed past it): that one must be reported invalid.
+        const bool valid = StillValid(reads, worker.Generation(), journal);
+        const bool covered = worker.Generation() >= trimmed.load();
+        if (reads.Refused() || snapshot.flattened_srt != expected || (covered && !valid))
+          mismatches.fetch_add(1);
+        walks.fetch_add(1);
+      }
+    });
+  }
+  for (auto &worker : workers) worker.join();
+  stop.store(true);
+  recorder.join();
+  Check(walks.load() == kWorkers * kIterations, "every worker walk ran");
+  Check(mismatches.load() == 0, "a worker walk was refused, wrong or invalidated by an unrelated write");
 }
 
 void TestMappedSrtUsesDirectReaderByDefault() {
@@ -912,7 +1193,7 @@ void TestSharedControlPredicates() {
             "shared predicate changed its uniform factor or cached runtime values");
       std::vector<uint32_t> flat;
       Check(walker.RefreshFlatBuffer(flat) &&
-                plan.visited_blocks == (known
+                plan.scratch.visited_blocks == (known
                     ? (conjunction ? std::vector<uint8_t>{1, 1, 0, 1}
                                    : std::vector<uint8_t>{1, 0, 1, 0})
                     : std::vector<uint8_t>{1, 1, 1, 1}),
@@ -1243,7 +1524,7 @@ void TestCyclicControlPredicatesRemainUnknown() {
             !walker.Evaluate(plan.control_flow[2].condition, value),
         "cyclic varying control acquired an unsupported uniform value");
   std::vector<uint32_t> flat;
-  Check(walker.RefreshFlatBuffer(flat) && plan.visited_blocks == std::vector<uint8_t>({1, 1, 1, 1}),
+  Check(walker.RefreshFlatBuffer(flat) && plan.scratch.visited_blocks == std::vector<uint8_t>({1, 1, 1, 1}),
         "cyclic control lost a possible branch during reachability");
 }
 
@@ -1608,6 +1889,10 @@ int main() {
   TestResourceMemoKeysOnReadUserData();
   TestResourceMemoRebasesValueWords();
   TestAddressUserDataIsNotAValueWord();
+  TestConcurrentWalksOfOnePlan();
+  TestWalkReaderRanges();
+  TestWorkerWalkReads();
+  TestWorkerWalksWithRecorder();
   std::puts("ResourceMaterializationTests: all cases passed");
   return 0;
 }

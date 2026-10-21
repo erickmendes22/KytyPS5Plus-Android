@@ -21,11 +21,13 @@
 #include "graphics/host_gpu/renderer/pipeline/hostShaderQuirks.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMemo.h"
 #include "graphics/shader/shaderCompiler.h"
+#include "graphics/shader/loopGuard.h"
 #include "kernel/memory.h"
 #include "loader/systemContent.h"
 
@@ -40,6 +42,7 @@
 #include <fmt/format.h>
 #include <limits>
 #include <mutex>
+#include <shared_mutex>
 #include <optional>
 #include <span>
 #include <spirv-tools/libspirv.hpp>
@@ -351,6 +354,12 @@ struct PipelineCache::ProgramCache {
 			} else {
 				EXIT_IF(!memo.Materialize(resource_plan, runtime, resources, specialization));
 			}
+			return MatchPermutation<HasCalls>(push_data_cursor);
+		}
+
+		// The installed permutation for the current resources/specialization, if any.
+		template <bool HasCalls>
+		Permutation* MatchPermutation(uint32_t push_data_cursor) {
 			for (auto& candidate: permutations) {
 				const auto& layout = candidate.program.bindings;
 				if (layout.push_data_start_dword != ShaderRecompiler::IR::PushData::StartFor(
@@ -545,6 +554,7 @@ struct PipelineCache::ProgramCache {
 		         .signed_zero_inf_nan_preserve_f32 =
 		             graphics.optional_features.shader_signed_zero_inf_nan_preserve_f32,
 		         .ftz32_ops = fast_paths.ftz32_ops,
+		         .pixel_live_election = fast_paths.pixel_live_election,
 		         .subgroup_vertex       = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eVertex),
 		         .subgroup_tessellation =
 		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationControl) &&
@@ -639,6 +649,10 @@ struct PipelineCache::ProgramCache {
 		}
 
 		const auto user_data = std::span(params.user_data).first(params.user_data_count);
+		if (auto* sink = WalkFan::t_walk_sink; sink != nullptr) {
+			SubmitWalk(*sink, stage, params, input_info);
+			return {};
+		}
 		// KYTY_FAULT_TRACE: specialization readbacks below name this shader.
 		struct TraceShaderScope {
 			explicit TraceShaderScope(uint64_t hash) { Common::PerfStats::SetTraceShader(hash); }
@@ -664,14 +678,38 @@ struct PipelineCache::ProgramCache {
 			runtime.indirect_args_address = input_info.indirect_args_address;
 		}
 		bool source_changed = false;
+		// KYTY_GPU_FAN: the front's walk job for this request (the recorder takes one per request,
+		// in the front's order).
+		std::shared_ptr<WalkFan::WalkJob> prewalk;
+		auto prewalk_reason = WalkFan::Outcome::Count;
+		if (auto* list = WalkFan::t_prewalk; list != nullptr) {
+			prewalk = list->Next(prewalk_reason);
+			if (prewalk && (entry == programs.end() || prewalk->entry != &entry->second ||
+			                prewalk->stage != static_cast<uint32_t>(stage))) {
+				prewalk_reason = WalkFan::Outcome::Mismatch;
+				prewalk.reset();
+			}
+			if (!prewalk) WalkFan::Count(prewalk_reason);
+		}
 		if (entry != programs.end()) {
 			auto& cached = entry->second;
 			Permutation* permutation = nullptr;
 			if (cached.call_source) {
 				source_changed = cached.RefreshCallSource(runtime);
 				if (!source_changed) permutation = cached.FindPermutation<true>(runtime, push_data_cursor);
+			} else if (auto* list = WalkFan::t_prewalk;
+			           list != nullptr && prewalk_reason == WalkFan::Outcome::Rerequest &&
+			           list->Walked(&cached)) {
+				// KYTY_GPU_FAN: the same draw's re-request of an entry it already materialized.
+				WalkFan::Count(WalkFan::Outcome::Reused);
+				permutation = cached.MatchPermutation<false>(push_data_cursor);
 			} else {
-				permutation = cached.FindPermutation<false>(runtime, push_data_cursor);
+				if (prewalk && TakePrewalk(cached, *prewalk, runtime)) {
+					permutation = cached.MatchPermutation<false>(push_data_cursor);
+				} else {
+					permutation = cached.FindPermutation<false>(runtime, push_data_cursor);
+				}
+				if (auto* list = WalkFan::t_prewalk; list != nullptr) list->NoteWalked(&cached);
 			}
 			if (permutation != nullptr) {
 				input_info.stage = {.program = &permutation->program, .resources = &entry->second.resources};
@@ -740,7 +778,10 @@ struct PipelineCache::ProgramCache {
 					return install(std::move(compiled));
 				}
 				RecordProgram(lookup_key, *job);
-				entry = programs.try_emplace(lookup_key, std::move(job->plan), nullptr).first;
+				{
+					const std::unique_lock lock(programs_mutex); // the front's SubmitWalk lookups
+					entry = programs.try_emplace(lookup_key, std::move(job->plan), nullptr).first;
+				}
 				{
 					const Common::PerfStats::ScopedTranslatePhase phase(Common::PerfStats::TranslatePhase::Materialize);
 					EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(
@@ -778,7 +819,10 @@ struct PipelineCache::ProgramCache {
 				const Common::PerfStats::ScopedTranslatePhase phase(Common::PerfStats::TranslatePhase::Plan);
 				plan = ShaderRecompiler::IR::ExtractResourcePlan(translated.program);
 			}
-			entry = programs.try_emplace(lookup_key, std::move(plan), std::move(retained)).first;
+			{
+				const std::unique_lock lock(programs_mutex); // the front's SubmitWalk lookups
+				entry = programs.try_emplace(lookup_key, std::move(plan), std::move(retained)).first;
+			}
 			const Common::PerfStats::ScopedTranslatePhase phase(Common::PerfStats::TranslatePhase::Materialize);
 			EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(
 			    entry->second.resource_plan, runtime, entry->second.resources,
@@ -799,6 +843,146 @@ struct PipelineCache::ProgramCache {
 		                                  entry->second.FunctionCode()));
 	}
 
+	// KYTY_GPU_FAN front: queues a walk of this request's program entry on the walk pool instead of
+	// walking (the recorder takes the result in Get). Only reads the entry map, under a shared lock:
+	// the recorder inserts with it held exclusively, and never erases while running. Entries whose
+	// plan can change (call sources) and the memo walk on the recorder.
+	template <typename InputInfo>
+	void SubmitWalk(WalkFan::PrewalkList& sink, ShaderType stage, const ShaderParams& params,
+	                const InputInfo& input_info) {
+		const auto* context = WalkFan::Context();
+		if (context == nullptr) {
+			sink.Push(nullptr, WalkFan::Outcome::NoContext);
+			return;
+		}
+		if (ShaderRecompiler::IR::ResourceMemo::Enabled()) {
+			sink.Push(nullptr, WalkFan::Outcome::Memo);
+			return;
+		}
+		thread_local ProgramKey key;
+		key.stage           = stage;
+		key.hash            = params.hash;
+		key.user_data_count = params.user_data_count;
+		key.code_size       = static_cast<uint32_t>(params.code.size());
+		BuildStageStaticKey(input_info, key.static_state);
+		const SourceEntry* entry = nullptr;
+		{
+			const std::shared_lock lock(programs_mutex);
+			if (const auto it = programs.find(key); it != programs.end()) entry = &it->second;
+		}
+		if (entry == nullptr) {
+			sink.Push(nullptr, WalkFan::Outcome::NoEntry);
+			return;
+		}
+		if (entry->call_source) {
+			sink.Push(nullptr, WalkFan::Outcome::CallSource);
+			return;
+		}
+		auto job         = std::make_shared<WalkFan::WalkJob>();
+		job->plan        = &entry->resource_plan;
+		job->entry       = entry;
+		job->stage       = static_cast<uint32_t>(stage);
+		const auto words = std::span(params.user_data).first(params.user_data_count);
+		job->user_data.assign(words.begin(), words.end());
+		job->shader_base = params.Base();
+		job->mapped      = Libs::LibKernel::Memory::IsMappedRange;
+		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
+			std::copy(std::begin(input_info.workgroup_counts), std::end(input_info.workgroup_counts),
+			          job->workgroup_counts.begin());
+			job->has_workgroup_counts  = true;
+			job->indirect_args_address = input_info.indirect_args_address;
+		}
+		job->view = WalkFan::Publisher().Current();
+		WalkFan::Pool().Submit(job);
+		WalkFan::CountSubmitted();
+		sink.Push(std::move(job));
+	}
+
+	// fan_shadow: what differs between the worker's walk (in `entry`) and this thread's (first 32).
+	static void LogShadowMismatch(const WalkFan::WalkJob& job, bool walked,
+	                              const ShaderRecompiler::IR::ResourceSnapshot&       mine,
+	                              const ShaderRecompiler::IR::ResourceSpecialization& mine_spec,
+	                              const SourceEntry&                                  entry) {
+		static std::atomic<uint32_t> logged {0};
+		if (logged.fetch_add(1) >= 32) return;
+		const auto& theirs = entry.resources;
+		std::string diff;
+		const auto first_diff = [&](const char* name, const auto& a, const auto& b) {
+			if (a == b) return;
+			size_t i = 0;
+			while (i < a.size() && i < b.size() && a[i] == b[i]) i++;
+			diff += fmt::format(" {}[{}/{}vs{}]", name, i, a.size(), b.size());
+		};
+		first_diff("buffers", theirs.buffers, mine.buffers);
+		first_diff("images", theirs.images, mine.images);
+		first_diff("samplers", theirs.samplers, mine.samplers);
+		first_diff("flat", theirs.flattened_srt, mine.flattened_srt);
+		for (size_t i = 0; i < theirs.flattened_srt.size() && i < mine.flattened_srt.size(); i++) {
+			if (theirs.flattened_srt[i] != mine.flattened_srt[i]) {
+				diff += fmt::format(" flat{}=0x{:08x}/0x{:08x}", i, theirs.flattened_srt[i], mine.flattened_srt[i]);
+				break;
+			}
+		}
+		for (size_t i = 0; i < theirs.buffers.size() && i < mine.buffers.size(); i++) {
+			if (!(theirs.buffers[i] == mine.buffers[i])) {
+				diff += fmt::format(" buf{}=0x{:08x}{:08x}/0x{:08x}{:08x}", i, theirs.buffers[i].dwords[1],
+				                    theirs.buffers[i].dwords[0], mine.buffers[i].dwords[1], mine.buffers[i].dwords[0]);
+				break;
+			}
+		}
+		first_diff("user", theirs.user_data, mine.user_data);
+		first_diff("spec_reads", theirs.specialization_reads, mine.specialization_reads);
+		if (!(theirs.uniform_fill == mine.uniform_fill)) diff += " uniform_fill";
+		if (!(entry.specialization == mine_spec)) diff += " specialization";
+		uint64_t read_bytes = 0;
+		for (const auto& range: job.reads.ranges) read_bytes += range.end - range.begin;
+		LOGF("[fan-shadow] stage=%u gt_walk=%s view_gen=%" PRIu64 " reads=%zu (%" PRIu64
+		     " B, %u calls)%s\n",
+		     job.stage, walked ? "ok" : "FAILED", job.view_generation, job.reads.ranges.size(),
+		     read_bytes, job.reads.reads, diff.c_str());
+	}
+
+	// KYTY_GPU_FAN recorder: waits for (or runs) the front's walk of this request and, when the
+	// pickup rule accepts it, moves its result into the entry. False: walk here as before.
+	bool TakePrewalk(SourceEntry& entry, WalkFan::WalkJob& job,
+	                 const ShaderRecompiler::IR::SrtRuntime& runtime) {
+		const auto& context = *WalkFan::Context();
+		bool        taken   = false;
+		{
+			const Common::PerfStats::ScopedWait wait(Common::PerfStats::Wait::GpuFanWait);
+			taken = job.TakeOrWait(context);
+		}
+		if (taken) {
+			WalkFan::CountStolen();
+		} else {
+			Common::PerfStats::AddWait(Common::PerfStats::Wait::GpuFanWorker, job.walk_ns);
+		}
+		const auto outcome = WalkFan::Accept(job, context);
+		WalkFan::Count(outcome);
+		if (outcome != WalkFan::Outcome::Accepted) {
+			return false;
+		}
+		std::swap(entry.resources, job.resources);
+		std::swap(entry.specialization, job.specialization);
+		if (WalkFan::Shadow()) {
+			// fan_shadow: walk here as well; on a difference keep this thread's result.
+			ShaderRecompiler::IR::ResourceSnapshot       resources;
+			ShaderRecompiler::IR::ResourceSpecialization specialization;
+			const bool walked = ShaderRecompiler::IR::MaterializeResources(entry.resource_plan, runtime,
+			                                                               resources, specialization);
+			if (!walked || !WalkFan::SameResult(resources, specialization, entry.resources,
+			                                    entry.specialization)) {
+				WalkFan::CountShadowMismatch();
+				LogShadowMismatch(job, walked, resources, specialization, entry);
+				if (walked) {
+					std::swap(entry.resources, resources);
+					std::swap(entry.specialization, specialization);
+				}
+			}
+		}
+		return true;
+	}
+
 	ProgramCache(GraphicContext& graphics, ShaderWorkerPool& workers)
 	    : graphics(graphics), workers(workers),
 	      device_quirks(ResolveShaderDeviceQuirks(graphics.physical_device)),
@@ -806,6 +990,8 @@ struct PipelineCache::ProgramCache {
 		lookup_key.static_state.reserve(MaxStaticKeyWords);
 	}
 	~ProgramCache() {
+		// Walk jobs whose item was never recorded may still run on the walk pool: they read our plans.
+		WalkFan::Pool().Quiesce();
 		// The pool is stopped before this runs; jobs that never got installed release their own
 		// modules.
 		pending_programs.clear();
@@ -858,7 +1044,9 @@ struct PipelineCache::ProgramCache {
             f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp, f.bvh_vector_loads, f.packed_varying_locations, f.drop_carried_vertex_data, f.fold_same_condition_selects, f.vs_live_vertex_exec, f.single_mode_alias_slots, fast_paths.uniform_constants_compute_only,
             f.constant_lane_broadcast, f.subgroup_size_min,
             f.compute_required_subgroup_min, f.compute_required_subgroup_max,
-            f.first_lane_value_sets, f.bvh_emulation) + fmt::format(" ftz32={}", f.ftz32_ops);
+            f.first_lane_value_sets, f.bvh_emulation) + fmt::format(" ftz32={} pslive={}", f.ftz32_ops, f.pixel_live_election) +
+            fmt::format(" loopguard={}/{}", LoopGuard::Spec() != nullptr ? LoopGuard::Spec() : "",
+                        LoopGuard::Limit());
 		return XXH3_64bits(text.data(), text.size());
 	}
 
@@ -914,6 +1102,8 @@ struct PipelineCache::ProgramCache {
 	std::unique_ptr<ShaderDiskCache>                            disk_cache;
 	std::unordered_set<ProgramKey, ProgramKeyHash>              recorded;
 	std::unordered_map<ProgramKey, SourceEntry, ProgramKeyHash> programs;
+	// KYTY_GPU_FAN: the front looks entries up (shared) while the recorder inserts (exclusive).
+	mutable std::shared_mutex                                   programs_mutex;
 	// Translations of sources without an entry yet, by the key they will get.
 	std::unordered_map<ProgramKey, std::shared_ptr<TranslateJob>, ProgramKeyHash> pending_programs;
 	ProgramKey                                                  lookup_key;

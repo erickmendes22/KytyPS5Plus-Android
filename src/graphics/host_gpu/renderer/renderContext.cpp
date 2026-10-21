@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 
 #include "common/assert.h"
@@ -66,6 +67,9 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 	if (!IsMapped(fault_vaddr, fault_size)) {
 		return false;
 	}
+	// KYTY_GPU_PIPELINE: a fault the front takes (its SRT walk read GPU-written memory) is handled
+	// with the record thread drained, like every other renderer access of the front.
+	GpuPipeline::DrainForFront();
 	if (access == PageFaultAccess::Write) {
 		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemWriteFault);
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
@@ -209,6 +213,7 @@ void RenderContext::RunGarbageCollector() {
 	m_texture_cache.ProcessDownloadImages();
 	m_texture_cache.RunGarbageCollector();
 	m_buffer_cache.RunGarbageCollector();
+	m_buffer_cache.PollLoopGuardLog();
 }
 
 void RenderContext::AddInterruptEq(LibKernel::EventQueue::KernelEqueue eq, int event_id) {

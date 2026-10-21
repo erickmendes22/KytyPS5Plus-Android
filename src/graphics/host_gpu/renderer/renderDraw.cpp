@@ -6,6 +6,9 @@
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "common/perfWaits.h"
+#include "graphics/host_gpu/renderer/gpuPipeline.h"
+#include "graphics/host_gpu/renderer/gpuPipelineItems.h"
+#include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -1105,6 +1108,19 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 	const auto& pixel_shader_info  = sh_ctx.GetPs();
 	const auto& shader_regs        = ctx.GetShaderRegisters();
 
+	if (auto* prepared = GpuPipeline::t_prepared_draw; prepared != nullptr) {
+		// KYTY_GPU_PIPELINE: the front walked this draw's SRT from the same registers
+		// (RenderExecutor::PrefetchDraw).
+		EXIT_IF(prepared->color_output_mask != color_output_mask ||
+		        prepared->ps_active != state.ps_active);
+		state.programs      = prepared->programs;
+		state.vertex_info   = prepared->vertex_info;
+		state.ps_input_info = prepared->ps_input_info;
+		state.indirect      = prepared->indirect;
+		return;
+	}
+	// The record thread walks only under KYTY_GPU_FAN (it owns the program cache then).
+	EXIT_IF(GpuPipeline::OnBack() && WalkFan::t_prewalk == nullptr);
 	state.programs      = {};
 	state.ps_input_info = {};
 	std::array<Prospero::ColorComponentMapping, RENDER_COLOR_ATTACHMENTS_MAX>
@@ -1122,10 +1138,74 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 	if (draw.IsIndexed()) {
 		LogDrawPhase(draw.Name(), "GetGraphicsPrograms");
 	}
+	PipelineProbe::BeginItem();
 	state.programs = pipeline_cache.GetGraphicsPrograms(
 	    vertex_shader_info, pixel_shader_info, shader_regs, ctx, buffer.GetUserConfig(),
 	    target_export_mapping, state.ps_active, state.vertex_info, state.ps_input_info,
 	    state.indirect);
+	if (state.programs.ready && Common::PerfStats::Enabled()) {
+		bool   dma   = false;
+		size_t bytes = 0;
+		const auto note = [&](const ShaderStageRuntime& stage) {
+			if (stage.program != nullptr) dma = dma || stage.program->has_address_writes;
+			bytes += PipelineProbe::ResourceBytes(stage.resources);
+		};
+		for (uint32_t i = 0; i < state.programs.VertexStageCount(); i++) note(state.vertex_info[i].stage);
+		if (state.ps_active) note(state.ps_input_info.stage);
+		if (dma) PipelineProbe::MarkDmaWriter();
+		PipelineProbe::AddResourceBytes(bytes);
+	}
+}
+
+// KYTY_GPU_PIPELINE front: the SRT walk of a DrawIndex / DrawAuto from the live registers, or
+// why the draw cannot be queued with one. Mirrors the draw's early returns before
+// PrepareDrawRenderState; metadata, resolve and depth-copy draws touch the texture cache before
+// they would walk, so they run on the front after a drain.
+GpuPipeline::Prefetch RenderExecutor::PrefetchDraw(CommandBuffer& buffer, bool indexed,
+                                                   uint32_t count, uint32_t instance_count,
+                                                   GpuPipeline::PreparedDrawShaders& out) {
+	using GpuPipeline::Prefetch;
+	if (count == 0 || instance_count == 0) {
+		return Prefetch::NoWalk;
+	}
+	const auto& hw   = buffer.GetRegisters();
+	const auto  mode = hw.GetColorControl().mode;
+	if (mode != static_cast<uint8_t>(CbColorMode::Disable) &&
+	    mode != static_cast<uint8_t>(CbColorMode::Normal)) {
+		return Prefetch::Inline; // fast-clear elimination, resolve, FMASK/DCC decompression
+	}
+	const auto& override = hw.GetDepthRenderOverride();
+	if (mode == static_cast<uint8_t>(CbColorMode::Disable) &&
+	    ((override.force_z_dirty && override.force_z_valid) ||
+	     (override.force_stencil_dirty && override.force_stencil_valid))) {
+		return Prefetch::Inline; // a possible DepthStencilCopy
+	}
+	if (!DrawHasValidVertexShader(buffer.GetShaders())) {
+		return Prefetch::NoWalk;
+	}
+	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
+	if (!GetDrawTopology(buffer.GetUserConfig(), topology)) {
+		return Prefetch::NoWalk;
+	}
+	const DrawCallInfo draw {indexed ? CommandBufferDebugOp::DrawIndex
+	                                 : CommandBufferDebugOp::DrawIndexAuto,
+	                         count, instance_count, 0};
+	const auto& shader_regs  = hw.GetShaderRegisters();
+	out.color_output_mask    = DrawColorOutputMask(hw);
+	DrawRenderState state {};
+	state.ps_active = buffer.GetShaders().GetPs().ps_regs.data_addr != 0 &&
+	                  (out.color_output_mask != 0 ||
+	                   PixelShaderHasDepthOrCoverageSideEffects(shader_regs));
+	RefreshShaders(buffer, draw, out.color_output_mask, state);
+	out.ps_active     = state.ps_active;
+	out.programs      = state.programs;
+	out.vertex_info   = state.vertex_info;
+	out.ps_input_info = state.ps_input_info;
+	out.indirect      = state.indirect;
+	if (out.programs.ready) {
+		out.OwnResources();
+	}
+	return Prefetch::Prepared;
 }
 
 bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCallInfo& draw,
@@ -1397,6 +1477,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                                          const DrawIndexBufferSource& index_source,
 	                                     bool primitive_restart_enable,
 	                                     const IndirectDrawArgs* indirect) {
+	const PipelineProbe::ScopedRecordPhase record_phase;
 	auto& ucfg = buffer.GetUserConfig();
 	if (CopyDepthToColor(buffer, draw, emit, state)) {
 		return;

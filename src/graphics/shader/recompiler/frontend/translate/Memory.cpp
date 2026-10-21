@@ -2,6 +2,7 @@
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 #include "graphics/shader/recompiler/frontend/decode/ImageOps.h"
+#include "graphics/shader/recompiler/frontend/translate/LaneElection.h"
 
 #include <algorithm>
 #include <array>
@@ -900,16 +901,11 @@ void Translator::DS_ORDERED_COUNT(const Decoder::Instruction& inst) {
 		address = ir.IAdd(address, ir.ShiftLeftLogical(packer, IR::U32(IR::Value(2u))));
 	}
 	const auto exec   = ir.GetExec();
-	const auto ballot = ir.Emit(IR::ValueOpcode::Ballot, {exec});
-	const auto low = ir.CompositeExtract(ballot, 0u);
-	const auto high = ir.CompositeExtract(ballot, 1u);
-	const auto active = ir.INotEqual(ir.BitwiseOr(low, high), IR::U32(IR::Value(0u)));
-	const auto first = ir.Select(
-	    ir.INotEqual(low, IR::U32(IR::Value(0u))),
-	    IR::U32(ir.Emit(IR::ValueOpcode::FindILsb32, {low})),
-	    ir.IAdd(IR::U32(IR::Value(32u)), IR::U32(ir.Emit(IR::ValueOpcode::FindILsb32, {high}))));
-	// An empty EXEC still returns the counter. Elect lane zero and perform an add of zero.
-	const auto selected = ir.Select(active, first, IR::U32(IR::Value(0u)));
+	// An empty EXEC still returns the counter: lane zero is elected and adds zero.
+	// KYTY_PS_LIVE_ELECT: a pixel shader elects a non-helper lane (its atomic takes effect).
+	const auto election = ElectFirstLane(ir, exec, program.pixel_live_election);
+	const auto active   = election.active;
+	const auto selected = election.selected;
 	const auto lane = IR::U32(ir.Emit(IR::ValueOpcode::LaneId));
 	const auto is_first = ir.IEqual(lane, selected);
 	const auto source = IR::U32(ir.Emit(IR::ValueOpcode::ReadFirstLane,

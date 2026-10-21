@@ -570,7 +570,24 @@ add_executable(gpu_memory_budget_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/GpuMe
 target_include_directories(gpu_memory_budget_tests PRIVATE ${inc_headers})
 
 add_executable(dispatch_split_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/DispatchSplitTests.cpp")
+
+add_executable(texture_desc_memo_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/TextureDescMemoTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/textureDescMemo.cpp"
+)
+target_link_libraries(texture_desc_memo_tests Vulkan::Headers fmt::fmt common)
+target_include_directories(texture_desc_memo_tests PRIVATE ${inc_headers})
+
+add_executable(color_target_memo_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ColorTargetMemoTests.cpp")
+target_link_libraries(color_target_memo_tests Vulkan::Headers fmt::fmt common)
+target_include_directories(color_target_memo_tests PRIVATE ${inc_headers})
 target_include_directories(dispatch_split_tests PRIVATE ${inc_headers})
+
+add_executable(pipeline_probe_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PipelineProbeTests.cpp")
+target_include_directories(pipeline_probe_tests PRIVATE ${inc_headers})
+
+add_executable(register_override_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/RegisterOverrideTests.cpp")
+target_include_directories(register_override_tests PRIVATE ${inc_headers})
 
 add_executable(gpu_diagnostics_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/GpuDiagnosticsTests.cpp"
@@ -602,9 +619,24 @@ add_executable(resource_materialization_tests EXCLUDE_FROM_ALL
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/ResourceMemo.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/ResourceMemoRebase.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/SrtWalker.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/walkReader.cpp"
 )
 target_link_libraries(resource_materialization_tests fmt::fmt xbyak::xbyak)
 target_include_directories(resource_materialization_tests PRIVATE ${inc_headers})
+
+add_executable(walk_fan_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/WalkFanTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/hostMemory.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/walkFan.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/walkReader.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/ResourceMaterialization.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/ResourceMemo.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/ResourceMemoRebase.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/SrtWalker.cpp"
+)
+target_link_libraries(walk_fan_tests fmt::fmt xbyak::xbyak)
+target_include_directories(walk_fan_tests PRIVATE ${inc_headers})
 
 add_executable(resource_tracking_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ResourceTrackingTests.cpp"
@@ -659,6 +691,18 @@ add_executable(ftz32_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Ftz32Tests.cpp")
 target_include_directories(ftz32_tests PRIVATE ${inc_headers})
 add_executable(bda_table_size_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BdaTableSizeTests.cpp")
 target_include_directories(bda_table_size_tests PRIVATE ${inc_headers})
+add_executable(lane_election_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/LaneElectionTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/translate/LaneElection.cpp"
+)
+target_link_libraries(lane_election_tests fmt::fmt xbyak::xbyak)
+target_include_directories(lane_election_tests PRIVATE ${inc_headers})
+add_executable(loop_guard_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/LoopGuardTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/LoopGuardPlan.cpp"
+)
+target_link_libraries(loop_guard_tests fmt::fmt xbyak::xbyak)
+target_include_directories(loop_guard_tests PRIVATE ${inc_headers})
 
 add_executable(pad_script_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PadScriptTests.cpp")
 target_link_libraries(pad_script_tests common fmt::fmt)
@@ -810,8 +854,13 @@ if(BUILD_TESTING)
 	add_test(NAME pad_haptics COMMAND $<TARGET_FILE:pad_haptics_tests>)
 	add_test(NAME controller_settings COMMAND $<TARGET_FILE:controller_settings_tests>)
 	add_test(NAME pad_script COMMAND $<TARGET_FILE:pad_script_tests>)
+	add_test(NAME pipeline_probe COMMAND $<TARGET_FILE:pipeline_probe_tests>)
+	add_test(NAME register_override COMMAND $<TARGET_FILE:register_override_tests>)
+	add_test(NAME walk_fan COMMAND $<TARGET_FILE:walk_fan_tests>)
 	add_test(NAME ftz32 COMMAND $<TARGET_FILE:ftz32_tests>)
 	add_test(NAME bda_table_size COMMAND $<TARGET_FILE:bda_table_size_tests>)
+	add_test(NAME loop_guard COMMAND $<TARGET_FILE:loop_guard_tests>)
+	add_test(NAME lane_election COMMAND $<TARGET_FILE:lane_election_tests>)
 	add_test(NAME host_input COMMAND $<TARGET_FILE:host_input_tests>)
 	add_test(NAME save_data_memory COMMAND $<TARGET_FILE:save_data_memory_tests>)
 	add_test(NAME png_enc COMMAND $<TARGET_FILE:png_enc_tests>)
@@ -904,6 +953,8 @@ if(BUILD_TESTING)
 		pad_script_tests
 		ftz32_tests
 		bda_table_size_tests
+		loop_guard_tests
+		lane_election_tests
 		host_input_tests
 		save_data_memory_tests
 		png_enc_tests
