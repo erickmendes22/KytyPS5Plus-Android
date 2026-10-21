@@ -423,6 +423,87 @@ void TestWorkerStackSize() {
 	Check(job->Done() && g_worker_stack.load() >= (8u << 20u), "walk worker stack below 8 MiB");
 }
 
+// Concurrent walks of one plan WITH control flow and a branch reader (every real walk has one):
+// RefreshFlatBuffer's branch walker must use the walk's scratch, not the plan's own (c17_drain1 /
+// c17_fan3a: SIGSEGV in ResetUnknowns from racing deque/vector growth in plan.scratch).
+std::array<uint32_t, 4> g_branch_table {0u, 0x8000u, 0u, 0u};
+bool ReadRealMemory(void*, uint64_t address, std::span<uint32_t> words) {
+	std::memcpy(words.data(), reinterpret_cast<const void*>(address), words.size_bytes());
+	return true;
+}
+
+IR::Block& AddBlock(IR::Program& program) {
+	auto block = std::make_unique<IR::Block>();
+	auto* result = block.get();
+	program.blocks.push_back(result);
+	result->id = static_cast<uint32_t>(program.blocks.size() - 1u);
+	program.block_storage.push_back(std::move(block));
+	return *result;
+}
+
+void TestConcurrentBranchWalks() {
+	IR::Program program;
+	program.stage                      = Libs::Graphics::ShaderType::Compute;
+	program.user_data_count            = 1;
+	program.srt_plan_complete          = true;
+	program.resource_tracking_complete = true;
+	auto& block = AddBlock(program);
+	program.memory_info.push_back({.kind = IR::ResourceKind::ScalarAddress});
+	const auto table = PointerWords(g_branch_table.data());
+	auto& handle = block.AppendNewInst(IR::ValueOpcode::GetAddressResource,
+	                                   {IR::Value(table[0]), IR::Value(table[1])});
+	auto& offset = block.AppendNewInst(IR::ValueOpcode::GetUserData, {IR::Value(static_cast<IR::ScalarReg>(0))});
+	auto& read   = block.AppendNewInst(IR::ValueOpcode::LoadAddressU32,
+	                                   {IR::Value(&handle), IR::Value(&offset), IR::Value(0u), IR::Value(false)});
+	read.SetFlags(IR::MemoryFlags {.index = 0});
+	IR::DescriptorSource source;
+	source.dwords      = {IR::Value(&read), IR::Value(0u), IR::Value(4u), IR::Value(0u)};
+	source.dword_count = 4;
+	program.descriptor_sources.push_back(source);
+	program.info.buffers.push_back({.source = 0, .written = true});
+	auto& condition = block.AppendNewInst(IR::ValueOpcode::IEqual32, {IR::Value(&read), IR::Value(0x8000u)});
+	auto& store_block = AddBlock(program);
+	AddBlock(program);
+	using Kind = Libs::Graphics::ShaderRecompiler::CFG::TerminatorKind;
+	program.blocks[0]->condition                = IR::Value(&condition);
+	program.blocks[0]->terminator.kind          = Kind::ConditionalBranch;
+	program.blocks[0]->terminator.true_block    = program.blocks[1];
+	program.blocks[0]->terminator.false_block   = program.blocks[2];
+	program.blocks[1]->terminator.kind          = Kind::Return;
+	program.blocks[2]->terminator.kind          = Kind::Return;
+	program.memory_info.push_back({.kind = IR::ResourceKind::Buffer, .resource = 0});
+	auto& output = store_block.AppendNewInst(IR::ValueOpcode::GetBufferResource,
+	    {source.dwords[0], source.dwords[1], source.dwords[2], source.dwords[3]});
+	store_block.AppendNewInst(IR::ValueOpcode::StoreBufferU32,
+	    {IR::Value(&output), IR::Value(0u), IR::Value(0u), IR::Value(0u), IR::Value(1u), IR::Value(true)})
+	    .SetFlags(IR::MemoryFlags {.index = 1});
+	const auto plan = IR::ExtractResourcePlan(program);
+	Check(!plan.control_flow.empty(), "test setup: the plan needs control flow");
+	const std::array<uint32_t, 1> user_data {4u};
+	const IR::SrtRuntime runtime {
+	    .user_data                  = user_data,
+	    .read_specialization_memory = ReadRealMemory,
+	    .read_branch_memory         = ReadRealMemory,
+	};
+	constexpr int kThreads = 4;
+	std::atomic<int> failures {0};
+	std::vector<std::thread> threads;
+	for (int t = 0; t < kThreads; t++) {
+		threads.emplace_back([&] {
+			IR::ResourcePlan::Scratch  scratch;
+			IR::ResourceSnapshot       snapshot;
+			IR::ResourceSpecialization specialization;
+			for (int i = 0; i < 4000; i++) {
+				if (!IR::MaterializeResources(plan, scratch, runtime, snapshot, specialization)) failures++;
+			}
+		});
+	}
+	for (auto& thread: threads) thread.join();
+	Check(failures.load() == 0, "a concurrent branch walk failed");
+	// The plan's own scratch must stay untouched by walks on caller-owned scratch.
+	Check(plan.scratch.evaluation_contexts.empty(), "a walk on caller scratch used the plan's own scratch");
+}
+
 void TestPrewalkListOrder() {
 	Fan::PrewalkList list;
 	auto             job = std::make_shared<Fan::WalkJob>();
@@ -476,6 +557,7 @@ void DbgExit(int) {
 
 int main() {
 	TestPrewalkListOrder();
+	TestConcurrentBranchWalks();
 	TestWorkerStackSize();
 	TestAcceptRules();
 	TestPoolMatchesInline();

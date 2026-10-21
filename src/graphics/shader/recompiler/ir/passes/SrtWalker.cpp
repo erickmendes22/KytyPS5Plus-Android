@@ -1549,7 +1549,9 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 	// through the strict reader.
 	std::optional<SrtWalker> branch;
 	if (m_runtime.read_branch_memory != nullptr) {
-		branch.emplace(m_program, BranchRuntime(m_runtime));
+		// On this walk's scratch: the plan's own scratch belongs to the GPU thread, and walks of one
+		// plan run concurrently on fan-out workers (c17_drain1 / c17_fan3a crashed in ResetUnknowns).
+		branch.emplace(m_program, m_scratch, BranchRuntime(m_runtime));
 		branch->m_reachable_blocks = &visited;
 	}
 	auto& predicate = branch.has_value()          ? *branch
