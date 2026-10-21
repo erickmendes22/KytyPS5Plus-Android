@@ -889,7 +889,15 @@ void Translator::HalfRateRetraceRemap() {
 	const auto ly     = HalfRateLocal(1);
 	const auto block  = ir.IAdd(ir.ShiftLeftLogical(ir.ShiftRightLogical(ly, HalfRateConst(1)), HalfRateConst(2)),
 	                            ir.ShiftRightLogical(lx, HalfRateConst(1)));
-	const auto index  = ir.IAdd(ir.IMul(chunk, HalfRateConst(H::kRetraceChunkPixels)), block);
+	// Every lane gets a real pixel: blocks past the chunk's listed pixels repeat them (the guest
+	// loads BVH node data cooperatively across the wave and reads it back with v_readlane, so lanes
+	// left outside the screen feed stale values to the active ones; c17_rtR8).
+	const auto count0 = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {HalfRateRetraceList(ir.GetVectorReg(static_cast<IR::VectorReg>(kRegRetraceGroup)))}));
+	const auto first  = ir.IMul(chunk, HalfRateConst(H::kRetraceChunkPixels));
+	const auto left   = ir.Select(ir.ULessThan(first, count0), ir.ISub(count0, first), HalfRateConst(1));
+	const auto n      = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {left, HalfRateConst(H::kRetraceChunkPixels)}));
+	const auto wrap   = ir.ISub(block, ir.IMul(n, IR::U32(ir.Emit(IR::ValueOpcode::UDiv32, {block, n}))));
+	const auto index  = ir.IAdd(first, wrap);
 	const auto safe   = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {index, HalfRateConst(H::kAdaptiveListMax - 1u)}));
 	const auto packed = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {ir.IAdd(ir.IAdd(base, HalfRateConst(4)), safe)}));
 	const auto listed = ir.ULessThan(index, count);
