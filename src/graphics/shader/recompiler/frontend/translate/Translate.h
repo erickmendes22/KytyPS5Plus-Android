@@ -31,6 +31,8 @@ struct TranslateOptions {
 	const EmbeddedFetchPlan*      embedded_fetch = nullptr;
 	// ShaderDeviceFeatures::vs_live_vertex_exec (frontend/translate/LiveVertexExec.h).
 	bool                          live_vertex_exec = false;
+	// ShaderDeviceFeatures::pixel_live_election (KYTY_PS_LIVE_ELECT, frontend/translate/LaneElection.h).
+	bool                          pixel_live_election = false;
 };
 
 IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& cfg,
