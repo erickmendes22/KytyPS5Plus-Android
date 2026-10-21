@@ -412,9 +412,15 @@ void Translator::HalfRateCapture() {
 				                                                                   ir.IMul(tile, HalfRateConst(0x85ebu))),
 				                                                     HalfRateConst(7)),
 				                                HalfRateConst(7));
-				for (uint32_t r = 3; r <= 5; r++) ir.SetVectorReg(static_cast<IR::VectorReg>(r), HalfRateConst(0));
-				ir.SetVectorReg(static_cast<IR::VectorReg>(6),
-				                ir.Select(ir.INotEqual(hash, HalfRateConst(0)), one_e30, minus_e30));
+				// Only in EXEC lanes, like the load it replaces: lanes below the always-append start
+				// are off here and keep v3 = 1 (their append flag).
+				const auto live = ir.GetExec();
+				const auto set  = [&](uint32_t r, IR::U32 value) {
+					const auto reg = static_cast<IR::VectorReg>(r);
+					ir.SetVectorReg(reg, ir.Select(live, value, ir.GetVectorReg(reg)));
+				};
+				for (uint32_t r = 3; r <= 5; r++) set(r, HalfRateConst(0));
+				set(6, ir.Select(ir.INotEqual(hash, HalfRateConst(0)), one_e30, minus_e30));
 			}
 			if (inst.pc == 0x4a4u) {
 				// EXEC holds the items the guest appends.
