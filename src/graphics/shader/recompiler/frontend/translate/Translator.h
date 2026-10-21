@@ -1,5 +1,6 @@
 #pragma once
 
+#include "graphics/shader/recompiler/frontend/translate/HalfRateTiles.h"
 #include "graphics/shader/recompiler/frontend/translate/Translate.h"
 #include "graphics/shader/recompiler/ir/IREmitter.h"
 
@@ -23,6 +24,10 @@ public:
 	                            uint32_t component_count, const ShaderBufferResource& resource);
 	void AddBranchCondition(const CFG::Graph& graph, const CFG::BasicBlock& source,
 	                        IR::Block& info);
+	// Half-rate tile patch (HalfRateTiles.h): the hooks run before and after each instruction.
+	void SetHalfRatePlan(const HalfRatePlan* plan) { half_rate = plan; }
+	void HalfRateBefore(const Decoder::Instruction& inst);
+	void HalfRateAfter(const Decoder::Instruction& inst);
 
 private:
 	const Decoder::Operand& SourceAt(const Decoder::Instruction& inst, uint32_t index);
@@ -263,6 +268,16 @@ private:
 	void EmitMemory(const Decoder::Instruction& inst);
 	static void FailMissingTranslation(const Decoder::Instruction& inst);
 
+	IR::U32 HalfRateConst(uint32_t value);
+	IR::F32 HalfRateFloat(float value);
+	IR::F32 HalfRateFloatOp(IR::ValueOpcode opcode, IR::F32 lhs, IR::F32 rhs);
+	IR::U32 HalfRateFlatIndex();
+	IR::U32 HalfRateLdsAddress(uint32_t array, IR::U32 index);
+	void    HalfRateStash(uint32_t array, IR::U32 index, IR::U32 value);
+	IR::U32 HalfRateLoad(uint32_t array, IR::U32 index);
+	void    HalfRateRemap();
+	void    HalfRateReconstruct();
+
 	IR::Program&    program;
 	IR::IREmitter   ir;
 	IR::U1          instruction_branch_condition;
@@ -273,6 +288,7 @@ private:
 	bool            graphics_compute;
 	// Pixel-stage metadata for I/J pair identification; null outside pixel shaders.
 	const ShaderPixelInputInfo* pixel_input;
+	const HalfRatePlan*         half_rate = nullptr;
 };
 
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend

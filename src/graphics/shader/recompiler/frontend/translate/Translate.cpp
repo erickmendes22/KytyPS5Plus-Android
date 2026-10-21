@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "graphics/shader/recompiler/frontend/translate/LiveVertexExec.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 #include "graphics/shader/shader.h"
@@ -6,6 +7,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cinttypes>
+#include <optional>
+#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -1451,11 +1455,19 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 	result.info.live_vertex_exec = live_exec_pc.has_value();
 	result.pixel_live_election =
 	    options.stage == ShaderType::Pixel && options.pixel_live_election;
+	std::optional<HalfRatePlan> half_rate;
+	if (options.stage == ShaderType::Compute && options.input_info.compute->half_rate_tiles != 0u) {
+		std::string reason;
+		half_rate = MakeHalfRatePlan(decoded, options.input_info.compute->lds_size_dwords, &reason);
+		LOGF("half-rate tiles: hash=0x%016" PRIx64 " %s%s\n", options.shader_hash,
+		     half_rate.has_value() ? "applied" : "not applied: ", reason.c_str());
+	}
 	for (const auto& cfg_block: cfg.blocks) {
 		auto*      block = blocks_by_id.at(cfg_block.id);
 		Translator translator(result, block, vector_limit, flush_f32_inputs,
 		    options.stage == ShaderType::Compute && !options.input_info.compute->async_compute,
 		    options.stage == ShaderType::Pixel ? options.input_info.pixel : nullptr);
+		translator.SetHalfRatePlan(half_rate.has_value() ? &*half_rate : nullptr);
 		for (uint32_t index = cfg_block.inst_begin; index < cfg_block.inst_end; index++) {
 			const auto& instruction = decoded.instructions[index];
 			if (IsCodeTableLoad(cfg, instruction.pc)) {
@@ -1476,7 +1488,9 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				                                  options.input_info.vertex->resources[resource]);
 				continue;
 			}
+			translator.HalfRateBefore(instruction);
 			translator.TranslateInstruction(instruction);
+			translator.HalfRateAfter(instruction);
 			if (live_exec_pc == instruction.pc) {
 				translator.MarkExecLive();
 			}

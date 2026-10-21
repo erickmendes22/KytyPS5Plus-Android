@@ -372,6 +372,13 @@ static uint8_t LiveDeadLane() {
 	return value < 0 ? uint8_t {0} : value == 0 ? uint8_t {1} : uint8_t {2};
 }
 
+// KYTY_LIVE_KNOBS rt_half=0/1: the half-rate tile patch of shader/halfRateTiles.h for programs
+// compiled from now on (ShaderComputeInputInfo::rt_half_live); absent keeps KYTY_RT_HALF.
+static uint8_t LiveRtHalf() {
+	const auto value = LiveKnobs::Int("rt_half", -1);
+	return value < 0 ? uint8_t {0} : value == 0 ? uint8_t {1} : uint8_t {2};
+}
+
 static bool ComputeGroupPackCandidate(const ShaderComputeInputInfo& input_info, uint32_t threads,
                                       uint32_t groups_x, bool turnip) {
 	return ComputeGroupPackEnabled(turnip) && !input_info.dispatch_thread_dimensions && threads <= 32u &&
@@ -401,6 +408,7 @@ ShaderComputeInputInfo RenderExecutor::DirectDispatchInputInfo(const HW::Compute
 	input_info.bvh_live      = LiveBvhOptions();
 	input_info.lane_branch_live = LiveLaneBranches();
 	input_info.dead_lane_live = LiveDeadLane();
+	input_info.rt_half_live   = LiveRtHalf();
 	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
 	input_info.dispatch_thread_dimensions = use_thread_dimensions;
 	input_info.workgroup_counts[0] = thread_group_x;
@@ -707,6 +715,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	input_info.bvh_live              = LiveBvhOptions();
 	input_info.lane_branch_live      = LiveLaneBranches();
 	input_info.dead_lane_live        = LiveDeadLane();
+	input_info.rt_half_live          = LiveRtHalf();
 	PipelineProbe::BeginItem();
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);

@@ -590,6 +590,9 @@ target_include_directories(rp_ops_fold_tests PRIVATE ${inc_headers})
 add_executable(dead_lane_defaults_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/DeadLaneDefaultsTests.cpp")
 target_include_directories(dead_lane_defaults_tests PRIVATE ${inc_headers})
 
+add_executable(half_rate_tiles_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HalfRateTilesTests.cpp")
+target_include_directories(half_rate_tiles_tests PRIVATE ${inc_headers})
+
 add_executable(color_target_memo_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ColorTargetMemoTests.cpp")
 target_link_libraries(color_target_memo_tests Vulkan::Headers fmt::fmt common)
 target_include_directories(color_target_memo_tests PRIVATE ${inc_headers})

@@ -219,6 +219,11 @@ struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
 	// KYTY_LIVE_KNOBS dead_lane=0/1 (in-run A/B of ShaderDeviceFeatures::dead_lane_fold): 0 keeps
 	// the device features, 1 forces it off, 2 on.
 	uint8_t            dead_lane_live             = 0;
+	// KYTY_LIVE_KNOBS rt_half=0/1 (shader/halfRateTiles.h): 0 keeps KYTY_RT_HALF, 1 off, 2 on.
+	uint8_t            rt_half_live               = 0;
+	// Set by PrepareProgram when the half-rate tile patch applies to this program (its LDS size
+	// then includes HalfRateTiles::kLdsDwords).
+	uint8_t            half_rate_tiles            = 0;
 	ShaderStageRuntime stage;
 };
 
