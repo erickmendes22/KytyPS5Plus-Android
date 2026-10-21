@@ -849,9 +849,9 @@ void Translator::HalfRateExportList() {
 	                                                                       ir.IEqual(HalfRateLocal(1), HalfRateConst(0))));
 	ir.SetExec(lead);
 	ir.Emit(O::RetraceStoreU32, {base, count, lead});
-	for (uint32_t chunk = 0; chunk < H::kAdaptiveListMax / H::kThreads; chunk++) {
-		const auto any = ir.LogicalAnd(lead, ir.ULessThan(HalfRateConst(chunk * H::kThreads), count));
-		ir.Emit(O::RetraceAppendU32, {ir.BitwiseOr(ir.ShiftLeftLogical(group, HalfRateConst(2)), HalfRateConst(chunk)), any});
+	for (uint32_t chunk = 0; chunk < H::kRetraceChunks; chunk++) {
+		const auto any = ir.LogicalAnd(lead, ir.ULessThan(HalfRateConst(chunk * H::kRetraceChunkPixels), count));
+		ir.Emit(O::RetraceAppendU32, {ir.BitwiseOr(ir.ShiftLeftLogical(group, HalfRateConst(4)), HalfRateConst(chunk)), any});
 	}
 	ir.SetExec(exec);
 }
@@ -862,11 +862,11 @@ void Translator::HalfRateRetraceGroup() {
 	const auto entry = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32,
 	                                   {ir.IAdd(HalfRateConst(4), IR::U32(ir.Emit(IR::ValueOpcode::UMin32,
 	                                                                             {HalfRateWorkgroupId(), HalfRateConst(H::kRetraceEntries - 1u)})))}));
-	const auto group = ir.ShiftRightLogical(entry, HalfRateConst(2));
+	const auto group = ir.ShiftRightLogical(entry, HalfRateConst(4));
 	ir.SetScalarReg(static_cast<IR::ScalarReg>(16), group);
 	ir.SetScalarMaskTag(static_cast<IR::ScalarReg>(16), IR::U1(IR::Value(false)));
 	ir.SetVectorReg(static_cast<IR::VectorReg>(kRegRetraceGroup), group);
-	ir.SetVectorReg(static_cast<IR::VectorReg>(kRegRetraceChunk), ir.BitwiseAnd(entry, HalfRateConst(3)));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(kRegRetraceChunk), ir.BitwiseAnd(entry, HalfRateConst(15)));
 }
 
 // rt_half=2 pass 2, after the pixel coordinates are formed: thread i shades listed pixel
@@ -881,12 +881,16 @@ void Translator::HalfRateRetraceRemap() {
 	const auto chunk  = ir.GetVectorReg(static_cast<IR::VectorReg>(kRegRetraceChunk));
 	const auto base   = HalfRateRetraceList(group);
 	const auto count  = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {base}));
-	const auto index  = ir.IAdd(ir.ShiftLeftLogical(chunk, HalfRateConst(6)), HalfRateFlatIndex());
+	// Lanes 4q..4q+3 take the 4-pixel row run of listed pixel 16 * chunk + q (the guest's quad
+	// derivatives read lanes 1 and 2 of each quad as the next pixels of the run).
+	const auto flat   = HalfRateFlatIndex();
+	const auto sub    = ir.BitwiseAnd(flat, HalfRateConst(3));
+	const auto index  = ir.IAdd(ir.IMul(chunk, HalfRateConst(H::kRetraceChunkPixels)), ir.ShiftRightLogical(flat, HalfRateConst(2)));
 	const auto safe   = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {index, HalfRateConst(H::kAdaptiveListMax - 1u)}));
 	const auto packed = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {ir.IAdd(ir.IAdd(base, HalfRateConst(4)), safe)}));
 	const auto listed = ir.ULessThan(index, count);
 	const auto outside = HalfRateConst(0xffffffffu);
-	const auto x = ir.IAdd(origin_x, ir.BitwiseAnd(packed, HalfRateConst(15)));
+	const auto x = ir.IAdd(origin_x, ir.BitwiseOr(ir.BitwiseAnd(packed, HalfRateConst(12)), sub));
 	const auto y = ir.IAdd(origin_y, ir.BitwiseAnd(ir.ShiftRightLogical(packed, HalfRateConst(4)), HalfRateConst(15)));
 	if (std::getenv("KYTY_RT_HALF_RETRACE_SAMPLES") != nullptr) {
 		// Diagnostic: pass 2 re-shades the tile's even/even samples (pass 1 shaded them too), so its

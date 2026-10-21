@@ -1435,33 +1435,34 @@ void BufferCache::PollRtHalfCheck() {
 		m_rt_half_retrace->Invalidate(0, HalfRateTiles::kRetraceBytes);
 		const auto* w       = reinterpret_cast<const uint32_t*>(m_rt_half_retrace->Mapped().data());
 		const auto  entries = std::min(w[0], HalfRateTiles::kRetraceEntries);
-		std::array<uint32_t, 4> chunks {};
+		std::array<uint32_t, 16> chunks {};
 		uint64_t                listed = 0;
 		uint32_t                groups = 0;
 		uint32_t                max_count = 0;
 		for (uint32_t i = 0; i < entries; i++) {
 			const auto e = w[4 + i];
-			chunks[e & 3u]++;
-			if ((e & 3u) == 0u) {
-				const auto g = std::min(e >> 2u, HalfRateTiles::kRetraceGroups - 1u);
+			chunks[e & 15u]++;
+			if ((e & 15u) == 0u) {
+				const auto g = std::min(e >> 4u, HalfRateTiles::kRetraceGroups - 1u);
 				const auto n = w[HalfRateTiles::kRetraceListsWord + g * HalfRateTiles::kRetraceListDwords];
 				listed += n;
 				groups++;
 				max_count = std::max(max_count, n);
 			}
 		}
-		LOGF("[rt-half-check] re-trace: args=%u,%u,%u entries chunk0/1/2/3=%u/%u/%u/%u groups=%u listed=%" PRIu64
+		LOGF("[rt-half-check] re-trace: args=%u,%u,%u entries chunk0/1/2/3/4+=%u/%u/%u/%u/%u groups=%u listed=%" PRIu64
 		     " max/group=%u\n",
-		     w[0], w[1], w[2], chunks[0], chunks[1], chunks[2], chunks[3], groups, listed, max_count);
+		     w[0], w[1], w[2], chunks[0], chunks[1], chunks[2], chunks[3],
+		     entries - chunks[0] - chunks[1] - chunks[2] - chunks[3], groups, listed, max_count);
 		for (uint32_t i = 0; i < std::min(entries, 3u); i++) {
 			const auto e    = w[4 + i];
-			const auto g    = std::min(e >> 2u, HalfRateTiles::kRetraceGroups - 1u);
+			const auto g    = std::min(e >> 4u, HalfRateTiles::kRetraceGroups - 1u);
 			const auto* lst = w + HalfRateTiles::kRetraceListsWord + g * HalfRateTiles::kRetraceListDwords;
 			std::string coords;
 			for (uint32_t k = 0; k < std::min(lst[0], 12u); k++) {
 				coords += fmt::format(" {},{}", lst[4 + k] & 15u, (lst[4 + k] >> 4u) & 15u);
 			}
-			LOGF("[rt-half-check] re-trace entry %u: group=%u chunk=%u count=%u:%s\n", i, e >> 2u, e & 3u, lst[0],
+			LOGF("[rt-half-check] re-trace entry %u: group=%u chunk=%u count=%u:%s\n", i, e >> 4u, e & 15u, lst[0],
 			     coords.c_str());
 		}
 	} else if (knob == 2) {

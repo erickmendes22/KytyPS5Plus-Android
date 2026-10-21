@@ -122,17 +122,24 @@ inline constexpr uint32_t kRegIteration      = 246;
 // loop above, a diagnostic that stalls on re-traced pixels, research/NEXT.md):
 //   pass 1 (half_rate_tiles = kVariantAdaptive): half-rate shading and fill; edge pixels are listed
 //     per workgroup in the re-trace buffer instead of being filled, and every 64-pixel chunk of a
-//     non-empty list is appended (group << 2 | chunk) to the buffer's compact list, whose count is
+//     non-empty list is appended (group << 4 | chunk of 16) to the buffer's compact list, whose count is
 //     the x of the indirect arguments at word 0.
 //   pass 2 (the same variant with rt_fill_live = kFillRetracePass, recorded by the renderer right
 //     after pass 1 as an indirect dispatch over that compact list): each 8x8 group takes the guest
 //     workgroup id of its list entry (so the tile's prologue and culling run as for that tile), and
-//     thread i shades listed pixel 64 * chunk + i at full rate through the guest's own stores.
+//     lanes 4q..4q+3 shade the row run of listed pixel 16 * chunk + q at full rate through the
+//     guest's own stores (kRetraceChunkPixels).
 // Re-trace buffer (words): [0..3] indirect args {count, 1, 1, 0}, [4..4 + kRetraceEntries) compact
 // entries, then kRetraceGroups lists of kRetraceListDwords (count, packed tile-local x | y << 4).
 inline constexpr uint8_t  kFillRetracePass   = 3; // rt_fill_live code of pass 2 (kVariantAdaptive only)
 inline constexpr uint32_t kRetraceGroups     = 16384;
-inline constexpr uint32_t kRetraceEntries    = 3u * kRetraceGroups;
+// The guest takes screen-space derivatives across each quad of lanes (DPP quad_perm at pc
+// 0x1408..0x1464: lanes 1 and 2 minus lane 0, i.e. the next two pixels of a 4-pixel row run), so pass
+// 2 shades every listed pixel together with its row run (x & ~3 .. +3): 16 listed pixels per 8x8
+// group, entries chunk the list by 16.
+inline constexpr uint32_t kRetraceChunkPixels = 16;
+inline constexpr uint32_t kRetraceChunks      = 3u * 64u / kRetraceChunkPixels; // 12
+inline constexpr uint32_t kRetraceEntries    = kRetraceChunks * kRetraceGroups;
 inline constexpr uint32_t kRetraceListDwords = 4u + kAdaptiveListMax;
 inline constexpr uint32_t kRetraceListsWord  = 4u + kRetraceEntries;
 inline constexpr uint64_t kRetraceBytes      = (uint64_t {kRetraceListsWord} + uint64_t {kRetraceGroups} * kRetraceListDwords) * 4u;
