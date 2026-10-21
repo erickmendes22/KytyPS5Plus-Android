@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <pthread.h>
+#include <stop_token>
 #include <thread>
 
 // Two-stage GPU thread (KYTY_GPU_PIPELINE, research/gputhread_pipeline.md). The GPU thread (the
@@ -45,13 +47,19 @@ public:
 
 private:
 	void Run(const std::stop_token& stop);
+	static void* Entry(void* self);
 
 	mutable std::mutex                       m_mutex;
 	std::condition_variable                  m_work;
 	std::condition_variable                  m_done;
 	std::deque<Common::UniqueFunction<void>> m_jobs;
 	bool                                     m_busy = false;
-	std::jthread                             m_thread;
+	// The recorder re-walks SRTs (fallback, stolen fan-out jobs), which recurse deeply
+	// (SrtWalker::EvaluateWide); bionic's default 1 MiB thread stack is not enough (walk workers:
+	// d9b44d54). A pthread with kStackBytes (virtual; touched pages only).
+	static constexpr size_t                  kStackBytes = 16u << 20u;
+	std::stop_source                         m_stop;
+	pthread_t                                m_thread {};
 };
 
 // The process-wide record thread (created on first use by the front).

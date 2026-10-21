@@ -100,13 +100,26 @@ bool Enabled() {
 }
 
 RecordThread::RecordThread() {
-	m_thread = std::jthread([this](const std::stop_token& stop) { Run(stop); });
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, kStackBytes);
+	if (pthread_create(&m_thread, &attr, Entry, this) != 0) {
+		std::abort(); // no record thread: the two-stage GPU thread cannot run
+	}
+	pthread_attr_destroy(&attr);
 }
 
 RecordThread::~RecordThread() {
 	Drain();
-	m_thread.request_stop();
+	m_stop.request_stop();
 	m_work.notify_all();
+	pthread_join(m_thread, nullptr);
+}
+
+void* RecordThread::Entry(void* self) {
+	auto* thread = static_cast<RecordThread*>(self);
+	thread->Run(thread->m_stop.get_token());
+	return nullptr;
 }
 
 void RecordThread::Enqueue(Common::UniqueFunction<void>&& job) {
