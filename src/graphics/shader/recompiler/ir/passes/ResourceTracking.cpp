@@ -56,6 +56,17 @@ uint32_t PossibleU32Bits(Value value, const auto& normalize) {
 				}
 				break;
 			}
+			case ValueOpcode::BitFieldInsert: {
+				const auto offset = inst->Arg(2).Resolve();
+				const auto count  = inst->Arg(3).Resolve();
+				if (offset.IsImmediate() && count.IsImmediate() && offset.U32() < 32u &&
+				    count.U32() <= 32u - offset.U32()) {
+					const auto field = (count.U32() == 32u ? UINT32_MAX : (1u << count.U32()) - 1u)
+					                   << offset.U32();
+					bits = (arg(0) & ~field) | ((arg(1) << offset.U32()) & field);
+				}
+				break;
+			}
 			default: break;
 		}
 		return bits;
