@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
+#include "graphics/guest_gpu/processWatchdog.h"
 
 #include "common/logging/log.h"
 #include "common/perfStats.h"
@@ -127,6 +128,20 @@ void RecordThread::Drain() {
 	m_done.wait(lock, [this] { return m_jobs.empty() && !m_busy; });
 }
 
+size_t RecordThread::Queued() const {
+	std::lock_guard lock(m_mutex);
+	return m_jobs.size();
+}
+
+bool RecordThread::Busy() const {
+	std::lock_guard lock(m_mutex);
+	return m_busy;
+}
+
+RecordThread* BackIfCreated() {
+	return Instance().get();
+}
+
 bool RecordThread::Idle() const {
 	std::lock_guard lock(m_mutex);
 	return m_jobs.empty() && !m_busy;
@@ -181,7 +196,9 @@ void DrainForFront(DrainCause cause, uint32_t opcode) {
 	auto& instance = Instance();
 	if (instance && GuestGpu::IsGpuThread() && !instance->Idle()) {
 		const auto start = NowNs();
+		ProcessWatchdog::SetPhase(ProcessWatchdog::Phase::Drain);
 		instance->Drain();
+		ProcessWatchdog::SetPhase(ProcessWatchdog::Phase::Process);
 		const auto index = static_cast<size_t>(cause);
 		g_drains[index].fetch_add(1, std::memory_order_relaxed);
 		g_drain_ns[index].fetch_add(NowNs() - start, std::memory_order_relaxed);

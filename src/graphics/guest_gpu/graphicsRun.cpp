@@ -1,4 +1,5 @@
 #include "graphics/guest_gpu/graphicsRun.h"
+#include "graphics/guest_gpu/processWatchdog.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/gpuPipelineItems.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
@@ -578,6 +579,7 @@ void GuestGpu::ThreadRun(void* data) {
 	Common::PerfStats::SetGpuThread();
 	Common::PerfStats::SampleThisThreadWallClock();
 	Kernel::ThreadPlacement::RegisterCurrentThread(Kernel::ThreadPlacement::Role::GpuCommand, "gpu");
+	ProcessWatchdog::Start();
 
 	for (;;) {
 		Submission                   submission;
@@ -658,7 +660,9 @@ void GuestGpu::ThreadRun(void* data) {
 			EXIT_IF(g_current_processor != nullptr);
 			{
 				const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GpuSyncCommand);
+				ProcessWatchdog::SetPhase(ProcessWatchdog::Phase::SyncCommand);
 				command();
+				ProcessWatchdog::SetPhase(ProcessWatchdog::Phase::Idle);
 			}
 
 			Common::LockGuard lock(gpu->m_queue_mutex);
@@ -673,7 +677,9 @@ void GuestGpu::ThreadRun(void* data) {
 		bool complete = false;
 		{
 			const Common::PerfStats::ScopedWait process_timing(Common::PerfStats::Wait::GpuProcess);
+			ProcessWatchdog::BeginProcess();
 			complete = gpu->Process(submission);
+			ProcessWatchdog::EndProcess();
 		}
 
 		Common::LockGuard lock(gpu->m_queue_mutex);
@@ -987,8 +993,13 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		}
 		Common::PerfStats::SetPm4Opcode(
 		    opcode == Pm4::IT_NOP ? opcode | (KYTY_PM4_R(packet_header) << 8u) : opcode);
+		ProcessWatchdog::OnPacket(cursor.commands.data(), cursor.offset_dw, total_dw,
+		                          static_cast<uint32_t>(execution.m_buffer_stack.size()),
+		                          opcode == Pm4::IT_NOP ? opcode | ((KYTY_PM4_R(packet_header) & 0xffu) << 8u) : opcode);
+		ProcessWatchdog::SetPhase(ProcessWatchdog::Phase::Handler);
 		const auto packet_dw =
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
+		ProcessWatchdog::SetPhase(ProcessWatchdog::Phase::Process);
 		Common::PerfStats::SetPm4Opcode(0);
 		EXIT_IF(packet_dw > remaining_dw);
 		if (inline_packet && GpuPipeline::Back().Idle()) {
@@ -1004,6 +1015,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		cursor.offset_dw += packet_dw;
 		execution.m_made_progress = true;
 		if (!execution.m_next_buffer.empty()) {
+			ProcessWatchdog::OnIbSwitch();
 			// Chains and taken branches reuse the fetcher; only calls retain a return cursor.
 			if (execution.m_chain) {
 				cursor = {execution.m_next_buffer};
@@ -1118,6 +1130,7 @@ void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 	if (args.instance_count == 0) {
 		args.instance_count = NumInstances();
 	}
+	ProcessWatchdog::OnDraw(1, args.index_count, args.instance_count, m_sh_ctx.GetVs().gs_regs.data_addr);
 	if (GraphicsRunDebugDumpEnabled() && (args.base_vertex != 0 || args.first_instance != 0)) {
 		LOGF("\t draw indexed offsets: base_vertex = %" PRId32 ", first_instance = %" PRIu32 "\n",
 		     args.base_vertex, args.first_instance);
@@ -1242,6 +1255,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 			m_renderer.GetRenderExecutor().NoteIndirectDrawCpuResult(record, empty);
 		}
 	};
+	ProcessWatchdog::OnDraw(4, draw_count, max_count_or_count, 0);
 	if (draw_count == 0) {
 		note();
 		return;
@@ -1326,6 +1340,8 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_group_y,
                                       uint32_t thread_group_z, uint32_t mode) {
 	m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
+	ProcessWatchdog::OnDraw(3, thread_group_x * thread_group_y * thread_group_z, 1,
+	                        m_sh_ctx.GetCs().cs_regs.data_addr);
 
 	uint32_t frame_num = 0;
 
@@ -1393,6 +1409,7 @@ void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 	if (args.instance_count == 0) {
 		args.instance_count = NumInstances();
 	}
+	ProcessWatchdog::OnDraw(2, args.vertex_count, args.instance_count, m_sh_ctx.GetVs().gs_regs.data_addr);
 	if (m_pipe_on) {
 		auto item = MakePipeItem<GpuPipeline::DrawItem>();
 		const auto prefetch = [&] {

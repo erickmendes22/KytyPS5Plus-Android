@@ -168,6 +168,9 @@ public:
 	// Keeps `workers` threads (1..kMaxWorkers); call between items.
 	void Resize(uint32_t workers);
 	[[nodiscard]] uint32_t Workers() const;
+	// Queued and running jobs (watchdog; any thread).
+	[[nodiscard]] size_t   Queued() const;
+	[[nodiscard]] uint32_t Running() const;
 	// Waits until every submitted job has finished (shutdown, tests).
 	void Quiesce();
 

@@ -39,6 +39,9 @@ public:
 	void Enqueue(Common::UniqueFunction<void>&& job);
 	void Drain();
 	[[nodiscard]] bool Idle() const;
+	// Queued jobs and whether one is running (watchdog; any thread).
+	[[nodiscard]] size_t Queued() const;
+	[[nodiscard]] bool   Busy() const;
 
 private:
 	void Run(const std::stop_token& stop);
@@ -53,6 +56,8 @@ private:
 
 // The process-wide record thread (created on first use by the front).
 RecordThread& Back();
+// The record thread if it was created, else nullptr (watchdog).
+RecordThread* BackIfCreated();
 // True on the record thread.
 [[nodiscard]] bool OnBack();
 // Why the front drains the back stage (--perf-stats "drains:" counts and wait per cause).

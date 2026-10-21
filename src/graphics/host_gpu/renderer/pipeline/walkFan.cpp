@@ -148,6 +148,16 @@ void WalkPool::Resize(uint32_t workers) {
 	m_workers.store(workers, std::memory_order_relaxed);
 }
 
+size_t WalkPool::Queued() const {
+	std::lock_guard lock(m_mutex);
+	return m_queue.size();
+}
+
+uint32_t WalkPool::Running() const {
+	std::lock_guard lock(m_mutex);
+	return m_running;
+}
+
 uint32_t WalkPool::Workers() const {
 	return m_workers.load(std::memory_order_relaxed);
 }
