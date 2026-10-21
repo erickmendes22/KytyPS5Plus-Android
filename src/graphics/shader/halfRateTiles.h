@@ -121,7 +121,7 @@ inline constexpr uint8_t kVariantCaptureOnly = 2; // native kernel, light-list c
 //   [20] stress list count, [21..276] stress list, [277..284] 256-bit mask of appending items.
 //   Native runs it as 256 threads x 1 item, half as 64 threads x 4 passes behind the same uniform
 //   branches as the real culling.
-//   [285..287] see kCheckWordRejected.
+//   [285..293] see kCheckWordRejected.
 inline constexpr uint32_t kForcedItems       = 256;
 inline constexpr uint32_t kCheckMaskDwords   = kForcedItems / 32u;
 inline constexpr std::array<uint32_t, 13> kStressCounts {0, 1, 63, 64, 65, 127, 128, 129, 191, 192, 193, 255, 256};
@@ -135,11 +135,17 @@ inline constexpr uint32_t kCheckWordMask     = kCheckWordStress + kForcedItems; 
 inline constexpr uint32_t kCheckTilesX       = 128;
 inline constexpr uint32_t kCheckTilesY       = 72;
 inline constexpr uint32_t kCheckTiles        = kCheckTilesX * kCheckTilesY;
-// [285..287] adaptive-rate estimate (half only, 4-nearest fill): unshaded pixels of the tile whose
-// best candidate similarity (depth x G-buffer weight, no distance term) is below kRejectThresholds.
+// [285..293] adaptive-rate estimate (half only, 4-nearest fill), per tile, unshaded pixels that:
+//   0-2 have no candidate with depth x G-buffer similarity >= 0.5 / 0.25 / 0.1;
+//   3-5 see a lit-luminance spread (max - min) / max among their valid nearest candidates > 0.5 / 0.25 / 0.1;
+//   6   have no candidate with the same material flags (R8Uint at s14+224, read at pc 0x4044);
+//   7   have at least one candidate with other material flags;
+//   8   have no candidate with albedo similarity >= 0.5 (RGBA at s14+32, read at pc 0x634).
 inline constexpr std::array<float, 3> kRejectThresholds {0.5f, 0.25f, 0.1f};
+inline constexpr std::array<float, 3> kSpreadThresholds {0.5f, 0.25f, 0.1f};
+inline constexpr uint32_t kRejectCounters = 9;
 inline constexpr uint32_t kCheckWordRejected = kCheckWordMask + kCheckMaskDwords; // 285
-inline constexpr uint32_t kCheckEntryDwords  = kCheckWordRejected + 3u; // 288
+inline constexpr uint32_t kCheckEntryDwords  = kCheckWordRejected + kRejectCounters; // 294
 inline constexpr uint32_t kCheckRegionDwords = kCheckTiles * kCheckEntryDwords;
 inline constexpr uint32_t kCheckBytes        = 2u * kCheckRegionDwords * 4u;
 inline constexpr uint32_t kCheckRegionNative = 0;
@@ -149,7 +155,14 @@ inline constexpr uint32_t kCheckLdsCounter   = 0;
 inline constexpr uint32_t kCheckLdsList      = 1;
 inline constexpr uint32_t kCheckLdsMask      = kCheckLdsList + kForcedItems;
 inline constexpr uint32_t kCheckLdsRejected  = kCheckLdsMask + kCheckMaskDwords;
-inline constexpr uint32_t kCheckLdsDwords    = kCheckLdsRejected + 3u;
+// Per-sample material flags and albedo (check mode only) for the estimate.
+inline constexpr uint32_t kCheckLdsMaterial  = kCheckLdsRejected + kRejectCounters;
+inline constexpr uint32_t kCheckLdsAlbedo    = kCheckLdsMaterial + kSamples; // 4 arrays
+inline constexpr uint32_t kCheckLdsDwords    = kCheckLdsAlbedo + 4u * kSamples;
+inline constexpr uint32_t kPcMaterialDesc    = 0x402c; // S_LOAD_DWORDX8 s0, s14 + 224
+inline constexpr uint32_t kPcMaterialLoad    = 0x4044; // IMAGE_LOAD v0, v24, s0 (R8Uint flags)
+inline constexpr uint32_t kPcAlbedoDesc      = 0x604;  // S_LOAD_DWORDX8 s20, s14 + 32
+inline constexpr uint32_t kPcAlbedoLoad      = 0x634;  // IMAGE_LOAD v6..v9, v24, s20
 
 // Synthetic radius sign of stress item `item` in tile `tile` (the shader evaluates the same
 // expression): about 7 of 8 items pass the guest's plane test.

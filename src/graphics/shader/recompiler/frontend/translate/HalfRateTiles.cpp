@@ -88,6 +88,12 @@ const std::array kExpected {
     Expect {H::kPcLumaStore, Opcode::IMAGE_STORE,
             [](const Decoder::Instruction& i) { return IsVgpr(i.dst, 8) && IsVgpr(i.src0, 24) && i.dmask == 0x1u; }},
     Expect {H::kPcEnd, Opcode::S_ENDPGM, Any},
+    Expect {H::kPcMaterialDesc, Opcode::S_LOAD_DWORDX8, [](const Decoder::Instruction& i) { return DescLoad(i, 0, 224); }},
+    Expect {H::kPcMaterialLoad, Opcode::IMAGE_LOAD,
+            [](const Decoder::Instruction& i) { return IsVgpr(i.dst, 0) && IsVgpr(i.src0, 24) && i.dmask == 0x1u; }},
+    Expect {H::kPcAlbedoDesc, Opcode::S_LOAD_DWORDX8, [](const Decoder::Instruction& i) { return DescLoad(i, 20, 32); }},
+    Expect {H::kPcAlbedoLoad, Opcode::IMAGE_LOAD,
+            [](const Decoder::Instruction& i) { return IsVgpr(i.dst, 6) && IsVgpr(i.src0, 24) && i.dmask == 0xfu; }},
 };
 
 // Registers an instruction writes from its destination: loads write data_dwords, ALU ops one.
@@ -197,6 +203,10 @@ std::optional<HalfRatePlan> MakeHalfRatePlan(const Decoder::Program& decoded, ui
 	plan.color_store    = *FindPc(decoded, H::kPcColorStore);
 	plan.luma_desc      = *FindPc(decoded, H::kPcLumaDesc);
 	plan.luma_store     = *FindPc(decoded, H::kPcLumaStore);
+	plan.material_desc  = *FindPc(decoded, H::kPcMaterialDesc);
+	plan.material_load  = *FindPc(decoded, H::kPcMaterialLoad);
+	plan.albedo_desc    = *FindPc(decoded, H::kPcAlbedoDesc);
+	plan.albedo_load    = *FindPc(decoded, H::kPcAlbedoLoad);
 	return plan;
 }
 
@@ -291,6 +301,16 @@ void Translator::HalfRateAfter(const Decoder::Instruction& inst) {
 		case H::kPcLumaStore:
 			HalfRateStash(Luma, HalfRateFlatIndex(), ir.GetVectorReg(static_cast<IR::VectorReg>(8)));
 			break;
+		case H::kPcMaterialLoad:
+			if (half_rate->capture) HalfRateCheckStash(H::kCheckLdsMaterial, ir.GetVectorReg(static_cast<IR::VectorReg>(0)));
+			break;
+		case H::kPcAlbedoLoad:
+			if (half_rate->capture) {
+				for (uint32_t k = 0; k < 4u; k++) {
+					HalfRateCheckStash(H::kCheckLdsAlbedo + k * H::kSamples, ir.GetVectorReg(static_cast<IR::VectorReg>(6u + k)));
+				}
+			}
+			break;
 		default: break;
 	}
 }
@@ -340,6 +360,23 @@ void Translator::HalfRateRemap() {
 	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.IAdd(origin_x, ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(stride_shift))));
 	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.IAdd(origin_y, ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(stride_shift))));
 	HalfRateStash(Valid, HalfRateFlatIndex(), HalfRateConst(0));
+	if (half_rate->capture) {
+		HalfRateCheckStash(H::kCheckLdsMaterial, HalfRateConst(0));
+		for (uint32_t k = 0; k < 4u; k++) HalfRateCheckStash(H::kCheckLdsAlbedo + k * H::kSamples, HalfRateConst(0));
+	}
+}
+
+// Check mode: one word per sample (thread) in the check scratch, array base `word` (in words).
+void Translator::HalfRateCheckStash(uint32_t word, IR::U32 value) {
+	const auto address = ir.IAdd(HalfRateConst(half_rate->check_base_bytes + word * 4u),
+	                             ir.ShiftLeftLogical(HalfRateFlatIndex(), HalfRateConst(2)));
+	WriteSharedU32(1, address, {value, IR::Value(0u), IR::Value(0u), IR::Value(0u)}, LdsWord(), current_pc);
+}
+
+IR::U32 Translator::HalfRateCheckLoad(uint32_t word, IR::U32 index) {
+	const auto address = ir.IAdd(HalfRateConst(half_rate->check_base_bytes + word * 4u),
+	                             ir.ShiftLeftLogical(index, HalfRateConst(2)));
+	return IR::U32(LoadSharedU32(1, address, LdsWord(), current_pc));
 }
 
 // KYTY_RT_HALF_CHECK, after the list barrier (graphics/shader/halfRateTiles.h "Check log").
@@ -378,7 +415,7 @@ void Translator::HalfRateCapture() {
 	}
 	const auto check_word = [&](uint32_t word) { return HalfRateConst(half_rate->check_base_bytes + word * 4u); };
 	ir.SetExec(lead);
-	for (uint32_t w = 0; w < 1u + H::kCheckMaskDwords + 3u; w++) {
+	for (uint32_t w = 0; w < 1u + H::kCheckMaskDwords + H::kRejectCounters; w++) {
 		const uint32_t word = w == 0 ? H::kCheckLdsCounter
 		                    : w <= H::kCheckMaskDwords ? H::kCheckLdsMask + (w - 1u)
 		                                               : H::kCheckLdsRejected + (w - 1u - H::kCheckMaskDwords);
@@ -519,6 +556,26 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 		own_g[k]     = f(ir.GetVectorReg(static_cast<IR::VectorReg>(3u + k)));
 		own_g_energy = add(own_g_energy, mul(own_g[k], own_g[k]));
 	}
+	// Check mode: the pixel's own material flags and albedo for the adaptive-rate estimate.
+	IR::U32                own_material {};
+	std::array<IR::F32, 4> own_albedo {};
+	auto                   own_albedo_energy = HalfRateFloat(0.0f);
+	if (half_rate->capture) {
+		TranslateInstruction(half_rate->material_desc);
+		TranslateInstruction(half_rate->material_load);
+		own_material = ir.GetVectorReg(static_cast<IR::VectorReg>(0));
+		TranslateInstruction(half_rate->albedo_desc);
+		TranslateInstruction(half_rate->albedo_load);
+		for (uint32_t k = 0; k < 4u; k++) {
+			own_albedo[k]     = f(ir.GetVectorReg(static_cast<IR::VectorReg>(6u + k)));
+			own_albedo_energy = add(own_albedo_energy, mul(own_albedo[k], own_albedo[k]));
+		}
+	}
+	auto luma_min        = HalfRateFloat(3.0e38f);
+	auto luma_max        = HalfRateFloat(0.0f);
+	auto any_same_mat    = IR::U1(IR::Value(false));
+	auto any_other_mat   = IR::U1(IR::Value(false));
+	auto best_albedo     = HalfRateFloat(0.0f);
 
 	const auto ftx = IR::F32(ir.Emit(O::ConvertF32U32, {tx}));
 	const auto fty = IR::F32(ir.Emit(O::ConvertF32U32, {ty}));
@@ -565,6 +622,28 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 			const auto w   = IR::F32(ir.Emit(O::SelectF32, {valid, mul(mul(spatial, depth_w), g_w), HalfRateFloat(0.0f)}));
 			best = HalfRateFloatOp(O::FPMax32, best,
 			                       IR::F32(ir.Emit(O::SelectF32, {valid, mul(depth_w, g_w), HalfRateFloat(0.0f)})));
+			if (half_rate->capture) {
+				std::array<IR::F32, 3> rgb {};
+				for (uint32_t k = 0; k < 3u; k++) rgb[k] = f(HalfRateLoad(Color + k, index));
+				const auto lum = add(add(mul(rgb[0], HalfRateFloat(0.2126f)), mul(rgb[1], HalfRateFloat(0.7152f))),
+				                     mul(rgb[2], HalfRateFloat(0.0722f)));
+				luma_min = IR::F32(ir.Emit(O::SelectF32, {valid, HalfRateFloatOp(O::FPMin32, luma_min, lum), luma_min}));
+				luma_max = IR::F32(ir.Emit(O::SelectF32, {valid, HalfRateFloatOp(O::FPMax32, luma_max, lum), luma_max}));
+				const auto mat  = HalfRateCheckLoad(H::kCheckLdsMaterial, index);
+				const auto same = ir.IEqual(mat, own_material);
+				any_same_mat    = ir.LogicalOr(any_same_mat, ir.LogicalAnd(valid, same));
+				any_other_mat   = ir.LogicalOr(any_other_mat, ir.LogicalAnd(valid, ir.LogicalNot(same)));
+				auto a_diff   = HalfRateFloat(0.0f);
+				auto a_energy = own_albedo_energy;
+				for (uint32_t k = 0; k < 4u; k++) {
+					const auto a = f(HalfRateCheckLoad(H::kCheckLdsAlbedo + k * H::kSamples, index));
+					const auto d = sub(a, own_albedo[k]);
+					a_diff       = add(a_diff, mul(d, d));
+					a_energy     = add(a_energy, mul(a, a));
+				}
+				const auto a_w = falloff(mul(mul(a_diff, rcp(add(a_energy, HalfRateFloat(1e-4f)))), HalfRateFloat(kGbufferSharpness)));
+				best_albedo    = IR::F32(ir.Emit(O::SelectF32, {valid, HalfRateFloatOp(O::FPMax32, best_albedo, a_w), best_albedo}));
+			}
 			for (uint32_t k = 0; k < 4u; k++) {
 				color[k] = IR::F32(ir.Emit(O::FPFma32, {w, f(HalfRateLoad(Color + k, index)), color[k]}));
 			}
@@ -574,12 +653,24 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 	}
 	if (half_rate->capture) {
 		// KYTY_RT_HALF_CHECK: count unshaded pixels without a same-surface candidate.
-		for (uint32_t t = 0; t < H::kRejectThresholds.size(); t++) {
-			const auto rejected = ir.LogicalAnd(ir.GetExec(), IR::U1(ir.Emit(O::FPOrdLessThan32, {best, HalfRateFloat(H::kRejectThresholds[t])})));
+		const auto count = [&](uint32_t counter, IR::U1 flag) {
 			ir.Emit(O::SharedAtomicIAdd32,
-			        {HalfRateConst(half_rate->check_base_bytes + (H::kCheckLdsRejected + t) * 4u), HalfRateConst(1), rejected},
+			        {HalfRateConst(half_rate->check_base_bytes + (H::kCheckLdsRejected + counter) * 4u), HalfRateConst(1),
+			         ir.LogicalAnd(ir.GetExec(), flag)},
 			        AddMemoryInfo(LdsWord(), current_pc));
+		};
+		for (uint32_t t = 0; t < H::kRejectThresholds.size(); t++) {
+			count(t, IR::U1(ir.Emit(O::FPOrdLessThan32, {best, HalfRateFloat(H::kRejectThresholds[t])})));
 		}
+		const auto spread = mul(sub(luma_max, luma_min), rcp(HalfRateFloatOp(O::FPMax32, luma_max, HalfRateFloat(1e-3f))));
+		const auto has_candidate = IR::U1(ir.Emit(O::FPOrdGreaterThanEqual32, {luma_max, luma_min}));
+		for (uint32_t t = 0; t < H::kSpreadThresholds.size(); t++) {
+			count(3u + t, ir.LogicalAnd(has_candidate,
+			                            IR::U1(ir.Emit(O::FPOrdGreaterThan32, {spread, HalfRateFloat(H::kSpreadThresholds[t])}))));
+		}
+		count(6, ir.LogicalAnd(has_candidate, ir.LogicalNot(any_same_mat)));
+		count(7, any_other_mat);
+		count(8, ir.LogicalAnd(has_candidate, IR::U1(ir.Emit(O::FPOrdLessThan32, {best_albedo, HalfRateFloat(0.5f)}))));
 	}
 	const auto any   = IR::U1(ir.Emit(O::FPOrdGreaterThan32, {weight, HalfRateFloat(0.0f)}));
 	const auto scale = IR::F32(ir.Emit(O::SelectF32, {any, rcp(HalfRateFloatOp(O::FPMax32, weight, HalfRateFloat(1e-37f))), HalfRateFloat(0.0f)}));
@@ -618,7 +709,7 @@ void Translator::HalfRateReconstruct() {
 		const auto base = ir.IAdd(HalfRateConst(half_rate->capture_region * H::kCheckRegionDwords),
 		                          ir.IMul(ir.IAdd(ir.IMul(tile_y, HalfRateConst(H::kCheckTilesX)), tile_x),
 		                                  HalfRateConst(H::kCheckEntryDwords)));
-		for (uint32_t t = 0; t < H::kRejectThresholds.size(); t++) {
+		for (uint32_t t = 0; t < H::kRejectCounters; t++) {
 			const auto value = IR::U32(LoadSharedU32(1, HalfRateConst(half_rate->check_base_bytes + (H::kCheckLdsRejected + t) * 4u),
 			                                         LdsWord(), current_pc));
 			ir.Emit(O::DebugLogStoreU32, {ir.IAdd(base, HalfRateConst(H::kCheckWordRejected + t)), value, write});

@@ -1420,10 +1420,11 @@ void BufferCache::PollRtHalfCheck() {
 	} else if (!st.native_latest.empty()) {
 		const auto half = region(HalfRateTiles::kCheckRegionHalf);
 		report("half vs latest native phase", half, st.native_latest);
-		// Adaptive-rate estimate: unshaded pixels (3 of each 2x2) without a same-surface candidate.
-		std::array<uint64_t, 3> rejected {};
-		std::array<uint32_t, 3> edge_tiles {}; // tiles with at least one such pixel (a second pass would visit them)
-		uint32_t                tiles = 0;
+		// Adaptive-rate estimate (halfRateTiles.h kCheckWordRejected): per criterion, the share of all
+		// pixels a second pass would re-trace and the tiles it would visit.
+		std::array<uint64_t, HalfRateTiles::kRejectCounters> rejected {};
+		std::array<uint32_t, HalfRateTiles::kRejectCounters> edge_tiles {};
+		uint32_t                                             tiles = 0;
 		for (uint32_t tile = 0; tile < HalfRateTiles::kCheckTiles; tile++) {
 			const auto* e = half.data() + tile * HalfRateTiles::kCheckEntryDwords;
 			if (e[0] == 0u) continue;
@@ -1433,13 +1434,17 @@ void BufferCache::PollRtHalfCheck() {
 				edge_tiles[t] += e[HalfRateTiles::kCheckWordRejected + t] != 0u ? 1u : 0u;
 			}
 		}
-		const double unshaded = static_cast<double>(tiles) * 192.0;
-		LOGF("[rt-half-check] unshaded pixels without a same-surface candidate (best similarity < 0.5 / 0.25 / 0.1): "
-		     "%.2f%% / %.2f%% / %.2f%% of unshaded, %.2f%% / %.2f%% / %.2f%% of all, %u tiles, tiles with any %u / %u / %u\n",
-		     unshaded > 0 ? 100.0 * rejected[0] / unshaded : 0.0, unshaded > 0 ? 100.0 * rejected[1] / unshaded : 0.0,
-		     unshaded > 0 ? 100.0 * rejected[2] / unshaded : 0.0, unshaded > 0 ? 75.0 * rejected[0] / unshaded : 0.0,
-		     unshaded > 0 ? 75.0 * rejected[1] / unshaded : 0.0, unshaded > 0 ? 75.0 * rejected[2] / unshaded : 0.0, tiles,
-		     edge_tiles[0], edge_tiles[1], edge_tiles[2]);
+		static constexpr std::array<const char*, HalfRateTiles::kRejectCounters> kNames {
+		    "no similar depth*G >=0.5", "no similar depth*G >=0.25", "no similar depth*G >=0.1",
+		    "luma spread >0.5", "luma spread >0.25", "luma spread >0.1",
+		    "no same material", "any other material", "no similar albedo >=0.5"};
+		const double pixels = static_cast<double>(tiles) * 256.0;
+		std::string  line;
+		for (uint32_t t = 0; t < rejected.size(); t++) {
+			line += fmt::format("{}{}: {:.2f}% of pixels, {} tiles", t == 0 ? "" : "; ", kNames[t],
+			                    pixels > 0 ? 100.0 * static_cast<double>(rejected[t]) / pixels : 0.0, edge_tiles[t]);
+		}
+		LOGF("[rt-half-check] re-trace estimate over %u tiles: %s\n", tiles, line.c_str());
 	}
 }
 

@@ -278,6 +278,8 @@ private:
 	IR::U32 HalfRateLoad(uint32_t array, IR::U32 index);
 	void    HalfRateCull();
 	void    HalfRateRemap();
+	void    HalfRateCheckStash(uint32_t word, IR::U32 value);
+	IR::U32 HalfRateCheckLoad(uint32_t word, IR::U32 index);
 	void    HalfRateCapture();
 	void    HalfRateFill(uint32_t dx, uint32_t dy, IR::U1 live);
 	void    HalfRateReconstruct();

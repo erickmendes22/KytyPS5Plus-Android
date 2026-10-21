@@ -45,6 +45,10 @@ struct HalfRatePlan {
 	Decoder::Instruction              color_store;
 	Decoder::Instruction              luma_desc;
 	Decoder::Instruction              luma_store;
+	Decoder::Instruction              material_desc; // check mode: the adaptive-rate estimate
+	Decoder::Instruction              material_load;
+	Decoder::Instruction              albedo_desc;
+	Decoder::Instruction              albedo_load;
 };
 
 // variant: HalfRateTiles::kVariantHalf or kVariantCaptureOnly; lds_dwords: the program's LDS size
