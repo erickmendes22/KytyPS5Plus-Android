@@ -360,6 +360,11 @@ VALUE_OPCODE(Barrier, Void)
 // KYTY_RT_HALF_CHECK (graphics/shader/halfRateTiles.h): word index, value, exec; a store to the
 // host-visible check log.
 VALUE_OPCODE(DebugLogStoreU32, Void, U32, U32, U1)
+// rt_half=2 re-trace buffer (graphics/shader/halfRateTiles.h): word index, value, exec; word index;
+// value appended to the compact list (atomic count at word 0), exec.
+VALUE_OPCODE(RetraceStoreU32, Void, U32, U32, U1)
+VALUE_OPCODE(RetraceLoadU32, U32, U32)
+VALUE_OPCODE(RetraceAppendU32, Void, U32, U1)
 VALUE_OPCODE(Sendmsg, Void)
 VALUE_OPCODE(TtraceData, Void)
 VALUE_OPCODE(InstPrefetch, Void)

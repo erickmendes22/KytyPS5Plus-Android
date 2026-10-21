@@ -118,6 +118,41 @@ inline constexpr float   kEdgeSpread         = 0.1f;
 inline constexpr uint32_t kAdaptiveListMax   = 3u * 64u; // unshaded pixels per tile
 inline constexpr uint32_t kAdaptiveLdsDwords = 4u + kAdaptiveListMax; // counter (+pad), packed tile-local x | y << 4
 inline constexpr uint32_t kRegIteration      = 246;
+// rt_half=2 as two dispatches (default for the variant; KYTY_RT_HALF_LOOP=1 selects the in-kernel
+// loop above, a diagnostic that stalls on re-traced pixels, research/NEXT.md):
+//   pass 1 (half_rate_tiles = kVariantAdaptive): half-rate shading and fill; edge pixels are listed
+//     per workgroup in the re-trace buffer instead of being filled, and every 64-pixel chunk of a
+//     non-empty list is appended (group << 2 | chunk) to the buffer's compact list, whose count is
+//     the x of the indirect arguments at word 0.
+//   pass 2 (the same variant with rt_fill_live = kFillRetracePass, recorded by the renderer right
+//     after pass 1 as an indirect dispatch over that compact list): each 8x8 group takes the guest
+//     workgroup id of its list entry (so the tile's prologue and culling run as for that tile), and
+//     thread i shades listed pixel 64 * chunk + i at full rate through the guest's own stores.
+// Re-trace buffer (words): [0..3] indirect args {count, 1, 1, 0}, [4..4 + kRetraceEntries) compact
+// entries, then kRetraceGroups lists of kRetraceListDwords (count, packed tile-local x | y << 4).
+inline constexpr uint8_t  kFillRetracePass   = 3; // rt_fill_live code of pass 2 (kVariantAdaptive only)
+inline constexpr uint32_t kRetraceGroups     = 16384;
+inline constexpr uint32_t kRetraceEntries    = 3u * kRetraceGroups;
+inline constexpr uint32_t kRetraceListDwords = 4u + kAdaptiveListMax;
+inline constexpr uint32_t kRetraceListsWord  = 4u + kRetraceEntries;
+inline constexpr uint64_t kRetraceBytes      = (uint64_t {kRetraceListsWord} + uint64_t {kRetraceGroups} * kRetraceListDwords) * 4u;
+inline constexpr uint32_t kPcGroupId         = 0x018; // S_LSHL_B32 vcc_lo, s16, 2 (s16 = guest workgroup id)
+
+inline bool LoopDiagnostic() {
+	static const bool loop = [] {
+		const char* value = std::getenv("KYTY_RT_HALF_LOOP");
+		return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+	}();
+	return loop;
+}
+
+// Device address of the re-trace buffer (set by the buffer cache before shaders compile), 0 = none.
+inline std::atomic<uint64_t>& RetraceAddressStorage() {
+	static std::atomic<uint64_t> address {0};
+	return address;
+}
+inline uint64_t RetraceAddress() { return RetraceAddressStorage().load(std::memory_order_acquire); }
+inline void     SetRetraceAddress(uint64_t address) { RetraceAddressStorage().store(address, std::memory_order_release); }
 
 // Check log: per region kCheckTiles entries of kCheckEntryDwords:
 //   [0] light-list count + 1 (0 = no capture for that tile), [1..16] list entries,

@@ -63,6 +63,7 @@ struct Expect {
 bool Any(const Decoder::Instruction&) { return true; }
 
 const std::array kExpected {
+    Expect {H::kPcGroupId, Opcode::S_LSHL_B32, [](const Decoder::Instruction& i) { return IsSgpr(i.src0, 16); }},
     Expect {H::kPcFlatIndex, Opcode::V_LSHL_ADD_U32, [](const Decoder::Instruction& i) { return IsVgpr(i.dst, 23); }},
     Expect {0x390, Opcode::V_CMPX_GT_U32, Any},
     Expect {0x3b4, Opcode::V_CMPX_LE_U32, Any},
@@ -173,12 +174,16 @@ std::optional<HalfRatePlan> MakeHalfRatePlan(const Decoder::Program& decoded, ui
 	plan.capture        = capture;
 	plan.capture_region = plan.half ? H::kCheckRegionHalf : H::kCheckRegionNative;
 	plan.fill_mode      = fill_mode;
-	plan.adaptive = variant == H::kVariantAdaptive;
-	plan.half     = plan.half || plan.adaptive;
-	plan.capture  = plan.capture && !plan.adaptive; // the check's stress split would share the loop's pre block
+	const bool variant3 = variant == H::kVariantAdaptive;
+	plan.adaptive     = variant3 && H::LoopDiagnostic();
+	plan.retrace      = variant3 && !plan.adaptive;
+	plan.retrace_pass = plan.retrace && fill_mode == H::kFillRetracePass;
+	if (plan.retrace_pass) plan.fill_mode = 0;
+	plan.half     = plan.half || variant3;
+	plan.capture  = plan.capture && !variant3; // the check's stress split would share the loop's pre block
 	plan.capture_region = plan.half ? H::kCheckRegionHalf : H::kCheckRegionNative;
-	const uint32_t check_dwords    = H::CheckEnabled() && !plan.adaptive ? H::kCheckLdsDwords : 0u;
-	const uint32_t adaptive_dwords = plan.adaptive ? H::kAdaptiveLdsDwords : 0u;
+	const uint32_t check_dwords    = H::CheckEnabled() && !variant3 ? H::kCheckLdsDwords : 0u;
+	const uint32_t adaptive_dwords = variant3 ? H::kAdaptiveLdsDwords : 0u;
 	const uint32_t patch_dwords    = (plan.half ? H::kLdsDwords : 0u) + adaptive_dwords + check_dwords;
 	if (lds_dwords < patch_dwords) {
 		if (reason != nullptr) {
@@ -273,11 +278,18 @@ void Translator::HalfRateBefore(const Decoder::Instruction& inst) {
 			ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegExtentY), ir.GetScalarReg(static_cast<IR::ScalarReg>(13)));
 			break;
 		case H::kPcEnd:
+			if (half_rate->retrace_pass) {
+				break; // pass 2 stored its pixels through the guest's own stores
+			}
 			if (half_rate->adaptive) {
 				HalfRateLoopExit();
 			} else {
 				HalfRateReconstruct();
+				if (half_rate->retrace) HalfRateExportList();
 			}
+			break;
+		case H::kPcGroupId:
+			if (half_rate->retrace_pass) HalfRateRetraceGroup();
 			break;
 		default: break;
 	}
@@ -304,7 +316,19 @@ void Translator::HalfRateAfter(const Decoder::Instruction& inst) {
 			// The item index of the guest's first culling pass; the replay adds 64k.
 			ir.SetVectorReg(static_cast<IR::VectorReg>(23), HalfRateFlatIndex());
 			break;
-		case H::kPcCoordY: HalfRateRemap(); break;
+		case H::kPcCoordY:
+			if (half_rate->retrace_pass) {
+				HalfRateRetraceRemap();
+			} else {
+				HalfRateRemap();
+			}
+			break;
+		default: break;
+	}
+	if (half_rate->retrace_pass) {
+		return; // pass 2 keeps no samples
+	}
+	switch (inst.pc) {
 		case H::kPcDepthLoad:
 			HalfRateStash(Depth, HalfRateFlatIndex(), ir.GetVectorReg(static_cast<IR::VectorReg>(26)));
 			break;
@@ -377,10 +401,18 @@ void Translator::HalfRateRemap() {
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginY), origin_y);
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegTileLive), HalfRateConst(1));
 	// kFillQuarter (timing probe): contiguous pixels of the top-left quarter instead of every other one.
-	const uint32_t stride_shift = half_rate->fill_mode == H::kFillQuarter && !half_rate->adaptive ? 0u : 1u;
+	const uint32_t stride_shift = half_rate->fill_mode == H::kFillQuarter && !half_rate->adaptive && !half_rate->retrace ? 0u : 1u;
 	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.IAdd(origin_x, ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(stride_shift))));
 	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.IAdd(origin_y, ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(stride_shift))));
 	HalfRateStash(Valid, HalfRateFlatIndex(), HalfRateConst(0));
+	if (half_rate->retrace) {
+		// Pass 1: clear the LDS edge list (ordered before the fill by its barrier).
+		const auto exec = ir.GetExec();
+		ir.SetExec(ir.LogicalAnd(ir.IEqual(HalfRateLocal(0), HalfRateConst(0)), ir.IEqual(HalfRateLocal(1), HalfRateConst(0))));
+		WriteSharedU32(1, HalfRateConst(half_rate->adaptive_base_bytes), {HalfRateConst(0), IR::Value(0u), IR::Value(0u), IR::Value(0u)},
+		               LdsWord(), current_pc);
+		ir.SetExec(exec);
+	}
 	if (half_rate->capture) {
 		HalfRateCheckStash(H::kCheckLdsMaterial, HalfRateConst(0));
 		for (uint32_t k = 0; k < 4u; k++) HalfRateCheckStash(H::kCheckLdsAlbedo + k * H::kSamples, HalfRateConst(0));
@@ -643,7 +675,7 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 			const auto w   = IR::F32(ir.Emit(O::SelectF32, {valid, mul(mul(spatial, depth_w), g_w), HalfRateFloat(0.0f)}));
 			best = HalfRateFloatOp(O::FPMax32, best,
 			                       IR::F32(ir.Emit(O::SelectF32, {valid, mul(depth_w, g_w), HalfRateFloat(0.0f)})));
-			if (half_rate->capture || half_rate->adaptive) {
+			if (half_rate->capture || half_rate->adaptive || half_rate->retrace) {
 				std::array<IR::F32, 3> rgb {};
 				for (uint32_t k = 0; k < 3u; k++) rgb[k] = f(HalfRateLoad(Color + k, index));
 				const auto lum = add(add(mul(rgb[0], HalfRateFloat(0.2126f)), mul(rgb[1], HalfRateFloat(0.7152f))),
@@ -703,7 +735,7 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 		ir.SetVectorReg(static_cast<IR::VectorReg>(3u + k), ir.BitCastU32(mul(color[k], scale)));
 	}
 	ir.SetVectorReg(static_cast<IR::VectorReg>(8), ir.BitCastU32(mul(luma, scale)));
-	if (half_rate->adaptive) {
+	if (half_rate->adaptive || half_rate->retrace) {
 		// rt_half=2: an edge pixel is listed for the re-trace pass instead of being filled.
 		// Diagnostic: rt_half=2 with rt_fill=9 keeps the loop but lists no pixel (one trip).
 		const float threshold = half_rate->fill_mode == H::kFillRing9 ? 3.0e38f : H::kEdgeSpread;
@@ -728,7 +760,8 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 // Before s_endpgm: all samples of the tile are in LDS after the barrier; each thread fills the
 // right, lower and diagonal pixel of its 2x2.
 void Translator::HalfRateReconstruct() {
-	if (!half_rate->adaptive && (half_rate->fill_mode == H::kFillOff || half_rate->fill_mode == H::kFillQuarter)) {
+	if (!half_rate->adaptive && !half_rate->retrace &&
+	    (half_rate->fill_mode == H::kFillOff || half_rate->fill_mode == H::kFillQuarter)) {
 		return;
 	}
 	ir.Emit(IR::ValueOpcode::Barrier);
@@ -756,6 +789,85 @@ void Translator::HalfRateReconstruct() {
 			ir.Emit(O::DebugLogStoreU32, {ir.IAdd(base, HalfRateConst(H::kCheckWordRejected + t)), value, write});
 		}
 	}
+}
+
+IR::U32 Translator::HalfRateWorkgroupId() {
+	return IR::U32(ir.Emit(IR::ValueOpcode::GetBuiltin,
+	                       {IR::Value(static_cast<uint32_t>(IR::StageInputKind::WorkgroupId)), IR::Value(0u)}));
+}
+
+// The re-trace buffer word where workgroup `group`'s edge list starts.
+IR::U32 Translator::HalfRateRetraceList(IR::U32 group) {
+	const auto safe = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {group, HalfRateConst(H::kRetraceGroups - 1u)}));
+	return ir.IAdd(HalfRateConst(H::kRetraceListsWord), ir.IMul(safe, HalfRateConst(H::kRetraceListDwords)));
+}
+
+// rt_half=2 pass 1, after the fill: the workgroup's edge list goes to the re-trace buffer, and each
+// 64-pixel chunk of it is appended to the compact list that pass 2 dispatches over.
+void Translator::HalfRateExportList() {
+	using O = IR::ValueOpcode;
+	ir.Emit(O::Barrier); // the LDS edge list is complete
+	const auto group = HalfRateWorkgroupId();
+	const auto base  = HalfRateRetraceList(group);
+	const auto count = IR::U32(LoadSharedU32(1, HalfRateConst(half_rate->adaptive_base_bytes), LdsWord(), current_pc));
+	const auto fits  = ir.ULessThan(group, HalfRateConst(H::kRetraceGroups));
+	const auto live  = ir.IEqual(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegTileLive)), HalfRateConst(1));
+	const auto thread = HalfRateFlatIndex();
+	const auto exec   = ir.GetExec();
+	for (uint32_t r = 0; r < H::kAdaptiveListMax / H::kThreads; r++) {
+		const auto index = ir.IAdd(thread, HalfRateConst(r * H::kThreads));
+		const auto take  = ir.LogicalAnd(ir.LogicalAnd(fits, live), ir.ULessThan(index, count));
+		ir.SetExec(take);
+		const auto packed = IR::U32(LoadSharedU32(1, ir.IAdd(HalfRateConst(half_rate->adaptive_base_bytes + 16u),
+		                                                    ir.ShiftLeftLogical(index, HalfRateConst(2))),
+		                                          LdsWord(), current_pc));
+		ir.Emit(O::RetraceStoreU32, {ir.IAdd(ir.IAdd(base, HalfRateConst(4)), index), packed, take});
+	}
+	const auto lead = ir.LogicalAnd(ir.LogicalAnd(fits, live), ir.LogicalAnd(ir.IEqual(HalfRateLocal(0), HalfRateConst(0)),
+	                                                                       ir.IEqual(HalfRateLocal(1), HalfRateConst(0))));
+	ir.SetExec(lead);
+	ir.Emit(O::RetraceStoreU32, {base, count, lead});
+	for (uint32_t chunk = 0; chunk < H::kAdaptiveListMax / H::kThreads; chunk++) {
+		const auto any = ir.LogicalAnd(lead, ir.ULessThan(HalfRateConst(chunk * H::kThreads), count));
+		ir.Emit(O::RetraceAppendU32, {ir.BitwiseOr(ir.ShiftLeftLogical(group, HalfRateConst(2)), HalfRateConst(chunk)), any});
+	}
+	ir.SetExec(exec);
+}
+
+// rt_half=2 pass 2, before the guest reads its workgroup id (pc 0x018): take the guest workgroup of
+// this dispatch's compact-list entry, so the tile's prologue and culling run as for that tile.
+void Translator::HalfRateRetraceGroup() {
+	const auto entry = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32,
+	                                   {ir.IAdd(HalfRateConst(4), IR::U32(ir.Emit(IR::ValueOpcode::UMin32,
+	                                                                             {HalfRateWorkgroupId(), HalfRateConst(H::kRetraceEntries - 1u)})))}));
+	const auto group = ir.ShiftRightLogical(entry, HalfRateConst(2));
+	ir.SetScalarReg(static_cast<IR::ScalarReg>(16), group);
+	ir.SetScalarMaskTag(static_cast<IR::ScalarReg>(16), IR::U1(IR::Value(false)));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(kRegRetraceGroup), group);
+	ir.SetVectorReg(static_cast<IR::VectorReg>(kRegRetraceChunk), ir.BitwiseAnd(entry, HalfRateConst(3)));
+}
+
+// rt_half=2 pass 2, after the pixel coordinates are formed: thread i shades listed pixel
+// 64 * chunk + i; threads past the list get coordinates the guest's bounds check rejects.
+void Translator::HalfRateRetraceRemap() {
+	const auto origin_x = ir.GetScalarReg(static_cast<IR::ScalarReg>(12));
+	const auto origin_y = ir.GetScalarReg(static_cast<IR::ScalarReg>(13));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginX), origin_x);
+	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginY), origin_y);
+	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegTileLive), HalfRateConst(1));
+	const auto group  = ir.GetVectorReg(static_cast<IR::VectorReg>(kRegRetraceGroup));
+	const auto chunk  = ir.GetVectorReg(static_cast<IR::VectorReg>(kRegRetraceChunk));
+	const auto base   = HalfRateRetraceList(group);
+	const auto count  = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {base}));
+	const auto index  = ir.IAdd(ir.ShiftLeftLogical(chunk, HalfRateConst(6)), HalfRateFlatIndex());
+	const auto safe   = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {index, HalfRateConst(H::kAdaptiveListMax - 1u)}));
+	const auto packed = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {ir.IAdd(ir.IAdd(base, HalfRateConst(4)), safe)}));
+	const auto listed = ir.ULessThan(index, count);
+	const auto outside = HalfRateConst(0xffffffffu);
+	const auto x = ir.IAdd(origin_x, ir.BitwiseAnd(packed, HalfRateConst(15)));
+	const auto y = ir.IAdd(origin_y, ir.BitwiseAnd(ir.ShiftRightLogical(packed, HalfRateConst(4)), HalfRateConst(15)));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.Select(listed, x, outside));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.Select(listed, y, outside));
 }
 
 // rt_half=2 diagnostic (KYTY_RT_HALF_CHECK): in re-trace iterations, the first active lane of the

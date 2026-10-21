@@ -260,6 +260,9 @@ public:
 	                                   GpuPipeline::PreparedDrawShaders& out);
 
 	void PrepareBindings(const ShaderStageRuntime& runtime, PreparedBindings& prepared);
+	// rt_half=2 pass 2 (shader/halfRateTiles.h), recorded right after pass 1.
+	void DispatchRetracePass(CommandBuffer& buffer, const HW::ComputeShaderInfo& cs_regs,
+	                         ShaderComputeInputInfo input_info, uint64_t args_addr, Buffer& retrace);
 	void                           FindBuffers(std::span<PreparedBindings* const> stages);
 	void                           RebindBuffers(PreparedBindings& bindings);
 	void                           RebindImages(PreparedBindings& bindings);

@@ -133,6 +133,8 @@ public:
 	void               PollLoopGuardLog(bool force = false);
 	// KYTY_RT_HALF_CHECK (graphics/shader/halfRateTiles.h): compares the captured light lists.
 	void               PollRtHalfCheck();
+	// rt_half=2 re-trace buffer (graphics/shader/halfRateTiles.h), null when not allocated.
+	[[nodiscard]] Buffer* RetraceBuffer() const { return m_rt_half_retrace.get(); }
 	// Bytes of guest-mirroring buffers the cache owns, and the mesh emulation ring (0 if unused).
 	[[nodiscard]] uint64_t TotalUsedMemory() const noexcept { return m_total_used_memory; }
 	[[nodiscard]] uint64_t MeshRingCapacity() const noexcept;
@@ -225,6 +227,7 @@ private:
 		bool                  phase_logged     = false;
 	};
 	std::unique_ptr<Buffer>                           m_rt_half_check;
+	std::unique_ptr<Buffer>                           m_rt_half_retrace;
 	RtHalfCheckState                                  m_rt_half_state;
 	uint64_t                                          m_bda_table_pages = 0;
 	bool                                              m_bda_table_sized = false;

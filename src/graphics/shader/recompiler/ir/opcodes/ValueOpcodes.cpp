@@ -95,6 +95,8 @@ bool HasSideEffects(ValueOpcode opcode) {
 		case ValueOpcode::MeshAllocate:
 		case ValueOpcode::StoreCompletion:
 		case ValueOpcode::DebugLogStoreU32:
+		case ValueOpcode::RetraceStoreU32:
+		case ValueOpcode::RetraceAppendU32:
 		case ValueOpcode::Barrier: return true;
 		default: return false;
 	}

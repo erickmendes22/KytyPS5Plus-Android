@@ -53,7 +53,9 @@ struct HalfRatePlan {
 		IR::Block* exit       = nullptr;
 		IR::Block* end        = nullptr;
 	};
-	bool                              adaptive = false;
+	bool                              adaptive = false;     // rt_half=2 in-kernel loop (KYTY_RT_HALF_LOOP diagnostic)
+	bool                              retrace = false;      // rt_half=2 as two dispatches (pass 1 or 2)
+	bool                              retrace_pass = false; // pass 2: listed edge pixels at full rate
 	// Registers the lighting body starts from (saved in the pre block, restored at the latch);
 	// written while translating the pre block, read in the s_endpgm block.
 	struct LoopSaved {

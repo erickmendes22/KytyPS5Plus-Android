@@ -607,6 +607,18 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 		LOGF("KYTY_LOOP_GUARD=%s, limit %u, trip log at 0x%016" PRIx64 "\n", LoopGuard::Spec(),
 		     LoopGuard::Limit(), m_loop_guard_log->BufferDeviceAddress());
 	}
+	if (std::getenv("KYTY_RT_HALF") != nullptr || std::getenv("KYTY_LIVE_KNOBS") != nullptr) {
+		// rt_half=2 (two dispatches): pass 1 lists edge pixels here, pass 2 dispatches over the compact
+		// list (indirect arguments at offset 0). Its address is baked in when the kernel compiles.
+		m_rt_half_retrace = std::make_unique<Buffer>(
+		    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
+		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress |
+		        vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferDst,
+		    HalfRateTiles::kRetraceBytes);
+		HalfRateTiles::SetRetraceAddress(m_rt_half_retrace->BufferDeviceAddress());
+		LOGF("rt_half=2 re-trace buffer: %" PRIu64 " KiB at 0x%016" PRIx64 "\n", HalfRateTiles::kRetraceBytes >> 10u,
+		     m_rt_half_retrace->BufferDeviceAddress());
+	}
 	if (HalfRateTiles::CheckEnabled()) {
 		// The RT lighting kernel bakes the check log's address in when it compiles.
 		m_rt_half_check = std::make_unique<Buffer>(

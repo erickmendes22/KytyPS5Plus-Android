@@ -285,6 +285,13 @@ private:
 	void    HalfRateReconstruct();
 	void    HalfRateLoopEnter();
 	void    HalfRateLightLoopDump(uint32_t pc);
+	IR::U32 HalfRateWorkgroupId();
+	IR::U32 HalfRateRetraceList(IR::U32 group);
+	void    HalfRateExportList();
+	void    HalfRateRetraceGroup();
+	void    HalfRateRetraceRemap();
+	static constexpr uint32_t kRegRetraceGroup = 248; // pass 2: guest workgroup of the list entry
+	static constexpr uint32_t kRegRetraceChunk = 249;
 	static constexpr uint32_t kRegLightIterations = 247; // diagnostic trip counter of the guest light loop
 	void    HalfRateLoopExit();
 

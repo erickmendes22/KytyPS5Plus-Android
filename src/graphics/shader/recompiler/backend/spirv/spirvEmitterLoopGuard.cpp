@@ -68,6 +68,48 @@ void EmitDebugLogStoreU32(EmitterState& state, uint32_t index, uint32_t value, u
 	});
 }
 
+// rt_half=2 re-trace buffer (graphics/shader/halfRateTiles.h).
+void EmitRetraceStoreU32(EmitterState& state, uint32_t index, uint32_t value, uint32_t exec) {
+	if (state.retrace_address == 0) {
+		return;
+	}
+	EmitIfCondition(state, exec, [&] {
+		const auto pointer = GuardLogWord(state, LogWordsAt(state, state.retrace_address), index);
+		state.builder.AddFunction(spv::OpStore, pointer, value, spv::MemoryAccessAlignedMask,
+		                          static_cast<uint32_t>(sizeof(uint32_t)));
+	});
+}
+
+uint32_t EmitRetraceLoadU32(EmitterState& state, uint32_t index) {
+	if (state.retrace_address == 0) {
+		return ConstantU32(state, 0);
+	}
+	const auto pointer = GuardLogWord(state, LogWordsAt(state, state.retrace_address), index);
+	const auto value   = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, pointer, spv::MemoryAccessAlignedMask,
+	                          static_cast<uint32_t>(sizeof(uint32_t)));
+	return value;
+}
+
+void EmitRetraceAppendU32(EmitterState& state, uint32_t value, uint32_t exec) {
+	if (state.retrace_address == 0) {
+		return;
+	}
+	EmitIfCondition(state, exec, [&] {
+		const auto words = LogWordsAt(state, state.retrace_address);
+		const auto slot  = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpAtomicIAdd, TypeU32(state), slot, GuardLogWord(state, words, ConstantU32(state, 0)),
+		                          ConstantU32(state, spv::ScopeDevice), ConstantU32(state, spv::MemorySemanticsMaskNone),
+		                          ConstantU32(state, 1));
+		const auto room = Binary(state, spv::OpULessThan, TypeBool(state), slot, ConstantU32(state, HalfRateTiles::kRetraceEntries));
+		EmitIfCondition(state, room, [&] {
+			const auto pointer = GuardLogWord(state, words, EmitAddU32(state, slot, ConstantU32(state, 4)));
+			state.builder.AddFunction(spv::OpStore, pointer, value, spv::MemoryAccessAlignedMask,
+			                          static_cast<uint32_t>(sizeof(uint32_t)));
+		});
+	});
+}
+
 void EmitLoopGuardVariables(EmitterState& state) {
 	if (!state.loop_guard) {
 		return;

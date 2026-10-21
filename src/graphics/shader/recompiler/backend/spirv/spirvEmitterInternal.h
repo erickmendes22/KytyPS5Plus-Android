@@ -172,6 +172,8 @@ struct EmitterState {
 	uint64_t                   loop_guard_log_address                = 0;
 	// KYTY_RT_HALF_CHECK log (graphics/shader/halfRateTiles.h), 0 = none.
 	uint64_t                   debug_log_address                     = 0;
+	// rt_half=2 re-trace buffer, 0 = none.
+	uint64_t                   retrace_address                       = 0;
 	uint32_t                   loop_guard_counter                    = 0;
 	uint32_t                   loop_guard_logged                     = 0;
 	std::unordered_map<const IR::Block*, IR::LoopGuardPoint> loop_guard_by_guard;

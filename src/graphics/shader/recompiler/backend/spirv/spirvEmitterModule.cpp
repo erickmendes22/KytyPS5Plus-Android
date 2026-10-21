@@ -1037,6 +1037,11 @@ void DefineModule(EmitterState& state) {
 	if (state.program.shader_hash == HalfRateTiles::kShaderHash && HalfRateTiles::CheckEnabled()) {
 		state.debug_log_address = HalfRateTiles::CheckAddress();
 	}
+	if (state.program.shader_hash == HalfRateTiles::kShaderHash && state.program.stage == ShaderType::Compute &&
+	    state.input_info.compute != nullptr &&
+	    state.input_info.compute->half_rate_tiles == HalfRateTiles::kVariantAdaptive) {
+		state.retrace_address = HalfRateTiles::RetraceAddress();
+	}
 	state.interface_variables.reserve(state.program.info.inputs.size() +
 	                                  state.program.info.outputs.size());
 	DefineInputs(state);
@@ -1083,7 +1088,8 @@ void DefineModule(EmitterState& state) {
 	if (state.program.info.buffer_u16) {
 		state.builder.RequireCapability(spv::CapabilityStorageBuffer16BitAccess);
 	}
-	if (state.program.info.uses_dma || state.loop_guard_log_address != 0 || state.debug_log_address != 0) {
+	if (state.program.info.uses_dma || state.loop_guard_log_address != 0 || state.debug_log_address != 0 ||
+	    state.retrace_address != 0) {
 		state.builder.RequireCapability(spv::CapabilityInt64);
 		state.builder.RequireCapability(spv::CapabilityPhysicalStorageBufferAddresses);
 		state.builder.RequireExtension("SPV_KHR_physical_storage_buffer");
@@ -1174,7 +1180,7 @@ void DefineModule(EmitterState& state) {
 	}
 	state.builder.RequireExtension("SPV_KHR_float_controls");
 	state.builder.AddMemoryModel(state.program.info.uses_dma || MeshEmulated(state) ||
-	                                     state.loop_guard_log_address != 0 || state.debug_log_address != 0
+	                                     state.loop_guard_log_address != 0 || state.debug_log_address != 0 || state.retrace_address != 0
 	                                 ? spv::AddressingModelPhysicalStorageBuffer64
 	                                 : spv::AddressingModelLogical,
 	                             spv::MemoryModelGLSL450);

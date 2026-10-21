@@ -724,6 +724,10 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	input_info.dead_lane_live        = LiveDeadLane();
 	input_info.rt_half_live          = LiveRtHalf();
 	input_info.rt_fill_live          = LiveRtFill();
+	if (input_info.rt_half_live == 3u && input_info.rt_fill_live == HalfRateTiles::kFillRetracePass) {
+		input_info.rt_fill_live = HalfRateTiles::kFillNearest4; // that code marks pass 2 of rt_half=2
+	}
+	const auto pass2_input = input_info; // rt_half=2 pass 2 starts from the same inputs
 	PipelineProbe::BeginItem();
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);
@@ -734,6 +738,19 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		return;
 	}
 	buffer.EndRendering(PassEnd::Compute);
+	// rt_half=2 (two dispatches, shader/halfRateTiles.h): pass 1 starts an empty compact list.
+	auto* const retrace = m_context.GetBufferCache().RetraceBuffer();
+	const bool  two_pass = retrace != nullptr && !HalfRateTiles::LoopDiagnostic() &&
+	                      input_info.half_rate_tiles == HalfRateTiles::kVariantAdaptive;
+	if (two_pass) {
+		const std::array<uint32_t, 4> start {0u, 1u, 1u, 0u};
+		buffer.Handle().updateBuffer(retrace->Handle(), 0, sizeof(start), start.data());
+		vk::MemoryBarrier reset {};
+		reset.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+		reset.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+		buffer.Handle().pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, 1,
+		                                &reset, 0, nullptr, 0, nullptr);
+	}
 	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(input_info, compute_program);
 	auto& bindings = m_compute_bindings;
 	PrepareBindings(input_info.stage, bindings);
@@ -792,6 +809,52 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
+	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	ResetBindings();
+	if (two_pass) {
+		DispatchRetracePass(buffer, cs_regs, pass2_input, args_addr, *retrace);
+	}
+}
+
+// rt_half=2 pass 2: the same kernel as the re-trace variant, one 8x8 group per compact-list entry
+// that pass 1 wrote (indirect arguments at the start of the re-trace buffer), with the guest's
+// bindings of this dispatch.
+void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::ComputeShaderInfo& cs_regs,
+                                         ShaderComputeInputInfo input_info, uint64_t args_addr, Buffer& retrace) {
+	const auto vk_buffer = buffer.Handle();
+	vk::MemoryBarrier listed {};
+	listed.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+	listed.dstAccessMask = vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead |
+	                       vk::AccessFlagBits::eShaderWrite;
+	vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+	                          vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eComputeShader, {}, 1,
+	                          &listed, 0, nullptr, 0, nullptr);
+	input_info.rt_fill_live    = HalfRateTiles::kFillRetracePass;
+	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
+	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);
+	if (input_info.stage.program == nullptr) {
+		return;
+	}
+	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(input_info, compute_program);
+	auto& bindings = m_compute_bindings;
+	PrepareBindings(input_info.stage, bindings);
+	PreparedBindings* descriptor_stage = &bindings;
+	FindBuffers(std::span {&descriptor_stage, 1u});
+	if (input_info.stage.program->info.uses_dma) {
+		m_context.PrepareBda();
+	}
+	BindSharedMemory(m_context, input_info, bindings, args_addr);
+	RebindImages(bindings);
+	RebindBuffers(bindings);
+	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline, std::span {&descriptor_stage, 1u});
+	ShaderWriteHazardBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	{
+		const ScopedDebugLabel label(vk_buffer, "cs-retrace", input_info.stage.program->shader_hash);
+		vk_buffer.dispatchIndirect(retrace.Handle(), 0);
+	}
+	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
+	buffer.MarkGpu("cs-retrace", input_info.stage.program->shader_hash);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ResetBindings();
 }
