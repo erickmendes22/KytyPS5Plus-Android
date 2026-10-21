@@ -11205,6 +11205,7 @@ void TestComputeDispatchWaveSize() {
 
 void TestNewShaderRecompilerBufferLoadsGuardedByExec() {
   const uint32_t shader[] = {
+      EncodeVopc(0xd4, 0 + 256, 1), // v_cmpx_gt_u32 v0, v1
       EncodeMubuf0(0x0c),
       EncodeMubuf1(0, 0, 1), // buffer_load_dword
                              // v0
