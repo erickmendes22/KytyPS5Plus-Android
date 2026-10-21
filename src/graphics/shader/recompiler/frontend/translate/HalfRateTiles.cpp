@@ -371,7 +371,7 @@ void Translator::HalfRateRemap() {
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginY), origin_y);
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegTileLive), HalfRateConst(1));
 	// kFillQuarter (timing probe): contiguous pixels of the top-left quarter instead of every other one.
-	const uint32_t stride_shift = half_rate->fill_mode == H::kFillQuarter ? 0u : 1u;
+	const uint32_t stride_shift = half_rate->fill_mode == H::kFillQuarter && !half_rate->adaptive ? 0u : 1u;
 	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.IAdd(origin_x, ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(stride_shift))));
 	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.IAdd(origin_y, ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(stride_shift))));
 	HalfRateStash(Valid, HalfRateFlatIndex(), HalfRateConst(0));
@@ -722,7 +722,7 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 // Before s_endpgm: all samples of the tile are in LDS after the barrier; each thread fills the
 // right, lower and diagonal pixel of its 2x2.
 void Translator::HalfRateReconstruct() {
-	if (half_rate->fill_mode == H::kFillOff || half_rate->fill_mode == H::kFillQuarter) {
+	if (!half_rate->adaptive && (half_rate->fill_mode == H::kFillOff || half_rate->fill_mode == H::kFillQuarter)) {
 		return;
 	}
 	ir.Emit(IR::ValueOpcode::Barrier);
@@ -802,8 +802,11 @@ void Translator::HalfRateLoopEnter() {
 	                       ir.BitwiseAnd(ir.ShiftRightLogical(packed, HalfRateConst(4)), HalfRateConst(15)));
 	const auto v24 = ir.GetVectorReg(static_cast<IR::VectorReg>(24));
 	const auto v25 = ir.GetVectorReg(static_cast<IR::VectorReg>(25));
-	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.Select(first, v24, ir.Select(listed, x, outside)));
-	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.Select(first, v25, ir.Select(listed, y, outside)));
+	// Diagnostic: rt_half=2 with rt_fill=0 lists edge pixels but re-traces none (iterations run, every
+	// thread outside the screen).
+	const auto take = half_rate->fill_mode == H::kFillOff ? IR::U1(IR::Value(false)) : listed;
+	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.Select(first, v24, ir.Select(take, x, outside)));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.Select(first, v25, ir.Select(take, y, outside)));
 	ir.SetExec(IR::U1(IR::Value(true)));
 	ir.SetBlock(loop.body_entry);
 }
@@ -843,7 +846,11 @@ void Translator::HalfRateLoopExit() {
 	const auto next  = ir.IAdd(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegIteration)), HalfRateConst(1));
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegIteration), next);
 	const auto count = IR::U32(LoadSharedU32(1, HalfRateConst(half_rate->adaptive_base_bytes), LdsWord(), current_pc));
-	const auto trips = ir.IAdd(HalfRateConst(1), ir.ShiftRightLogical(ir.IAdd(count, HalfRateConst(H::kThreads - 1u)), HalfRateConst(6)));
+	auto trips = ir.IAdd(HalfRateConst(1), ir.ShiftRightLogical(ir.IAdd(count, HalfRateConst(H::kThreads - 1u)), HalfRateConst(6)));
+	if (half_rate->fill_mode == H::kFillQuarter) {
+		// Diagnostic: rt_half=2 with rt_fill=99 re-traces at most the first 64 listed pixels.
+		trips = IR::U32(ir.Emit(O::UMin32, {trips, HalfRateConst(2)}));
+	}
 	const auto again = ir.ULessThan(next, trips);
 	loop.latch->condition = again;
 	ir.Emit(O::Reference, {again});
