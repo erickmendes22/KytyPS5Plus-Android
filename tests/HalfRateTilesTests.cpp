@@ -20,7 +20,7 @@ static_assert(H::kRegOriginX > 71 && H::kRegTileLive < 256);
 // A 1920x1080 screen of 16x16 tiles fits the check log's tile grid.
 static_assert(H::kCheckTilesX * 16 >= 1920 && H::kCheckTilesY * 16 >= 1080);
 // Entry: real list, item count, stress designed count, start, stress list (256), mask (8).
-static_assert(H::kCheckEntryDwords == 285 && H::kCheckMaskDwords == 8);
+static_assert(H::kCheckEntryDwords == 288 && H::kCheckMaskDwords == 8);
 // The stress scratch fits next to the patch in the 32 KiB compute LDS.
 static_assert((1920u + H::kLdsDwords + H::kCheckLdsDwords) * 4u <= 32u * 1024u);
 

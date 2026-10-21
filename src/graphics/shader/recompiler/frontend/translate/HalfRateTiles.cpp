@@ -378,8 +378,10 @@ void Translator::HalfRateCapture() {
 	}
 	const auto check_word = [&](uint32_t word) { return HalfRateConst(half_rate->check_base_bytes + word * 4u); };
 	ir.SetExec(lead);
-	for (uint32_t w = 0; w < 1u + H::kCheckMaskDwords; w++) {
-		const uint32_t word = w == 0 ? H::kCheckLdsCounter : H::kCheckLdsMask + (w - 1u);
+	for (uint32_t w = 0; w < 1u + H::kCheckMaskDwords + 3u; w++) {
+		const uint32_t word = w == 0 ? H::kCheckLdsCounter
+		                    : w <= H::kCheckMaskDwords ? H::kCheckLdsMask + (w - 1u)
+		                                               : H::kCheckLdsRejected + (w - 1u - H::kCheckMaskDwords);
 		WriteSharedU32(1, check_word(word), {HalfRateConst(0), IR::Value(0u), IR::Value(0u), IR::Value(0u)}, LdsWord(),
 		               current_pc);
 	}
@@ -525,6 +527,7 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 	color.fill(HalfRateFloat(0.0f));
 	auto luma   = HalfRateFloat(0.0f);
 	auto weight = HalfRateFloat(0.0f);
+	auto best   = HalfRateFloat(0.0f); // best same-surface similarity of a valid candidate
 	std::vector<uint32_t> xs;
 	std::vector<uint32_t> ys;
 	if (half_rate->fill_mode == H::kFillRing9) {
@@ -560,11 +563,22 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 			}
 			const auto g_w = falloff(mul(mul(g_diff, rcp(add(g_energy, HalfRateFloat(1e-4f)))), HalfRateFloat(kGbufferSharpness)));
 			const auto w   = IR::F32(ir.Emit(O::SelectF32, {valid, mul(mul(spatial, depth_w), g_w), HalfRateFloat(0.0f)}));
+			best = HalfRateFloatOp(O::FPMax32, best,
+			                       IR::F32(ir.Emit(O::SelectF32, {valid, mul(depth_w, g_w), HalfRateFloat(0.0f)})));
 			for (uint32_t k = 0; k < 4u; k++) {
 				color[k] = IR::F32(ir.Emit(O::FPFma32, {w, f(HalfRateLoad(Color + k, index)), color[k]}));
 			}
 			luma   = IR::F32(ir.Emit(O::FPFma32, {w, f(HalfRateLoad(Luma, index)), luma}));
 			weight = add(weight, w);
+		}
+	}
+	if (half_rate->capture) {
+		// KYTY_RT_HALF_CHECK: count unshaded pixels without a same-surface candidate.
+		for (uint32_t t = 0; t < H::kRejectThresholds.size(); t++) {
+			const auto rejected = ir.LogicalAnd(ir.GetExec(), IR::U1(ir.Emit(O::FPOrdLessThan32, {best, HalfRateFloat(H::kRejectThresholds[t])})));
+			ir.Emit(O::SharedAtomicIAdd32,
+			        {HalfRateConst(half_rate->check_base_bytes + (H::kCheckLdsRejected + t) * 4u), HalfRateConst(1), rejected},
+			        AddMemoryInfo(LdsWord(), current_pc));
 		}
 	}
 	const auto any   = IR::U1(ir.Emit(O::FPOrdGreaterThan32, {weight, HalfRateFloat(0.0f)}));
@@ -590,6 +604,26 @@ void Translator::HalfRateReconstruct() {
 	HalfRateFill(1, 0, live);
 	HalfRateFill(0, 1, live);
 	HalfRateFill(1, 1, live);
+	if (half_rate->capture) {
+		// Thread 0 logs the tile's rejected-pixel counts (the tile origin is in kRegOrigin*).
+		using O = IR::ValueOpcode;
+		ir.Emit(O::Barrier);
+		const auto tile_x = ir.ShiftRightLogical(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginX)), HalfRateConst(4));
+		const auto tile_y = ir.ShiftRightLogical(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginY)), HalfRateConst(4));
+		const auto lead   = ir.LogicalAnd(ir.IEqual(HalfRateLocal(0), HalfRateConst(0)), ir.IEqual(HalfRateLocal(1), HalfRateConst(0)));
+		const auto write  = ir.LogicalAnd(ir.LogicalAnd(lead, live),
+		                                  ir.LogicalAnd(ir.ULessThan(tile_x, HalfRateConst(H::kCheckTilesX)),
+		                                                ir.ULessThan(tile_y, HalfRateConst(H::kCheckTilesY))));
+		ir.SetExec(write);
+		const auto base = ir.IAdd(HalfRateConst(half_rate->capture_region * H::kCheckRegionDwords),
+		                          ir.IMul(ir.IAdd(ir.IMul(tile_y, HalfRateConst(H::kCheckTilesX)), tile_x),
+		                                  HalfRateConst(H::kCheckEntryDwords)));
+		for (uint32_t t = 0; t < H::kRejectThresholds.size(); t++) {
+			const auto value = IR::U32(LoadSharedU32(1, HalfRateConst(half_rate->check_base_bytes + (H::kCheckLdsRejected + t) * 4u),
+			                                         LdsWord(), current_pc));
+			ir.Emit(O::DebugLogStoreU32, {ir.IAdd(base, HalfRateConst(H::kCheckWordRejected + t)), value, write});
+		}
+	}
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend
