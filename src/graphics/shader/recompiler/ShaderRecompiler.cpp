@@ -11,6 +11,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
+#include "graphics/shader/recompiler/ir/passes/DeadLaneFold.h"
 #include "graphics/shader/recompiler/ir/passes/NativeFloat16.h"
 #include "graphics/shader/recompiler/ir/passes/ReadLaneElimination.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
@@ -1013,6 +1014,17 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 		}
 	}
 
+	if (ir.stage == ShaderType::Compute && options.device_features.dead_lane_fold) {
+		const auto dead = IR::FoldDeadLaneSelects(ir);
+		if (dead.folded != 0 || dead.narrowed != 0) {
+			IR::EliminateDeadCode(ir.blocks);
+		}
+		LOGF("%s dead-lane fold: hash=0x%016" PRIx64 " folded=%u narrowed=%u kept_lane_ops=%u "
+		     "candidates=%u%s%s\n",
+		     GetDumpLabel(options), ir.shader_hash, dead.folded, dead.narrowed, dead.kept_lane_ops,
+		     dead.candidates, dead.reject != nullptr ? " reject=" : "",
+		     dead.reject != nullptr ? dead.reject : "");
+	}
 	IR::CollectShaderInfo(ir, options.input_info, native_barycentrics || emulate_barycentrics);
 	ir.info.barycentric_emulation = {.enabled = emulate_barycentrics};
 	ir.info.group_pack            = ComputeGroupPack(ir, options);

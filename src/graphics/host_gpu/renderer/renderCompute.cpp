@@ -365,6 +365,13 @@ static uint8_t LiveLaneBranches() {
 	return value < 0 ? uint8_t {0} : value == 0 ? uint8_t {1} : uint8_t {2};
 }
 
+// KYTY_LIVE_KNOBS dead_lane=0/1: ShaderDeviceFeatures::dead_lane_fold for compute programs
+// compiled from now on (ShaderComputeInputInfo::dead_lane_live); absent keeps KYTY_DEAD_LANE_FOLD.
+static uint8_t LiveDeadLane() {
+	const auto value = LiveKnobs::Int("dead_lane", -1);
+	return value < 0 ? uint8_t {0} : value == 0 ? uint8_t {1} : uint8_t {2};
+}
+
 static bool ComputeGroupPackCandidate(const ShaderComputeInputInfo& input_info, uint32_t threads,
                                       uint32_t groups_x, bool turnip) {
 	return ComputeGroupPackEnabled(turnip) && !input_info.dispatch_thread_dimensions && threads <= 32u &&
@@ -393,6 +400,7 @@ ShaderComputeInputInfo RenderExecutor::DirectDispatchInputInfo(const HW::Compute
 	input_info.async_compute = async_compute;
 	input_info.bvh_live      = LiveBvhOptions();
 	input_info.lane_branch_live = LiveLaneBranches();
+	input_info.dead_lane_live = LiveDeadLane();
 	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
 	input_info.dispatch_thread_dimensions = use_thread_dimensions;
 	input_info.workgroup_counts[0] = thread_group_x;
@@ -698,6 +706,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	input_info.indirect_args_address = args_addr;
 	input_info.bvh_live              = LiveBvhOptions();
 	input_info.lane_branch_live      = LiveLaneBranches();
+	input_info.dead_lane_live        = LiveDeadLane();
 	PipelineProbe::BeginItem();
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);

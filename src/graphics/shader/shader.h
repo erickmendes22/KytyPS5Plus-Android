@@ -216,6 +216,9 @@ struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
 	// for compute programs; KYTY_LANE_BRANCHES_ONLY / _SKIP still select the hashes): 1 = off,
 	// 2 = on, 0 keeps the device features.
 	uint8_t            lane_branch_live           = 0;
+	// KYTY_LIVE_KNOBS dead_lane=0/1 (in-run A/B of ShaderDeviceFeatures::dead_lane_fold): 0 keeps
+	// the device features, 1 forces it off, 2 on.
+	uint8_t            dead_lane_live             = 0;
 	ShaderStageRuntime stage;
 };
 
@@ -350,6 +353,10 @@ struct ShaderDeviceFeatures {
 	// covers each of them and the per-lane EXEC selects fold away (frontend/translate/
 	// LiveVertexExec.h; KYTY_VS_LIVE_EXEC, default on Mesa Turnip).
 	bool vs_live_vertex_exec = false;
+	// Compute: an EXEC narrowing whose lanes never come back (a bounds-check early-out) stops
+	// preserving those lanes' registers through every later VGPR write
+	// (ir/passes/DeadLaneFold.h, KYTY_DEAD_LANE_FOLD; default off).
+	bool dead_lane_fold = false;
 	// Without fragment_shader_barycentric, a pixel parameter slot that a flat and a smooth input
 	// alias (SPI_PS_INPUT_CNTL offsets) stays a native input while the shader uses only one of the
 	// two modes; that alias alone is declared, with its own qualifier. Otherwise any use of such a

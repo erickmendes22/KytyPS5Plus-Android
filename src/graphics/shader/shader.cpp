@@ -413,10 +413,12 @@ static void ShaderGetStaticInputInfoCS(const HW::ComputeShaderInfo& regs,
 	const auto pack_groups                = info.pack_groups;
 	const auto bvh_live                   = info.bvh_live;
 	const auto lane_branch_live           = info.lane_branch_live;
+	const auto dead_lane_live             = info.dead_lane_live;
 	info                                  = {};
 	info.pack_groups                      = pack_groups;
 	info.bvh_live                         = bvh_live;
 	info.lane_branch_live                 = lane_branch_live;
+	info.dead_lane_live                   = dead_lane_live;
 	info.async_compute                    = async_compute;
 	info.dispatch_thread_dimensions       = dispatch_thread_dimensions;
 	info.host_subgroup_size               = host_subgroup_size;
@@ -563,7 +565,8 @@ void BuildStageStaticKey(const ShaderComputeInputInfo& info, std::vector<uint32_
 		key.push_back(static_cast<uint32_t>(info.group_id[i]));
 	}
 	key.push_back(static_cast<uint32_t>(info.tg_size_en) | (uint32_t {info.pack_groups} << 8u) |
-	              (uint32_t {info.bvh_live} << 16u) | (uint32_t {info.lane_branch_live} << 24u));
+	              (uint32_t {info.bvh_live} << 16u) | (uint32_t {info.lane_branch_live} << 24u) |
+	              (uint32_t {info.dead_lane_live} << 26u));
 }
 
 ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context& context,
