@@ -222,6 +222,9 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
 void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destination_access,
                     std::optional<ImageSubresourceRange> range, vk::CommandBuffer command_buffer,
                     PassEnd reason) {
+	if (destination_layout != vk::ImageLayout::eColorAttachmentOptimal) {
+		rp_clear_pending = false; // any other use than an attachment sees the cleared contents
+	}
 	const auto transfer_access =
 	    vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite;
 	vk::PipelineStageFlags2 destination_stage {};

@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/renderDraw.h"
+#include "graphics/host_gpu/renderer/rpStats.h"
 
 #include "common/assert.h"
 #include "common/common.h"
@@ -810,6 +811,18 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	}
 	if (state.num_layers == std::numeric_limits<uint32_t>::max()) {
 		state.num_layers = 1;
+	}
+	if (RpStats::Enabled()) {
+		// A clear still pending on a colour target would be absorbed by loadOp CLEAR when the
+		// pass covers the whole image (the pass state below is its render area).
+		for (uint32_t i = 0; i < color_count; i++) {
+			auto* image = cache.m_slot_images.try_get(colors[i].image_id);
+			if (image == nullptr || !image->rp_clear_pending) continue;
+			image->rp_clear_pending = false;
+			const bool full = state.width == image->backing.extent.width &&
+			                  state.height == image->backing.extent.height;
+			RpStats::OnAttachment(full, image->info.data.size);
+		}
 	}
 	EXIT_IF(state.width == 0 || state.height == 0 || state.num_layers == 0 ||
 	        state.width == std::numeric_limits<uint32_t>::max() ||

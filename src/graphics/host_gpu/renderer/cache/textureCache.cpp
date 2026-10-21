@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/rpStats.h"
 #include "graphics/host_gpu/renderer/pipeline/bindMemo.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "kernel/addressFold.h"
@@ -1791,6 +1792,7 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 		command.Handle().beginRendering(&rendering);
 		command.Handle().endRendering();
 		CommitGpuWrite(image);
+		NoteClearForRpStats(image, range, full_image);
 		return;
 	}
 	image.Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {},
@@ -1809,6 +1811,19 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 		                                        &clear.depthStencil, 1, &native_range);
 	}
 	CommitGpuWrite(image);
+	NoteClearForRpStats(image, range, full_image);
+}
+
+// KYTY_RP_STATS: a full colour clear of a single-level, single-layer image is a loadOp CLEAR
+// candidate until another use of the image transitions it (Image::Transit).
+void TextureCache::NoteClearForRpStats(Image& image, const vk::ImageSubresourceRange& range,
+                                       bool full_image) {
+	if (!RpStats::Enabled()) return;
+	const bool full_color = full_image && range.aspectMask == vk::ImageAspectFlagBits::eColor &&
+	                        image.info.resources.levels == 1 && image.backing.layers == 1 &&
+	                        image.info.samples == 1;
+	RpStats::OnClear(full_color);
+	image.rp_clear_pending = full_color;
 }
 
 void TextureCache::InvalidateMemory(uint64_t address, uint64_t size) {

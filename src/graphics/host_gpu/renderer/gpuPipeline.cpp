@@ -6,6 +6,7 @@
 #include "common/perfWaits.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
+#include "graphics/host_gpu/renderer/rpStats.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 
 #include <algorithm>
@@ -64,6 +65,7 @@ void AppendReport(std::string& out, double per_frame) {
 		}
 		out += part;
 	}
+	RpStats::Append(out, per_frame);
 	using WalkFan::Outcome;
 	const auto take = [&](Outcome o) { return static_cast<double>(WalkFan::TakeCount(o)) * per_frame; };
 	std::snprintf(part, sizeof(part), " fan: sub=%.0f ok=%.0f gpu_mod=%.1f no_backing=%.1f invalid=%.1f inval=%.1f",

@@ -130,6 +130,8 @@ public:
 	[[nodiscard]] bool IsGpuModified() const noexcept { return m_gpu_modified; }
 	void               MarkGpuModified() noexcept { m_gpu_modified = true; }
 	void               ClearGpuModified() noexcept { m_gpu_modified = false; }
+	// KYTY_RP_STATS: a full-image colour clear not yet followed by any other use (rpStats.h).
+	bool               rp_clear_pending = false;
 
 	[[nodiscard]] bool IsBufferModified() const noexcept { return m_buffer_modified; }
 	void               MarkBufferModified() noexcept { m_buffer_modified = true; }
