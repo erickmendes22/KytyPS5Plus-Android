@@ -24,6 +24,10 @@ bool Enabled() {
 	return LiveKnobs::Int("gpu_fan", env_on ? 1 : 0) != 0;
 }
 
+bool MemoEnabled() {
+	return LiveKnobs::Int("fan_memo", 0) != 0;
+}
+
 bool Shadow() {
 	return LiveKnobs::Int("fan_shadow", 0) != 0;
 }

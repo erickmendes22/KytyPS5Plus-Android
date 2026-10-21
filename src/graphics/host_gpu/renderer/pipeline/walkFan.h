@@ -115,6 +115,15 @@ private:
 class PrewalkList {
 public:
 	void Push(std::shared_ptr<WalkJob> job, Outcome inline_reason = Outcome::Count);
+	// Front: a job to submit when the item's requests are done (one pool lock per item, SubmitPending).
+	void PushPending(std::shared_ptr<WalkJob> job) {
+		m_pending.push_back(job);
+		Push(std::move(job));
+	}
+	// Front: hands the item's pending jobs to the pool in one batch.
+	void SubmitPending();
+	// Front: the walk view for every job of this item (taken once per item).
+	std::shared_ptr<const WalkReader::View> view;
 	// The recorder's next request: the job (or nullptr with the reason it is inline).
 	std::shared_ptr<WalkJob> Next(Outcome& reason);
 	[[nodiscard]] size_t Size() const { return m_jobs.size(); }
@@ -131,6 +140,7 @@ public:
 	}
 
 private:
+	std::vector<std::shared_ptr<WalkJob>> m_pending;
 	std::array<const void*, 8> m_walked {};
 	size_t                     m_walked_count = 0;
 	struct Slot {
@@ -148,14 +158,58 @@ inline thread_local PrewalkList* t_prewalk   = nullptr;
 
 class ScopedList {
 public:
-	ScopedList(PrewalkList*& slot, PrewalkList* list): m_slot(slot), m_previous(slot) { m_slot = list; }
-	~ScopedList() { m_slot = m_previous; }
+	ScopedList(PrewalkList*& slot, PrewalkList* list): m_slot(slot), m_previous(slot), m_list(list) { m_slot = list; }
+	~ScopedList() {
+		if (m_list != nullptr) m_list->SubmitPending(); // the front's sink: submit the item's jobs
+		m_slot = m_previous;
+	}
 	ScopedList(const ScopedList&)            = delete;
 	ScopedList& operator=(const ScopedList&) = delete;
 
 private:
 	PrewalkList*& m_slot;
 	PrewalkList*  m_previous;
+	PrewalkList*  m_list;
+};
+
+// The front's lookup memo (live fan_memo=1): request key -> program entry, so a repeated
+// request skips the shared lock and hash-map probe of ProgramCache::SubmitWalk. Valid because
+// entries are never erased while running and the stored key is compared in full on every hit;
+// a miss is not remembered (the entry may be created later). Direct-mapped, front thread only.
+template <typename Key, typename Value, size_t Slots = 1024>
+class LookupMemo {
+public:
+	static_assert((Slots & (Slots - 1)) == 0, "power of two");
+	[[nodiscard]] Value* Find(const Key& key, size_t hash) {
+		auto& slot = m_slots[hash & (Slots - 1)];
+		if (slot.value != nullptr && slot.hash == hash && slot.key == key) {
+			m_hits++;
+			return slot.value;
+		}
+		m_misses++;
+		return nullptr;
+	}
+	void Insert(const Key& key, size_t hash, Value* value) {
+		auto& slot = m_slots[hash & (Slots - 1)];
+		slot.key   = key;
+		slot.hash  = hash;
+		slot.value = value;
+	}
+	void Clear() {
+		for (auto& slot: m_slots) slot.value = nullptr;
+	}
+	[[nodiscard]] uint64_t Hits() const { return m_hits; }
+	[[nodiscard]] uint64_t Misses() const { return m_misses; }
+
+private:
+	struct Slot {
+		Key    key {};
+		size_t hash  = 0;
+		Value* value = nullptr;
+	};
+	std::array<Slot, Slots> m_slots {};
+	uint64_t                m_hits   = 0;
+	uint64_t                m_misses = 0;
 };
 
 // Worker threads walking submitted jobs in submission order.
@@ -167,6 +221,8 @@ public:
 	WalkPool& operator=(const WalkPool&) = delete;
 
 	void Submit(std::shared_ptr<WalkJob> job);
+	// One lock and one wake-up for an item's jobs.
+	void SubmitBatch(std::vector<std::shared_ptr<WalkJob>>& jobs);
 	// Keeps `workers` threads (1..kMaxWorkers); call between items.
 	void Resize(uint32_t workers);
 	[[nodiscard]] uint32_t Workers() const;
@@ -225,6 +281,8 @@ WalkPool& Pool();
 
 // KYTY_GPU_FAN=0/1 (default 1 on Android, 0 elsewhere) or live gpu_fan=0/1; read by the front at submission boundaries.
 [[nodiscard]] bool Enabled();
+// Live fan_memo=1 (default 0): ProgramCache::SubmitWalk remembers request key -> entry (LookupMemo).
+[[nodiscard]] bool MemoEnabled();
 // Live fan_shadow=1: the recorder also walks every accepted job itself and compares.
 [[nodiscard]] bool Shadow();
 // Applies live fan_workers to the pool (front, at submission boundaries).

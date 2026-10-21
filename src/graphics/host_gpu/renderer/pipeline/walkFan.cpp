@@ -100,6 +100,12 @@ Outcome Accept(const WalkJob& job, const WalkContext& context) {
 	                                                                                : Outcome::Invalidated;
 }
 
+void PrewalkList::SubmitPending() {
+	if (m_pending.empty()) return;
+	Pool().SubmitBatch(m_pending);
+	m_pending.clear();
+}
+
 void PrewalkList::Push(std::shared_ptr<WalkJob> job, Outcome inline_reason) {
 	m_jobs.push_back({std::move(job), inline_reason});
 }
@@ -131,6 +137,19 @@ void WalkPool::Submit(std::shared_ptr<WalkJob> job) {
 		m_queue.push_back(std::move(job));
 	}
 	m_work.notify_one();
+}
+
+void WalkPool::SubmitBatch(std::vector<std::shared_ptr<WalkJob>>& jobs) {
+	if (jobs.empty()) return;
+	{
+		std::lock_guard lock(m_mutex);
+		for (auto& job: jobs) m_queue.push_back(job);
+	}
+	if (jobs.size() == 1) {
+		m_work.notify_one();
+	} else {
+		m_work.notify_all();
+	}
 }
 
 void WalkPool::Resize(uint32_t workers) {

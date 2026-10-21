@@ -32,6 +32,7 @@ enum class Wait : uint8_t {
 	GpuPipeCopy,    // ... the front's register and resource copies for queued items (busy time)
 	GpuFanWait,     // KYTY_GPU_FAN: the recorder waiting for (or running) a walk job
 	GpuFanWorker,   // ... walk-pool time of the jobs the recorder took from a worker (busy time)
+	GpuFanLookup,   // ... the front's program-entry lookup for walk jobs (shared lock or fan_memo)
 	TimelineQuery,  // vkGetSemaphoreCounterValue on the renderer timeline (any thread)
 	// vkWaitSemaphores on the renderer timeline, by call site (any thread)
 	SemFinish,

@@ -423,6 +423,59 @@ void TestWorkerStackSize() {
 	Check(job->Done() && g_worker_stack.load() >= (8u << 20u), "walk worker stack below 8 MiB");
 }
 
+// LookupMemo (fan_memo): a hit needs the full key; a changed static state, stage or hash misses; a
+// colliding slot is replaced, never returned for the other key.
+void TestLookupMemo() {
+	struct Key {
+		uint32_t              stage = 0;
+		uint64_t              hash  = 0;
+		std::vector<uint32_t> state;
+		bool operator==(const Key&) const = default;
+	};
+	Fan::LookupMemo<Key, const int, 4> memo;
+	const int a = 1, b = 2;
+	const Key ka {1, 0x1234, {1, 2, 3}};
+	Check(memo.Find(ka, 5) == nullptr, "empty memo hit");
+	memo.Insert(ka, 5, &a);
+	Check(memo.Find(ka, 5) == &a, "memo missed its own key");
+	Key changed = ka;
+	changed.state[2] = 4;
+	Check(memo.Find(changed, 5) == nullptr, "a changed static state hit the memo");
+	changed = ka;
+	changed.stage = 2;
+	Check(memo.Find(changed, 5) == nullptr, "a changed stage hit the memo");
+	const Key kb {1, 0x9999, {7}};
+	memo.Insert(kb, 9, &b); // 9 & 3 == 5 & 3: same slot
+	Check(memo.Find(ka, 5) == nullptr, "a replaced slot returned the old key's value");
+	Check(memo.Find(kb, 9) == &b, "memo missed the replacing key");
+	memo.Clear();
+	Check(memo.Find(kb, 9) == nullptr, "Clear kept an entry");
+}
+
+// The front's sink submits an item's jobs when its scope ends (one pool lock per item).
+void TestSinkSubmitsPendingAtScopeEnd() {
+	FakeGpu                gpu;
+	const Fan::WalkContext context {.memory = kIdentityMemory, .journal = &gpu.journal};
+	Fan::SetContext(&context);
+	const ChainPlan         chain;
+	std::array<uint32_t, 3> leaf {0u, 3u, 4u};
+	const auto              root = PointerWords(leaf.data());
+	const auto              user = PointerWords(root.data());
+	Fan::PrewalkList        list;
+	std::vector<std::shared_ptr<Fan::WalkJob>> jobs;
+	{
+		const Fan::ScopedList sink(Fan::t_walk_sink, &list);
+		for (int i = 0; i < 3; i++) {
+			jobs.push_back(MakeJob(chain, user, gpu));
+			Fan::t_walk_sink->PushPending(jobs.back());
+		}
+	}
+	Fan::Pool().Quiesce();
+	for (auto& job: jobs) Check(job->Done() && job->ok, "a pending job was not submitted at scope end");
+	Fan::Outcome reason = Fan::Outcome::Count;
+	Check(list.Next(reason) == jobs[0], "pending jobs keep the request order");
+}
+
 // Concurrent walks of one plan WITH control flow and a branch reader (every real walk has one):
 // RefreshFlatBuffer's branch walker must use the walk's scratch, not the plan's own (c17_drain1 /
 // c17_fan3a: SIGSEGV in ResetUnknowns from racing deque/vector growth in plan.scratch).
@@ -558,6 +611,8 @@ void DbgExit(int) {
 int main() {
 	TestPrewalkListOrder();
 	TestConcurrentBranchWalks();
+	TestLookupMemo();
+	TestSinkSubmitsPendingAtScopeEnd();
 	TestWorkerStackSize();
 	TestAcceptRules();
 	TestPoolMatchesInline();

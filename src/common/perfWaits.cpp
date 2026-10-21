@@ -62,7 +62,7 @@ constexpr std::array<const char*, static_cast<size_t>(ReadbackMode::Count)> kRea
 
 constexpr std::array<const char*, static_cast<size_t>(Wait::Count)> kWaitNames = {
     "idle",       "blocked",  "flip_done",   "flip_slot", "sync_cmd", "fault",
-    "submit",     "process",  "prio_wait", "pipe_drain", "pipe_full", "pipe_rec", "pipe_walk", "pipe_copy", "fan_wait", "fan_walk", "tl_query", "finish",   "flush",       "stream",    "mesh_ring", "download",
+    "submit",     "process",  "prio_wait", "pipe_drain", "pipe_full", "pipe_rec", "pipe_walk", "pipe_copy", "fan_wait", "fan_walk", "fan_lookup", "tl_query", "finish",   "flush",       "stream",    "mesh_ring", "download",
     "read_fault", "write_fault", "indirect_args", "metadata", "gc",   "fault_buf",
     "swapchain",  "desc",     "prio",        "other",     "fault",    "sync_cmd",
     "suspend",    "flip_done", "wait_idle",

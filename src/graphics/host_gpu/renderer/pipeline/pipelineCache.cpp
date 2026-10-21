@@ -874,8 +874,30 @@ struct PipelineCache::ProgramCache {
 		BuildStageStaticKey(input_info, key.static_state);
 		const SourceEntry* entry = nullptr;
 		{
-			const std::shared_lock lock(programs_mutex);
-			if (const auto it = programs.find(key); it != programs.end()) entry = &it->second;
+			const Common::PerfStats::ScopedWait lookup(Common::PerfStats::Wait::GpuFanLookup);
+			// fan_memo: request key -> entry without the shared lock (front thread only; full key
+			// compared on a hit; misses are not remembered).
+			thread_local WalkFan::LookupMemo<ProgramKey, const SourceEntry> memo;
+			thread_local bool memo_was_on = false;
+			const bool memo_on = WalkFan::MemoEnabled();
+			if (memo_on != memo_was_on) {
+				memo.Clear();
+				memo_was_on = memo_on;
+			}
+			size_t memo_hash = 0;
+			if (memo_on) {
+				memo_hash = ProgramKeyHash {}(key) ^
+				            static_cast<size_t>(XXH3_64bits(key.static_state.data(),
+				                                            key.static_state.size() * sizeof(uint32_t)));
+				entry = memo.Find(key, memo_hash);
+			}
+			if (entry == nullptr) {
+				{
+					const std::shared_lock lock(programs_mutex);
+					if (const auto it = programs.find(key); it != programs.end()) entry = &it->second;
+				}
+				if (memo_on && entry != nullptr) memo.Insert(key, memo_hash, entry);
+			}
 		}
 		if (entry == nullptr) {
 			sink.Push(nullptr, WalkFan::Outcome::NoEntry);
@@ -899,10 +921,11 @@ struct PipelineCache::ProgramCache {
 			job->has_workgroup_counts  = true;
 			job->indirect_args_address = input_info.indirect_args_address;
 		}
-		job->view = WalkFan::Publisher().Current();
-		WalkFan::Pool().Submit(job);
+		// One view per item (the recorder publishes between items, never during one).
+		if (sink.view == nullptr) sink.view = WalkFan::Publisher().Current();
+		job->view = sink.view;
 		WalkFan::CountSubmitted();
-		sink.Push(std::move(job));
+		sink.PushPending(std::move(job)); // submitted with the item's other jobs (ScopedList)
 	}
 
 	// fan_shadow: what differs between the worker's walk (in `entry`) and this thread's (first 32).
