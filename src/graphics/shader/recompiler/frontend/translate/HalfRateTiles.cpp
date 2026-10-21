@@ -699,8 +699,10 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 	ir.SetVectorReg(static_cast<IR::VectorReg>(8), ir.BitCastU32(mul(luma, scale)));
 	if (half_rate->adaptive) {
 		// rt_half=2: an edge pixel is listed for the re-trace pass instead of being filled.
+		// Diagnostic: rt_half=2 with rt_fill=9 keeps the loop but lists no pixel (one trip).
+		const float threshold = half_rate->fill_mode == H::kFillRing9 ? 3.0e38f : H::kEdgeSpread;
 		const auto edge = ir.LogicalAnd(ir.GetExec(), ir.LogicalAnd(has_candidate,
-		                      IR::U1(ir.Emit(O::FPOrdGreaterThan32, {spread, HalfRateFloat(H::kEdgeSpread)}))));
+		                      IR::U1(ir.Emit(O::FPOrdGreaterThan32, {spread, HalfRateFloat(threshold)}))));
 		const auto slot = IR::U32(ir.Emit(O::SharedAtomicIAdd32, {HalfRateConst(half_rate->adaptive_base_bytes), HalfRateConst(1), edge},
 		                                  AddMemoryInfo(LdsWord(), current_pc)));
 		const auto listed = ir.LogicalAnd(edge, ir.ULessThan(slot, HalfRateConst(H::kAdaptiveListMax)));
