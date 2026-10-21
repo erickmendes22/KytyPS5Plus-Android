@@ -27,6 +27,7 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/rtTrace.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
@@ -819,6 +820,7 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	if (program.bindings.descriptor_counts[static_cast<size_t>(BindingKind::Gds)] != 0) {
 		prepared.gds.buffer = m_context.GetBufferCache().GetGdsBuffer()->Handle();
 	}
+	RtTrace::OnStageBindings(program.shader_hash, program.stage, prepared.images);
 }
 
 void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
