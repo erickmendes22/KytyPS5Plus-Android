@@ -886,6 +886,13 @@ void Translator::HalfRateRetraceRemap() {
 	const auto outside = HalfRateConst(0xffffffffu);
 	const auto x = ir.IAdd(origin_x, ir.BitwiseAnd(packed, HalfRateConst(15)));
 	const auto y = ir.IAdd(origin_y, ir.BitwiseAnd(ir.ShiftRightLogical(packed, HalfRateConst(4)), HalfRateConst(15)));
+	if (std::getenv("KYTY_RT_HALF_RETRACE_SAMPLES") != nullptr) {
+		// Diagnostic: pass 2 re-shades the tile's even/even samples (pass 1 shaded them too), so its
+		// results can be compared with pass 1's.
+		ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.IAdd(origin_x, ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(1))));
+		ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.IAdd(origin_y, ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(1))));
+		return;
+	}
 	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.Select(listed, x, outside));
 	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.Select(listed, y, outside));
 }
