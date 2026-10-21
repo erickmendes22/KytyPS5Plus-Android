@@ -19,6 +19,7 @@
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/hostShaderQuirks.h"
+#include "graphics/host_gpu/renderer/pipeline/laneBranchDefaults.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
@@ -580,7 +581,8 @@ struct PipelineCache::ProgramCache {
 		         .uniform_constant_buffer_bytes = ubo_stage ? fast_paths.uniform_constant_buffer_bytes : 0u,
 		         .uniform_buffers_per_stage     = ubo_stage ? fast_paths.uniform_buffers_per_stage : 0u,
 		         .native_float16                = graphics.optional_features.native_float16,
-		         .lane_exec_branches   = fast_paths.lane_exec_branches &&
+		         .lane_exec_branches   = (fast_paths.lane_exec_branches ||
+		                                  (fast_paths.lane_branch_defaults && LaneBranchesByDefault(hash))) &&
 		                               LaneFastPathAllowed(LaneFastPath::LaneBranches, hash),
 		         .wqm_entry_lane_fold  = fast_paths.wqm_entry_lane_fold &&
 		                               LaneFastPathAllowed(LaneFastPath::WqmLaneFold, hash),
@@ -605,6 +607,11 @@ struct PipelineCache::ProgramCache {
 			if ((input_info.bvh_live & 0x80u) != 0u) {
 				options.device_features.bvh_emulation    = input_info.bvh_live & 0x0fu;
 				options.device_features.bvh_vector_loads = (input_info.bvh_live & 0x10u) != 0u;
+			}
+			if (input_info.lane_branch_live != 0u) {
+				options.device_features.lane_exec_branches =
+				    input_info.lane_branch_live == 2u &&
+				    LaneFastPathAllowed(LaneFastPath::LaneBranches, hash);
 			}
 		}
 		options.device_quirks = device_quirks;

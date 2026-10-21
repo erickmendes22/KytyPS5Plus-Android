@@ -65,6 +65,8 @@ ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 	    .robust_buffer_loads  = EnvToggle("KYTY_ROBUST_LOADS", turnip) &&
 	                           graphics.optional_features.robust_buffer_access2_dword,
 	    .lane_exec_branches   = EnvToggle("KYTY_LANE_BRANCHES", false),
+	    .lane_branch_defaults = turnip && std::getenv("KYTY_LANE_BRANCHES") == nullptr &&
+	                            EnvToggle("KYTY_LANE_BRANCHES_DEFAULT", true),
 	    .wqm_entry_lane_fold  = EnvToggle("KYTY_WQM_LANE_FOLD", false),
 	    .wave_slices          = EnvToggle("KYTY_WAVE_SLICES", false),
 	    .quad_dpp             = EnvToggle("KYTY_QUAD_DPP", turnip) &&
@@ -95,12 +97,12 @@ ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 		}
 	}
 	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: native_float_min_max={} "
-	                                      "robust_buffer_loads={} lane_exec_branches={} "
+	                                      "robust_buffer_loads={} lane_exec_branches={} lane_branch_defaults={} "
 	                                      "wqm_entry_lane_fold={} wave_slices={} quad_dpp={} "
 	                                      "bvh_vec={} packed_interp={} drop_carried={} select_fold={} vs_live_exec={} alias_slots={} lane_broadcast={} first_lane_sets={} bvh_opt={} "
 	                                      "ubo_constants={}B x{}{}\n",
 	                                      paths.native_float_min_max, paths.robust_buffer_loads,
-	                                      paths.lane_exec_branches, paths.wqm_entry_lane_fold,
+	                                      paths.lane_exec_branches, paths.lane_branch_defaults, paths.wqm_entry_lane_fold,
 	                                      paths.wave_slices, paths.quad_dpp, paths.bvh_vector_loads, paths.packed_interp, paths.drop_carried, paths.select_fold, paths.vs_live_exec, paths.alias_slots,
 	                                      paths.lane_broadcast, paths.first_lane_sets, paths.bvh_emulation,
 	                                      paths.uniform_constant_buffer_bytes,

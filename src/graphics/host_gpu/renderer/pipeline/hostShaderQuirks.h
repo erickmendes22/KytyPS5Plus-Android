@@ -28,6 +28,9 @@ struct ShaderFastPaths {
 	bool native_float_min_max = false;
 	bool robust_buffer_loads  = false;
 	bool lane_exec_branches   = false;
+	// laneBranchDefaults.h: lane_exec_branches for the listed guest shaders (Mesa Turnip, while
+	// KYTY_LANE_BRANCHES is unset; KYTY_LANE_BRANCHES_DEFAULT=0 opts out).
+	bool lane_branch_defaults = false;
 	bool wqm_entry_lane_fold  = false;
 	bool wave_slices          = false;
 	// ShaderDeviceFeatures::subgroup_quad_dpp (KYTY_QUAD_DPP; default Mesa Turnip, =0 opts out).

@@ -578,6 +578,9 @@ add_executable(texture_desc_memo_tests EXCLUDE_FROM_ALL
 target_link_libraries(texture_desc_memo_tests Vulkan::Headers fmt::fmt common)
 target_include_directories(texture_desc_memo_tests PRIVATE ${inc_headers})
 
+add_executable(lane_branch_defaults_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LaneBranchDefaultsTests.cpp")
+target_include_directories(lane_branch_defaults_tests PRIVATE ${inc_headers})
+
 add_executable(color_target_memo_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ColorTargetMemoTests.cpp")
 target_link_libraries(color_target_memo_tests Vulkan::Headers fmt::fmt common)
 target_include_directories(color_target_memo_tests PRIVATE ${inc_headers})
