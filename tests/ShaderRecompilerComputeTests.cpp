@@ -27338,6 +27338,35 @@ TestCase VectorDppRowShare(u32 wave_size) {
   return test;
 }
 
+// row_mirror, row_half_mirror and row_ror read lanes within the row; v1 = 100 + lane.
+TestCase VectorDppMirrorAndRotate(u32 wave_size) {
+  using O = ShaderOpcode;
+  TestCase test;
+  test.name = wave_size == 32 ? "VectorDppMirrorAndRotateWave32" : "VectorDppMirrorAndRotateWave64";
+  auto &code = test.code;
+  AppendVMovU32(&code, 1, 100);
+  code.push_back(EncodeVop2(0x25, 1, Vgpr(0), 1));
+  for (const u32 control : {0x140u, 0x141u, 0x121u, 0x125u, 0x12fu}) {
+    code.push_back(EncodeVop1(0x01, 2, 250));
+    code.push_back(EncodeVop1Dpp(1, control));
+    AppendStoreVgprAtLaneDwordOffset(&code, 2, 0, u32(test.expected.size()));
+    for (u32 lane = 0; lane < wave_size; ++lane) {
+      const u32 source = control == 0x140u   ? (lane | 15u) - (lane & 15u)
+                         : control == 0x141u ? (lane | 7u) - (lane & 7u)
+                                             : (lane & ~15u) | ((lane - (control & 15u)) & 15u);
+      test.expected.push_back(100 + source);
+    }
+  }
+  AppendEnd(&code);
+  test.opcodes = {O::V_MOV_B32, O::V_ADD_NC_U32, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.compute_info.wave_size = wave_size;
+  test.compute_info.threads_num[0] = wave_size;
+  test.compute_info.threads_num[1] = test.compute_info.threads_num[2] = 1;
+  test.compute_info.thread_ids_num = 1;
+  test.has_compute_info = true;
+  return test;
+}
+
 TestCase VectorDppBankMaskPreservesDestination() {
   using O = ShaderOpcode;
 
@@ -42890,6 +42919,8 @@ std::vector<TestCase> MakeCases() {
   AddCase(VectorDppRowXmask);
   cases.push_back(VectorDppRowShare(32));
   cases.push_back(VectorDppRowShare(64));
+  cases.push_back(VectorDppMirrorAndRotate(32));
+  cases.push_back(VectorDppMirrorAndRotate(64));
   cases.push_back(ComputeWave64Minimum(false));
   cases.push_back(ComputeWave64Minimum(true));
   AddCase(VectorDppBankMaskPreservesDestination);
@@ -48964,6 +48995,8 @@ int main(int argc, char **argv) {
     RunCase(&vulkan, VectorDppRowXmask());
     RunCase(&vulkan, VectorDppRowShare(32));
     RunCase(&vulkan, VectorDppRowShare(64));
+    RunCase(&vulkan, VectorDppMirrorAndRotate(32));
+    RunCase(&vulkan, VectorDppMirrorAndRotate(64));
     RunCase(&vulkan, VectorDppBankMaskPreservesDestination());
     RunCase(&vulkan, VectorDppBoundsControlZeroPreservesDestination());
     return 0;
