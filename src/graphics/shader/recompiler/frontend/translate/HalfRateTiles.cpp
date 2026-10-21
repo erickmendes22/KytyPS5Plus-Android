@@ -759,7 +759,9 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 		WriteSharedU32(1, ir.IAdd(HalfRateConst(half_rate->adaptive_base_bytes + 16u), ir.ShiftLeftLogical(slot, HalfRateConst(2))),
 		               {ir.BitwiseOr(tx, ir.ShiftLeftLogical(ty, HalfRateConst(4))), IR::Value(0u), IR::Value(0u), IR::Value(0u)},
 		               LdsWord(), current_pc);
-		if (half_rate->retrace && std::getenv("KYTY_RT_HALF_RETRACE_RED") != nullptr) {
+		if (half_rate->retrace && std::getenv("KYTY_RT_HALF_RETRACE_SAMPLES") != nullptr) {
+			ir.SetExec(exec); // diagnostic: pass 1 fills listed pixels too (pass 2 re-shades samples)
+		} else if (half_rate->retrace && std::getenv("KYTY_RT_HALF_RETRACE_RED") != nullptr) {
 			// Diagnostic: listed pixels are stored green by pass 1 (pass 2 overwrites them red).
 			for (uint32_t k = 0; k < 4u; k++) {
 				const auto reg = static_cast<IR::VectorReg>(3u + k);
