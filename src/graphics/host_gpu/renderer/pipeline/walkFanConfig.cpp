@@ -10,8 +10,14 @@ namespace Libs::Graphics::WalkFan {
 
 bool Enabled() {
 	static const bool env_on = [] {
+		// Default on for Android (Mesa Turnip, the validated target); KYTY_GPU_FAN=0 opts out.
+#if defined(__ANDROID__)
+		constexpr bool default_on = true;
+#else
+		constexpr bool default_on = false;
+#endif
 		const char* value = std::getenv("KYTY_GPU_FAN");
-		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
+		const bool  on    = value == nullptr ? default_on : std::strcmp(value, "1") == 0;
 		LOGF("KYTY_GPU_FAN: SRT walk fan-out %s\n", on ? "on" : "off");
 		return on;
 	}();

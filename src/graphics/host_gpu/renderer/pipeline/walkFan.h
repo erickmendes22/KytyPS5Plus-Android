@@ -223,7 +223,7 @@ void NoteBackingWrite(uint64_t host_address, uint64_t size);
 // default 2).
 WalkPool& Pool();
 
-// KYTY_GPU_FAN=1 (default 0) or live gpu_fan=0/1; read by the front at submission boundaries.
+// KYTY_GPU_FAN=0/1 (default 1 on Android, 0 elsewhere) or live gpu_fan=0/1; read by the front at submission boundaries.
 [[nodiscard]] bool Enabled();
 // Live fan_shadow=1: the recorder also walks every accepted job itself and compares.
 [[nodiscard]] bool Shadow();
