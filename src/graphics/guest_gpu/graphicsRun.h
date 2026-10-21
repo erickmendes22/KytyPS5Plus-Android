@@ -15,6 +15,7 @@
 #include <mutex>
 #include <semaphore>
 #include <span>
+#include <pthread.h>
 #include <thread>
 
 namespace Libs::Graphics {
@@ -112,7 +113,12 @@ private:
 
 	uint64_t        m_submit_id = 0;
 	std::atomic_int m_done_num  = 0;
-	std::jthread    m_thread;
+	// The GPU command thread walks every SRT itself when the two-stage pipeline is off
+	// (SrtWalker::EvaluateWide recursion): a pthread with kThreadStackBytes rather than bionic's
+	// 1 MiB default, as the walk workers (d9b44d54) and the record thread (f3fa8127).
+	static constexpr size_t kThreadStackBytes = 16u << 20u;
+	pthread_t       m_thread {};
+	bool            m_thread_started = false;
 
 	friend class CommandProcessor;
 };

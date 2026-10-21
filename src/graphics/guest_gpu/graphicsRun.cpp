@@ -77,7 +77,17 @@ GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
 	GraphicsInitJmpTables();
 	m_gfx_cp = std::make_unique<CommandProcessor>(renderer, 0);
 	m_gfx_cp->Reset();
-	m_thread = std::jthread(ThreadRun, this);
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, kThreadStackBytes);
+	EXIT_IF(pthread_create(&m_thread, &attr,
+	                       [](void* self) -> void* {
+		                       ThreadRun(self);
+		                       return nullptr;
+	                       },
+	                       this) != 0);
+	pthread_attr_destroy(&attr);
+	m_thread_started = true;
 }
 
 GuestGpu::~GuestGpu() {
@@ -95,8 +105,9 @@ void GuestGpu::Shutdown() {
 		m_stopping  = true;
 		m_work_available.SignalAll();
 	}
-	if (m_thread.joinable()) {
-		m_thread.join();
+	if (m_thread_started) {
+		m_thread_started = false;
+		pthread_join(m_thread, nullptr);
 	}
 	m_shutdown_complete = true;
 }
