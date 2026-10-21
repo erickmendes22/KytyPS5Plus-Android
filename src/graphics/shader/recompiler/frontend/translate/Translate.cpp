@@ -1083,8 +1083,39 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 		}
 	}
 
-	result.block_storage.reserve(cfg.blocks.size() + 1u);
-	result.blocks.reserve(cfg.blocks.size() + 1u);
+	std::optional<HalfRatePlan> half_rate;
+	if (options.stage == ShaderType::Compute && options.input_info.compute->half_rate_tiles != 0u) {
+		std::string reason;
+		const auto  variant = options.input_info.compute->half_rate_tiles;
+		const bool  capture = HalfRateTiles::CheckEnabled() && HalfRateTiles::CheckAddress() != 0u;
+		half_rate = MakeHalfRatePlan(decoded, variant, options.input_info.compute->lds_size_dwords,
+		                             options.input_info.compute->rt_fill_live, capture, &reason);
+		LOGF("half-rate tiles: hash=0x%016" PRIx64 " variant=%u fill=%u capture=%d %s%s\n", options.shader_hash,
+		     static_cast<unsigned>(variant), static_cast<unsigned>(options.input_info.compute->rt_fill_live),
+		     capture ? 1 : 0, half_rate.has_value() ? "applied" : "not applied: ",
+		     reason.c_str());
+		if (half_rate.has_value() && !half_rate->half && !half_rate->capture) {
+			half_rate.reset();
+		}
+	}
+	// Half-rate tiles: the CFG block holding the culling replay is split so that passes 1..3 can be
+	// skipped (HalfRatePlan::pass_blocks). Not with the dispatcher fallback (no structured merges).
+	uint32_t split_id = UINT32_MAX;
+	if (half_rate.has_value() && half_rate->half) {
+		for (const auto& cfg_block: cfg.blocks) {
+			for (uint32_t index = cfg_block.inst_begin; index < cfg_block.inst_end; index++) {
+				if (decoded.instructions[index].pc == HalfRateTiles::kPcCullBegin) split_id = cfg_block.id;
+			}
+		}
+		if (split_id == UINT32_MAX || result.dispatcher_fallback) {
+			LOGF("half-rate tiles: hash=0x%016" PRIx64 " not applied: culling block not found or no structured CFG\n",
+			     options.shader_hash);
+			half_rate.reset();
+			split_id = UINT32_MAX;
+		}
+	}
+	result.block_storage.reserve(cfg.blocks.size() + 7u);
+	result.blocks.reserve(cfg.blocks.size() + 7u);
 	const auto max_id = std::ranges::max_element(cfg.blocks, {}, [](const CFG::BasicBlock& block) {
 		                    return block.id;
 	                    })->id;
@@ -1110,12 +1141,46 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 		block.start_pc = source.start_pc;
 		block.end_pc   = source.end_pc;
 	}
+	IR::Block* split_tail = nullptr;
+	if (split_id != UINT32_MAX) {
+		auto* const split = blocks_by_id.at(split_id);
+		auto        at    = std::ranges::find(result.blocks, split) + 1;
+		for (uint32_t k = 0; k < 6u; k++) {
+			auto& extra    = *result.block_storage.emplace_back(std::make_unique<IR::Block>());
+			extra.id       = max_id + 2u + k;
+			extra.start_pc = HalfRateTiles::kPcCullBegin;
+			extra.end_pc   = split->end_pc;
+			at             = result.blocks.insert(at, &extra) + 1;
+			(k % 2u == 0u ? half_rate->pass_blocks : half_rate->tail_blocks)[k / 2u] = &extra;
+		}
+		split->end_pc = HalfRateTiles::kPcCullBegin;
+		split_tail    = half_rate->tail_blocks[2];
+		// split -> pass1 | tail1, pass_k -> tail_k, tail_k -> pass_k+1 | tail_k+1 (selection merges).
+		IR::Block* from = split;
+		for (uint32_t k = 0; k < 3u; k++) {
+			auto* pass = half_rate->pass_blocks[k];
+			auto* tail = half_rate->tail_blocks[k];
+			from->terminator.kind        = CFG::TerminatorKind::ConditionalBranch;
+			from->terminator.true_block  = pass;
+			from->terminator.false_block = tail;
+			from->terminator.merge_block = tail;
+			from->AddBranch(pass);
+			from->AddBranch(tail);
+			pass->terminator.kind       = CFG::TerminatorKind::Branch;
+			pass->terminator.true_block = tail;
+			pass->AddBranch(tail);
+			from = tail;
+		}
+	}
+	const auto terminal_block = [&](uint32_t id) -> IR::Block* {
+		return id == split_id ? split_tail : blocks_by_id.at(id);
+	};
 	const auto target_block = [&](uint32_t id) -> IR::Block* {
 		return id == UINT32_MAX ? nullptr : blocks_by_id.at(id);
 	};
 	entry.terminator.true_block = target_block(cfg.blocks.front().id);
 	for (const auto& source: cfg.blocks) {
-		auto&       block               = *blocks_by_id.at(source.id);
+		auto&       block               = *terminal_block(source.id);
 		const auto& term                = source.terminator;
 		block.terminator.kind           = term.kind;
 		block.terminator.true_block     = target_block(term.true_block);
@@ -1456,21 +1521,6 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 	result.info.live_vertex_exec = live_exec_pc.has_value();
 	result.pixel_live_election =
 	    options.stage == ShaderType::Pixel && options.pixel_live_election;
-	std::optional<HalfRatePlan> half_rate;
-	if (options.stage == ShaderType::Compute && options.input_info.compute->half_rate_tiles != 0u) {
-		std::string reason;
-		const auto  variant = options.input_info.compute->half_rate_tiles;
-		const bool  capture = HalfRateTiles::CheckEnabled() && HalfRateTiles::CheckAddress() != 0u;
-		half_rate = MakeHalfRatePlan(decoded, variant, options.input_info.compute->lds_size_dwords,
-		                             options.input_info.compute->rt_fill_live, capture, &reason);
-		LOGF("half-rate tiles: hash=0x%016" PRIx64 " variant=%u fill=%u capture=%d %s%s\n", options.shader_hash,
-		     static_cast<unsigned>(variant), static_cast<unsigned>(options.input_info.compute->rt_fill_live),
-		     capture ? 1 : 0, half_rate.has_value() ? "applied" : "not applied: ",
-		     reason.c_str());
-		if (half_rate.has_value() && !half_rate->half && !half_rate->capture) {
-			half_rate.reset();
-		}
-	}
 	for (const auto& cfg_block: cfg.blocks) {
 		auto*      block = blocks_by_id.at(cfg_block.id);
 		Translator translator(result, block, vector_limit, flush_f32_inputs,
@@ -1504,7 +1554,8 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				translator.MarkExecLive();
 			}
 		}
-		translator.AddBranchCondition(cfg, cfg_block, *block);
+		// The split culling block ends in its last tail block (the emitter is there by now).
+		translator.AddBranchCondition(cfg, cfg_block, *terminal_block(cfg_block.id));
 	}
 	IR::ValidateProgram(result, false);
 	return result;

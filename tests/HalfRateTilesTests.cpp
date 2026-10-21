@@ -19,6 +19,8 @@ static_assert((1920u + H::kLdsDwords) * 4u <= 32u * 1024u);
 static_assert(H::kRegOriginX > 71 && H::kRegTileLive < 256);
 // A 1920x1080 screen of 16x16 tiles fits the check log's tile grid.
 static_assert(H::kCheckTilesX * 16 >= 1920 && H::kCheckTilesY * 16 >= 1080);
+// Entry: count + 1, 16 entries, item count, 256-bit stress mask.
+static_assert(H::kCheckEntryDwords == 26 && H::kCheckMaskDwords == 8);
 
 int g_failures = 0;
 
@@ -58,7 +60,14 @@ void TestCompare() {
 	Put(native, 7, {5, 6});
 	Put(half, 7, {5, 6});
 	half[7 * H::kCheckEntryDwords + 5] = 99;
+	// Stress masks: identical except tile 2 (one more passing item in half).
+	for (uint32_t tile = 0; tile < 8; tile++) {
+		native[tile * H::kCheckEntryDwords + H::kCheckWordMask] = 0x5u;
+		half[tile * H::kCheckEntryDwords + H::kCheckWordMask]   = tile == 2 ? 0x7u : 0x5u;
+	}
 	const auto c = H::CompareLists(native.data(), half.data(), H::kCheckTiles);
+	Check(c.mask_equal == 6 && c.mask_diff == 1, "stress masks: tile 2 differs");
+	Check(c.mask_items == 14, "passing items counted from the native side (7 tiles x 2)");
 	Check(c.tiles == 7, "tiles captured in both");
 	Check(c.same_order == 3, "same order: tiles 0, 5 and 7");
 	Check(c.same_set == 1, "same set in another order: tile 1");

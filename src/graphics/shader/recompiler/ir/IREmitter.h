@@ -13,6 +13,7 @@ public:
 	explicit IREmitter(Block* block);
 
 	void SetBlock(Block* block);
+	[[nodiscard]] Block* CurrentBlock() const { return block; }
 
 	Value Emit(ValueOpcode opcode, std::initializer_list<Value> args = {}, uint64_t flags = 0);
 

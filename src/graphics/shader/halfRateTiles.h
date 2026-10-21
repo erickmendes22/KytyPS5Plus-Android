@@ -107,14 +107,23 @@ inline uint8_t FillModeFromKnob(int64_t value) {
 inline constexpr uint8_t kVariantHalf        = 1;
 inline constexpr uint8_t kVariantCaptureOnly = 2; // native kernel, light-list capture only
 
-// Check log: per region kCheckTiles entries of kCheckEntryDwords (count + 1, then 16 entries;
-// 0 in the first word = no capture for that tile).
-inline constexpr uint32_t kCheckTilesX      = 128;
-inline constexpr uint32_t kCheckTilesY      = 72;
-inline constexpr uint32_t kCheckTiles       = kCheckTilesX * kCheckTilesY;
-inline constexpr uint32_t kCheckEntryDwords = 1 + kListEntries;
+// Check log: per region kCheckTiles entries of kCheckEntryDwords:
+//   [0] light-list count + 1 (0 = no capture for that tile), [1..16] list entries,
+//   [17] the item count the guest culls (s51), [18..25] a 256-bit mask of the items that pass the
+//   guest's item test when kForcedItems items are tested (the "stress" culling: the same item code
+//   over items past the real count, read from the light buffer beyond its live entries, without the
+//   16-entry append cap). Native runs it with 256 threads, one item each; half with 64 threads x 4.
+inline constexpr uint32_t kForcedItems       = 256;
+inline constexpr uint32_t kCheckMaskDwords   = kForcedItems / 32u;
+inline constexpr uint32_t kCheckWordCount    = 1u + kListEntries;
+inline constexpr uint32_t kCheckWordItems    = kCheckWordCount;
+inline constexpr uint32_t kCheckWordMask     = kCheckWordItems + 1u;
+inline constexpr uint32_t kCheckTilesX       = 128;
+inline constexpr uint32_t kCheckTilesY       = 72;
+inline constexpr uint32_t kCheckTiles        = kCheckTilesX * kCheckTilesY;
+inline constexpr uint32_t kCheckEntryDwords  = kCheckWordMask + kCheckMaskDwords;
 inline constexpr uint32_t kCheckRegionDwords = kCheckTiles * kCheckEntryDwords;
-inline constexpr uint32_t kCheckBytes       = 2u * kCheckRegionDwords * 4u;
+inline constexpr uint32_t kCheckBytes        = 2u * kCheckRegionDwords * 4u;
 inline constexpr uint32_t kCheckRegionNative = 0;
 inline constexpr uint32_t kCheckRegionHalf   = 1;
 
@@ -169,6 +178,9 @@ struct ListCompare {
 	uint32_t different   = 0;
 	uint32_t overflowed  = 0; // count > 16 in either (entries past 16 are not kept, set undefined)
 	int32_t  first_diff  = -1;
+	uint32_t mask_equal  = 0; // stress culling: identical 256-item pass masks
+	uint32_t mask_diff   = 0;
+	uint64_t mask_items  = 0; // passing items summed over the compared tiles (how much was tested)
 };
 
 inline ListCompare CompareLists(const uint32_t* a, const uint32_t* b, uint32_t tiles) {
@@ -180,6 +192,12 @@ inline ListCompare CompareLists(const uint32_t* a, const uint32_t* b, uint32_t t
 			continue;
 		}
 		result.tiles++;
+		bool mask_same = true;
+		for (uint32_t i = 0; i < kCheckMaskDwords; i++) {
+			mask_same = mask_same && x[kCheckWordMask + i] == y[kCheckWordMask + i];
+			result.mask_items += static_cast<uint32_t>(__builtin_popcount(x[kCheckWordMask + i]));
+		}
+		(mask_same ? result.mask_equal : result.mask_diff)++;
 		if (x[0] - 1u > kListEntries || y[0] - 1u > kListEntries) {
 			result.overflowed++;
 			continue;

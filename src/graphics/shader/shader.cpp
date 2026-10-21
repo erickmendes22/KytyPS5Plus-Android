@@ -743,6 +743,9 @@ ShaderParams PrepareProgram(const HW::ComputeShaderInfo& regs, const HW::ShaderR
 	} else {
 		info.rt_fill_live = 0;
 	}
+	if (info.half_rate_tiles != 0u && HalfRateTiles::CheckEnabled()) {
+		info.lds_size_dwords += HalfRateTiles::kCheckMaskDwords; // stress-culling mask, last in LDS
+	}
 	return GetShaderParams(
 	    regs.cs_regs.data_addr, hash,
 	    std::span<const uint32_t>(regs.cs_user_sgpr.value, regs.cs_regs.user_sgpr), data);
