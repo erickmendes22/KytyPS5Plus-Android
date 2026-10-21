@@ -1144,13 +1144,16 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 	IR::Block* split_tail = nullptr;
 	if (split_id != UINT32_MAX) {
 		auto* const split = blocks_by_id.at(split_id);
-		auto        at    = std::ranges::find(result.blocks, split) + 1;
-		for (uint32_t k = 0; k < 6u; k++) {
-			auto& extra    = *result.block_storage.emplace_back(std::make_unique<IR::Block>());
+		// blocks and block_storage stay parallel (ValidateProgram): insert into both after the split.
+		auto position = static_cast<size_t>(std::ranges::find(result.blocks, split) - result.blocks.begin()) + 1u;
+		for (uint32_t k = 0; k < 6u; k++, position++) {
+			auto  owned    = std::make_unique<IR::Block>();
+			auto& extra    = *owned;
 			extra.id       = max_id + 2u + k;
 			extra.start_pc = HalfRateTiles::kPcCullBegin;
 			extra.end_pc   = split->end_pc;
-			at             = result.blocks.insert(at, &extra) + 1;
+			result.block_storage.insert(result.block_storage.begin() + static_cast<std::ptrdiff_t>(position), std::move(owned));
+			result.blocks.insert(result.blocks.begin() + static_cast<std::ptrdiff_t>(position), &extra);
 			(k % 2u == 0u ? half_rate->pass_blocks : half_rate->tail_blocks)[k / 2u] = &extra;
 		}
 		split->end_pc = HalfRateTiles::kPcCullBegin;
