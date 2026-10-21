@@ -416,12 +416,14 @@ static void ShaderGetStaticInputInfoCS(const HW::ComputeShaderInfo& regs,
 	const auto lane_branch_live           = info.lane_branch_live;
 	const auto dead_lane_live             = info.dead_lane_live;
 	const auto rt_half_live               = info.rt_half_live;
+	const auto rt_fill_live               = info.rt_fill_live;
 	info                                  = {};
 	info.pack_groups                      = pack_groups;
 	info.bvh_live                         = bvh_live;
 	info.lane_branch_live                 = lane_branch_live;
 	info.dead_lane_live                   = dead_lane_live;
 	info.rt_half_live                     = rt_half_live;
+	info.rt_fill_live                     = rt_fill_live;
 	info.async_compute                    = async_compute;
 	info.dispatch_thread_dimensions       = dispatch_thread_dimensions;
 	info.host_subgroup_size               = host_subgroup_size;
@@ -569,7 +571,8 @@ void BuildStageStaticKey(const ShaderComputeInputInfo& info, std::vector<uint32_
 	}
 	key.push_back(static_cast<uint32_t>(info.tg_size_en) | (uint32_t {info.pack_groups} << 8u) |
 	              (uint32_t {info.bvh_live} << 16u) | (uint32_t {info.lane_branch_live} << 24u) |
-	              (uint32_t {info.dead_lane_live} << 26u) | (uint32_t {info.half_rate_tiles & 3u} << 28u));
+	              (uint32_t {info.dead_lane_live} << 26u) | (uint32_t {info.half_rate_tiles & 3u} << 28u) |
+	              (uint32_t {info.rt_fill_live & 3u} << 30u));
 }
 
 ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context& context,
@@ -737,6 +740,8 @@ ShaderParams PrepareProgram(const HW::ComputeShaderInfo& regs, const HW::ShaderR
 		info.threads_num[0] = HalfRateTiles::kGroupSize;
 		info.threads_num[1] = HalfRateTiles::kGroupSize;
 		info.lds_size_dwords += HalfRateTiles::kLdsDwords;
+	} else {
+		info.rt_fill_live = 0;
 	}
 	return GetShaderParams(
 	    regs.cs_regs.data_addr, hash,

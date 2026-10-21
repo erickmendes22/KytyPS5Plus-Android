@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <string_view>
+#include <vector>
 
 namespace Libs::Graphics::ShaderRecompiler::Frontend {
 
@@ -150,7 +151,8 @@ IR::MemoryInfo LdsWord() {
 } // namespace
 
 std::optional<HalfRatePlan> MakeHalfRatePlan(const Decoder::Program& decoded, uint8_t variant,
-                                             uint32_t lds_dwords, bool capture, std::string* reason) {
+                                             uint32_t lds_dwords, uint8_t fill_mode, bool capture,
+                                             std::string* reason) {
 	for (const auto& expect: kExpected) {
 		const auto* inst = FindPc(decoded, expect.pc);
 		if (inst == nullptr || inst->opcode != expect.opcode || !expect.shape(*inst)) {
@@ -164,6 +166,7 @@ std::optional<HalfRatePlan> MakeHalfRatePlan(const Decoder::Program& decoded, ui
 	plan.half           = variant == H::kVariantHalf;
 	plan.capture        = capture;
 	plan.capture_region = plan.half ? H::kCheckRegionHalf : H::kCheckRegionNative;
+	plan.fill_mode      = fill_mode;
 	if (!plan.half) {
 		return plan;
 	}
@@ -309,8 +312,10 @@ void Translator::HalfRateRemap() {
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginX), origin_x);
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginY), origin_y);
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegTileLive), HalfRateConst(1));
-	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.IAdd(origin_x, ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(1))));
-	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.IAdd(origin_y, ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(1))));
+	// kFillQuarter (timing probe): contiguous pixels of the top-left quarter instead of every other one.
+	const uint32_t stride_shift = half_rate->fill_mode == H::kFillQuarter ? 0u : 1u;
+	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.IAdd(origin_x, ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(stride_shift))));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.IAdd(origin_y, ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(stride_shift))));
 	HalfRateStash(Valid, HalfRateFlatIndex(), HalfRateConst(0));
 }
 
@@ -341,10 +346,15 @@ void Translator::HalfRateCapture() {
 	ir.SetExec(exec);
 }
 
-// One pixel of the 2x2 that is not shaded: up to 9 samples around it in the tile (the nearest
-// 1, 2 or 4 and the ring beyond), weighted by distance, depth and G-buffer similarity.
-void Translator::HalfRateFill(IR::U32 tx, IR::U32 ty, IR::U1 live) {
+// One pixel of the 2x2 that is not shaded, at (2x + dx, 2y + dy) for thread (x, y). Candidates
+// are samples at (2x + ox, 2y + oy): kFillNearest4 the 1, 2 or 4 nearest (ox, oy in {0, 2 dx/dy}),
+// kFillRing9 the 3x3 grid ox, oy in {-2, 0, 2}. Weights: distance, depth and G-buffer similarity.
+void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live) {
 	using O = IR::ValueOpcode;
+	const auto bx = ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(1));
+	const auto by = ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(1));
+	const auto tx = ir.IAdd(bx, HalfRateConst(dx_pixel));
+	const auto ty = ir.IAdd(by, HalfRateConst(dy_pixel));
 	const auto px = ir.IAdd(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginX)), tx);
 	const auto py = ir.IAdd(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginY)), ty);
 	const auto inside =
@@ -376,8 +386,6 @@ void Translator::HalfRateFill(IR::U32 tx, IR::U32 ty, IR::U1 live) {
 		own_g_energy = add(own_g_energy, mul(own_g[k], own_g[k]));
 	}
 
-	const auto bx = ir.BitwiseAnd(tx, HalfRateConst(~1u));
-	const auto by = ir.BitwiseAnd(ty, HalfRateConst(~1u));
 	const auto ftx = IR::F32(ir.Emit(O::ConvertF32U32, {tx}));
 	const auto fty = IR::F32(ir.Emit(O::ConvertF32U32, {ty}));
 
@@ -385,8 +393,17 @@ void Translator::HalfRateFill(IR::U32 tx, IR::U32 ty, IR::U1 live) {
 	color.fill(HalfRateFloat(0.0f));
 	auto luma   = HalfRateFloat(0.0f);
 	auto weight = HalfRateFloat(0.0f);
-	for (const uint32_t oy: {0xfffffffeu, 0u, 2u}) {
-		for (const uint32_t ox: {0xfffffffeu, 0u, 2u}) {
+	std::vector<uint32_t> xs;
+	std::vector<uint32_t> ys;
+	if (half_rate->fill_mode == H::kFillRing9) {
+		xs = {0xfffffffeu, 0u, 2u};
+		ys = {0xfffffffeu, 0u, 2u};
+	} else {
+		xs = dx_pixel != 0u ? std::vector<uint32_t> {0u, 2u} : std::vector<uint32_t> {0u};
+		ys = dy_pixel != 0u ? std::vector<uint32_t> {0u, 2u} : std::vector<uint32_t> {0u};
+	}
+	for (const uint32_t oy: ys) {
+		for (const uint32_t ox: xs) {
 			const auto cx      = ir.IAdd(bx, HalfRateConst(ox));
 			const auto cy      = ir.IAdd(by, HalfRateConst(oy));
 			const auto in_tile = ir.LogicalAnd(ir.ULessThan(cx, HalfRateConst(kLastSample + 1u)),
@@ -433,14 +450,14 @@ void Translator::HalfRateFill(IR::U32 tx, IR::U32 ty, IR::U1 live) {
 // Before s_endpgm: all samples of the tile are in LDS after the barrier; each thread fills the
 // right, lower and diagonal pixel of its 2x2.
 void Translator::HalfRateReconstruct() {
+	if (half_rate->fill_mode == H::kFillOff || half_rate->fill_mode == H::kFillQuarter) {
+		return;
+	}
 	ir.Emit(IR::ValueOpcode::Barrier);
 	const auto live = ir.IEqual(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegTileLive)), HalfRateConst(1));
-	const auto sx   = ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(1));
-	const auto sy   = ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(1));
-	const auto one  = HalfRateConst(1);
-	HalfRateFill(ir.IAdd(sx, one), sy, live);
-	HalfRateFill(sx, ir.IAdd(sy, one), live);
-	HalfRateFill(ir.IAdd(sx, one), ir.IAdd(sy, one), live);
+	HalfRateFill(1, 0, live);
+	HalfRateFill(0, 1, live);
+	HalfRateFill(1, 1, live);
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend

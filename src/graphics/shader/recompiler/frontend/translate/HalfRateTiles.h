@@ -20,6 +20,7 @@ struct HalfRatePlan {
 	bool                              capture        = false; // KYTY_RT_HALF_CHECK log
 	uint32_t                          capture_region = 0;
 	uint32_t                          lds_base_bytes = 0;
+	uint8_t                           fill_mode      = 0;     // HalfRateTiles::kFill*
 	std::vector<Decoder::Instruction> cull;                   // item code without its branches
 	Decoder::Instruction              depth_desc;
 	Decoder::Instruction              gbuffer_desc;
@@ -34,6 +35,7 @@ struct HalfRatePlan {
 // variant: HalfRateTiles::kVariantHalf or kVariantCaptureOnly; lds_dwords: the program's LDS size
 // (including the patch's words for the half variant).
 std::optional<HalfRatePlan> MakeHalfRatePlan(const Decoder::Program& decoded, uint8_t variant,
-                                             uint32_t lds_dwords, bool capture, std::string* reason);
+                                             uint32_t lds_dwords, uint8_t fill_mode, bool capture,
+                                             std::string* reason);
 
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend

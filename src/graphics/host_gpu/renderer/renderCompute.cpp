@@ -19,6 +19,7 @@
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
+#include "graphics/shader/halfRateTiles.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -379,6 +380,11 @@ static uint8_t LiveRtHalf() {
 	return value < 0 ? uint8_t {0} : value == 0 ? uint8_t {1} : uint8_t {2};
 }
 
+// KYTY_LIVE_KNOBS rt_fill=4|9|0|99: the half-rate fill mode (shader/halfRateTiles.h).
+static uint8_t LiveRtFill() {
+	return HalfRateTiles::FillModeFromKnob(LiveKnobs::Int("rt_fill", 4));
+}
+
 static bool ComputeGroupPackCandidate(const ShaderComputeInputInfo& input_info, uint32_t threads,
                                       uint32_t groups_x, bool turnip) {
 	return ComputeGroupPackEnabled(turnip) && !input_info.dispatch_thread_dimensions && threads <= 32u &&
@@ -409,6 +415,7 @@ ShaderComputeInputInfo RenderExecutor::DirectDispatchInputInfo(const HW::Compute
 	input_info.lane_branch_live = LiveLaneBranches();
 	input_info.dead_lane_live = LiveDeadLane();
 	input_info.rt_half_live   = LiveRtHalf();
+	input_info.rt_fill_live   = LiveRtFill();
 	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
 	input_info.dispatch_thread_dimensions = use_thread_dimensions;
 	input_info.workgroup_counts[0] = thread_group_x;
@@ -716,6 +723,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	input_info.lane_branch_live      = LiveLaneBranches();
 	input_info.dead_lane_live        = LiveDeadLane();
 	input_info.rt_half_live          = LiveRtHalf();
+	input_info.rt_fill_live          = LiveRtFill();
 	PipelineProbe::BeginItem();
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);

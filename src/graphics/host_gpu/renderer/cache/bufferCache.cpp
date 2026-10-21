@@ -1382,6 +1382,16 @@ void BufferCache::PollRtHalfCheck() {
 	if (knob == 0) {
 		st.native_previous = std::move(st.native_latest);
 		st.native_latest   = region(HalfRateTiles::kCheckRegionNative);
+		// How many lights the captured tiles carry (0, 1, 2, 3-4, 5-8, 9-16, more).
+		std::array<uint32_t, 7> bins {};
+		for (uint32_t tile = 0; tile < HalfRateTiles::kCheckTiles; tile++) {
+			const auto word = st.native_latest[tile * HalfRateTiles::kCheckEntryDwords];
+			if (word == 0u) continue;
+			const auto n = word - 1u;
+			bins[n == 0 ? 0 : n == 1 ? 1 : n == 2 ? 2 : n <= 4 ? 3 : n <= 8 ? 4 : n <= 16 ? 5 : 6]++;
+		}
+		LOGF("[rt-half-check] native light counts: 0:%u 1:%u 2:%u 3-4:%u 5-8:%u 9-16:%u >16:%u\n", bins[0], bins[1],
+		     bins[2], bins[3], bins[4], bins[5], bins[6]);
 		if (!st.native_previous.empty()) {
 			report("native vs previous native phase", st.native_latest, st.native_previous);
 		}

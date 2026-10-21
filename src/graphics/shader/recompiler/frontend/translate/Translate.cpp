@@ -1461,9 +1461,11 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 		std::string reason;
 		const auto  variant = options.input_info.compute->half_rate_tiles;
 		const bool  capture = HalfRateTiles::CheckEnabled() && HalfRateTiles::CheckAddress() != 0u;
-		half_rate = MakeHalfRatePlan(decoded, variant, options.input_info.compute->lds_size_dwords, capture, &reason);
-		LOGF("half-rate tiles: hash=0x%016" PRIx64 " variant=%u capture=%d %s%s\n", options.shader_hash,
-		     static_cast<unsigned>(variant), capture ? 1 : 0, half_rate.has_value() ? "applied" : "not applied: ",
+		half_rate = MakeHalfRatePlan(decoded, variant, options.input_info.compute->lds_size_dwords,
+		                             options.input_info.compute->rt_fill_live, capture, &reason);
+		LOGF("half-rate tiles: hash=0x%016" PRIx64 " variant=%u fill=%u capture=%d %s%s\n", options.shader_hash,
+		     static_cast<unsigned>(variant), static_cast<unsigned>(options.input_info.compute->rt_fill_live),
+		     capture ? 1 : 0, half_rate.has_value() ? "applied" : "not applied: ",
 		     reason.c_str());
 		if (half_rate.has_value() && !half_rate->half && !half_rate->capture) {
 			half_rate.reset();

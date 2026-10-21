@@ -225,6 +225,8 @@ struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
 	// (8x8 threads, LDS size including HalfRateTiles::kLdsDwords), kVariantCaptureOnly for the
 	// native kernel with the KYTY_RT_HALF_CHECK light-list capture, else 0.
 	uint8_t            half_rate_tiles            = 0;
+	// KYTY_LIVE_KNOBS rt_fill (shader/halfRateTiles.h kFill*), only kept for the half variant.
+	uint8_t            rt_fill_live               = 0;
 	ShaderStageRuntime stage;
 };
 

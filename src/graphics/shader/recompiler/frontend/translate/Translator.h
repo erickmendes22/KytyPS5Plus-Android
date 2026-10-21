@@ -279,7 +279,7 @@ private:
 	void    HalfRateCull();
 	void    HalfRateRemap();
 	void    HalfRateCapture();
-	void    HalfRateFill(IR::U32 tx, IR::U32 ty, IR::U1 live);
+	void    HalfRateFill(uint32_t dx, uint32_t dy, IR::U1 live);
 	void    HalfRateReconstruct();
 
 	IR::Program&    program;

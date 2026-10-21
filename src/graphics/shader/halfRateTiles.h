@@ -83,6 +83,26 @@ inline constexpr uint32_t kRegExtentX  = 242;
 inline constexpr uint32_t kRegExtentY  = 243;
 inline constexpr uint32_t kRegTileLive = 244; // 1 once the tile passed the guest's empty-tile exit
 
+// Fill of the 3 unshaded pixels per 2x2 (ShaderComputeInputInfo::rt_fill_live, live knob rt_fill):
+// rt_fill=4 (default) the up-to-4 nearest samples, weights without a floor so that when all are
+// rejected the least different one wins; rt_fill=9 also the ring around them (always computed:
+// one IR block has no branch to skip it); rt_fill=0 no fill (timing arm, image stale);
+// rt_fill=99 each thread shades a contiguous pixel of the tile's top-left 8x8 quarter instead of
+// a 2x-strided one, no fill (timing probe for lane coherence, image wrong).
+inline constexpr uint8_t kFillNearest4 = 0;
+inline constexpr uint8_t kFillOff      = 1;
+inline constexpr uint8_t kFillRing9    = 2;
+inline constexpr uint8_t kFillQuarter  = 3;
+
+inline uint8_t FillModeFromKnob(int64_t value) {
+	switch (value) {
+		case 0: return kFillOff;
+		case 9: return kFillRing9;
+		case 99: return kFillQuarter;
+		default: return kFillNearest4;
+	}
+}
+
 // program variant (ShaderComputeInputInfo::half_rate_tiles)
 inline constexpr uint8_t kVariantHalf        = 1;
 inline constexpr uint8_t kVariantCaptureOnly = 2; // native kernel, light-list capture only
