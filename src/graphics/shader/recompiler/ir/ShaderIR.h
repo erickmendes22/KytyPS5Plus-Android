@@ -893,6 +893,9 @@ struct Program: ResourcePlan {
 	uint32_t                      wave_size      = 64;
 	uint32_t                      scratch_dwords = 0;
 	bool                          dispatcher_fallback = false;
+	// KYTY_PS_LIVE_ELECT (ShaderDeviceFeatures::pixel_live_election, pixel stage): lanes that update
+	// a wave-wide counter for the whole wave are elected among non-helper invocations.
+	bool                          pixel_live_election = false;
 	CFG::FailureKind              cfg_failure_kind    = CFG::FailureKind::None;
 	std::string                   fallback_reason;
 	struct ScalarWrite { uint32_t pc; ScalarReg reg; Value value; };

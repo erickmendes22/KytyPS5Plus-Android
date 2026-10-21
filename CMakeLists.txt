@@ -670,6 +670,18 @@ add_executable(ftz32_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Ftz32Tests.cpp")
 target_include_directories(ftz32_tests PRIVATE ${inc_headers})
 add_executable(bda_table_size_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BdaTableSizeTests.cpp")
 target_include_directories(bda_table_size_tests PRIVATE ${inc_headers})
+add_executable(lane_election_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/LaneElectionTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/translate/LaneElection.cpp"
+)
+target_link_libraries(lane_election_tests fmt::fmt xbyak::xbyak)
+target_include_directories(lane_election_tests PRIVATE ${inc_headers})
+add_executable(loop_guard_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/LoopGuardTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/LoopGuardPlan.cpp"
+)
+target_link_libraries(loop_guard_tests fmt::fmt xbyak::xbyak)
+target_include_directories(loop_guard_tests PRIVATE ${inc_headers})
 
 add_executable(pad_script_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PadScriptTests.cpp")
 target_link_libraries(pad_script_tests common fmt::fmt)
@@ -823,6 +835,8 @@ if(BUILD_TESTING)
 	add_test(NAME pad_script COMMAND $<TARGET_FILE:pad_script_tests>)
 	add_test(NAME ftz32 COMMAND $<TARGET_FILE:ftz32_tests>)
 	add_test(NAME bda_table_size COMMAND $<TARGET_FILE:bda_table_size_tests>)
+	add_test(NAME loop_guard COMMAND $<TARGET_FILE:loop_guard_tests>)
+	add_test(NAME lane_election COMMAND $<TARGET_FILE:lane_election_tests>)
 	add_test(NAME host_input COMMAND $<TARGET_FILE:host_input_tests>)
 	add_test(NAME save_data_memory COMMAND $<TARGET_FILE:save_data_memory_tests>)
 	add_test(NAME png_enc COMMAND $<TARGET_FILE:png_enc_tests>)
@@ -915,6 +929,8 @@ if(BUILD_TESTING)
 		pad_script_tests
 		ftz32_tests
 		bda_table_size_tests
+		loop_guard_tests
+		lane_election_tests
 		host_input_tests
 		save_data_memory_tests
 		png_enc_tests

@@ -799,6 +799,16 @@ void EmitBarrier(EmitterState& state) {
 	                          ConstantU32(state, memory_scope), ConstantU32(state, semantics));
 }
 
+// KYTY_PS_LIVE_ELECT: BuiltIn HelperInvocation where declared (pixel stage with the option), else false.
+uint32_t EmitIsHelperInvocation(EmitterState& state) {
+	if (state.helper_invocation_variable == 0) {
+		return ConstantBool(state, false);
+	}
+	const auto value = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeBool(state), value, state.helper_invocation_variable);
+	return value;
+}
+
 uint32_t EmitLaneId(EmitterState& state) {
 	if (state.program.stage == ShaderType::TessellationControl) {
 		return EmitBuiltinU32(state, IR::StageInputKind::InvocationId, 0);
