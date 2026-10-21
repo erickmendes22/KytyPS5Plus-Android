@@ -584,6 +584,9 @@ target_include_directories(lane_branch_defaults_tests PRIVATE ${inc_headers})
 add_executable(front_only_packets_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FrontOnlyPacketsTests.cpp")
 target_include_directories(front_only_packets_tests PRIVATE ${inc_headers})
 
+add_executable(rp_ops_fold_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/RpOpsFoldTests.cpp")
+target_include_directories(rp_ops_fold_tests PRIVATE ${inc_headers})
+
 add_executable(dead_lane_defaults_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/DeadLaneDefaultsTests.cpp")
 target_include_directories(dead_lane_defaults_tests PRIVATE ${inc_headers})
 

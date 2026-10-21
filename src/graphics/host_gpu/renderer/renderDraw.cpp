@@ -821,16 +821,20 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	// now and the attachment acquired again.
 	for (uint32_t i = 0; i < color_count; i++) {
 		auto* image = cache.m_slot_images.try_get(colors[i].image_id);
-		if (image == nullptr || !image->rp_fold_pending) continue;
-		auto&      attachment = state.color_attachments[colors[i].target_slot];
-		const auto& view      = colors[i].desc.view_info;
-		const bool absorb = state.width == image->backing.extent.width &&
-		                    state.height == image->backing.extent.height && state.num_layers == 1 &&
-		                    view.base_level == 0 && attachment.format == image->backing.format;
-		if (absorb) {
-			image->rp_fold_pending = false;
-			attachment.is_clear    = true;
-			std::memcpy(attachment.clear_value.data(), &image->rp_fold_value, sizeof(attachment.clear_value));
+		if (image == nullptr || !image->rp_fold.Pending()) continue;
+		auto&       attachment = state.color_attachments[colors[i].target_slot];
+		const auto& view       = colors[i].desc.view_info;
+		const RpFold::PassUse use {.pass_width      = state.width,
+		                           .pass_height     = state.height,
+		                           .pass_layers     = state.num_layers,
+		                           .view_base_level = view.base_level,
+		                           .image_width     = image->backing.extent.width,
+		                           .image_height    = image->backing.extent.height,
+		                           .same_format     = attachment.format == image->backing.format};
+		vk::ClearColorValue value {};
+		if (image->rp_fold.TryAbsorb(use, value)) {
+			attachment.is_clear = true;
+			std::memcpy(attachment.clear_value.data(), &value, sizeof(attachment.clear_value));
 			RpStats::OnFolded();
 		} else {
 			image->FlushFoldedClear();

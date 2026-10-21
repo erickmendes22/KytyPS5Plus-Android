@@ -2,6 +2,7 @@
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_IMAGE_H_
 
 #include "common/alignment.h"
+#include "graphics/host_gpu/renderer/image/rpFold.h"
 #include "common/assert.h"
 #include "common/slotVector.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -133,12 +134,9 @@ public:
 	// KYTY_RP_STATS: a full-image colour clear not yet followed by any other use (rpStats.h).
 	bool               rp_clear_pending = false;
 	// KYTY_RP_OPS: a full colour clear kept as a loadOp CLEAR for the next pass that binds this
-	// image over its whole area (TextureCache::ClearImage, RenderExecutor::AcquireRenderTargets).
-	// Any other layout change first records the clear (GetBarriers), so every other reader and
-	// writer still sees it in order.
-	bool                 rp_fold_pending = false;
-	vk::ClearColorValue  rp_fold_value {};
-	void                 FlushFoldedClear();
+	// image over its whole area (rpFold.h). Any other layout change records it first (GetBarriers).
+	RpFold::Tracker<vk::ClearColorValue> rp_fold;
+	void                                 FlushFoldedClear();
 	// While alive, a layout change of an image with a folded clear keeps the clear pending:
 	// only the colour-attachment acquisition of the pass that absorbs it.
 	class FoldScope {

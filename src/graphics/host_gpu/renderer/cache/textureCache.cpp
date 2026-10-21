@@ -1797,11 +1797,14 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 	}
 	// KYTY_RP_OPS: a full colour clear of a single-level, single-layer image waits for the next
 	// pass that binds it over its whole area (loadOp CLEAR); any other use records it first.
-	if (range.aspectMask == vk::ImageAspectFlagBits::eColor && full_image &&
-	    image.info.resources.levels == 1 && image.backing.layers == 1 && image.info.samples == 1 &&
-	    !image.info.IsVolume() && RpStats::FoldEnabled()) {
-		image.rp_fold_pending = true;
-		image.rp_fold_value   = clear.color;
+	const RpFold::Shape shape {.color_aspect = range.aspectMask == vk::ImageAspectFlagBits::eColor,
+	                           .full_image   = full_image,
+	                           .levels       = image.info.resources.levels,
+	                           .layers       = image.backing.layers,
+	                           .samples      = image.info.samples,
+	                           .volume       = image.info.IsVolume()};
+	if (RpFold::Eligible(shape) && RpStats::FoldEnabled(command.GetGraphics().IsMesaTurnip())) {
+		image.rp_fold.Fold(clear.color);
 		CommitGpuWrite(image);
 		NoteClearForRpStats(image, range, full_image);
 		return;

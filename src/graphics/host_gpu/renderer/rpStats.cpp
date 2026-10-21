@@ -26,10 +26,11 @@ bool Enabled() {
 	return enabled;
 }
 
-bool FoldEnabled() {
-	static const int64_t start = [] {
+bool FoldEnabled(bool turnip) {
+	static const int64_t start = [turnip] {
 		const char* value = std::getenv("KYTY_RP_OPS");
-		return value != nullptr && std::strcmp(value, "1") == 0 ? int64_t {1} : int64_t {0};
+		const bool  on    = value != nullptr && value[0] != '\0' ? std::strcmp(value, "0") != 0 : turnip;
+		return on ? int64_t {1} : int64_t {0};
 	}();
 	return LiveKnobs::Int("rp_ops", start) != 0;
 }

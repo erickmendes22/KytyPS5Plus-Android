@@ -140,18 +140,17 @@ Image::FoldScope::~FoldScope() {
 
 // Records the folded clear where the guest's clear would have run relative to this use.
 void Image::FlushFoldedClear() {
-	if (!rp_fold_pending || t_fold_flushing) {
+	if (!rp_fold.Pending() || t_fold_flushing) {
 		return;
 	}
-	t_fold_flushing = true;
-	rp_fold_pending = false;
+	t_fold_flushing   = true;
+	const auto value  = rp_fold.TakeForFlush();
 	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	auto command = m_scheduler.Current().Handle();
 	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command,
 	        PassEnd::ImageCopy);
 	const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-	command.clearColorImage(backing.image, vk::ImageLayout::eTransferDstOptimal, &rp_fold_value, 1,
-	                        &range);
+	command.clearColorImage(backing.image, vk::ImageLayout::eTransferDstOptimal, &value, 1, &range);
 	RpStats::OnFoldFlushed();
 	t_fold_flushing = false;
 }
@@ -160,7 +159,7 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
                                    vk::AccessFlags2                     destination_access,
                                    vk::PipelineStageFlags2              destination_stage,
                                    std::optional<ImageSubresourceRange> range) {
-	if (rp_fold_pending && t_fold_scope == 0) {
+	if (rp_fold.NeedsFlush(t_fold_scope != 0)) {
 		FlushFoldedClear();
 	}
 	auto& state              = backing.state;

@@ -14,8 +14,9 @@ namespace Libs::Graphics::RpStats {
 void OnClear(bool full_color);
 // A pending clear met a render pass: `full_area` whether the pass covers the whole image.
 void OnAttachment(bool full_area, uint64_t bytes);
-// KYTY_RP_OPS (live rp_ops=0/1): fold full colour clears into the next full-area pass.
-[[nodiscard]] bool FoldEnabled();
+// KYTY_RP_OPS (default on with Mesa Turnip, =0 opts out, =1 forces on; live rp_ops=0/1
+// overrides): fold full colour clears into the next full-area pass (image/rpFold.h).
+[[nodiscard]] bool FoldEnabled(bool turnip);
 void OnFolded();      // a pass absorbed a clear as loadOp CLEAR
 void OnFoldFlushed(); // another use recorded the clear first
 void Append(std::string& out, double per_frame);
