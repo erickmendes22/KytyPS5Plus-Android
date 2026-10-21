@@ -1246,6 +1246,15 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 		return static_cast<size_t>(std::ranges::find(result.blocks, block) - result.blocks.begin());
 	};
 	if (loop_pre_id != UINT32_MAX) {
+		std::unordered_set<uint32_t> variables;
+		for (const auto& block: cfg.blocks) {
+			for (const auto& assignment: block.assignments) variables.insert(assignment.variable);
+		}
+		for (const auto& expression: cfg.expressions) {
+			if (expression.op == CFG::ConditionExpression::Op::Variable) variables.insert(expression.lhs);
+		}
+		half_rate->goto_variables.assign(variables.begin(), variables.end());
+		std::ranges::sort(half_rate->goto_variables);
 		auto& loop = half_rate->loop;
 		auto* pre  = blocks_by_id.at(loop_pre_id);
 		loop.end   = blocks_by_id.at(loop_end_id);

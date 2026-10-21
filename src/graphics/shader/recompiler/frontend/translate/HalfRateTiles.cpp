@@ -759,11 +759,22 @@ void Translator::HalfRateLoopEnter() {
 	saved.v.clear();
 	saved.s.clear();
 	for (uint32_t r = 0; r < HalfRatePlan::kLoopSavedVgprs; r++) saved.v.push_back(ir.GetVectorReg(static_cast<IR::VectorReg>(r)));
-	for (uint32_t r = 0; r < HalfRatePlan::kLoopSavedSgprs; r++) saved.s.push_back(ir.GetScalarReg(static_cast<IR::ScalarReg>(r)));
+	saved.thread_bits.clear();
+	saved.mask_tags.clear();
+	for (uint32_t r = 0; r < HalfRatePlan::kLoopSavedSgprs; r++) {
+		const auto reg = static_cast<IR::ScalarReg>(r);
+		saved.s.push_back(ir.GetScalarReg(reg));
+		saved.thread_bits.push_back(ir.GetThreadBitScalarReg(reg));
+		saved.mask_tags.push_back(ir.GetScalarMaskTag(reg));
+	}
 	saved.vcc_lo = ir.GetVccLo();
 	saved.vcc_hi = ir.GetVccHi();
 	saved.scc    = ir.GetScc();
 	saved.m0     = ir.GetM0();
+	// The CFG structurizer's goto variables: an iteration must start with the values the first one
+	// saw (a variable set only before the body would otherwise carry the last iteration's value).
+	saved.goto_values.clear();
+	for (const auto id: half_rate->goto_variables) saved.goto_values.push_back(ir.GetGotoVariable(id));
 	const auto exec = ir.GetExec();
 	const auto lead = ir.LogicalAnd(ir.IEqual(HalfRateLocal(0), HalfRateConst(0)), ir.IEqual(HalfRateLocal(1), HalfRateConst(0)));
 	ir.SetExec(lead);
@@ -815,11 +826,17 @@ void Translator::HalfRateLoopExit() {
 	ir.SetBlock(loop.latch);
 	const auto& saved = half_rate->loop_saved;
 	for (uint32_t r = 0; r < saved.v.size(); r++) ir.SetVectorReg(static_cast<IR::VectorReg>(r), saved.v[r]);
-	for (uint32_t r = 0; r < saved.s.size(); r++) ir.SetScalarReg(static_cast<IR::ScalarReg>(r), saved.s[r]);
+	for (uint32_t r = 0; r < saved.s.size(); r++) {
+		const auto reg = static_cast<IR::ScalarReg>(r);
+		ir.SetScalarReg(reg, saved.s[r]);
+		ir.SetThreadBitScalarReg(reg, saved.thread_bits[r]);
+		ir.SetScalarMaskTag(reg, saved.mask_tags[r]);
+	}
 	ir.SetVccLo(saved.vcc_lo);
 	ir.SetVccHi(saved.vcc_hi);
 	ir.SetScc(saved.scc);
 	ir.SetM0(saved.m0);
+	for (size_t i = 0; i < saved.goto_values.size(); i++) ir.SetGotoVariable(half_rate->goto_variables[i], saved.goto_values[i]);
 	ir.SetExec(IR::U1(IR::Value(true)));
 	const auto next  = ir.IAdd(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegIteration)), HalfRateConst(1));
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegIteration), next);

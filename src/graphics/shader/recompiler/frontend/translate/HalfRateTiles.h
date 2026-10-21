@@ -63,7 +63,11 @@ struct HalfRatePlan {
 		IR::U32              vcc_hi {};
 		IR::U1               scc {};
 		IR::U32              m0 {};
+		std::vector<IR::U1>  goto_values;
+		std::vector<IR::U1>  thread_bits; // per-lane view of SGPR lane masks
+		std::vector<IR::U1>  mask_tags;
 	};
+	std::vector<uint32_t>             goto_variables; // structurizer variables (restored per iteration)
 	static constexpr uint32_t kLoopSavedVgprs = 72;
 	static constexpr uint32_t kLoopSavedSgprs = 106;
 	mutable LoopSaved                 loop_saved {};
