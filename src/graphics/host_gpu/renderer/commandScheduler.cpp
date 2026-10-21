@@ -1,4 +1,6 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/host_gpu/renderer/submitStats.h"
+#include <chrono>
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
@@ -188,16 +190,20 @@ bool CommandScheduler::CanHoistBarrier(uint64_t image_pass_serial) const noexcep
 }
 
 void CommandScheduler::Flush() {
+	SubmitStats::NoteCaller(__builtin_return_address(0));
 	SubmitInfo submit;
-	Flush(submit);
+	Submit(submit);
+	BeginNext();
 }
 
 void CommandScheduler::Flush(SubmitInfo& submit) {
+	SubmitStats::NoteCaller(__builtin_return_address(0));
 	Submit(submit);
 	BeginNext();
 }
 
 void CommandScheduler::FlushAndWait() {
+	SubmitStats::NoteCaller(__builtin_return_address(0));
 	const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemFlush);
 	const auto tick = Submit();
 	m_master.Wait(tick);
@@ -208,6 +214,7 @@ void CommandScheduler::Finish() {
 	const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemFinish);
 	CheckActive();
 	if (!m_command.IsInvalid()) {
+		SubmitStats::NoteCaller(__builtin_return_address(0));
 		Submit();
 	}
 	m_master.Wait(CurrentTick() - 1);
@@ -424,6 +431,7 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	pending.debug_arg2      = m_command.m_debug_arg2;
 	pending.debug_arg3      = m_command.m_debug_arg3;
 	pending.debug_arg4      = m_command.m_debug_arg4;
+	pending.work            = m_work_since_submit;
 
 	if (m_submit_thread.joinable() && !external_semaphores) {
 		{
@@ -468,7 +476,10 @@ void CommandScheduler::QueueSubmit(const PendingSubmit& pending) {
 	{
 		Common::LockGuard                   lock(graphics.queue_mutex);
 		const Common::PerfStats::ScopedWait timing(Common::PerfStats::Wait::QueueSubmit);
+		const auto submit_start = std::chrono::steady_clock::now();
 		result = graphics.queue.submit(1, &submit_info, nullptr);
+		SubmitStats::NoteSubmit(pending.work, static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - submit_start).count()));
 		Common::PerfStats::Count(Common::PerfStats::Counter::Submits);
 	}
 
