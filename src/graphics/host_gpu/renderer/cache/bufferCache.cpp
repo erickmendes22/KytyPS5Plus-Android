@@ -1417,6 +1417,24 @@ void BufferCache::PollRtHalfCheck() {
 		     "129-192:%u 193-256:%u; native stress lists as expected %u/%u\n",
 		     items_min, items_max, stress[0], stress[1], stress[2], stress[3], stress[4], stress[5], stress[6],
 		     expected, captured);
+	} else if (knob == 2) {
+		// rt_half=2 diagnostic: the guest light loop's state in re-trace iterations (HalfRateLightLoopDump).
+		const auto half    = region(HalfRateTiles::kCheckRegionHalf);
+		uint32_t   printed = 0;
+		uint32_t   dumped  = 0;
+		for (uint32_t tile = 0; tile < HalfRateTiles::kCheckTiles; tile++) {
+			const auto* e = half.data() + tile * HalfRateTiles::kCheckEntryDwords;
+			for (uint32_t at = 0; at < 2; at++) {
+				const auto* d = e + at * 16u;
+				if (d[0] < 0x100u || d[0] > 0x104u) continue;
+				dumped++;
+				if (printed++ >= 12) continue;
+				LOGF("[rt-half-check] light loop tile=%u iter=%u trip=%u s33=%u v17=%u v0=%u s32=%u exec=%08x%08x "
+				     "vcc=%08x%08x lane=%u x=%u y=%u s10=%u s35=%u s36=%08x\n",
+				     tile, d[0] - 0x100u, d[1], d[2], d[3], d[4], d[5], d[7], d[6], d[9], d[8], d[10], d[11], d[12], d[13], d[14], d[15]);
+			}
+		}
+		LOGF("[rt-half-check] light loop dumps: %u\n", dumped);
 	} else if (!st.native_latest.empty()) {
 		const auto half = region(HalfRateTiles::kCheckRegionHalf);
 		report("half vs latest native phase", half, st.native_latest);

@@ -256,7 +256,10 @@ void Translator::HalfRateBefore(const Decoder::Instruction& inst) {
 	if (half_rate == nullptr) {
 		return;
 	}
-	if (inst.pc == 0u && half_rate->half) {
+	if (half_rate->adaptive && H::CheckEnabled() && inst.pc == 0x1d7cu) {
+		ir.SetVectorReg(static_cast<IR::VectorReg>(kRegLightIterations), HalfRateConst(0)); // light loop entry
+	}
+		if (inst.pc == 0u && half_rate->half) {
 		ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegTileLive), HalfRateConst(0));
 	}
 	if (!half_rate->half) {
@@ -284,7 +287,10 @@ void Translator::HalfRateAfter(const Decoder::Instruction& inst) {
 	if (half_rate == nullptr) {
 		return;
 	}
-	if (inst.pc == H::kPcListBarrier && half_rate->adaptive) {
+	if (half_rate->adaptive && H::CheckEnabled() && (inst.pc == 0x1de4u || inst.pc == 0x1df0u)) {
+		HalfRateLightLoopDump(inst.pc);
+	}
+		if (inst.pc == H::kPcListBarrier && half_rate->adaptive) {
 		HalfRateLoopEnter();
 	}
 	if (inst.pc == H::kPcListBarrier && half_rate->capture) {
@@ -749,6 +755,57 @@ void Translator::HalfRateReconstruct() {
 			                                         LdsWord(), current_pc));
 			ir.Emit(O::DebugLogStoreU32, {ir.IAdd(base, HalfRateConst(H::kCheckWordRejected + t)), value, write});
 		}
+	}
+}
+
+// rt_half=2 diagnostic (KYTY_RT_HALF_CHECK): in re-trace iterations, the first active lane of the
+// wave logs the guest light loop's state (pc 0x1de4: s33 < v17, v17 = s32 + v0, v0 = LDS count;
+// pc 0x1df0: s10 = readfirstlane(v0)) at its 1st and 64th trip, into the tile's half-region entry
+// (words 0..15 and 16..31; the half region is otherwise unused by rt_half=2).
+void Translator::HalfRateLightLoopDump(uint32_t pc) {
+	using O = IR::ValueOpcode;
+	const auto counter_reg = static_cast<IR::VectorReg>(kRegLightIterations);
+	auto       trips       = ir.GetVectorReg(counter_reg);
+	if (pc == 0x1de4u) {
+		trips = ir.Select(ir.GetExec(), ir.IAdd(trips, HalfRateConst(1)), trips);
+		ir.SetVectorReg(counter_reg, trips);
+	}
+	const auto iteration = ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegIteration));
+	const auto flat      = HalfRateFlatIndex();
+	const auto first     = ir.IEqual(flat, IR::U32(ir.Emit(O::ReadFirstLane, {flat, ir.GetExec()})));
+	const auto retrace   = ir.LogicalNot(ir.IEqual(iteration, HalfRateConst(0)));
+	const auto at_1      = ir.IEqual(trips, HalfRateConst(1));
+	const auto at_64     = ir.IEqual(trips, HalfRateConst(64));
+	const auto tile_x    = ir.ShiftRightLogical(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginX)), HalfRateConst(4));
+	const auto tile_y    = ir.ShiftRightLogical(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginY)), HalfRateConst(4));
+	const auto inside    = ir.LogicalAnd(ir.ULessThan(tile_x, HalfRateConst(H::kCheckTilesX)), ir.ULessThan(tile_y, HalfRateConst(H::kCheckTilesY)));
+	const auto write     = ir.LogicalAnd(ir.LogicalAnd(ir.GetExec(), first), ir.LogicalAnd(retrace, ir.LogicalAnd(inside, ir.LogicalOr(at_1, at_64))));
+	const auto base      = ir.IAdd(ir.IAdd(HalfRateConst(H::kCheckRegionHalf * H::kCheckRegionDwords),
+	                                       ir.IMul(ir.IAdd(ir.IMul(tile_y, HalfRateConst(H::kCheckTilesX)), tile_x), HalfRateConst(H::kCheckEntryDwords))),
+	                              ir.Select(at_64, HalfRateConst(16), HalfRateConst(0)));
+	const auto log = [&](uint32_t word, IR::U32 value) {
+		ir.Emit(O::DebugLogStoreU32, {ir.IAdd(base, HalfRateConst(word)), value, write});
+	};
+	const auto exec_mask = BallotMask(ir.GetExec());
+	if (pc == 0x1de4u) {
+		const auto vcc_mask = BallotMask(ir.GetVcc());
+		log(0, ir.IAdd(iteration, HalfRateConst(0x100u))); // marker: 0x100 + loop iteration
+		log(1, trips);
+		log(2, ir.GetScalarReg(static_cast<IR::ScalarReg>(33)));
+		log(3, ir.GetVectorReg(static_cast<IR::VectorReg>(17)));
+		log(4, ir.GetVectorReg(static_cast<IR::VectorReg>(0)));
+		log(5, ir.GetScalarReg(static_cast<IR::ScalarReg>(32)));
+		log(6, exec_mask[0]);
+		log(7, exec_mask[1]);
+		log(8, vcc_mask[0]);
+		log(9, vcc_mask[1]);
+		log(10, flat);
+		log(11, ir.GetVectorReg(static_cast<IR::VectorReg>(24)));
+		log(12, ir.GetVectorReg(static_cast<IR::VectorReg>(25)));
+	} else {
+		log(13, ir.GetScalarReg(static_cast<IR::ScalarReg>(10)));
+		log(14, ir.GetScalarReg(static_cast<IR::ScalarReg>(35)));
+		log(15, ir.GetScalarReg(static_cast<IR::ScalarReg>(36)));
 	}
 }
 

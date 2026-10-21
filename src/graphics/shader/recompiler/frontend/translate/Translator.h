@@ -284,6 +284,8 @@ private:
 	void    HalfRateFill(uint32_t dx, uint32_t dy, IR::U1 live);
 	void    HalfRateReconstruct();
 	void    HalfRateLoopEnter();
+	void    HalfRateLightLoopDump(uint32_t pc);
+	static constexpr uint32_t kRegLightIterations = 247; // diagnostic trip counter of the guest light loop
 	void    HalfRateLoopExit();
 
 	IR::Program&    program;
