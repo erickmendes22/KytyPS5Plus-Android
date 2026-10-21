@@ -3721,11 +3721,18 @@ int KYTY_SYSV_ABI PthreadRename(Pthread thread, const char* name) {
 
 // KYTY_YIELD_US=<n> (live knob yield_us): a guest thread that keeps yielding (8 yields in a row,
 // each within 200 us of the previous one) sleeps n microseconds per further yield instead of
-// calling sched_yield, so idle spinners stop burning a core. 0 (default) = always sched_yield.
+// calling sched_yield, so idle spinners stop burning a core. Default 50 on Android (c17_yA/yB
+// pairs: CPU 352 -> 329%, same fps, no pixel change), 0 elsewhere; KYTY_YIELD_US=0 = always
+// sched_yield.
 static int64_t YieldSleepMicros() {
 	static const int64_t start = [] {
+#if defined(__ANDROID__)
+		constexpr long long kDefaultUs = 50;
+#else
+		constexpr long long kDefaultUs = 0;
+#endif
 		const char* value = std::getenv("KYTY_YIELD_US");
-		const auto  us    = value != nullptr ? std::strtoll(value, nullptr, 10) : 0ll;
+		const auto  us    = value != nullptr && value[0] != '\0' ? std::strtoll(value, nullptr, 10) : kDefaultUs;
 		return us > 0 && us <= 10000 ? static_cast<int64_t>(us) : int64_t {0};
 	}();
 	const auto live = Libs::Graphics::LiveKnobs::Int("yield_us", start);

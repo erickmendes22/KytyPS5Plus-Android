@@ -81,9 +81,18 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 		// fault; pages an image watches stay write-protected by the texture cache's watcher.
 		// The cost is uploading the window's untouched pages on the next GPU use.
 		// The live knob fault_kb=<n> overrides the start value while a game runs.
+		// Default 64 on Android (c17_fk0: guest write faults 598 -> 93/s, no pixel change; c17_yB
+		// pairs with yield_us=50), off elsewhere; KYTY_FAULT_WINDOW_KB=0 opts out.
 		static const int64_t start_kb = [] {
+#if defined(__ANDROID__)
+			constexpr int64_t kDefaultKb = 64;
+#else
+			constexpr int64_t kDefaultKb = 0;
+#endif
 			const char* value = std::getenv("KYTY_FAULT_WINDOW_KB");
-			return value != nullptr ? static_cast<int64_t>(std::strtoull(value, nullptr, 10)) : int64_t {0};
+			return value != nullptr && value[0] != '\0'
+			           ? static_cast<int64_t>(std::strtoull(value, nullptr, 10))
+			           : kDefaultKb;
 		}();
 		const auto     kb     = static_cast<uint64_t>(std::max<int64_t>(LiveKnobs::Int("fault_kb", start_kb), 0));
 		const uint64_t window = kb >= 8 && kb <= 1024 && std::has_single_bit(kb) ? kb * 1024ull : 0ull;
