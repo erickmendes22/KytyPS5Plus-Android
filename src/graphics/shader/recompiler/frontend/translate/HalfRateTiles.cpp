@@ -759,7 +759,8 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 		WriteSharedU32(1, ir.IAdd(HalfRateConst(half_rate->adaptive_base_bytes + 16u), ir.ShiftLeftLogical(slot, HalfRateConst(2))),
 		               {ir.BitwiseOr(tx, ir.ShiftLeftLogical(ty, HalfRateConst(4))), IR::Value(0u), IR::Value(0u), IR::Value(0u)},
 		               LdsWord(), current_pc);
-		if (half_rate->retrace && std::getenv("KYTY_RT_HALF_RETRACE_SAMPLES") != nullptr) {
+		if (half_rate->retrace && (std::getenv("KYTY_RT_HALF_RETRACE_SAMPLES") != nullptr ||
+		                           std::getenv("KYTY_RT_HALF_RETRACE_ODD") != nullptr)) {
 			ir.SetExec(exec); // diagnostic: pass 1 fills listed pixels too (pass 2 re-shades samples)
 		} else if (half_rate->retrace && std::getenv("KYTY_RT_HALF_RETRACE_RED") != nullptr) {
 			// Diagnostic: listed pixels are stored green by pass 1 (pass 2 overwrites them red).
@@ -905,7 +906,15 @@ void Translator::HalfRateRetraceRemap() {
 	const auto x = ir.IAdd(origin_x, ir.BitwiseOr(ir.BitwiseAnd(packed, HalfRateConst(14)), ir.BitwiseAnd(lx, HalfRateConst(1))));
 	const auto y = ir.IAdd(origin_y, ir.BitwiseOr(ir.BitwiseAnd(ir.ShiftRightLogical(packed, HalfRateConst(4)), HalfRateConst(14)),
 	                                              ir.BitwiseAnd(ly, HalfRateConst(1))));
-	if (std::getenv("KYTY_RT_HALF_RETRACE_SAMPLES") != nullptr) {
+	if (std::getenv("KYTY_RT_HALF_RETRACE_ODD") != nullptr) {
+		// Diagnostic: pass 2 shades the odd-x neighbour of every sample (2x + 1, 2y), lanes laid out
+		// like pass 1's; pass 1 fills everything.
+		ir.SetVectorReg(static_cast<IR::VectorReg>(24),
+		                ir.IAdd(origin_x, ir.IAdd(ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(1)), HalfRateConst(1))));
+		ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.IAdd(origin_y, ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(1))));
+		return;
+	}
+		if (std::getenv("KYTY_RT_HALF_RETRACE_SAMPLES") != nullptr) {
 		// Diagnostic: pass 2 re-shades the tile's even/even samples (pass 1 shaded them too), so its
 		// results can be compared with pass 1's.
 		ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.IAdd(origin_x, ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(1))));
