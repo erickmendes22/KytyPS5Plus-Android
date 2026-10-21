@@ -18,6 +18,7 @@
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
+#include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/sync.h"
@@ -827,13 +828,14 @@ void CommandProcessor::SuspendPm4() {
 	g_current_execution->m_suspended = true;
 }
 
-// KYTY_DRAIN_LITE=1 (off by default): the front-only packets (frontOnlyPackets.h: PM4 markers,
-// ACQUIRE_MEM, R_CONTEXT_STATE) no longer drain the record thread. With KYTY_LIVE_KNOBS=1 the
+// KYTY_DRAIN_LITE (default on with Mesa Turnip, =0 opts out, =1 forces it on): the front-only
+// packets (frontOnlyPackets.h: PM4 markers, ACQUIRE_MEM, R_CONTEXT_STATE) no longer drain the
+// record thread (c17_drain2: front 80.5 -> 79.2 ms/frame, fps +1%). With KYTY_LIVE_KNOBS=1 the
 // live key drain_lite=0/1 overrides it per guest submission (in-run A/B).
-static bool DrainLiteEnabled() {
-	static const bool default_on = [] {
+static bool DrainLiteEnabled(bool turnip) {
+	static const bool default_on = [turnip] {
 		const char* value = std::getenv("KYTY_DRAIN_LITE");
-		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
+		const bool  on    = value != nullptr && value[0] != '\0' ? std::strcmp(value, "0") != 0 : turnip;
 		LOGF("KYTY_DRAIN_LITE: front-only packets %s the record thread\n", on ? "skip draining" : "drain");
 		return on;
 	}();
@@ -850,7 +852,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 	// drains it first (gpuPipeline.h), and so does leaving this function.
 	m_fan_on     = WalkFan::Enabled();
 	m_pipe_on    = m_fan_on || GpuPipeline::Enabled();
-	m_drain_lite = m_pipe_on && DrainLiteEnabled();
+	m_drain_lite = m_pipe_on && DrainLiteEnabled(m_renderer.GetGraphics().IsMesaTurnip());
 	if (m_pipe_on) {
 		GpuPipeline::InstallReportSection();
 	}
