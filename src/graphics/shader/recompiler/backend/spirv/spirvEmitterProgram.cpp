@@ -156,7 +156,12 @@ void EmitStructuredTerminator(ValueEmitContext& ctx, const IR::Block* block) {
 				EmitReturn(ctx);
 				return;
 			}
-			const auto condition = ctx.Def(block->condition);
+			auto condition = ctx.Def(block->condition);
+			if (const auto guard = ctx.state.loop_guard_by_guard.find(block);
+			    guard != ctx.state.loop_guard_by_guard.end()) {
+				// KYTY_LOOP_GUARD: past the iteration limit, take the loop's exit edge.
+				condition = EmitLoopGuardCondition(ctx.state, condition, guard->second.exit_on_true);
+			}
 			emit_merge();
 			ctx.state.builder.AddFunction(spv::OpBranchConditional, condition,
 			                              true_block->Definition(), false_block->Definition());
@@ -314,6 +319,21 @@ void EmitDispatcherInstruction(ValueEmitContext& ctx, const DispatcherFunctionSt
 	}
 }
 
+// KYTY_LOOP_GUARD: after a block's phis, a guarded loop header counts an iteration and a block
+// the exit edge of a guarded loop enters logs a trip.
+void EmitLoopGuardPrologue(ValueEmitContext& ctx, const IR::Block* block) {
+	auto& state = ctx.state;
+	if (!state.loop_guard || state.program.dispatcher_fallback) {
+		return;
+	}
+	if (const auto log = state.loop_guard_log_blocks.find(block); log != state.loop_guard_log_blocks.end()) {
+		EmitLoopGuardLog(state, log->second, 1);
+	}
+	if (state.loop_guard_headers.contains(block)) {
+		EmitLoopGuardCount(state);
+	}
+}
+
 template <typename EmitInstruction>
 void EmitBlock(ValueEmitContext& ctx, const IR::Block* block, EmitInstruction&& emit_instruction) {
 	ctx.state.current_block = block;
@@ -325,6 +345,9 @@ void EmitBlock(ValueEmitContext& ctx, const IR::Block* block, EmitInstruction&& 
 				ctx.Fail(inst, "appears after a non-Phi instruction");
 			}
 		} else {
+			if (!emitted_non_phi) {
+				EmitLoopGuardPrologue(ctx, block);
+			}
 			emitted_non_phi = true;
 		}
 		for (uint32_t half = 0; half < ctx.state.lane_count; half++) {
@@ -337,6 +360,9 @@ void EmitBlock(ValueEmitContext& ctx, const IR::Block* block, EmitInstruction&& 
 			}
 		}
 		ctx.state.lane_half = 0;
+	}
+	if (!emitted_non_phi) {
+		EmitLoopGuardPrologue(ctx, block);
 	}
 }
 
@@ -387,9 +413,14 @@ void EmitDispatcherFunction(ValueEmitContext& ctx, const DispatcherFunctionState
 	const auto next_pc = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpPhi, TypeU32(state), pc, initial_pc, initial_parent, next_pc,
 	                          dispatcher.continue_label);
-	const auto done = state.builder.AllocateId();
+	auto done = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpIEqual, TypeBool(state), done, pc,
 	                          ConstantU32(ctx.state, UINT32_MAX));
+	if (state.loop_guard) {
+		// KYTY_LOOP_GUARD: every dispatched block counts; past the limit (x16) the shader returns.
+		EmitLoopGuardCount(state);
+		done = Binary(state, spv::OpLogicalOr, TypeBool(state), done, EmitLoopGuardTripped(state, 16));
+	}
 	state.builder.AddFunction(spv::OpLoopMerge, dispatcher.merge_label, dispatcher.continue_label,
 	                          spv::LoopControlMaskNone);
 	state.builder.AddFunction(spv::OpBranchConditional, done, dispatcher.merge_label,
@@ -424,6 +455,9 @@ void EmitDispatcherFunction(ValueEmitContext& ctx, const DispatcherFunctionState
 	EmitLabel(state, dispatcher.continue_label);
 	state.builder.AddFunction(spv::OpBranch, dispatcher.header_label);
 	EmitLabel(state, dispatcher.merge_label);
+	if (state.loop_guard) {
+		EmitLoopGuardLog(state, nullptr, 16);
+	}
 	EmitReturn(ctx);
 }
 
@@ -737,6 +771,7 @@ void EmitProgram(EmitterState& state) {
 		                          TypePointer(state, spv::StorageClassFunction, TypeU32(state)),
 		                          state.pixel_valid_mask_variable, spv::StorageClassFunction);
 	}
+	EmitLoopGuardVariables(state);
 	for (uint32_t half = 0; half < state.lane_count; half++) {
 		auto& lane = half == 0 ? ctx : high;
 		if (state.program.dispatcher_fallback) {
@@ -766,6 +801,7 @@ void EmitProgram(EmitterState& state) {
 		state.builder.AddFunction(spv::OpStore, state.pixel_valid_mask_variable,
 		                          ConstantU32(state, 1));
 	}
+	EmitLoopGuardInit(state);
 	if (state.lds_storage_class == spv::StorageClassStorageBuffer && state.lds_variable != 0) {
 		const auto group_x = EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 0);
 		const auto group_y = EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 1);

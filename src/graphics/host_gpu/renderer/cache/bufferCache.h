@@ -119,6 +119,9 @@ public:
 		m_memory_tracker.QueueBdaSync(Kernel::AddressFold::Fold(vaddr), size);
 	}
 	void               RunGarbageCollector();
+	// KYTY_LOOP_GUARD (graphics/shader/loopGuard.h): logs new "[loop-guard]" trips (at most once
+	// a second unless `force`).
+	void               PollLoopGuardLog(bool force = false);
 	// Bytes of guest-mirroring buffers the cache owns, and the mesh emulation ring (0 if unused).
 	[[nodiscard]] uint64_t TotalUsedMemory() const noexcept { return m_total_used_memory; }
 	[[nodiscard]] uint64_t MeshRingCapacity() const noexcept;
@@ -199,6 +202,9 @@ private:
 	FaultManager                                      m_fault_manager;
 	Buffer                                            m_gds_buffer;
 	std::unique_ptr<Buffer>                           m_bda_pagetable_buffer;
+	std::unique_ptr<Buffer>                           m_loop_guard_log;
+	uint32_t                                          m_loop_guard_logged    = 0;
+	int64_t                                           m_loop_guard_polled_ms = 0;
 	uint64_t                                          m_bda_table_pages = 0;
 	bool                                              m_bda_table_sized = false;
 	std::atomic<uint64_t>                             m_bda_mapped_pages {0};

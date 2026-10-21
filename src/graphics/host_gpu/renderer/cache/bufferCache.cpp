@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/loopGuard.h"
 #include "graphics/shader/meshBoundsCheck.h"
 #include "kernel/addressFold.h"
 #include "kernel/memory.h"
@@ -28,6 +29,7 @@
 #endif
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
 #include <cstdlib>
 #include <cstring>
@@ -581,6 +583,19 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	SetVulkanObjectNameF(m_graphics.device, GetBuffer(null_id).Handle(), "Kyty.NullBuffer");
 	g_fault_cache = this;
 	AddGpuFatalHook(DumpFaultNeighbors);
+	if (LoopGuard::Enabled()) {
+		// Guarded shaders bake the log's address in when they compile.
+		m_loop_guard_log = std::make_unique<Buffer>(
+		    m_graphics, m_scheduler, MemoryUsage::Download, 0,
+		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+		    LoopGuard::kLogBytes);
+		EXIT_IF(m_loop_guard_log->Mapped().size() < LoopGuard::kLogBytes);
+		std::memset(m_loop_guard_log->Mapped().data(), 0, LoopGuard::kLogBytes);
+		m_loop_guard_log->Flush(0, LoopGuard::kLogBytes);
+		LoopGuard::SetLogAddress(m_loop_guard_log->BufferDeviceAddress());
+		LOGF("KYTY_LOOP_GUARD=%s, limit %u, trip log at 0x%016" PRIx64 "\n", LoopGuard::Spec(),
+		     LoopGuard::Limit(), m_loop_guard_log->BufferDeviceAddress());
+	}
 	if (MeshBoundsCheck::Enabled()) {
 		// Mesh shaders bake the violation log's address in when they compile.
 		GetMeshEmulationRing().EnableBoundsLog();
@@ -1250,6 +1265,38 @@ void BufferCache::RunGarbageCollector() {
 		Unregister(id);
 		m_slot_buffers.erase(id);
 	}
+}
+
+void BufferCache::PollLoopGuardLog(bool force) {
+	if (!m_loop_guard_log) {
+		return;
+	}
+	const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                        std::chrono::steady_clock::now().time_since_epoch())
+	                        .count();
+	if (!force && now_ms - m_loop_guard_polled_ms < 1000) {
+		return;
+	}
+	m_loop_guard_polled_ms = now_ms;
+	m_loop_guard_log->Invalidate(0, LoopGuard::kLogBytes);
+	const auto* words = reinterpret_cast<const uint32_t*>(m_loop_guard_log->Mapped().data());
+	const auto  count = words[0];
+	if (count == m_loop_guard_logged && !force) {
+		return;
+	}
+	LOGF("[loop-guard] %u invocations tripped so far\n", count);
+	const auto stored = std::min(count, LoopGuard::kMaxEntries);
+	for (uint32_t entry = force ? 0u : std::min(m_loop_guard_logged, LoopGuard::kMaxEntries); entry < stored;
+	     entry++) {
+		const auto* e = words + LoopGuard::kHeaderDwords + entry * LoopGuard::kEntryDwords;
+		std::string values;
+		for (uint32_t i = 0; i < LoopGuard::kPhis; i++) {
+			values += fmt::format("{}{:08x}", i == 0 ? "" : ",", e[4 + i]);
+		}
+		LOGF("[loop-guard] #%u shader=0x%08x%08x loop_header=%u iterations=%u phis=%s\n", entry, e[1], e[0],
+		     e[2], e[3], values.c_str());
+	}
+	m_loop_guard_logged = count;
 }
 
 void BufferCache::ProcessFaultBuffer() {
