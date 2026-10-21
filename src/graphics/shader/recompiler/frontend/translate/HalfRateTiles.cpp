@@ -167,8 +167,8 @@ std::optional<HalfRatePlan> MakeHalfRatePlan(const Decoder::Program& decoded, ui
 	plan.capture        = capture;
 	plan.capture_region = plan.half ? H::kCheckRegionHalf : H::kCheckRegionNative;
 	plan.fill_mode      = fill_mode;
-	const uint32_t mask_dwords  = H::CheckEnabled() ? H::kCheckMaskDwords : 0u;
-	const uint32_t patch_dwords = (plan.half ? H::kLdsDwords : 0u) + mask_dwords;
+	const uint32_t check_dwords = H::CheckEnabled() ? H::kCheckLdsDwords : 0u;
+	const uint32_t patch_dwords = (plan.half ? H::kLdsDwords : 0u) + check_dwords;
 	if (lds_dwords < patch_dwords) {
 		if (reason != nullptr) {
 			*reason = "LDS size does not include the patch";
@@ -178,8 +178,14 @@ std::optional<HalfRatePlan> MakeHalfRatePlan(const Decoder::Program& decoded, ui
 	if (!CheckCullRange(decoded, plan.cull, reason)) {
 		return std::nullopt;
 	}
-	plan.mask_base_bytes = (lds_dwords - mask_dwords) * 4u;
-	plan.lds_base_bytes  = (lds_dwords - patch_dwords) * 4u;
+	plan.check_base_bytes = (lds_dwords - check_dwords) * 4u;
+	plan.lds_base_bytes   = (lds_dwords - patch_dwords) * 4u;
+	if (plan.half) {
+		plan.splits[plan.split_count++].pc = H::kPcCullBegin;
+		if (capture) {
+			plan.splits[plan.split_count++].pc = H::kPcListBarrier;
+		}
+	}
 	if (!plan.half) {
 		return plan;
 	}
@@ -312,9 +318,9 @@ void Translator::HalfRateCull() {
 		const auto taken = ir.ULessThan(HalfRateConst(k * H::kThreads), count);
 		from->condition  = taken;
 		ir.Emit(IR::ValueOpcode::Reference, {taken});
-		ir.SetBlock(half_rate->pass_blocks[k - 1u]);
+		ir.SetBlock(half_rate->splits[0].pass[k - 1u]);
 		pass(k);
-		ir.SetBlock(half_rate->tail_blocks[k - 1u]);
+		ir.SetBlock(half_rate->splits[0].tail[k - 1u]);
 	}
 	ir.SetVectorReg(static_cast<IR::VectorReg>(23), thread);
 	ir.SetVectorReg(static_cast<IR::VectorReg>(3), HalfRateConst(0));
@@ -336,11 +342,13 @@ void Translator::HalfRateRemap() {
 	HalfRateStash(Valid, HalfRateFlatIndex(), HalfRateConst(0));
 }
 
-// KYTY_RT_HALF_CHECK, after the list barrier. 1) Stress culling: the guest's item code (up to the
-// append decision at pc 0x4a4) over kForcedItems items, ORing passing items into an LDS mask
-// instead of appending: native one item per thread over 256 threads, half 4 items per thread
-// over 64. 2) Thread 0 logs the real light list, the item count and the mask. Registers the item
-// code writes are restored, and the real list in LDS is not touched.
+// KYTY_RT_HALF_CHECK, after the list barrier (graphics/shader/halfRateTiles.h "Check log").
+// 1) Synthetic stress culling: the guest's item code over the tile's designed item count, each
+// record replaced by a zero position and a +-1e30 radius, appending through the guest's own atomic
+// into an LDS scratch list (no 16-entry cap) and ORing a mask. Native: 256 threads x 1 item;
+// half: 64 threads x 4 passes, passes 1..3 behind the same uniform branches as the real culling.
+// 2) Thread 0 logs the real list, the item count and the stress results. Registers the item code
+// writes are restored; the real list in LDS is not touched.
 void Translator::HalfRateCapture() {
 	using O = IR::ValueOpcode;
 	const auto exec = ir.GetExec();
@@ -354,46 +362,87 @@ void Translator::HalfRateCapture() {
 	const auto saved_scc    = ir.GetScc();
 	const auto item_count   = ir.GetScalarReg(static_cast<IR::ScalarReg>(51));
 
-	const auto lx   = HalfRateLocal(0);
-	const auto ly   = HalfRateLocal(1);
-	const auto lead = ir.LogicalAnd(ir.IEqual(lx, HalfRateConst(0)), ir.IEqual(ly, HalfRateConst(0)));
-	const auto mask_word = [&](IR::U32 word) {
-		return ir.IAdd(HalfRateConst(half_rate->mask_base_bytes), ir.ShiftLeftLogical(word, HalfRateConst(2)));
-	};
-	ir.SetExec(lead);
-	for (uint32_t w = 0; w < H::kCheckMaskDwords; w++) {
-		WriteSharedU32(1, mask_word(HalfRateConst(w)), {HalfRateConst(0), IR::Value(0u), IR::Value(0u), IR::Value(0u)},
-		               LdsWord(), current_pc);
+	const auto lx     = HalfRateLocal(0);
+	const auto ly     = HalfRateLocal(1);
+	const auto lead   = ir.LogicalAnd(ir.IEqual(lx, HalfRateConst(0)), ir.IEqual(ly, HalfRateConst(0)));
+	const auto tile_x = ir.ShiftRightLogical(ir.GetScalarReg(static_cast<IR::ScalarReg>(12)), HalfRateConst(4));
+	const auto tile_y = ir.ShiftRightLogical(ir.GetScalarReg(static_cast<IR::ScalarReg>(13)), HalfRateConst(4));
+	const auto tile   = ir.IAdd(ir.IMul(tile_y, HalfRateConst(H::kCheckTilesX)), tile_x);
+	// Designed count: kStressCounts[tile % 13], as a select chain on tile - 13 * (tile / 13).
+	const auto tile_mod = ir.ISub(tile, ir.IMul(IR::U32(ir.Emit(O::ConvertU32F32, {IR::F32(ir.Emit(O::FPMul32,
+	                          {IR::F32(ir.Emit(O::ConvertF32U32, {tile})), HalfRateFloat(1.0f / 13.0f)}))})),
+	                          HalfRateConst(13)));
+	auto designed = HalfRateConst(H::kStressCounts[0]);
+	for (uint32_t i = 1; i < H::kStressCounts.size(); i++) {
+		designed = ir.Select(ir.IEqual(tile_mod, HalfRateConst(i)), HalfRateConst(H::kStressCounts[i]), designed);
 	}
-	ir.Emit(O::Barrier);
-	const uint32_t per_axis = half_rate->half ? H::kGroupSize : H::kGuestGroupSize;
-	const uint32_t passes   = half_rate->half ? H::kCullPasses : 1u;
-	const auto     thread   = ir.IAdd(ir.IMul(ly, HalfRateConst(per_axis)), lx);
-	for (uint32_t k = 0; k < passes; k++) {
-		const auto item = ir.IAdd(thread, HalfRateConst(k * per_axis * per_axis));
-		ir.SetExec(exec);
-		ir.SetVectorReg(static_cast<IR::VectorReg>(23), item);
-		for (const auto& inst: half_rate->cull) {
-			if (inst.pc > 0x4a4u) break;
-			TranslateInstruction(inst);
-			if (inst.pc == 0x384u) {
-				ir.SetScalarReg(static_cast<IR::ScalarReg>(51), HalfRateConst(H::kForcedItems));
-			}
-		}
-		// EXEC now holds the items the guest would append.
-		const auto bit = ir.ShiftLeftLogical(HalfRateConst(1), ir.BitwiseAnd(item, HalfRateConst(31)));
-		ir.Emit(O::SharedAtomicOr32, {mask_word(ir.ShiftRightLogical(item, HalfRateConst(5))), bit, ir.GetExec()},
-		        AddMemoryInfo(LdsWord(), current_pc));
+	const auto check_word = [&](uint32_t word) { return HalfRateConst(half_rate->check_base_bytes + word * 4u); };
+	ir.SetExec(lead);
+	for (uint32_t w = 0; w < 1u + H::kCheckMaskDwords; w++) {
+		const uint32_t word = w == 0 ? H::kCheckLdsCounter : H::kCheckLdsMask + (w - 1u);
+		WriteSharedU32(1, check_word(word), {HalfRateConst(0), IR::Value(0u), IR::Value(0u), IR::Value(0u)}, LdsWord(),
+		               current_pc);
 	}
 	ir.Emit(O::Barrier);
 
-	const auto tile_x = ir.ShiftRightLogical(ir.GetScalarReg(static_cast<IR::ScalarReg>(12)), HalfRateConst(4));
-	const auto tile_y = ir.ShiftRightLogical(ir.GetScalarReg(static_cast<IR::ScalarReg>(13)), HalfRateConst(4));
+	IR::U32    start {};
+	const auto one_e30     = HalfRateConst(0x7149f2cau); // +1e30f
+	const auto minus_e30   = HalfRateConst(0xf149f2cau); // -1e30f
+	const uint32_t per_axis = half_rate->half ? H::kGroupSize : H::kGuestGroupSize;
+	const auto     thread   = ir.IAdd(ir.IMul(ly, HalfRateConst(per_axis)), lx);
+	const auto     pass     = [&](uint32_t k) {
+		const auto item = ir.IAdd(thread, HalfRateConst(k * per_axis * per_axis));
+		ir.SetExec(exec);
+		ir.SetVectorReg(static_cast<IR::VectorReg>(23), item);
+		for (const auto& original: half_rate->cull) {
+			auto inst = original;
+			if (inst.pc == 0x4b4u) inst.offset = half_rate->check_base_bytes + H::kCheckLdsCounter * 4u;
+			if (inst.pc == 0x4ccu) inst.offset = half_rate->check_base_bytes + H::kCheckLdsList * 4u;
+			if (inst.pc == 0x4c0u) {
+				inst.src0       = Decoder::Operand {};
+				inst.src0.kind  = OperandKind::LiteralConstant;
+				inst.src0.value = H::kForcedItems;
+			}
+			TranslateInstruction(inst);
+			if (inst.pc == 0x384u) ir.SetScalarReg(static_cast<IR::ScalarReg>(51), designed);
+			if (inst.pc == 0x3a8u && k == 0u) start = ir.GetVccLo();
+			if (inst.pc == 0x408u) {
+				// Zero position, radius +-1e30 by StressPasses(item, tile).
+				const auto hash = ir.BitwiseAnd(ir.ShiftRightLogical(ir.BitwiseXor(ir.IMul(item, HalfRateConst(0x9e37u)),
+				                                                                   ir.IMul(tile, HalfRateConst(0x85ebu))),
+				                                                     HalfRateConst(7)),
+				                                HalfRateConst(7));
+				for (uint32_t r = 3; r <= 5; r++) ir.SetVectorReg(static_cast<IR::VectorReg>(r), HalfRateConst(0));
+				ir.SetVectorReg(static_cast<IR::VectorReg>(6),
+				                ir.Select(ir.INotEqual(hash, HalfRateConst(0)), one_e30, minus_e30));
+			}
+			if (inst.pc == 0x4a4u) {
+				// EXEC holds the items the guest appends.
+				const auto bit = ir.ShiftLeftLogical(HalfRateConst(1), ir.BitwiseAnd(item, HalfRateConst(31)));
+				const auto at  = ir.IAdd(check_word(H::kCheckLdsMask), ir.ShiftLeftLogical(ir.ShiftRightLogical(item, HalfRateConst(5)), HalfRateConst(2)));
+				ir.Emit(O::SharedAtomicOr32, {at, bit, ir.GetExec()}, AddMemoryInfo(LdsWord(), current_pc));
+			}
+		}
+	};
+	pass(0);
+	if (half_rate->half) {
+		const auto& split = half_rate->splits[1];
+		for (uint32_t k = 1; k < H::kCullPasses; k++) {
+			auto*      from  = ir.CurrentBlock();
+			const auto taken = ir.ULessThan(HalfRateConst(k * H::kThreads), designed);
+			from->condition  = taken;
+			ir.Emit(O::Reference, {taken});
+			ir.SetBlock(split.pass[k - 1u]);
+			pass(k);
+			ir.SetBlock(split.tail[k - 1u]);
+		}
+	}
+	ir.Emit(O::Barrier);
+
 	const auto inside = ir.LogicalAnd(ir.ULessThan(tile_x, HalfRateConst(H::kCheckTilesX)),
 	                                  ir.ULessThan(tile_y, HalfRateConst(H::kCheckTilesY)));
 	const auto write  = ir.LogicalAnd(lead, inside);
 	ir.SetExec(write);
-	const auto tile = ir.IAdd(ir.IMul(tile_y, HalfRateConst(H::kCheckTilesX)), tile_x);
 	const auto base = ir.IAdd(HalfRateConst(half_rate->capture_region * H::kCheckRegionDwords),
 	                          ir.IMul(tile, HalfRateConst(H::kCheckEntryDwords)));
 	const auto read = [&](IR::U32 byte) { return IR::U32(LoadSharedU32(1, byte, LdsWord(), current_pc)); };
@@ -405,8 +454,14 @@ void Translator::HalfRateCapture() {
 		log(1 + i, read(HalfRateConst(H::kListEntriesByte + i * 4u)));
 	}
 	log(H::kCheckWordItems, item_count);
+	log(H::kCheckWordDesigned, designed);
+	log(H::kCheckWordStart, start);
+	log(H::kCheckWordStressN, read(check_word(H::kCheckLdsCounter)));
+	for (uint32_t i = 0; i < H::kForcedItems; i++) {
+		log(H::kCheckWordStress + i, read(check_word(H::kCheckLdsList + i)));
+	}
 	for (uint32_t w = 0; w < H::kCheckMaskDwords; w++) {
-		log(H::kCheckWordMask + w, read(mask_word(HalfRateConst(w))));
+		log(H::kCheckWordMask + w, read(check_word(H::kCheckLdsMask + w)));
 	}
 
 	for (uint32_t r = 0; r < saved_v.size(); r++) ir.SetVectorReg(static_cast<IR::VectorReg>(3u + r), saved_v[r]);

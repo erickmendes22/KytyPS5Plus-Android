@@ -1376,10 +1376,12 @@ void BufferCache::PollRtHalfCheck() {
 	};
 	const auto report = [&](const char* what, const std::vector<uint32_t>& a, const std::vector<uint32_t>& b) {
 		const auto c = HalfRateTiles::CompareLists(a.data(), b.data(), HalfRateTiles::kCheckTiles);
-		LOGF("[rt-half-check] %s: tiles=%u same_order=%u same_set=%u different=%u overflow=%u first_diff=%d | "
-		     "stress masks equal=%u different=%u passing_items=%" PRIu64 "\n",
-		     what, c.tiles, c.same_order, c.same_set, c.different, c.overflowed, c.first_diff, c.mask_equal,
-		     c.mask_diff, c.mask_items);
+		LOGF("[rt-half-check] %s: tiles=%u real lists same_order=%u same_set=%u different=%u overflow=%u first_diff=%d | "
+		     "stress lists same_order=%u same_set=%u different=%u, as expected in both=%u, boundary tiles=%u, "
+		     "masks equal=%u different=%u, items=%" PRIu64 " max/tile=%u\n",
+		     what, c.tiles, c.same_order, c.same_set, c.different, c.overflowed, c.first_diff, c.stress_same_order,
+		     c.stress_same_set, c.stress_different, c.stress_expected, c.stress_boundary, c.mask_equal, c.mask_diff,
+		     c.stress_items, c.stress_max);
 	};
 	if (knob == 0) {
 		st.native_previous = std::move(st.native_latest);
@@ -1394,27 +1396,27 @@ void BufferCache::PollRtHalfCheck() {
 		}
 		LOGF("[rt-half-check] native light counts: 0:%u 1:%u 2:%u 3-4:%u 5-8:%u 9-16:%u >16:%u\n", bins[0], bins[1],
 		     bins[2], bins[3], bins[4], bins[5], bins[6]);
-		// Stress culling: passing items per tile (of 256), and the guest's item counts seen.
+		// Stress culling: appended items per tile, the guest's item counts, and whether each native list
+		// holds exactly the items the synthetic test should pass.
 		std::array<uint32_t, 7> stress {};
 		uint32_t                items_min = UINT32_MAX;
 		uint32_t                items_max = 0;
+		uint32_t                expected  = 0;
+		uint32_t                captured  = 0;
 		for (uint32_t tile = 0; tile < HalfRateTiles::kCheckTiles; tile++) {
 			const auto* e = st.native_latest.data() + tile * HalfRateTiles::kCheckEntryDwords;
 			if (e[0] == 0u) continue;
-			uint32_t n = 0;
-			for (uint32_t w = 0; w < HalfRateTiles::kCheckMaskDwords; w++) {
-				n += static_cast<uint32_t>(__builtin_popcount(e[HalfRateTiles::kCheckWordMask + w]));
-			}
-			stress[n == 0 ? 0 : n == 1 ? 1 : n <= 4 ? 2 : n <= 16 ? 3 : n <= 64 ? 4 : n < 256 ? 5 : 6]++;
+			captured++;
+			const auto n = e[HalfRateTiles::kCheckWordStressN];
+			stress[n == 0 ? 0 : n == 1 ? 1 : n <= 16 ? 2 : n <= 64 ? 3 : n <= 128 ? 4 : n <= 192 ? 5 : 6]++;
 			items_min = std::min(items_min, e[HalfRateTiles::kCheckWordItems]);
 			items_max = std::max(items_max, e[HalfRateTiles::kCheckWordItems]);
+			expected += HalfRateTiles::StressMatchesExpected(e, tile) ? 1u : 0u;
 		}
-		LOGF("[rt-half-check] native item count %u..%u; stress passing items per tile: 0:%u 1:%u 2-4:%u 5-16:%u "
-		     "17-64:%u 65-255:%u 256:%u\n",
-		     items_min, items_max, stress[0], stress[1], stress[2], stress[3], stress[4], stress[5], stress[6]);
-		if (!st.native_previous.empty()) {
-			report("native vs previous native phase", st.native_latest, st.native_previous);
-		}
+		LOGF("[rt-half-check] native item count %u..%u; stress items per tile 0:%u 1:%u 2-16:%u 17-64:%u 65-128:%u "
+		     "129-192:%u 193-256:%u; native stress lists as expected %u/%u\n",
+		     items_min, items_max, stress[0], stress[1], stress[2], stress[3], stress[4], stress[5], stress[6],
+		     expected, captured);
 	} else if (!st.native_latest.empty()) {
 		report("half vs latest native phase", region(HalfRateTiles::kCheckRegionHalf), st.native_latest);
 	}

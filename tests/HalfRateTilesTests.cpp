@@ -19,8 +19,10 @@ static_assert((1920u + H::kLdsDwords) * 4u <= 32u * 1024u);
 static_assert(H::kRegOriginX > 71 && H::kRegTileLive < 256);
 // A 1920x1080 screen of 16x16 tiles fits the check log's tile grid.
 static_assert(H::kCheckTilesX * 16 >= 1920 && H::kCheckTilesY * 16 >= 1080);
-// Entry: count + 1, 16 entries, item count, 256-bit stress mask.
-static_assert(H::kCheckEntryDwords == 26 && H::kCheckMaskDwords == 8);
+// Entry: real list, item count, stress designed count, start, stress list (256), mask (8).
+static_assert(H::kCheckEntryDwords == 285 && H::kCheckMaskDwords == 8);
+// The stress scratch fits next to the patch in the 32 KiB compute LDS.
+static_assert((1920u + H::kLdsDwords + H::kCheckLdsDwords) * 4u <= 32u * 1024u);
 
 int g_failures = 0;
 
@@ -31,12 +33,31 @@ void Check(bool value, const char* message) {
 	}
 }
 
-// One capture: count, entries (written as count + 1 like the shader does).
-void Put(std::vector<uint32_t>& region, uint32_t tile, std::vector<uint32_t> entries, uint32_t count = UINT32_MAX) {
+// One capture: real list (count + 1, entries), item count 1, and a stress list that holds the
+// expected items of the tile in ascending order (what a correct culling appends) unless `stress`
+// is given.
+void Put(std::vector<uint32_t>& region, uint32_t tile, std::vector<uint32_t> entries, uint32_t count = UINT32_MAX,
+         const std::vector<uint32_t>* stress = nullptr) {
 	auto* e = region.data() + tile * H::kCheckEntryDwords;
 	e[0]    = (count == UINT32_MAX ? static_cast<uint32_t>(entries.size()) : count) + 1u;
 	for (size_t i = 0; i < entries.size() && i < H::kListEntries; i++) {
 		e[1 + i] = entries[i];
+	}
+	e[H::kCheckWordItems]    = 1;
+	e[H::kCheckWordDesigned] = H::StressDesignedCount(tile);
+	e[H::kCheckWordStart]    = 1;
+	std::vector<uint32_t> list;
+	if (stress != nullptr) {
+		list = *stress;
+	} else {
+		for (uint32_t k = 0; k < H::StressDesignedCount(tile); k++) {
+			if (k < 1u || H::StressPasses(k, tile)) list.push_back(k);
+		}
+	}
+	e[H::kCheckWordStressN] = static_cast<uint32_t>(list.size());
+	for (size_t i = 0; i < list.size(); i++) {
+		e[H::kCheckWordStress + i] = list[i];
+		e[H::kCheckWordMask + list[i] / 32u] |= 1u << (list[i] % 32u);
 	}
 }
 
@@ -56,24 +77,38 @@ void TestCompare() {
 	Put(native, 5, {});
 	Put(half, 5, {});        // empty list, still captured
 	Put(native, 6, {1});     // half never ran on this tile: skipped
-	// Stale words past the count do not matter.
 	Put(native, 7, {5, 6});
 	Put(half, 7, {5, 6});
-	half[7 * H::kCheckEntryDwords + 5] = 99;
-	// Stress masks: identical except tile 2 (one more passing item in half).
-	for (uint32_t tile = 0; tile < 8; tile++) {
-		native[tile * H::kCheckEntryDwords + H::kCheckWordMask] = 0x5u;
-		half[tile * H::kCheckEntryDwords + H::kCheckWordMask]   = tile == 2 ? 0x7u : 0x5u;
+	half[7 * H::kCheckEntryDwords + 5] = 99; // stale word past the count does not matter
+	// Tile 3's designed stress count is 64 (a pass boundary): half appends in another order.
+	std::vector<uint32_t> reversed;
+	for (uint32_t k = H::StressDesignedCount(3); k-- > 0;) {
+		if (k < 1u || H::StressPasses(k, 3)) reversed.push_back(k);
 	}
+	Put(half, 3, {3, 7, 9}, UINT32_MAX, &reversed);
+	// Tile 8 (designed 191): half loses one item.
+	Put(native, 8, {2});
+	std::vector<uint32_t> missing;
+	for (uint32_t k = 0; k < H::StressDesignedCount(8); k++) {
+		if (k < 1u || H::StressPasses(k, 8)) missing.push_back(k);
+	}
+	missing.pop_back();
+	Put(half, 8, {2}, UINT32_MAX, &missing);
+
 	const auto c = H::CompareLists(native.data(), half.data(), H::kCheckTiles);
-	Check(c.mask_equal == 6 && c.mask_diff == 1, "stress masks: tile 2 differs");
-	Check(c.mask_items == 14, "passing items counted from the native side (7 tiles x 2)");
-	Check(c.tiles == 7, "tiles captured in both");
-	Check(c.same_order == 3, "same order: tiles 0, 5 and 7");
-	Check(c.same_set == 1, "same set in another order: tile 1");
-	Check(c.different == 2, "different: tiles 2 and 3");
-	Check(c.overflowed == 1, "overflow: tile 4");
-	Check(c.first_diff == 2, "first difference");
+	Check(c.tiles == 8, "tiles captured in both");
+	Check(c.same_order == 4, "real lists same order: tiles 0, 5, 7, 8");
+	Check(c.same_set == 1, "real list same set in another order: tile 1");
+	Check(c.different == 2, "real lists different: tiles 2 and 3");
+	Check(c.overflowed == 1, "real list overflow: tile 4");
+	Check(c.first_diff == 2, "first real-list difference");
+	Check(c.stress_same_order == 6 && c.stress_same_set == 1 && c.stress_different == 1,
+	      "stress lists: tile 3 reordered, tile 8 missing an item");
+	Check(c.stress_expected == 7, "stress lists as expected in both except tile 8");
+	Check(c.mask_equal == 7 && c.mask_diff == 1, "stress masks differ only on tile 8");
+	Check(c.stress_boundary == 1, "one compared tile with a boundary count (tile 3: 64)");
+	Check(H::StressDesignedCount(3) == 64 && H::StressDesignedCount(6) == 128 && H::StressDesignedCount(9) == 192,
+	      "boundary counts appear in the cycle");
 }
 
 void TestVariant() {

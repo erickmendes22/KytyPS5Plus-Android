@@ -1098,24 +1098,28 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			half_rate.reset();
 		}
 	}
-	// Half-rate tiles: the CFG block holding the culling replay is split so that passes 1..3 can be
-	// skipped (HalfRatePlan::pass_blocks). Not with the dispatcher fallback (no structured merges).
-	uint32_t split_id = UINT32_MAX;
+	// Half-rate tiles: the CFG blocks holding the culling replays are split so that passes 1..3 can
+	// be skipped (HalfRatePlan::splits). Not with the dispatcher fallback (no structured merges).
+	std::array<uint32_t, 2> split_ids {UINT32_MAX, UINT32_MAX};
 	if (half_rate.has_value() && half_rate->half) {
-		for (const auto& cfg_block: cfg.blocks) {
-			for (uint32_t index = cfg_block.inst_begin; index < cfg_block.inst_end; index++) {
-				if (decoded.instructions[index].pc == HalfRateTiles::kPcCullBegin) split_id = cfg_block.id;
+		bool ok = !result.dispatcher_fallback;
+		for (uint32_t i = 0; i < half_rate->split_count && ok; i++) {
+			for (const auto& cfg_block: cfg.blocks) {
+				for (uint32_t index = cfg_block.inst_begin; index < cfg_block.inst_end; index++) {
+					if (decoded.instructions[index].pc == half_rate->splits[i].pc) split_ids[i] = cfg_block.id;
+				}
 			}
+			ok = split_ids[i] != UINT32_MAX && (i == 0 || split_ids[i] != split_ids[0]);
 		}
-		if (split_id == UINT32_MAX || result.dispatcher_fallback) {
-			LOGF("half-rate tiles: hash=0x%016" PRIx64 " not applied: culling block not found or no structured CFG\n",
+		if (!ok) {
+			LOGF("half-rate tiles: hash=0x%016" PRIx64 " not applied: culling blocks not found, shared, or no structured CFG\n",
 			     options.shader_hash);
 			half_rate.reset();
-			split_id = UINT32_MAX;
+			split_ids = {UINT32_MAX, UINT32_MAX};
 		}
 	}
-	result.block_storage.reserve(cfg.blocks.size() + 7u);
-	result.blocks.reserve(cfg.blocks.size() + 7u);
+	result.block_storage.reserve(cfg.blocks.size() + 13u);
+	result.blocks.reserve(cfg.blocks.size() + 13u);
 	const auto max_id = std::ranges::max_element(cfg.blocks, {}, [](const CFG::BasicBlock& block) {
 		                    return block.id;
 	                    })->id;
@@ -1141,28 +1145,33 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 		block.start_pc = source.start_pc;
 		block.end_pc   = source.end_pc;
 	}
-	IR::Block* split_tail = nullptr;
-	if (split_id != UINT32_MAX) {
-		auto* const split = blocks_by_id.at(split_id);
+	std::array<IR::Block*, 2> split_tails {};
+	uint32_t                  next_id = max_id + 2u;
+	for (uint32_t i = 0; i < split_ids.size(); i++) {
+		if (split_ids[i] == UINT32_MAX) {
+			continue;
+		}
+		auto&       plan_split = half_rate->splits[i];
+		auto* const split      = blocks_by_id.at(split_ids[i]);
 		// blocks and block_storage stay parallel (ValidateProgram): insert into both after the split.
 		auto position = static_cast<size_t>(std::ranges::find(result.blocks, split) - result.blocks.begin()) + 1u;
 		for (uint32_t k = 0; k < 6u; k++, position++) {
 			auto  owned    = std::make_unique<IR::Block>();
 			auto& extra    = *owned;
-			extra.id       = max_id + 2u + k;
-			extra.start_pc = HalfRateTiles::kPcCullBegin;
+			extra.id       = next_id++;
+			extra.start_pc = plan_split.pc;
 			extra.end_pc   = split->end_pc;
 			result.block_storage.insert(result.block_storage.begin() + static_cast<std::ptrdiff_t>(position), std::move(owned));
 			result.blocks.insert(result.blocks.begin() + static_cast<std::ptrdiff_t>(position), &extra);
-			(k % 2u == 0u ? half_rate->pass_blocks : half_rate->tail_blocks)[k / 2u] = &extra;
+			(k % 2u == 0u ? plan_split.pass : plan_split.tail)[k / 2u] = &extra;
 		}
-		split->end_pc = HalfRateTiles::kPcCullBegin;
-		split_tail    = half_rate->tail_blocks[2];
+		split->end_pc  = plan_split.pc;
+		split_tails[i] = plan_split.tail[2];
 		// split -> pass1 | tail1, pass_k -> tail_k, tail_k -> pass_k+1 | tail_k+1 (selection merges).
 		IR::Block* from = split;
 		for (uint32_t k = 0; k < 3u; k++) {
-			auto* pass = half_rate->pass_blocks[k];
-			auto* tail = half_rate->tail_blocks[k];
+			auto* pass = plan_split.pass[k];
+			auto* tail = plan_split.tail[k];
 			from->terminator.kind        = CFG::TerminatorKind::ConditionalBranch;
 			from->terminator.true_block  = pass;
 			from->terminator.false_block = tail;
@@ -1176,7 +1185,10 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 		}
 	}
 	const auto terminal_block = [&](uint32_t id) -> IR::Block* {
-		return id == split_id ? split_tail : blocks_by_id.at(id);
+		for (uint32_t i = 0; i < split_ids.size(); i++) {
+			if (id == split_ids[i]) return split_tails[i];
+		}
+		return blocks_by_id.at(id);
 	};
 	const auto target_block = [&](uint32_t id) -> IR::Block* {
 		return id == UINT32_MAX ? nullptr : blocks_by_id.at(id);

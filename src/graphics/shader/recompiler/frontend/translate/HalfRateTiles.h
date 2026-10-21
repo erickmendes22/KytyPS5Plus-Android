@@ -22,14 +22,21 @@ struct HalfRatePlan {
 	bool                              capture        = false; // KYTY_RT_HALF_CHECK log
 	uint32_t                          capture_region = 0;
 	uint32_t                          lds_base_bytes = 0;     // the patch's sample arrays
-	uint32_t                          mask_base_bytes = 0;    // the check's stress-culling mask
+	uint32_t                          check_base_bytes = 0;   // the check's stress-culling scratch
 	uint8_t                           fill_mode      = 0;     // HalfRateTiles::kFill*
 	std::vector<Decoder::Instruction> cull;                   // item code without its branches
 	// Culling passes 1..3 run in their own blocks, each skipped (uniform branch) when 64k >= the
-	// item count: pass_blocks[k-1] holds pass k, tail_blocks[k-1] follows it. TranslateProgram
-	// splits the CFG block holding kPcCullBegin this way; its terminator moves to tail_blocks[2].
-	std::array<IR::Block*, 3>         pass_blocks {};
-	std::array<IR::Block*, 3>         tail_blocks {};
+	// item count: pass[k-1] holds pass k, tail[k-1] follows it. TranslateProgram splits the CFG
+	// block holding `pc` this way; its terminator moves to tail[2]. splits[0]: the real culling
+	// (before kPcCullBegin, half only); splits[1]: the check's stress culling (after
+	// kPcListBarrier, half with capture only).
+	struct Split {
+		uint32_t                  pc = 0;
+		std::array<IR::Block*, 3> pass {};
+		std::array<IR::Block*, 3> tail {};
+	};
+	std::array<Split, 2>              splits {};
+	uint32_t                          split_count = 0;
 	Decoder::Instruction              depth_desc;
 	Decoder::Instruction              gbuffer_desc;
 	Decoder::Instruction              depth_load;

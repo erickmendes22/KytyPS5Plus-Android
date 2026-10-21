@@ -32,6 +32,8 @@
 // Only the listed hash with the expected instructions at the patch points is changed. Other
 // shaders, or a mismatch, compile as before (the recompiler logs the reason).
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -109,23 +111,49 @@ inline constexpr uint8_t kVariantCaptureOnly = 2; // native kernel, light-list c
 
 // Check log: per region kCheckTiles entries of kCheckEntryDwords:
 //   [0] light-list count + 1 (0 = no capture for that tile), [1..16] list entries,
-//   [17] the item count the guest culls (s51), [18..25] a 256-bit mask of the items that pass the
-//   guest's item test when kForcedItems items are tested (the "stress" culling: the same item code
-//   over items past the real count, read from the light buffer beyond its live entries, without the
-//   16-entry append cap). Native runs it with 256 threads, one item each; half with 64 threads x 4.
+//   [17] the item count the guest culls (s51),
+//   then the synthetic stress culling (check mode only; the rendered list is not touched): the
+//   guest's item code over a designed item count per tile (kStressCounts, cycling by tile, so
+//   counts 0..256 and the pass boundaries 64/128/192 all occur), with each item's record replaced
+//   by a zero position and a radius of +1e30 or -1e30 from StressPasses(item, tile). Items append
+//   through the guest's own atomic into an LDS scratch list without the 16-entry cap:
+//   [18] designed count, [19] the guest's always-append start index (loaded at pc 0x3a8),
+//   [20] stress list count, [21..276] stress list, [277..284] 256-bit mask of appending items.
+//   Native runs it as 256 threads x 1 item, half as 64 threads x 4 passes behind the same uniform
+//   branches as the real culling.
 inline constexpr uint32_t kForcedItems       = 256;
 inline constexpr uint32_t kCheckMaskDwords   = kForcedItems / 32u;
-inline constexpr uint32_t kCheckWordCount    = 1u + kListEntries;
-inline constexpr uint32_t kCheckWordItems    = kCheckWordCount;
-inline constexpr uint32_t kCheckWordMask     = kCheckWordItems + 1u;
+inline constexpr std::array<uint32_t, 13> kStressCounts {0, 1, 63, 64, 65, 127, 128, 129, 191, 192, 193, 255, 256};
+inline constexpr uint32_t kCheckWordCount    = 1u + kListEntries;   // 17
+inline constexpr uint32_t kCheckWordItems    = kCheckWordCount;     // 17
+inline constexpr uint32_t kCheckWordDesigned = kCheckWordItems + 1u;  // 18
+inline constexpr uint32_t kCheckWordStart    = kCheckWordDesigned + 1u; // 19
+inline constexpr uint32_t kCheckWordStressN  = kCheckWordStart + 1u; // 20
+inline constexpr uint32_t kCheckWordStress   = kCheckWordStressN + 1u; // 21
+inline constexpr uint32_t kCheckWordMask     = kCheckWordStress + kForcedItems; // 277
 inline constexpr uint32_t kCheckTilesX       = 128;
 inline constexpr uint32_t kCheckTilesY       = 72;
 inline constexpr uint32_t kCheckTiles        = kCheckTilesX * kCheckTilesY;
-inline constexpr uint32_t kCheckEntryDwords  = kCheckWordMask + kCheckMaskDwords;
+inline constexpr uint32_t kCheckEntryDwords  = kCheckWordMask + kCheckMaskDwords; // 285
 inline constexpr uint32_t kCheckRegionDwords = kCheckTiles * kCheckEntryDwords;
 inline constexpr uint32_t kCheckBytes        = 2u * kCheckRegionDwords * 4u;
 inline constexpr uint32_t kCheckRegionNative = 0;
 inline constexpr uint32_t kCheckRegionHalf   = 1;
+// LDS scratch of the stress culling (last in LDS): counter, 256-entry list, mask.
+inline constexpr uint32_t kCheckLdsCounter   = 0;
+inline constexpr uint32_t kCheckLdsList      = 1;
+inline constexpr uint32_t kCheckLdsMask      = kCheckLdsList + kForcedItems;
+inline constexpr uint32_t kCheckLdsDwords    = kCheckLdsMask + kCheckMaskDwords;
+
+// Synthetic radius sign of stress item `item` in tile `tile` (the shader evaluates the same
+// expression): about 7 of 8 items pass the guest's plane test.
+constexpr bool StressPasses(uint32_t item, uint32_t tile) {
+	return (((item * 0x9e37u) ^ (tile * 0x85ebu)) >> 7u & 7u) != 0u;
+}
+
+constexpr uint32_t StressDesignedCount(uint32_t tile) {
+	return kStressCounts[tile % kStressCounts.size()];
+}
 
 inline bool EnvFlag(const char* name) {
 	const char* value = std::getenv(name);
@@ -169,19 +197,79 @@ inline uint8_t Variant(uint64_t hash, uint8_t live, uint32_t threads_x, uint32_t
 	return check ? kVariantCaptureOnly : uint8_t {0};
 }
 
-// Light-list comparison of two check-log regions (host side). A tile counts when both regions
-// captured it (first word = count + 1, non-zero).
+enum class SequenceMatch { SameOrder, SameSet, Different };
+
+inline SequenceMatch CompareSequence(const uint32_t* x, uint32_t nx, const uint32_t* y, uint32_t ny) {
+	if (nx != ny) {
+		return SequenceMatch::Different;
+	}
+	bool same = true;
+	for (uint32_t i = 0; i < nx; i++) {
+		same = same && x[i] == y[i];
+	}
+	if (same) {
+		return SequenceMatch::SameOrder;
+	}
+	bool used[kForcedItems] = {};
+	for (uint32_t i = 0; i < nx; i++) {
+		bool found = false;
+		for (uint32_t j = 0; j < ny && !found; j++) {
+			if (!used[j] && x[i] == y[j]) {
+				used[j] = true;
+				found   = true;
+			}
+		}
+		if (!found) {
+			return SequenceMatch::Different;
+		}
+	}
+	return SequenceMatch::SameSet;
+}
+
+// The stress list a correct culling produces for this tile: items below the designed count that
+// are before the always-append start or pass the synthetic radius (in any order).
+inline uint32_t ExpectedStressCount(uint32_t tile, uint32_t start) {
+	uint32_t n = 0;
+	for (uint32_t k = 0; k < StressDesignedCount(tile); k++) {
+		n += (k < start || StressPasses(k, tile)) ? 1u : 0u;
+	}
+	return n;
+}
+
 struct ListCompare {
-	uint32_t tiles       = 0; // present in both
-	uint32_t same_order  = 0; // identical count and entries in the same order
-	uint32_t same_set    = 0; // identical count and the same entries in another order
+	uint32_t tiles       = 0; // captured in both regions
+	uint32_t same_order  = 0; // real list: identical count and entries in the same order
+	uint32_t same_set    = 0; // real list: the same entries in another order
 	uint32_t different   = 0;
-	uint32_t overflowed  = 0; // count > 16 in either (entries past 16 are not kept, set undefined)
+	uint32_t overflowed  = 0; // real count > 16 in either (entries past 16 are not kept)
 	int32_t  first_diff  = -1;
-	uint32_t mask_equal  = 0; // stress culling: identical 256-item pass masks
-	uint32_t mask_diff   = 0;
-	uint64_t mask_items  = 0; // passing items summed over the compared tiles (how much was tested)
+	uint32_t stress_same_order = 0; // stress list, native vs half
+	uint32_t stress_same_set   = 0;
+	uint32_t stress_different  = 0;
+	uint32_t stress_boundary   = 0; // compared tiles whose designed count is 64, 128 or 192
+	uint32_t stress_expected   = 0; // tiles where both stress lists hold exactly the expected items
+	uint32_t mask_equal        = 0;
+	uint32_t mask_diff         = 0;
+	uint64_t stress_items      = 0; // stress items appended, summed over the compared tiles
+	uint32_t stress_max        = 0;
 };
+
+inline bool StressMatchesExpected(const uint32_t* e, uint32_t tile) {
+	const uint32_t start = e[kCheckWordStart];
+	const uint32_t n     = e[kCheckWordStressN];
+	if (e[kCheckWordDesigned] != StressDesignedCount(tile) || n != ExpectedStressCount(tile, start)) {
+		return false;
+	}
+	bool seen[kForcedItems] = {};
+	for (uint32_t i = 0; i < n; i++) {
+		const uint32_t k = e[kCheckWordStress + i];
+		if (k >= StressDesignedCount(tile) || seen[k] || !(k < start || StressPasses(k, tile))) {
+			return false;
+		}
+		seen[k] = true;
+	}
+	return true;
+}
 
 inline ListCompare CompareLists(const uint32_t* a, const uint32_t* b, uint32_t tiles) {
 	ListCompare result;
@@ -192,49 +280,36 @@ inline ListCompare CompareLists(const uint32_t* a, const uint32_t* b, uint32_t t
 			continue;
 		}
 		result.tiles++;
+		// Stress culling.
+		const uint32_t nx = std::min(x[kCheckWordStressN], kForcedItems);
+		const uint32_t ny = std::min(y[kCheckWordStressN], kForcedItems);
+		switch (CompareSequence(x + kCheckWordStress, nx, y + kCheckWordStress, ny)) {
+			case SequenceMatch::SameOrder: result.stress_same_order++; break;
+			case SequenceMatch::SameSet: result.stress_same_set++; break;
+			case SequenceMatch::Different: result.stress_different++; break;
+		}
+		const uint32_t designed = x[kCheckWordDesigned];
+		result.stress_boundary += (designed == 64u || designed == 128u || designed == 192u) ? 1u : 0u;
+		result.stress_expected += StressMatchesExpected(x, tile) && StressMatchesExpected(y, tile) ? 1u : 0u;
+		result.stress_items += nx;
+		result.stress_max = std::max(result.stress_max, nx);
 		bool mask_same = true;
 		for (uint32_t i = 0; i < kCheckMaskDwords; i++) {
 			mask_same = mask_same && x[kCheckWordMask + i] == y[kCheckWordMask + i];
-			result.mask_items += static_cast<uint32_t>(__builtin_popcount(x[kCheckWordMask + i]));
 		}
 		(mask_same ? result.mask_equal : result.mask_diff)++;
+		// Real list.
 		if (x[0] - 1u > kListEntries || y[0] - 1u > kListEntries) {
 			result.overflowed++;
 			continue;
 		}
-		if (x[0] != y[0]) {
-			result.different++;
-			if (result.first_diff < 0) result.first_diff = static_cast<int32_t>(tile);
-			continue;
-		}
-		const uint32_t count = x[0] - 1u;
-		bool           same  = true;
-		for (uint32_t i = 0; i < count; i++) {
-			same = same && x[1 + i] == y[1 + i];
-		}
-		if (same) {
-			result.same_order++;
-			continue;
-		}
-		// Same multiset in another order?
-		bool used[kListEntries] = {};
-		bool set_equal          = true;
-		for (uint32_t i = 0; i < count && set_equal; i++) {
-			bool found = false;
-			for (uint32_t j = 0; j < count; j++) {
-				if (!used[j] && x[1 + i] == y[1 + j]) {
-					used[j] = true;
-					found   = true;
-					break;
-				}
-			}
-			set_equal = found;
-		}
-		if (set_equal) {
-			result.same_set++;
-		} else {
-			result.different++;
-			if (result.first_diff < 0) result.first_diff = static_cast<int32_t>(tile);
+		switch (CompareSequence(x + 1, x[0] - 1u, y + 1, y[0] - 1u)) {
+			case SequenceMatch::SameOrder: result.same_order++; break;
+			case SequenceMatch::SameSet: result.same_set++; break;
+			case SequenceMatch::Different:
+				result.different++;
+				if (result.first_diff < 0) result.first_diff = static_cast<int32_t>(tile);
+				break;
 		}
 	}
 	return result;
