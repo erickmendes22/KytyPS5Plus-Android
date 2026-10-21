@@ -120,7 +120,7 @@ WalkPool::WalkPool(uint32_t workers) {
 
 WalkPool::~WalkPool() {
 	Quiesce();
-	for (auto& thread: m_threads) thread.request_stop();
+	for (auto& thread: m_threads) thread->RequestStop();
 	m_work.notify_all();
 	m_threads.clear(); // joins
 }
@@ -137,13 +137,13 @@ void WalkPool::Resize(uint32_t workers) {
 	workers = std::clamp<uint32_t>(workers, 1u, kMaxWorkers);
 	if (workers == m_threads.size()) return;
 	while (m_threads.size() > workers) {
-		m_threads.back().request_stop();
+		m_threads.back()->RequestStop();
 		m_work.notify_all();
 		m_threads.pop_back(); // joins after it finishes its job
 	}
 	while (m_threads.size() < workers) {
 		const auto index = static_cast<uint32_t>(m_threads.size());
-		m_threads.emplace_back([this, index](const std::stop_token& stop) { Run(index, stop); });
+		m_threads.push_back(std::make_unique<Worker>(*this, index));
 	}
 	m_workers.store(workers, std::memory_order_relaxed);
 }
@@ -165,6 +165,28 @@ uint32_t WalkPool::Workers() const {
 void WalkPool::Quiesce() {
 	std::unique_lock lock(m_mutex);
 	m_idle.wait(lock, [this] { return m_queue.empty() && m_running == 0; });
+}
+
+WalkPool::Worker::Worker(WalkPool& pool, uint32_t index): m_pool(pool), m_index(index) {
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setstacksize(&attr, kWorkerStackBytes);
+	if (pthread_create(&m_thread, &attr, Entry, this) != 0) {
+		std::abort(); // no walk worker: the fan-out cannot run
+	}
+	pthread_attr_destroy(&attr);
+}
+
+WalkPool::Worker::~Worker() {
+	m_stop.request_stop();
+	m_pool.m_work.notify_all();
+	pthread_join(m_thread, nullptr);
+}
+
+void* WalkPool::Worker::Entry(void* self) {
+	auto* worker = static_cast<Worker*>(self);
+	worker->m_pool.Run(worker->m_index, worker->m_stop.get_token());
+	return nullptr;
 }
 
 void WalkPool::Run(uint32_t index, const std::stop_token& stop) {

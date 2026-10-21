@@ -13,6 +13,8 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <pthread.h>
+#include <stop_token>
 #include <thread>
 #include <vector>
 
@@ -184,7 +186,25 @@ private:
 	std::condition_variable               m_idle;
 	std::deque<std::shared_ptr<WalkJob>>  m_queue;
 	uint32_t                              m_running = 0;
-	std::vector<std::jthread>             m_threads; // Resize's caller only
+	// A worker thread with its own stack size: SRT walks recurse deeply (EvaluateWide), and the
+	// default 1 MiB of a bionic thread overflowed on Astro Bot's intro content (c14_fanlive1).
+	class Worker {
+	public:
+		Worker(WalkPool& pool, uint32_t index);
+		~Worker(); // requests stop and joins
+		Worker(const Worker&)            = delete;
+		Worker& operator=(const Worker&) = delete;
+		void RequestStop() { m_stop.request_stop(); }
+
+	private:
+		static void* Entry(void* self);
+		WalkPool&         m_pool;
+		uint32_t          m_index;
+		std::stop_source  m_stop;
+		pthread_t         m_thread {};
+	};
+	static constexpr size_t kWorkerStackBytes = 16u << 20u;
+	std::vector<std::unique_ptr<Worker>>  m_threads; // Resize's caller only
 	std::atomic<uint32_t>                 m_workers {0};
 };
 

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <mutex>
+#include <pthread.h>
 #include <set>
 #include <sys/mman.h>
 #include <thread>
@@ -383,6 +384,45 @@ void TestRefusedByView() {
 	pool.Quiesce();
 }
 
+// Walk workers run on a large stack (SRT walks recurse deeply; 1 MiB overflowed on device).
+std::atomic<size_t> g_worker_stack {0};
+size_t CurrentStackBytes() {
+#if defined(__APPLE__)
+	return pthread_get_stacksize_np(pthread_self());
+#else
+	pthread_attr_t attr;
+	size_t         size = 0;
+	if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+		pthread_attr_getstacksize(&attr, &size);
+		pthread_attr_destroy(&attr);
+	}
+	return size;
+#endif
+}
+
+void TestWorkerStackSize() {
+	FakeGpu gpu;
+	static const WalkReader::Memory kStackProbe {
+	    .fold         = kIdentityMemory.fold,
+	    .read_backing = [](uint64_t host, void* data, uint64_t size) {
+		    g_worker_stack = CurrentStackBytes();
+		    std::memcpy(data, reinterpret_cast<const void*>(host), size);
+		    return true;
+	    },
+	};
+	const Fan::WalkContext context {.memory = kStackProbe, .journal = &gpu.journal};
+	Fan::SetContext(&context);
+	const ChainPlan         chain;
+	std::array<uint32_t, 3> leaf {0u, 1u, 2u};
+	const auto              root = PointerWords(leaf.data());
+	const auto              user = PointerWords(root.data());
+	Fan::WalkPool           pool(1);
+	auto                    job = MakeJob(chain, user, gpu);
+	pool.Submit(job);
+	pool.Quiesce();
+	Check(job->Done() && g_worker_stack.load() >= (8u << 20u), "walk worker stack below 8 MiB");
+}
+
 void TestPrewalkListOrder() {
 	Fan::PrewalkList list;
 	auto             job = std::make_shared<Fan::WalkJob>();
@@ -436,6 +476,7 @@ void DbgExit(int) {
 
 int main() {
 	TestPrewalkListOrder();
+	TestWorkerStackSize();
 	TestAcceptRules();
 	TestPoolMatchesInline();
 	TestRecorderTakesQueuedJob();
