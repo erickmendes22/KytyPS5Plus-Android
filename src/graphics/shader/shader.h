@@ -286,6 +286,12 @@ struct ShaderDeviceFeatures {
 	// KYTY_FTZ32 (graphics/shader/ftz32.h): Ftz32::Op bits whose explicit FP32 denormal input
 	// flush is left to the device, with DenormFlushToZero declared at width 32. 0: flush all.
 	uint32_t ftz32_ops                    = 0;
+	// KYTY_PS_LIVE_ELECT: in pixel shaders, the lane that performs a wave-aggregated DS_APPEND /
+	// DS_CONSUME counter update is elected among non-helper invocations. Guest EXEC holds no helper
+	// lanes there (GCN adds them only through S_WQM), but the host may count helper invocations as
+	// active in subgroup ballots, and their atomics have no effect, so an elected helper lane leaves
+	// its wave with an undefined base index (duplicate append-buffer slots).
+	bool pixel_live_election              = false;
 	// Graphics stages whose invocations may use subgroup ballot and shuffle
 	// (VkPhysicalDeviceVulkan11Properties::subgroupSupportedStages/Operations). In a stage
 	// without them each invocation is emitted as a one-lane wave instead.

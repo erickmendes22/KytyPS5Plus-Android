@@ -1580,7 +1580,19 @@ uint32_t EmitAppendConsume(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto count = Binary(state, spv::OpIAdd, TypeU32(state),
 	                          Unary(state, spv::OpBitCount, TypeU32(state), low),
 	                          Unary(state, spv::OpBitCount, TypeU32(state), high));
-	const auto first = ctx.FirstLane(ballot);
+	auto first = ctx.FirstLane(ballot);
+	if (state.helper_invocation_variable != 0 && !sliced && state.lane_count == 1) {
+		// KYTY_PS_LIVE_ELECT: the counter update must come from a lane whose atomics take effect.
+		// The count (and the guest's MBCNT prefixes) keep the full ballot.
+		const auto helper = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpLoad, TypeBool(state), helper, state.helper_invocation_variable);
+		const auto live = Binary(state, spv::OpLogicalAnd, TypeBool(state), exec,
+		                         Unary(state, spv::OpLogicalNot, TypeBool(state), helper));
+		const auto live_ballot = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpGroupNonUniformBallot, TypeU32Vector(state, 4), live_ballot,
+		                          ConstantU32(state, spv::ScopeSubgroup), live);
+		first = ctx.FirstLane(live_ballot);
+	}
 	const auto source_lane =
 	    sliced ? EmitWaveLaneToSubgroupLane(state, first)
 	    : state.lane_count == 2

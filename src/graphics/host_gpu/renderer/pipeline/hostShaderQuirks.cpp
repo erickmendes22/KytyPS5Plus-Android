@@ -107,6 +107,10 @@ ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 	                                      paths.uniform_buffers_per_stage,
 	                                      paths.uniform_constants_compute_only ? " (compute only)" : ""));
 	paths.ftz32_ops = ProbeFtz32Ops(graphics, turnip);
+	paths.pixel_live_election = EnvToggle("KYTY_PS_LIVE_ELECT", false);
+	if (paths.pixel_live_election) {
+		Log::WriteToConsoleAndLog("KYTY_PS_LIVE_ELECT: pixel-shader append counters elected among non-helper lanes\n");
+	}
 	return paths;
 }
 

@@ -23,6 +23,8 @@ struct GraphicContext;
 struct ShaderFastPaths {
 	// KYTY_FTZ32 (default on with Mesa Turnip, =0 opts out): ShaderDeviceFeatures::ftz32_ops from the device check (ftzProbe.h).
 	uint32_t ftz32_ops        = 0;
+	// KYTY_PS_LIVE_ELECT=1 (default off): ShaderDeviceFeatures::pixel_live_election.
+	bool pixel_live_election  = false;
 	bool native_float_min_max = false;
 	bool robust_buffer_loads  = false;
 	bool lane_exec_branches   = false;

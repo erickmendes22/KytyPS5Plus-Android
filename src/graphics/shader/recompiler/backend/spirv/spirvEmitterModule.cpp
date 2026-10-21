@@ -800,6 +800,17 @@ void DefineInputs(EmitterState& state) {
 			                            builtin);
 		}
 	}
+	if (state.program.stage == ShaderType::Pixel && state.device_features.pixel_live_election &&
+	    !state.subgroup_isolated) {
+		const auto variable = DefineInterfaceVariable(state, TypeBool(state), spv::StorageClassInput,
+		                                              "gl_HelperInvocation");
+		state.helper_invocation_variable = variable;
+		state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationBuiltIn,
+		                            spv::BuiltInHelperInvocation);
+		if (state.builder.Version() >= 0x00010600u) {
+			state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationVolatile);
+		}
+	}
 	if (state.program.info.subgroup_local_invocation_id && !state.subgroup_isolated) {
 		const auto variable = DefineInterfaceVariable(state, TypeU32(state), spv::StorageClassInput,
 		                                              "gl_SubgroupInvocationID");

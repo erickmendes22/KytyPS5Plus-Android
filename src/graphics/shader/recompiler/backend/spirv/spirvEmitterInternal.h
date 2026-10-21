@@ -164,6 +164,8 @@ struct EmitterState {
 	uint32_t                   current_label                         = 0;
 	const IR::Block*           current_block                         = nullptr;
 	uint32_t                   pixel_valid_mask_variable             = 0;
+	// KYTY_PS_LIVE_ELECT: BuiltIn HelperInvocation (pixel stage), 0 when not declared.
+	uint32_t                   helper_invocation_variable            = 0;
 	// KYTY_LOOP_GUARD (graphics/shader/loopGuard.h): Function u32 variables (iterations through
 	// guarded loop headers; whether this invocation logged its trip), and the plan by block.
 	bool                       loop_guard                            = false;
