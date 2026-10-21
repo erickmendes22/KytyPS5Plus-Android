@@ -14,6 +14,10 @@ namespace Libs::Graphics::RpStats {
 void OnClear(bool full_color);
 // A pending clear met a render pass: `full_area` whether the pass covers the whole image.
 void OnAttachment(bool full_area, uint64_t bytes);
+// KYTY_RP_OPS (live rp_ops=0/1): fold full colour clears into the next full-area pass.
+[[nodiscard]] bool FoldEnabled();
+void OnFolded();      // a pass absorbed a clear as loadOp CLEAR
+void OnFoldFlushed(); // another use recorded the clear first
 void Append(std::string& out, double per_frame);
 
 } // namespace Libs::Graphics::RpStats

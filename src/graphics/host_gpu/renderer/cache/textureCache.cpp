@@ -1795,6 +1795,17 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 		NoteClearForRpStats(image, range, full_image);
 		return;
 	}
+	// KYTY_RP_OPS: a full colour clear of a single-level, single-layer image waits for the next
+	// pass that binds it over its whole area (loadOp CLEAR); any other use records it first.
+	if (range.aspectMask == vk::ImageAspectFlagBits::eColor && full_image &&
+	    image.info.resources.levels == 1 && image.backing.layers == 1 && image.info.samples == 1 &&
+	    !image.info.IsVolume() && RpStats::FoldEnabled()) {
+		image.rp_fold_pending = true;
+		image.rp_fold_value   = clear.color;
+		CommitGpuWrite(image);
+		NoteClearForRpStats(image, range, full_image);
+		return;
+	}
 	image.Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {},
 	              command.Handle());
 	auto native_range = range;

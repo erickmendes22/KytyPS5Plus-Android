@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/image/image.h"
+#include "graphics/host_gpu/renderer/rpStats.h"
 
 #include "common/assert.h"
 #include "common/perfWaits.h"
@@ -124,10 +125,44 @@ vk::ImageAspectFlags Image::FullAspectMask(vk::Format format) noexcept {
 	}
 }
 
+namespace {
+thread_local int  t_fold_scope    = 0;
+thread_local bool t_fold_flushing = false;
+} // namespace
+
+Image::FoldScope::FoldScope() {
+	t_fold_scope++;
+}
+
+Image::FoldScope::~FoldScope() {
+	t_fold_scope--;
+}
+
+// Records the folded clear where the guest's clear would have run relative to this use.
+void Image::FlushFoldedClear() {
+	if (!rp_fold_pending || t_fold_flushing) {
+		return;
+	}
+	t_fold_flushing = true;
+	rp_fold_pending = false;
+	m_scheduler.EndRendering(PassEnd::ImageCopy);
+	auto command = m_scheduler.Current().Handle();
+	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command,
+	        PassEnd::ImageCopy);
+	const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+	command.clearColorImage(backing.image, vk::ImageLayout::eTransferDstOptimal, &rp_fold_value, 1,
+	                        &range);
+	RpStats::OnFoldFlushed();
+	t_fold_flushing = false;
+}
+
 Image::Barriers Image::GetBarriers(vk::ImageLayout                      destination_layout,
                                    vk::AccessFlags2                     destination_access,
                                    vk::PipelineStageFlags2              destination_stage,
                                    std::optional<ImageSubresourceRange> range) {
+	if (rp_fold_pending && t_fold_scope == 0) {
+		FlushFoldedClear();
+	}
 	auto& state              = backing.state;
 	auto& subresource_states = backing.subresource_states;
 	if (range && info.IsVolume()) {

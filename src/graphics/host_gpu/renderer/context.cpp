@@ -109,8 +109,23 @@ void CommandBuffer::SetDebugInfo(uint32_t op, uint64_t submit_id, uint32_t arg0,
 	m_debug_arg4      = arg4;
 }
 
+// Same targets and geometry; the load ops only matter when the pass begins (KYTY_RP_OPS gives
+// the first draw of a pass a loadOp CLEAR that later draws of the pass do not repeat).
+static bool SamePass(const RenderState& open, const RenderState& next) {
+	if (open == next) return true;
+	auto a = open;
+	auto b = next;
+	for (auto* s: {&a, &b}) {
+		for (auto& c: s->color_attachments) {
+			c.is_clear    = false;
+			c.clear_value = {};
+		}
+	}
+	return a == b;
+}
+
 void CommandBuffer::BeginRendering(const RenderState& state) const {
-	if (m_rendering && m_render_state == state) {
+	if (m_rendering && SamePass(m_render_state, state)) {
 		return;
 	}
 	EXIT_IF(state.width == 0 || state.height == 0 || state.num_layers == 0 ||

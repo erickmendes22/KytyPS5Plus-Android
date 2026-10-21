@@ -678,10 +678,14 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		image.binding.attachment_layout = layout;
 		image.binding.attachment_access =
 		    vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite;
-		image.Transit(layout, image.binding.attachment_access,
-		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
-		                                     view.layer_count},
-		              buffer.Handle(), PassEnd::Attach);
+		{
+			// KYTY_RP_OPS: becoming this pass's attachment keeps a folded clear pending.
+			const Image::FoldScope fold_scope;
+			image.Transit(layout, image.binding.attachment_access,
+			              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
+			                                     view.layer_count},
+			              buffer.Handle(), PassEnd::Attach);
+		}
 		const auto extent       = target.Extent();
 		const auto view_extent  = AttachmentViewExtent(image, view);
 		state.width             = std::min(state.width, view_extent.width);
@@ -811,6 +815,30 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	}
 	if (state.num_layers == std::numeric_limits<uint32_t>::max()) {
 		state.num_layers = 1;
+	}
+	// KYTY_RP_OPS: a folded clear becomes this pass's loadOp CLEAR when the pass covers the whole
+	// image in the image's own format (the clear value means the same); otherwise it is recorded
+	// now and the attachment acquired again.
+	for (uint32_t i = 0; i < color_count; i++) {
+		auto* image = cache.m_slot_images.try_get(colors[i].image_id);
+		if (image == nullptr || !image->rp_fold_pending) continue;
+		auto&      attachment = state.color_attachments[colors[i].target_slot];
+		const auto& view      = colors[i].desc.view_info;
+		const bool absorb = state.width == image->backing.extent.width &&
+		                    state.height == image->backing.extent.height && state.num_layers == 1 &&
+		                    view.base_level == 0 && attachment.format == image->backing.format;
+		if (absorb) {
+			image->rp_fold_pending = false;
+			attachment.is_clear    = true;
+			std::memcpy(attachment.clear_value.data(), &image->rp_fold_value, sizeof(attachment.clear_value));
+			RpStats::OnFolded();
+		} else {
+			image->FlushFoldedClear();
+			image->Transit(attachment.image_layout, image->binding.attachment_access,
+			               ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
+			                                      view.layer_count},
+			               buffer.Handle(), PassEnd::Attach);
+		}
 	}
 	if (RpStats::Enabled()) {
 		// A clear still pending on a colour target would be absorbed by loadOp CLEAR when the

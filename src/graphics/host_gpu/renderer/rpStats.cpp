@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/rpStats.h"
+#include "graphics/host_gpu/renderer/liveKnobs.h"
 
 #include <atomic>
 #include <cstdio>
@@ -13,6 +14,8 @@ std::atomic<uint64_t> g_full_color {0};
 std::atomic<uint64_t> g_absorbable {0};
 std::atomic<uint64_t> g_partial {0};
 std::atomic<uint64_t> g_bytes {0};
+std::atomic<uint64_t> g_folded {0};
+std::atomic<uint64_t> g_flushed {0};
 } // namespace
 
 bool Enabled() {
@@ -21,6 +24,22 @@ bool Enabled() {
 		return value != nullptr && std::strcmp(value, "1") == 0;
 	}();
 	return enabled;
+}
+
+bool FoldEnabled() {
+	static const int64_t start = [] {
+		const char* value = std::getenv("KYTY_RP_OPS");
+		return value != nullptr && std::strcmp(value, "1") == 0 ? int64_t {1} : int64_t {0};
+	}();
+	return LiveKnobs::Int("rp_ops", start) != 0;
+}
+
+void OnFolded() {
+	g_folded.fetch_add(1, std::memory_order_relaxed);
+}
+
+void OnFoldFlushed() {
+	g_flushed.fetch_add(1, std::memory_order_relaxed);
 }
 
 void OnClear(bool full_color) {
@@ -38,6 +57,14 @@ void OnAttachment(bool full_area, uint64_t bytes) {
 }
 
 void Append(std::string& out, double per_frame) {
+	const auto folded  = static_cast<double>(g_folded.exchange(0, std::memory_order_relaxed));
+	const auto flushed = static_cast<double>(g_flushed.exchange(0, std::memory_order_relaxed));
+	if (folded != 0 || flushed != 0) {
+		char fold[96];
+		std::snprintf(fold, sizeof(fold), " rp_fold: folded=%.1f flushed=%.1f", folded * per_frame,
+		              flushed * per_frame);
+		out += fold;
+	}
 	if (!Enabled()) return;
 	const auto take = [](std::atomic<uint64_t>& c) { return static_cast<double>(c.exchange(0, std::memory_order_relaxed)); };
 	char part[200];
