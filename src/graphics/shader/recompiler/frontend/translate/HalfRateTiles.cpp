@@ -421,6 +421,8 @@ void Translator::HalfRateRemap() {
 		ir.SetExec(ir.LogicalAnd(ir.IEqual(HalfRateLocal(0), HalfRateConst(0)), ir.IEqual(HalfRateLocal(1), HalfRateConst(0))));
 		WriteSharedU32(1, HalfRateConst(half_rate->adaptive_base_bytes), {HalfRateConst(0), IR::Value(0u), IR::Value(0u), IR::Value(0u)},
 		               LdsWord(), current_pc);
+		WriteSharedU32(1, HalfRateConst(half_rate->adaptive_base_bytes + 4u), {HalfRateConst(0), IR::Value(0u), IR::Value(0u), IR::Value(0u)},
+		               LdsWord(), current_pc);
 		ir.SetExec(exec);
 	}
 	if (half_rate->capture) {
@@ -754,6 +756,12 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 		const auto slot = IR::U32(ir.Emit(O::SharedAtomicIAdd32, {HalfRateConst(half_rate->adaptive_base_bytes), HalfRateConst(1), edge},
 		                                  AddMemoryInfo(LdsWord(), current_pc)));
 		const auto listed = ir.LogicalAnd(edge, ir.ULessThan(slot, HalfRateConst(H::kAdaptiveListMax)));
+		// The 8x8 quadrant of the tile holding the pixel (word 1): pass 2 re-shades whole quadrants.
+		const auto quadrant = ir.IAdd(ir.ShiftRightLogical(tx, HalfRateConst(3)),
+		                              ir.ShiftLeftLogical(ir.ShiftRightLogical(ty, HalfRateConst(3)), HalfRateConst(1)));
+		ir.Emit(O::SharedAtomicOr32, {HalfRateConst(half_rate->adaptive_base_bytes + 4u),
+		                              ir.ShiftLeftLogical(HalfRateConst(1), quadrant), edge},
+		        AddMemoryInfo(LdsWord(), current_pc));
 		const auto exec   = ir.GetExec();
 		ir.SetExec(listed);
 		WriteSharedU32(1, ir.IAdd(HalfRateConst(half_rate->adaptive_base_bytes + 16u), ir.ShiftLeftLogical(slot, HalfRateConst(2))),
@@ -850,9 +858,11 @@ void Translator::HalfRateExportList() {
 	                                                                       ir.IEqual(HalfRateLocal(1), HalfRateConst(0))));
 	ir.SetExec(lead);
 	ir.Emit(O::RetraceStoreU32, {base, count, lead});
-	for (uint32_t chunk = 0; chunk < H::kRetraceChunks; chunk++) {
-		const auto any = ir.LogicalAnd(lead, ir.ULessThan(HalfRateConst(chunk * H::kRetraceChunkPixels), count));
-		ir.Emit(O::RetraceAppendU32, {ir.BitwiseOr(ir.ShiftLeftLogical(group, HalfRateConst(4)), HalfRateConst(chunk)), any});
+	// One pass-2 group per 8x8 quadrant holding a listed pixel (group << 4 | quadrant).
+	const auto quadrants = IR::U32(LoadSharedU32(1, HalfRateConst(half_rate->adaptive_base_bytes + 4u), LdsWord(), current_pc));
+	for (uint32_t q = 0; q < 4u; q++) {
+		const auto any = ir.LogicalAnd(lead, ir.INotEqual(ir.BitwiseAnd(quadrants, HalfRateConst(1u << q)), HalfRateConst(0)));
+		ir.Emit(O::RetraceAppendU32, {ir.BitwiseOr(ir.ShiftLeftLogical(group, HalfRateConst(4)), HalfRateConst(q)), any});
 	}
 	ir.SetExec(exec);
 }
@@ -873,56 +883,20 @@ void Translator::HalfRateRetraceGroup() {
 // rt_half=2 pass 2, after the pixel coordinates are formed: thread i shades listed pixel
 // 64 * chunk + i; threads past the list get coordinates the guest's bounds check rejects.
 void Translator::HalfRateRetraceRemap() {
+	// Pass 2 re-shades the listed 8x8 quadrant of the tile at full rate with the guest's own lane
+	// layout: thread (x, y) takes pixel (8 * (q & 1) + x, 8 * (q >> 1) + y). Lists of single edge
+	// pixels came out dark however their lanes were arranged (c17_rtR1..R9); a coherent layout
+	// shaded correctly (c17_rtR6, R10).
 	const auto origin_x = ir.GetScalarReg(static_cast<IR::ScalarReg>(12));
 	const auto origin_y = ir.GetScalarReg(static_cast<IR::ScalarReg>(13));
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginX), origin_x);
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginY), origin_y);
 	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegTileLive), HalfRateConst(1));
-	const auto group  = ir.GetVectorReg(static_cast<IR::VectorReg>(kRegRetraceGroup));
-	const auto chunk  = ir.GetVectorReg(static_cast<IR::VectorReg>(kRegRetraceChunk));
-	const auto base   = HalfRateRetraceList(group);
-	const auto count  = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {base}));
-	// The guest's quad derivatives (lanes 1 and 2 minus lane 0) need each host quad to cover a 2x2
-	// pixel block. The quads of an 8x8 group are its 2x2 local-id blocks (c17_rtR7: 4-pixel row
-	// runs on linear quads still came out dark). So local block (lx >> 1, ly >> 1) takes the 2x2
-	// block of listed pixel 16 * chunk + block, and (lx & 1, ly & 1) picks the pixel in it.
-	const auto lx     = HalfRateLocal(0);
-	const auto ly     = HalfRateLocal(1);
-	const auto block  = ir.IAdd(ir.ShiftLeftLogical(ir.ShiftRightLogical(ly, HalfRateConst(1)), HalfRateConst(2)),
-	                            ir.ShiftRightLogical(lx, HalfRateConst(1)));
-	// Every lane gets a real pixel: blocks past the chunk's listed pixels repeat them (the guest
-	// loads BVH node data cooperatively across the wave and reads it back with v_readlane, so lanes
-	// left outside the screen feed stale values to the active ones; c17_rtR8).
-	const auto count0 = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {HalfRateRetraceList(ir.GetVectorReg(static_cast<IR::VectorReg>(kRegRetraceGroup)))}));
-	const auto first  = ir.IMul(chunk, HalfRateConst(H::kRetraceChunkPixels));
-	const auto left   = ir.Select(ir.ULessThan(first, count0), ir.ISub(count0, first), HalfRateConst(1));
-	const auto n      = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {left, HalfRateConst(H::kRetraceChunkPixels)}));
-	const auto wrap   = ir.ISub(block, ir.IMul(n, IR::U32(ir.Emit(IR::ValueOpcode::UDiv32, {block, n}))));
-	const auto index  = ir.IAdd(first, wrap);
-	const auto safe   = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {index, HalfRateConst(H::kAdaptiveListMax - 1u)}));
-	const auto packed = IR::U32(ir.Emit(IR::ValueOpcode::RetraceLoadU32, {ir.IAdd(ir.IAdd(base, HalfRateConst(4)), safe)}));
-	const auto listed = ir.ULessThan(index, count);
-	const auto outside = HalfRateConst(0xffffffffu);
-	const auto x = ir.IAdd(origin_x, ir.BitwiseOr(ir.BitwiseAnd(packed, HalfRateConst(14)), ir.BitwiseAnd(lx, HalfRateConst(1))));
-	const auto y = ir.IAdd(origin_y, ir.BitwiseOr(ir.BitwiseAnd(ir.ShiftRightLogical(packed, HalfRateConst(4)), HalfRateConst(14)),
-	                                              ir.BitwiseAnd(ly, HalfRateConst(1))));
-	if (std::getenv("KYTY_RT_HALF_RETRACE_ODD") != nullptr) {
-		// Diagnostic: pass 2 shades the odd-x neighbour of every sample (2x + 1, 2y), lanes laid out
-		// like pass 1's; pass 1 fills everything.
-		ir.SetVectorReg(static_cast<IR::VectorReg>(24),
-		                ir.IAdd(origin_x, ir.IAdd(ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(1)), HalfRateConst(1))));
-		ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.IAdd(origin_y, ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(1))));
-		return;
-	}
-		if (std::getenv("KYTY_RT_HALF_RETRACE_SAMPLES") != nullptr) {
-		// Diagnostic: pass 2 re-shades the tile's even/even samples (pass 1 shaded them too), so its
-		// results can be compared with pass 1's.
-		ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.IAdd(origin_x, ir.ShiftLeftLogical(HalfRateLocal(0), HalfRateConst(1))));
-		ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.IAdd(origin_y, ir.ShiftLeftLogical(HalfRateLocal(1), HalfRateConst(1))));
-		return;
-	}
-	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.Select(listed, x, outside));
-	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.Select(listed, y, outside));
+	const auto quadrant = ir.GetVectorReg(static_cast<IR::VectorReg>(kRegRetraceChunk));
+	const auto qx = ir.ShiftLeftLogical(ir.BitwiseAnd(quadrant, HalfRateConst(1)), HalfRateConst(3));
+	const auto qy = ir.ShiftLeftLogical(ir.BitwiseAnd(ir.ShiftRightLogical(quadrant, HalfRateConst(1)), HalfRateConst(1)), HalfRateConst(3));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.IAdd(ir.IAdd(origin_x, qx), HalfRateLocal(0)));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.IAdd(ir.IAdd(origin_y, qy), HalfRateLocal(1)));
 }
 
 // rt_half=2 diagnostic (KYTY_RT_HALF_CHECK): in re-trace iterations, the first active lane of the
