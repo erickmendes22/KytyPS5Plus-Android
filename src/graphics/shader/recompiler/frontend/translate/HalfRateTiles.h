@@ -8,6 +8,7 @@
 
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/recompiler/ir/Block.h"
+#include "graphics/shader/recompiler/ir/Value.h"
 
 #include <array>
 #include <cstdint>
@@ -37,6 +38,37 @@ struct HalfRatePlan {
 	};
 	std::array<Split, 2>              splits {};
 	uint32_t                          split_count = 0;
+	// rt_half=2 (HalfRateTiles::kVariantAdaptive): the re-trace loop around the lighting body.
+	// pre (the CFG block holding kPcListBarrier) -> header -> body ... -> merge (all body exits) ->
+	// fill (first iteration only) -> fill_merge -> latch (continue target, back edge to header or
+	// exit) -> exit -> end (the s_endpgm block). TranslateProgram builds the CFG; the translator
+	// fills the blocks (HalfRateLoopEnter after kPcListBarrier, HalfRateLoopExit before kPcEnd).
+	struct Loop {
+		IR::Block* header     = nullptr;
+		IR::Block* body_entry = nullptr; // rest of the pre block's instructions and its terminator
+		IR::Block* merge      = nullptr;
+		IR::Block* fill       = nullptr;
+		IR::Block* fill_merge = nullptr;
+		IR::Block* latch      = nullptr;
+		IR::Block* exit       = nullptr;
+		IR::Block* end        = nullptr;
+	};
+	bool                              adaptive = false;
+	// Registers the lighting body starts from (saved in the pre block, restored at the latch);
+	// written while translating the pre block, read in the s_endpgm block.
+	struct LoopSaved {
+		std::vector<IR::U32> v;
+		std::vector<IR::U32> s;
+		IR::U32              vcc_lo {};
+		IR::U32              vcc_hi {};
+		IR::U1               scc {};
+		IR::U32              m0 {};
+	};
+	static constexpr uint32_t kLoopSavedVgprs = 72;
+	static constexpr uint32_t kLoopSavedSgprs = 106;
+	mutable LoopSaved                 loop_saved {};
+	Loop                              loop {};
+	uint32_t                          adaptive_base_bytes = 0; // re-trace counter + list
 	Decoder::Instruction              depth_desc;
 	Decoder::Instruction              gbuffer_desc;
 	Decoder::Instruction              depth_load;

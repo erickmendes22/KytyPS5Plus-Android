@@ -173,8 +173,13 @@ std::optional<HalfRatePlan> MakeHalfRatePlan(const Decoder::Program& decoded, ui
 	plan.capture        = capture;
 	plan.capture_region = plan.half ? H::kCheckRegionHalf : H::kCheckRegionNative;
 	plan.fill_mode      = fill_mode;
-	const uint32_t check_dwords = H::CheckEnabled() ? H::kCheckLdsDwords : 0u;
-	const uint32_t patch_dwords = (plan.half ? H::kLdsDwords : 0u) + check_dwords;
+	plan.adaptive = variant == H::kVariantAdaptive;
+	plan.half     = plan.half || plan.adaptive;
+	plan.capture  = plan.capture && !plan.adaptive; // the check's stress split would share the loop's pre block
+	plan.capture_region = plan.half ? H::kCheckRegionHalf : H::kCheckRegionNative;
+	const uint32_t check_dwords    = H::CheckEnabled() && !plan.adaptive ? H::kCheckLdsDwords : 0u;
+	const uint32_t adaptive_dwords = plan.adaptive ? H::kAdaptiveLdsDwords : 0u;
+	const uint32_t patch_dwords    = (plan.half ? H::kLdsDwords : 0u) + adaptive_dwords + check_dwords;
 	if (lds_dwords < patch_dwords) {
 		if (reason != nullptr) {
 			*reason = "LDS size does not include the patch";
@@ -184,11 +189,12 @@ std::optional<HalfRatePlan> MakeHalfRatePlan(const Decoder::Program& decoded, ui
 	if (!CheckCullRange(decoded, plan.cull, reason)) {
 		return std::nullopt;
 	}
-	plan.check_base_bytes = (lds_dwords - check_dwords) * 4u;
-	plan.lds_base_bytes   = (lds_dwords - patch_dwords) * 4u;
+	plan.check_base_bytes    = (lds_dwords - check_dwords) * 4u;
+	plan.adaptive_base_bytes = (lds_dwords - check_dwords - adaptive_dwords) * 4u;
+	plan.lds_base_bytes      = (lds_dwords - patch_dwords) * 4u;
 	if (plan.half) {
 		plan.splits[plan.split_count++].pc = H::kPcCullBegin;
-		if (capture) {
+		if (plan.capture) {
 			plan.splits[plan.split_count++].pc = H::kPcListBarrier;
 		}
 	}
@@ -263,7 +269,13 @@ void Translator::HalfRateBefore(const Decoder::Instruction& inst) {
 			ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegExtentX), ir.GetScalarReg(static_cast<IR::ScalarReg>(12)));
 			ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegExtentY), ir.GetScalarReg(static_cast<IR::ScalarReg>(13)));
 			break;
-		case H::kPcEnd: HalfRateReconstruct(); break;
+		case H::kPcEnd:
+			if (half_rate->adaptive) {
+				HalfRateLoopExit();
+			} else {
+				HalfRateReconstruct();
+			}
+			break;
 		default: break;
 	}
 }
@@ -271,6 +283,9 @@ void Translator::HalfRateBefore(const Decoder::Instruction& inst) {
 void Translator::HalfRateAfter(const Decoder::Instruction& inst) {
 	if (half_rate == nullptr) {
 		return;
+	}
+	if (inst.pc == H::kPcListBarrier && half_rate->adaptive) {
+		HalfRateLoopEnter();
 	}
 	if (inst.pc == H::kPcListBarrier && half_rate->capture) {
 		HalfRateCapture();
@@ -622,13 +637,15 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 			const auto w   = IR::F32(ir.Emit(O::SelectF32, {valid, mul(mul(spatial, depth_w), g_w), HalfRateFloat(0.0f)}));
 			best = HalfRateFloatOp(O::FPMax32, best,
 			                       IR::F32(ir.Emit(O::SelectF32, {valid, mul(depth_w, g_w), HalfRateFloat(0.0f)})));
-			if (half_rate->capture) {
+			if (half_rate->capture || half_rate->adaptive) {
 				std::array<IR::F32, 3> rgb {};
 				for (uint32_t k = 0; k < 3u; k++) rgb[k] = f(HalfRateLoad(Color + k, index));
 				const auto lum = add(add(mul(rgb[0], HalfRateFloat(0.2126f)), mul(rgb[1], HalfRateFloat(0.7152f))),
 				                     mul(rgb[2], HalfRateFloat(0.0722f)));
 				luma_min = IR::F32(ir.Emit(O::SelectF32, {valid, HalfRateFloatOp(O::FPMin32, luma_min, lum), luma_min}));
 				luma_max = IR::F32(ir.Emit(O::SelectF32, {valid, HalfRateFloatOp(O::FPMax32, luma_max, lum), luma_max}));
+			}
+			if (half_rate->capture) {
 				const auto mat  = HalfRateCheckLoad(H::kCheckLdsMaterial, index);
 				const auto same = ir.IEqual(mat, own_material);
 				any_same_mat    = ir.LogicalOr(any_same_mat, ir.LogicalAnd(valid, same));
@@ -651,6 +668,9 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 			weight = add(weight, w);
 		}
 	}
+	// Lit-luminance spread among the valid candidates (an edge the samples straddle).
+	const auto spread        = mul(sub(luma_max, luma_min), rcp(HalfRateFloatOp(O::FPMax32, luma_max, HalfRateFloat(1e-3f))));
+	const auto has_candidate = IR::U1(ir.Emit(O::FPOrdGreaterThanEqual32, {luma_max, luma_min}));
 	if (half_rate->capture) {
 		// KYTY_RT_HALF_CHECK: count unshaded pixels without a same-surface candidate.
 		const auto count = [&](uint32_t counter, IR::U1 flag) {
@@ -662,8 +682,7 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 		for (uint32_t t = 0; t < H::kRejectThresholds.size(); t++) {
 			count(t, IR::U1(ir.Emit(O::FPOrdLessThan32, {best, HalfRateFloat(H::kRejectThresholds[t])})));
 		}
-		const auto spread = mul(sub(luma_max, luma_min), rcp(HalfRateFloatOp(O::FPMax32, luma_max, HalfRateFloat(1e-3f))));
-		const auto has_candidate = IR::U1(ir.Emit(O::FPOrdGreaterThanEqual32, {luma_max, luma_min}));
+
 		for (uint32_t t = 0; t < H::kSpreadThresholds.size(); t++) {
 			count(3u + t, ir.LogicalAnd(has_candidate,
 			                            IR::U1(ir.Emit(O::FPOrdGreaterThan32, {spread, HalfRateFloat(H::kSpreadThresholds[t])}))));
@@ -678,6 +697,20 @@ void Translator::HalfRateFill(uint32_t dx_pixel, uint32_t dy_pixel, IR::U1 live)
 		ir.SetVectorReg(static_cast<IR::VectorReg>(3u + k), ir.BitCastU32(mul(color[k], scale)));
 	}
 	ir.SetVectorReg(static_cast<IR::VectorReg>(8), ir.BitCastU32(mul(luma, scale)));
+	if (half_rate->adaptive) {
+		// rt_half=2: an edge pixel is listed for the re-trace pass instead of being filled.
+		const auto edge = ir.LogicalAnd(ir.GetExec(), ir.LogicalAnd(has_candidate,
+		                      IR::U1(ir.Emit(O::FPOrdGreaterThan32, {spread, HalfRateFloat(H::kEdgeSpread)}))));
+		const auto slot = IR::U32(ir.Emit(O::SharedAtomicIAdd32, {HalfRateConst(half_rate->adaptive_base_bytes), HalfRateConst(1), edge},
+		                                  AddMemoryInfo(LdsWord(), current_pc)));
+		const auto listed = ir.LogicalAnd(edge, ir.ULessThan(slot, HalfRateConst(H::kAdaptiveListMax)));
+		const auto exec   = ir.GetExec();
+		ir.SetExec(listed);
+		WriteSharedU32(1, ir.IAdd(HalfRateConst(half_rate->adaptive_base_bytes + 16u), ir.ShiftLeftLogical(slot, HalfRateConst(2))),
+		               {ir.BitwiseOr(tx, ir.ShiftLeftLogical(ty, HalfRateConst(4))), IR::Value(0u), IR::Value(0u), IR::Value(0u)},
+		               LdsWord(), current_pc);
+		ir.SetExec(ir.LogicalAnd(exec, ir.LogicalNot(listed)));
+	}
 	TranslateInstruction(half_rate->color_desc);
 	TranslateInstruction(half_rate->color_store);
 	TranslateInstruction(half_rate->luma_desc);
@@ -715,6 +748,89 @@ void Translator::HalfRateReconstruct() {
 			ir.Emit(O::DebugLogStoreU32, {ir.IAdd(base, HalfRateConst(H::kCheckWordRejected + t)), value, write});
 		}
 	}
+}
+
+// rt_half=2, after the list barrier (in the pre block): save the registers the lighting body
+// starts from, clear the re-trace list, and enter the loop header. Iteration 0 shades the
+// even/even samples (coordinates from HalfRateRemap). Iteration k >= 1 shades listed edge pixels
+// (k-1)*64 + thread, and threads past the list get coordinates the guest's bounds check rejects.
+void Translator::HalfRateLoopEnter() {
+	auto& saved = half_rate->loop_saved;
+	saved.v.clear();
+	saved.s.clear();
+	for (uint32_t r = 0; r < HalfRatePlan::kLoopSavedVgprs; r++) saved.v.push_back(ir.GetVectorReg(static_cast<IR::VectorReg>(r)));
+	for (uint32_t r = 0; r < HalfRatePlan::kLoopSavedSgprs; r++) saved.s.push_back(ir.GetScalarReg(static_cast<IR::ScalarReg>(r)));
+	saved.vcc_lo = ir.GetVccLo();
+	saved.vcc_hi = ir.GetVccHi();
+	saved.scc    = ir.GetScc();
+	saved.m0     = ir.GetM0();
+	const auto exec = ir.GetExec();
+	const auto lead = ir.LogicalAnd(ir.IEqual(HalfRateLocal(0), HalfRateConst(0)), ir.IEqual(HalfRateLocal(1), HalfRateConst(0)));
+	ir.SetExec(lead);
+	WriteSharedU32(1, HalfRateConst(half_rate->adaptive_base_bytes), {HalfRateConst(0), IR::Value(0u), IR::Value(0u), IR::Value(0u)},
+	               LdsWord(), current_pc);
+	ir.SetExec(exec);
+	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegIteration), HalfRateConst(0));
+
+	const auto& loop = half_rate->loop;
+	ir.SetBlock(loop.header);
+	const auto iteration = ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegIteration));
+	const auto first     = ir.IEqual(iteration, HalfRateConst(0));
+	const auto count     = IR::U32(LoadSharedU32(1, HalfRateConst(half_rate->adaptive_base_bytes), LdsWord(), current_pc));
+	const auto index     = ir.IAdd(ir.IMul(ir.ISub(iteration, HalfRateConst(1)), HalfRateConst(H::kThreads)), HalfRateFlatIndex());
+	const auto safe      = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {index, HalfRateConst(H::kAdaptiveListMax - 1u)}));
+	const auto packed    = IR::U32(LoadSharedU32(1, ir.IAdd(HalfRateConst(half_rate->adaptive_base_bytes + 16u),
+	                                                       ir.ShiftLeftLogical(safe, HalfRateConst(2))),
+	                                             LdsWord(), current_pc));
+	const auto listed    = ir.ULessThan(index, count);
+	const auto outside   = HalfRateConst(0xffffffffu);
+	const auto x = ir.IAdd(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginX)), ir.BitwiseAnd(packed, HalfRateConst(15)));
+	const auto y = ir.IAdd(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegOriginY)),
+	                       ir.BitwiseAnd(ir.ShiftRightLogical(packed, HalfRateConst(4)), HalfRateConst(15)));
+	const auto v24 = ir.GetVectorReg(static_cast<IR::VectorReg>(24));
+	const auto v25 = ir.GetVectorReg(static_cast<IR::VectorReg>(25));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(24), ir.Select(first, v24, ir.Select(listed, x, outside)));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(25), ir.Select(first, v25, ir.Select(listed, y, outside)));
+	ir.SetExec(IR::U1(IR::Value(true)));
+	ir.SetBlock(loop.body_entry);
+}
+
+// rt_half=2, before s_endpgm: the body's exits meet in the merge block. The first iteration fills
+// (listing edge pixels), the latch restores the body's starting registers and loops while listed
+// pixels remain; the exit block leads to the s_endpgm block.
+void Translator::HalfRateLoopExit() {
+	using O = IR::ValueOpcode;
+	const auto& loop = half_rate->loop;
+	ir.SetBlock(loop.merge);
+	const auto iteration = ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegIteration));
+	const auto first     = ir.IEqual(iteration, HalfRateConst(0));
+	loop.merge->condition = first;
+	ir.Emit(O::Reference, {first});
+
+	ir.SetBlock(loop.fill);
+	HalfRateReconstruct();
+	ir.Emit(O::Barrier); // the list count is final
+
+	ir.SetBlock(loop.fill_merge);
+	ir.SetBlock(loop.latch);
+	const auto& saved = half_rate->loop_saved;
+	for (uint32_t r = 0; r < saved.v.size(); r++) ir.SetVectorReg(static_cast<IR::VectorReg>(r), saved.v[r]);
+	for (uint32_t r = 0; r < saved.s.size(); r++) ir.SetScalarReg(static_cast<IR::ScalarReg>(r), saved.s[r]);
+	ir.SetVccLo(saved.vcc_lo);
+	ir.SetVccHi(saved.vcc_hi);
+	ir.SetScc(saved.scc);
+	ir.SetM0(saved.m0);
+	ir.SetExec(IR::U1(IR::Value(true)));
+	const auto next  = ir.IAdd(ir.GetVectorReg(static_cast<IR::VectorReg>(H::kRegIteration)), HalfRateConst(1));
+	ir.SetVectorReg(static_cast<IR::VectorReg>(H::kRegIteration), next);
+	const auto count = IR::U32(LoadSharedU32(1, HalfRateConst(half_rate->adaptive_base_bytes), LdsWord(), current_pc));
+	const auto trips = ir.IAdd(HalfRateConst(1), ir.ShiftRightLogical(ir.IAdd(count, HalfRateConst(H::kThreads - 1u)), HalfRateConst(6)));
+	const auto again = ir.ULessThan(next, trips);
+	loop.latch->condition = again;
+	ir.Emit(O::Reference, {again});
+
+	ir.SetBlock(loop.exit);
+	ir.SetBlock(loop.end);
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend

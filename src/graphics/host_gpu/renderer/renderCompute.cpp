@@ -377,7 +377,7 @@ static uint8_t LiveDeadLane() {
 // compiled from now on (ShaderComputeInputInfo::rt_half_live); absent keeps KYTY_RT_HALF.
 static uint8_t LiveRtHalf() {
 	const auto value = LiveKnobs::Int("rt_half", -1);
-	return value < 0 ? uint8_t {0} : value == 0 ? uint8_t {1} : uint8_t {2};
+	return value < 0 ? uint8_t {0} : value == 0 ? uint8_t {1} : value == 2 ? uint8_t {3} : uint8_t {2};
 }
 
 // KYTY_LIVE_KNOBS rt_fill=4|9|0|99: the half-rate fill mode (shader/halfRateTiles.h).

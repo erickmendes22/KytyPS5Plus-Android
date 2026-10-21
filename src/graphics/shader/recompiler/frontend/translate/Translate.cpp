@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace Libs::Graphics::ShaderRecompiler::Frontend {
@@ -1118,8 +1119,56 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			split_ids = {UINT32_MAX, UINT32_MAX};
 		}
 	}
-	result.block_storage.reserve(cfg.blocks.size() + 13u);
-	result.blocks.reserve(cfg.blocks.size() + 13u);
+	// rt_half=2: the re-trace loop needs the lighting body (everything reachable from the CFG block
+	// holding kPcListBarrier, up to the s_endpgm block) to be a single-entry region in program order
+	// whose only exit is the s_endpgm block, with plain branch terminators.
+	uint32_t loop_pre_id = UINT32_MAX;
+	uint32_t loop_end_id = UINT32_MAX;
+	if (half_rate.has_value() && half_rate->adaptive) {
+		std::unordered_map<uint32_t, size_t> order;
+		for (size_t i = 0; i < cfg.blocks.size(); i++) {
+			order.emplace(cfg.blocks[i].id, i);
+			for (uint32_t index = cfg.blocks[i].inst_begin; index < cfg.blocks[i].inst_end; index++) {
+				const auto pc = decoded.instructions[index].pc;
+				if (pc == HalfRateTiles::kPcListBarrier) loop_pre_id = cfg.blocks[i].id;
+				if (pc == HalfRateTiles::kPcEnd) loop_end_id = cfg.blocks[i].id;
+			}
+		}
+		std::string why;
+		if (loop_pre_id == UINT32_MAX || loop_end_id == UINT32_MAX || loop_pre_id == loop_end_id ||
+		    loop_pre_id == split_ids[0]) {
+			why = "loop blocks not found or shared";
+		} else {
+			const auto& pre = cfg.blocks[order.at(loop_pre_id)];
+			const auto  lo  = order.at(loop_pre_id);
+			const auto  hi  = order.at(loop_end_id);
+			std::vector<uint32_t>        stack(pre.successors.begin(), pre.successors.end());
+			std::unordered_set<uint32_t> seen;
+			bool                         reaches_end = false;
+			while (!stack.empty() && why.empty()) {
+				const auto id = stack.back();
+				stack.pop_back();
+				if (id == loop_end_id) { reaches_end = true; continue; }
+				if (id == loop_pre_id) { why = "body branches back to the loop entry"; break; }
+				if (!seen.insert(id).second) continue;
+				const auto at = order.find(id);
+				if (at == order.end() || at->second <= lo || at->second >= hi) { why = "body block outside the program-order range"; break; }
+				const auto& b = cfg.blocks[at->second];
+				if (b.terminator.kind != CFG::TerminatorKind::Branch &&
+				    b.terminator.kind != CFG::TerminatorKind::ConditionalBranch) { why = "body block with a non-branch terminator"; break; }
+				stack.insert(stack.end(), b.successors.begin(), b.successors.end());
+			}
+			if (why.empty() && !reaches_end) why = "body never reaches s_endpgm";
+		}
+		if (!why.empty()) {
+			LOGF("half-rate tiles: hash=0x%016" PRIx64 " adaptive re-trace not applied (%s); plain half-rate\n",
+			     options.shader_hash, why.c_str());
+			half_rate->adaptive = false;
+			loop_pre_id = loop_end_id = UINT32_MAX;
+		}
+	}
+	result.block_storage.reserve(cfg.blocks.size() + 20u);
+	result.blocks.reserve(cfg.blocks.size() + 20u);
 	const auto max_id = std::ranges::max_element(cfg.blocks, {}, [](const CFG::BasicBlock& block) {
 		                    return block.id;
 	                    })->id;
@@ -1184,10 +1233,36 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			from = tail;
 		}
 	}
+	const auto insert_block = [&](size_t position, uint32_t pc) {
+		auto  owned    = std::make_unique<IR::Block>();
+		auto* block    = owned.get();
+		block->id       = next_id++;
+		block->start_pc = block->end_pc = pc;
+		result.block_storage.insert(result.block_storage.begin() + static_cast<std::ptrdiff_t>(position), std::move(owned));
+		result.blocks.insert(result.blocks.begin() + static_cast<std::ptrdiff_t>(position), block);
+		return block;
+	};
+	const auto index_of = [&](const IR::Block* block) {
+		return static_cast<size_t>(std::ranges::find(result.blocks, block) - result.blocks.begin());
+	};
+	if (loop_pre_id != UINT32_MAX) {
+		auto& loop = half_rate->loop;
+		auto* pre  = blocks_by_id.at(loop_pre_id);
+		loop.end   = blocks_by_id.at(loop_end_id);
+		loop.header     = insert_block(index_of(pre) + 1u, HalfRateTiles::kPcListBarrier);
+		loop.body_entry = insert_block(index_of(loop.header) + 1u, HalfRateTiles::kPcListBarrier);
+		loop.body_entry->end_pc = pre->end_pc;
+		pre->end_pc             = HalfRateTiles::kPcListBarrier;
+		auto at = index_of(loop.end);
+		for (auto** slot: {&loop.merge, &loop.fill, &loop.fill_merge, &loop.latch, &loop.exit}) {
+			*slot = insert_block(at++, HalfRateTiles::kPcEnd);
+		}
+	}
 	const auto terminal_block = [&](uint32_t id) -> IR::Block* {
 		for (uint32_t i = 0; i < split_ids.size(); i++) {
 			if (id == split_ids[i]) return split_tails[i];
 		}
+		if (id == loop_pre_id) return half_rate->loop.body_entry;
 		return blocks_by_id.at(id);
 	};
 	const auto target_block = [&](uint32_t id) -> IR::Block* {
@@ -1222,6 +1297,64 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			}
 			block.AddBranch(target->second);
 		}
+	}
+	if (loop_pre_id != UINT32_MAX) {
+		auto& loop = half_rate->loop;
+		auto* pre  = blocks_by_id.at(loop_pre_id);
+		// Body: reachable from the body entry without passing the s_endpgm block.
+		std::vector<IR::Block*>        stack {loop.body_entry};
+		std::unordered_set<IR::Block*> body;
+		while (!stack.empty()) {
+			auto* block = stack.back();
+			stack.pop_back();
+			if (block == loop.end || !body.insert(block).second) continue;
+			for (auto* next: block->ImmSuccessors()) stack.push_back(next);
+		}
+		for (auto* block: body) {
+			auto& term = block->terminator;
+			if (std::ranges::find(block->ImmSuccessors(), loop.end) != block->ImmSuccessors().end()) {
+				block->ReplaceSuccessor(loop.end, loop.merge);
+			}
+			for (auto** field: {&term.true_block, &term.false_block, &term.merge_block}) {
+				if (*field == loop.end) *field = loop.merge;
+			}
+		}
+		pre->terminator      = {};
+		pre->terminator.kind = CFG::TerminatorKind::Branch;
+		pre->terminator.true_block = loop.header;
+		pre->AddBranch(loop.header);
+		auto& header = loop.header->terminator;
+		header.kind           = CFG::TerminatorKind::Branch;
+		header.true_block     = loop.body_entry;
+		header.loop_header    = true;
+		header.merge_block    = loop.exit;
+		header.continue_block = loop.latch;
+		loop.header->AddBranch(loop.body_entry);
+		auto& merge = loop.merge->terminator;
+		merge.kind        = CFG::TerminatorKind::ConditionalBranch;
+		merge.true_block  = loop.fill;
+		merge.false_block = loop.fill_merge;
+		merge.merge_block = loop.fill_merge;
+		loop.merge->AddBranch(loop.fill);
+		loop.merge->AddBranch(loop.fill_merge);
+		loop.fill->terminator.kind       = CFG::TerminatorKind::Branch;
+		loop.fill->terminator.true_block = loop.fill_merge;
+		loop.fill->AddBranch(loop.fill_merge);
+		loop.fill_merge->terminator.kind       = CFG::TerminatorKind::Branch;
+		loop.fill_merge->terminator.true_block = loop.latch;
+		loop.fill_merge->AddBranch(loop.latch);
+		auto& latch = loop.latch->terminator;
+		latch.kind        = CFG::TerminatorKind::ConditionalBranch;
+		latch.true_block  = loop.header;
+		latch.false_block = loop.exit;
+		loop.latch->AddBranch(loop.header);
+		loop.latch->AddBranch(loop.exit);
+		loop.exit->terminator.kind       = CFG::TerminatorKind::Branch;
+		loop.exit->terminator.true_block = loop.end;
+		loop.exit->AddBranch(loop.end);
+		result.half_rate_loop = true;
+		LOGF("half-rate tiles: hash=0x%016" PRIx64 " adaptive re-trace loop around %zu body blocks\n",
+		     options.shader_hash, body.size());
 	}
 	{
 		entry.AddBranch(entry.terminator.true_block);

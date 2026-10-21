@@ -2,6 +2,7 @@
 #include "graphics/shader/recompiler/Tessellation.h"
 
 #include "common/assert.h"
+#include <cstdlib>
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/frontend/cfg/ShaderCFG.h"
@@ -1014,7 +1015,7 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 		}
 	}
 
-	if (ir.stage == ShaderType::Compute && options.device_features.dead_lane_fold) {
+	if (ir.stage == ShaderType::Compute && options.device_features.dead_lane_fold && !ir.half_rate_loop) {
 		const auto dead = IR::FoldDeadLaneSelects(ir);
 		if (dead.folded != 0 || dead.narrowed != 0) {
 			IR::EliminateDeadCode(ir.blocks);
@@ -1042,8 +1043,13 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 
 	LOGF("%s phase begin: stage=%s hash=0x%016" PRIx64 " SPIR-V EmitProgram\n",
 	     GetDumpLabel(options), StageName(ir.stage), ir.shader_hash);
+	auto device_features = options.device_features;
+	if (ir.half_rate_loop && std::getenv("KYTY_RT_HALF_LOOP_LANES") == nullptr) {
+		// Lane branches inside the re-trace loop are not proven; KYTY_RT_HALF_LOOP_LANES=1 keeps them (A/B).
+		device_features.lane_exec_branches = false;
+	}
 	auto spirv = Spirv::EmitProgram(ir, options.input_info, push_data_start_dword,
-	                                options.maintenance8_enabled, options.device_features,
+	                                options.maintenance8_enabled, device_features,
 	                                options.device_quirks, options.emit_debug_info);
 	LOGF("%s phase end: stage=%s hash=0x%016" PRIx64 " SPIR-V EmitProgram words=%" PRIu64
 	     " elapsed_ms=%" PRIu64 "\n",

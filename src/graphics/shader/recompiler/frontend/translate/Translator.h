@@ -283,6 +283,8 @@ private:
 	void    HalfRateCapture();
 	void    HalfRateFill(uint32_t dx, uint32_t dy, IR::U1 live);
 	void    HalfRateReconstruct();
+	void    HalfRateLoopEnter();
+	void    HalfRateLoopExit();
 
 	IR::Program&    program;
 	IR::IREmitter   ir;
@@ -295,6 +297,7 @@ private:
 	// Pixel-stage metadata for I/J pair identification; null outside pixel shaders.
 	const ShaderPixelInputInfo* pixel_input;
 	const HalfRatePlan*         half_rate = nullptr;
+
 };
 
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend

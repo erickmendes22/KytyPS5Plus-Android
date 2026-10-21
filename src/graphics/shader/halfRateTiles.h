@@ -108,6 +108,16 @@ inline uint8_t FillModeFromKnob(int64_t value) {
 // program variant (ShaderComputeInputInfo::half_rate_tiles)
 inline constexpr uint8_t kVariantHalf        = 1;
 inline constexpr uint8_t kVariantCaptureOnly = 2; // native kernel, light-list capture only
+// rt_half=2: half plus an adaptive re-trace. The 4-nearest fill flags unshaded pixels whose nearest
+// candidates disagree in lit luminance ((max - min) / max > kEdgeSpread, c17_rtH8: 2.5-4.4% of pixels).
+// Instead of filling them, it appends them to an LDS list, and the guest's lighting body (pc 0x4e8..
+// s_endpgm) runs again in a loop with one listed pixel per thread until the list is done. The light
+// culling and the prologue run once. The loop is built into the IR CFG (TranslateProgram).
+inline constexpr uint8_t kVariantAdaptive    = 3;
+inline constexpr float   kEdgeSpread         = 0.1f;
+inline constexpr uint32_t kAdaptiveListMax   = 3u * 64u; // unshaded pixels per tile
+inline constexpr uint32_t kAdaptiveLdsDwords = 4u + kAdaptiveListMax; // counter (+pad), packed tile-local x | y << 4
+inline constexpr uint32_t kRegIteration      = 246;
 
 // Check log: per region kCheckTiles entries of kCheckEntryDwords:
 //   [0] light-list count + 1 (0 = no capture for that tile), [1..16] list entries,
@@ -198,11 +208,23 @@ inline uint64_t CheckAddress() { return CheckAddressStorage().load(std::memory_o
 inline void     SetCheckAddress(uint64_t address) { CheckAddressStorage().store(address, std::memory_order_release); }
 
 // live: 0 = KYTY_RT_HALF decides, 1 = off, 2 = on.
+inline bool EnvAdaptive() {
+	static const bool adaptive = [] {
+		const char* value = std::getenv("KYTY_RT_HALF");
+		return value != nullptr && std::strcmp(value, "2") == 0;
+	}();
+	return adaptive;
+}
+
 inline bool Applies(uint64_t hash, uint8_t live) {
 	if (hash != kShaderHash) {
 		return false;
 	}
-	return live == 0 ? EnvEnabled() : live == 2;
+	return live == 0 ? EnvEnabled() : live >= 2;
+}
+
+inline bool AppliesAdaptive(uint8_t live) {
+	return live == 0 ? EnvAdaptive() : live == 3;
 }
 
 // The variant a program of this hash compiles as: half, capture-only (check log on), or none.
@@ -211,7 +233,7 @@ inline uint8_t Variant(uint64_t hash, uint8_t live, uint32_t threads_x, uint32_t
 		return 0;
 	}
 	if (Applies(hash, live)) {
-		return kVariantHalf;
+		return AppliesAdaptive(live) ? kVariantAdaptive : kVariantHalf;
 	}
 	return check ? kVariantCaptureOnly : uint8_t {0};
 }

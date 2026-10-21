@@ -33,6 +33,9 @@ public:
 	iterator PrependNewInst(iterator insertion_point, ValueOpcode opcode,
 	                        std::initializer_list<Value> args = {}, uint64_t flags = 0);
 	void     AddBranch(Block* block);
+	// Moves the edge this -> from to this -> to (both adjacency lists; terminator fields are the
+	// caller's). Used by the half-rate loop construction (frontend/translate/HalfRateTiles.h).
+	void     ReplaceSuccessor(Block* from, Block* to);
 
 	[[nodiscard]] InstructionList&        Instructions();
 	[[nodiscard]] const InstructionList&  Instructions() const;

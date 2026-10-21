@@ -735,15 +735,19 @@ ShaderParams PrepareProgram(const HW::ComputeShaderInfo& regs, const HW::ShaderR
 	ShaderGetStaticInputInfoCS(regs, sh, data, info);
 	info.half_rate_tiles = HalfRateTiles::Variant(hash, info.rt_half_live, info.threads_num[0],
 	                                              info.threads_num[1], HalfRateTiles::CheckEnabled());
-	if (info.half_rate_tiles == HalfRateTiles::kVariantHalf) {
+	if (info.half_rate_tiles == HalfRateTiles::kVariantHalf || info.half_rate_tiles == HalfRateTiles::kVariantAdaptive) {
 		// One 8x8 wave per tile (shader/halfRateTiles.h); the indirect group count is unchanged.
 		info.threads_num[0] = HalfRateTiles::kGroupSize;
 		info.threads_num[1] = HalfRateTiles::kGroupSize;
 		info.lds_size_dwords += HalfRateTiles::kLdsDwords;
+		if (info.half_rate_tiles == HalfRateTiles::kVariantAdaptive) {
+			info.lds_size_dwords += HalfRateTiles::kAdaptiveLdsDwords; // re-trace list, after the samples
+		}
 	} else {
 		info.rt_fill_live = 0;
 	}
-	if (info.half_rate_tiles != 0u && HalfRateTiles::CheckEnabled()) {
+	if (info.half_rate_tiles != 0u && info.half_rate_tiles != HalfRateTiles::kVariantAdaptive &&
+	    HalfRateTiles::CheckEnabled()) {
 		info.lds_size_dwords += HalfRateTiles::kCheckLdsDwords; // stress-culling scratch, last in LDS
 	}
 	return GetShaderParams(

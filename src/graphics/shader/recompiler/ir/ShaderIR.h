@@ -904,6 +904,9 @@ struct Program: ResourcePlan {
 	uint32_t                      wave_size      = 64;
 	uint32_t                      scratch_dwords = 0;
 	bool                          dispatcher_fallback = false;
+	// rt_half=2: TranslateProgram built the re-trace loop (frontend/translate/HalfRateTiles.h);
+	// the dead-lane fold and lane branches stay off for it.
+	bool                          half_rate_loop = false;
 	// KYTY_PS_LIVE_ELECT (ShaderDeviceFeatures::pixel_live_election, pixel stage): lanes that update
 	// a wave-wide counter for the whole wave are elected among non-helper invocations.
 	bool                          pixel_live_election = false;

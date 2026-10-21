@@ -37,6 +37,18 @@ void Block::AddBranch(Block* block) {
 	block->predecessors.push_back(this);
 }
 
+void Block::ReplaceSuccessor(Block* from, Block* to) {
+	const auto it = std::ranges::find(successors, from);
+	EXIT_IF(from == nullptr || to == nullptr || it == successors.end());
+	std::erase(from->predecessors, this);
+	if (std::ranges::find(successors, to) != successors.end()) {
+		successors.erase(it);
+		return; // already an edge to `to` (both arms of a conditional now merge there)
+	}
+	*it = to;
+	to->predecessors.push_back(this);
+}
+
 Block::InstructionList& Block::Instructions() {
 	return instructions;
 }
