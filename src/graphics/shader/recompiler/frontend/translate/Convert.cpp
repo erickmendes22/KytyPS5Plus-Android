@@ -89,7 +89,7 @@ void Translator::V_CVT_16_F16(const Decoder::Instruction& inst, bool signed_valu
 	if (signed_value) {
 		const auto converted =
 		    ConvertF32ToI32Saturated(value, -32768.0f, 32768.0f, 32767.0f, 0xffff8000u, 0x7fffu);
-		Write16Bits(DestinationOperand(inst), ir.BitwiseAnd(converted, IR::U32(IR::Value(0xffffu))));
+		Write16Bits(DestinationOperand(inst), converted);
 		return;
 	}
 	Write16Bits(DestinationOperand(inst),

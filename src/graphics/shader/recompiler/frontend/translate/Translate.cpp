@@ -303,15 +303,11 @@ void Translator::WriteRawU32(const Decoder::Operand& operand, IR::U32 value) {
 				value               = ir.ShiftLeftLogical(extended, IR::U32(IR::Value(offset)));
 				break;
 			}
-			case 2: {
-				const uint32_t field_mask = width == 32u ? 0xffffffffu : (1u << width) - 1u;
-				const auto     inserted =
-				    ir.ShiftLeftLogical(ir.BitwiseAnd(value, IR::U32(IR::Value(field_mask))),
-				                        IR::U32(IR::Value(offset)));
-				const auto cleared = ir.BitwiseAnd(ReadRawU32(PlainOperand(operand)),
-				                                   IR::U32(IR::Value(~(field_mask << offset))));
-				value              = ir.BitwiseOr(cleared, inserted);
-			} break;
+			case 2:
+				value = IR::U32(ir.Emit(IR::ValueOpcode::BitFieldInsert,
+				                        {ReadRawU32(PlainOperand(operand)), value, IR::Value(offset),
+				                         IR::Value(width)}));
+				break;
 			default: EXIT("reserved SDWA DST_U mode");
 		}
 	}
@@ -466,7 +462,10 @@ void Translator::Write16Bits(const Decoder::Operand& operand, IR::U32 value) {
 	destination.omod   = 0u;
 	destination.op_sel = false;
 	destination.clamp  = false;
-	WriteRawU32(destination, ir.BitwiseAnd(value, IR::U32(IR::Value(0xffffu))));
+	// A field selector keeps only the field's bits; a full-dword SDWA selector zero-extends.
+	WriteRawU32(destination, destination.sdwa_sel == 6u
+	                             ? ir.BitwiseAnd(value, IR::U32(IR::Value(0xffffu)))
+	                             : value);
 }
 
 void Translator::WriteF16(const Decoder::Operand& operand, IR::F32 value) {

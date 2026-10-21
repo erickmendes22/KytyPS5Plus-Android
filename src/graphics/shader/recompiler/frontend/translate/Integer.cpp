@@ -9,7 +9,7 @@ void Translator::Integer16Shift(const Decoder::Instruction& inst, IR::ValueOpcod
 	const auto value  = ReadU16AsU32(inst.src1, arithmetic);
 	const auto count  = ir.BitwiseAnd(ReadU16AsU32(inst.src0, false), IR::U32(IR::Value(15u)));
 	const auto result = IR::U32(ir.Emit(opcode, {value, count}));
-	Write16Bits(DestinationOperand(inst), ir.BitwiseAnd(result, IR::U32(IR::Value(0xffffu))));
+	Write16Bits(DestinationOperand(inst), result);
 }
 
 void Translator::Integer16Binary(const Decoder::Instruction& inst, IR::ValueOpcode opcode,
@@ -17,7 +17,7 @@ void Translator::Integer16Binary(const Decoder::Instruction& inst, IR::ValueOpco
 	const auto lhs    = ReadU16AsU32(inst.src0, sign);
 	const auto rhs    = ReadU16AsU32(inst.src1, sign);
 	const auto result = IR::U32(ir.Emit(opcode, {lhs, rhs}));
-	Write16Bits(DestinationOperand(inst), ir.BitwiseAnd(result, IR::U32(IR::Value(0xffffu))));
+	Write16Bits(DestinationOperand(inst), result);
 }
 
 void Translator::V_MAD_I16(const Decoder::Instruction& inst) {
@@ -28,7 +28,7 @@ void Translator::V_MAD_I16(const Decoder::Instruction& inst) {
 		result = IR::U32(ir.Emit(IR::ValueOpcode::SMax32, {result, IR::Value(0xffff8000u)}));
 		result = IR::U32(ir.Emit(IR::ValueOpcode::SMin32, {result, IR::Value(0x7fffu)}));
 	}
-	Write16Bits(DestinationOperand(inst), ir.BitwiseAnd(result, IR::U32(IR::Value(0xffffu))));
+	Write16Bits(DestinationOperand(inst), result);
 }
 
 void Translator::Integer16Ternary(const Decoder::Instruction& inst, IR::ValueOpcode opcode,
