@@ -25523,6 +25523,31 @@ TestCase VectorBfeI32SignExtendsField() {
   return test;
 }
 
+TestCase VectorBfmDropsMaskBitsPastBit31() {
+  using O = ShaderOpcode;
+
+  std::vector<u32> code;
+  for (u32 vgpr = 0; vgpr < 4; vgpr++) {
+    AppendVMovU32(&code, 30, vgpr * sizeof(u32));
+    AppendBufferLoadDword(&code, vgpr, 30);
+  }
+  AppendVop3(&code, 0x363, 10, Vgpr(0), Vgpr(1));
+  AppendVop3(&code, 0x363, 11, Vgpr(2), Vgpr(3));
+  AppendStoreVgpr(&code, 10, 0);
+  AppendStoreVgpr(&code, 11, 1);
+  AppendEnd(&code);
+
+  TestCase test;
+  test.name = "VectorBfmDropsMaskBitsPastBit31";
+  test.code = std::move(code);
+  // Size and offset use bits [4:0]; mask bits shifted past bit 31 are dropped.
+  test.initial = {24, 16, 0x3fu, 0x21u};
+  test.expected = {0xffff0000u, 0xfffffffeu};
+  test.opcodes = {O::V_MOV_B32, O::BUFFER_LOAD_DWORD, O::V_BFM_B32,
+                  O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  return test;
+}
+
 TestCase VectorAlignByteUsesTwoBitByteOffset() {
   using O = ShaderOpcode;
 
@@ -42816,6 +42841,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(VectorVop3LshlrevB64Captured);
   AddCase(VectorVop3IntegerOps);
   AddCase(VectorBfeI32SignExtendsField);
+  AddCase(VectorBfmDropsMaskBitsPastBit31);
   AddCase(VectorAlignByteUsesTwoBitByteOffset);
   AddCase(VectorCarryAndBitCountOps);
   AddCase(ScalarVector64BitFloatInlineConstants);
