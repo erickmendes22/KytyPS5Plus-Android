@@ -143,22 +143,14 @@ uint32_t EmitFlushF32DenormInput(EmitterState& state, uint32_t value, uint32_t f
 }
 
 uint32_t EmitFlushF32DenormToSignedZero(EmitterState& state, uint32_t value) {
-	const auto bits      = state.builder.AllocateId();
-	const auto abs_bits  = state.builder.AllocateId();
-	const auto sign_bits = state.builder.AllocateId();
-	const auto subnormal = state.builder.AllocateId();
-	const auto selected  = state.builder.AllocateId();
-	const auto ret       = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpBitcast, TypeU32(state), bits, value);
-	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), abs_bits, bits,
-	                          ConstantU32(state, 0x7fffffffu));
-	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), sign_bits, bits,
-	                          ConstantU32(state, 0x80000000u));
-	state.builder.AddFunction(spv::OpULessThan, TypeBool(state), subnormal, abs_bits,
-	                          ConstantU32(state, 0x00800000u));
-	state.builder.AddFunction(spv::OpSelect, TypeU32(state), selected, subnormal, sign_bits, bits);
-	state.builder.AddFunction(spv::OpBitcast, TypeF32(state), ret, selected);
-	return ret;
+	// x * 0 keeps the sign of a denormal; NaN and infinity fail the ordered compare.
+	const auto magnitude = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpExtInst, TypeF32(state), magnitude, GlslStd450(state),
+	                          GLSLstd450FAbs, value);
+	const auto denormal = Binary(state, spv::OpFOrdLessThan, TypeBool(state), magnitude,
+	                             ConstantF32(state, 0x00800000u));
+	return Select(state, TypeF32(state), denormal,
+	              Binary(state, spv::OpFMul, TypeF32(state), value, ConstantF32(state, 0)), value);
 }
 
 uint32_t EmitTrigCycleF32(EmitterState& state, uint32_t src, bool preserve_signed_zero) {
