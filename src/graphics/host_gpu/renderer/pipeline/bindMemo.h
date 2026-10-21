@@ -5,7 +5,8 @@
 
 // Binding-preparation memos on the GPU command thread. Each is selected by one bit of the
 // bind-memo mask: the live knob bind-memo=<mask> (KYTY_LIVE_KNOBS=1) when present, otherwise
-// KYTY_BIND_MEMO=<mask> (default 0).
+// KYTY_BIND_MEMO=<mask>, otherwise the default: TextureDesc | ColorClearScan with Mesa Turnip
+// (SetDeviceDefault), 0 elsewhere. KYTY_BIND_MEMO=0 opts out.
 namespace Libs::Graphics::BindMemo {
 
 enum Bit : uint32_t {
@@ -17,6 +18,8 @@ enum Bit : uint32_t {
 	ColorClearScan = 1u << 3u,
 };
 
+// The mask without KYTY_BIND_MEMO or the live knob; set once by the renderer at startup.
+void SetDeviceDefault(bool mesa_turnip);
 [[nodiscard]] uint32_t Bits();
 
 } // namespace Libs::Graphics::BindMemo

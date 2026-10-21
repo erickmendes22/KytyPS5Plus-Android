@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "graphics/host_gpu/renderer/pipeline/bindMemo.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "kernel/memory.h"
 
@@ -347,7 +348,9 @@ void IndirectDrawFixup::Draw(vk::CommandBuffer pass, const Records& records, boo
 	}
 }
 
-RenderExecutor::RenderExecutor(RenderContext& context): m_context(context) {}
+RenderExecutor::RenderExecutor(RenderContext& context): m_context(context) {
+	BindMemo::SetDeviceDefault(m_context.GetGraphics().IsMesaTurnip());
+}
 
 IndirectDrawFixup& RenderExecutor::GetIndirectDrawFixup() {
 	if (!m_indirect_fixup) {
