@@ -610,8 +610,9 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	if (std::getenv("KYTY_RT_HALF") != nullptr || std::getenv("KYTY_LIVE_KNOBS") != nullptr) {
 		// rt_half=2 (two dispatches): pass 1 lists edge pixels here, pass 2 dispatches over the compact
 		// list (indirect arguments at offset 0). Its address is baked in when the kernel compiles.
+		// Host-visible in check mode so PollRtHalfCheck can read the lists back.
 		m_rt_half_retrace = std::make_unique<Buffer>(
-		    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
+		    m_graphics, m_scheduler, HalfRateTiles::CheckEnabled() ? MemoryUsage::Download : MemoryUsage::DeviceLocal, 0,
 		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress |
 		        vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransferDst,
 		    HalfRateTiles::kRetraceBytes);
@@ -1429,6 +1430,40 @@ void BufferCache::PollRtHalfCheck() {
 		     "129-192:%u 193-256:%u; native stress lists as expected %u/%u\n",
 		     items_min, items_max, stress[0], stress[1], stress[2], stress[3], stress[4], stress[5], stress[6],
 		     expected, captured);
+	} else if (knob == 2 && m_rt_half_retrace && !HalfRateTiles::LoopDiagnostic()) {
+		// rt_half=2 two-dispatch diagnostic: the last frame's compact list and per-workgroup edge lists.
+		m_rt_half_retrace->Invalidate(0, HalfRateTiles::kRetraceBytes);
+		const auto* w       = reinterpret_cast<const uint32_t*>(m_rt_half_retrace->Mapped().data());
+		const auto  entries = std::min(w[0], HalfRateTiles::kRetraceEntries);
+		std::array<uint32_t, 4> chunks {};
+		uint64_t                listed = 0;
+		uint32_t                groups = 0;
+		uint32_t                max_count = 0;
+		for (uint32_t i = 0; i < entries; i++) {
+			const auto e = w[4 + i];
+			chunks[e & 3u]++;
+			if ((e & 3u) == 0u) {
+				const auto g = std::min(e >> 2u, HalfRateTiles::kRetraceGroups - 1u);
+				const auto n = w[HalfRateTiles::kRetraceListsWord + g * HalfRateTiles::kRetraceListDwords];
+				listed += n;
+				groups++;
+				max_count = std::max(max_count, n);
+			}
+		}
+		LOGF("[rt-half-check] re-trace: args=%u,%u,%u entries chunk0/1/2/3=%u/%u/%u/%u groups=%u listed=%" PRIu64
+		     " max/group=%u\n",
+		     w[0], w[1], w[2], chunks[0], chunks[1], chunks[2], chunks[3], groups, listed, max_count);
+		for (uint32_t i = 0; i < std::min(entries, 3u); i++) {
+			const auto e    = w[4 + i];
+			const auto g    = std::min(e >> 2u, HalfRateTiles::kRetraceGroups - 1u);
+			const auto* lst = w + HalfRateTiles::kRetraceListsWord + g * HalfRateTiles::kRetraceListDwords;
+			std::string coords;
+			for (uint32_t k = 0; k < std::min(lst[0], 12u); k++) {
+				coords += fmt::format(" {},{}", lst[4 + k] & 15u, (lst[4 + k] >> 4u) & 15u);
+			}
+			LOGF("[rt-half-check] re-trace entry %u: group=%u chunk=%u count=%u:%s\n", i, e >> 2u, e & 3u, lst[0],
+			     coords.c_str());
+		}
 	} else if (knob == 2) {
 		// rt_half=2 diagnostic: the guest light loop's state in re-trace iterations (HalfRateLightLoopDump).
 		const auto half    = region(HalfRateTiles::kCheckRegionHalf);
