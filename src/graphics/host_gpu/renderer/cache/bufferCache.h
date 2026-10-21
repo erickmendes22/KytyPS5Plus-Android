@@ -131,6 +131,8 @@ public:
 	// KYTY_LOOP_GUARD (graphics/shader/loopGuard.h): logs new "[loop-guard]" trips (at most once
 	// a second unless `force`).
 	void               PollLoopGuardLog(bool force = false);
+	// KYTY_RT_HALF_CHECK (graphics/shader/halfRateTiles.h): compares the captured light lists.
+	void               PollRtHalfCheck();
 	// Bytes of guest-mirroring buffers the cache owns, and the mesh emulation ring (0 if unused).
 	[[nodiscard]] uint64_t TotalUsedMemory() const noexcept { return m_total_used_memory; }
 	[[nodiscard]] uint64_t MeshRingCapacity() const noexcept;
@@ -214,6 +216,16 @@ private:
 	std::unique_ptr<Buffer>                           m_loop_guard_log;
 	uint32_t                                          m_loop_guard_logged    = 0;
 	int64_t                                           m_loop_guard_polled_ms = 0;
+	struct RtHalfCheckState {
+		std::vector<uint32_t> native_latest;   // last native snapshot of a settled phase
+		std::vector<uint32_t> native_previous; // the one before (native/native baseline)
+		int64_t               knob             = -2;
+		int64_t               knob_since_ms    = 0;
+		int64_t               polled_ms        = 0;
+		bool                  phase_logged     = false;
+	};
+	std::unique_ptr<Buffer>                           m_rt_half_check;
+	RtHalfCheckState                                  m_rt_half_state;
 	uint64_t                                          m_bda_table_pages = 0;
 	bool                                              m_bda_table_sized = false;
 	std::atomic<uint64_t>                             m_bda_mapped_pages {0};

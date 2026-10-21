@@ -357,6 +357,9 @@ VALUE_OPCODE(SetAttribute, Void, U32x4, U1)
 VALUE_OPCODE(ControlNop, Void)
 VALUE_OPCODE(StoreCompletion, Void)
 VALUE_OPCODE(Barrier, Void)
+// KYTY_RT_HALF_CHECK (graphics/shader/halfRateTiles.h): word index, value, exec; a store to the
+// host-visible check log.
+VALUE_OPCODE(DebugLogStoreU32, Void, U32, U32, U1)
 VALUE_OPCODE(Sendmsg, Void)
 VALUE_OPCODE(TtraceData, Void)
 VALUE_OPCODE(InstPrefetch, Void)

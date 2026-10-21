@@ -20,6 +20,8 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/host_gpu/renderer/liveKnobs.h"
+#include "graphics/shader/halfRateTiles.h"
 #include "graphics/shader/loopGuard.h"
 #include "graphics/shader/meshBoundsCheck.h"
 #include "kernel/addressFold.h"
@@ -604,6 +606,18 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 		LoopGuard::SetLogAddress(m_loop_guard_log->BufferDeviceAddress());
 		LOGF("KYTY_LOOP_GUARD=%s, limit %u, trip log at 0x%016" PRIx64 "\n", LoopGuard::Spec(),
 		     LoopGuard::Limit(), m_loop_guard_log->BufferDeviceAddress());
+	}
+	if (HalfRateTiles::CheckEnabled()) {
+		// The RT lighting kernel bakes the check log's address in when it compiles.
+		m_rt_half_check = std::make_unique<Buffer>(
+		    m_graphics, m_scheduler, MemoryUsage::Download, 0,
+		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+		    HalfRateTiles::kCheckBytes);
+		EXIT_IF(m_rt_half_check->Mapped().size() < HalfRateTiles::kCheckBytes);
+		std::memset(m_rt_half_check->Mapped().data(), 0, HalfRateTiles::kCheckBytes);
+		m_rt_half_check->Flush(0, HalfRateTiles::kCheckBytes);
+		HalfRateTiles::SetCheckAddress(m_rt_half_check->BufferDeviceAddress());
+		LOGF("KYTY_RT_HALF_CHECK: light-list log at 0x%016" PRIx64 "\n", m_rt_half_check->BufferDeviceAddress());
 	}
 	if (MeshBoundsCheck::Enabled()) {
 		// Mesh shaders bake the violation log's address in when they compile.
@@ -1325,6 +1339,55 @@ void BufferCache::PollLoopGuardLog(bool force) {
 		     e[2], e[3], values.c_str());
 	}
 	m_loop_guard_logged = count;
+}
+
+// Once a live rt_half phase has run for kSettleMs, the region its variant writes is compared: a
+// native phase against the previous native phase (how much the lists change over time), a half
+// phase against the latest native phase. One "[rt-half-check]" line per phase.
+void BufferCache::PollRtHalfCheck() {
+	constexpr int64_t kSettleMs = 6000;
+	if (!m_rt_half_check) {
+		return;
+	}
+	auto&      st     = m_rt_half_state;
+	const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                        std::chrono::steady_clock::now().time_since_epoch())
+	                        .count();
+	if (now_ms - st.polled_ms < 1000) {
+		return;
+	}
+	st.polled_ms    = now_ms;
+	const auto knob = LiveKnobs::Int("rt_half", HalfRateTiles::EnvEnabled() ? 1 : 0);
+	if (knob != st.knob) {
+		st.knob          = knob;
+		st.knob_since_ms = now_ms;
+		st.phase_logged  = false;
+		return;
+	}
+	if (st.phase_logged || now_ms - st.knob_since_ms < kSettleMs) {
+		return;
+	}
+	st.phase_logged = true;
+	m_rt_half_check->Invalidate(0, HalfRateTiles::kCheckBytes);
+	const auto* words  = reinterpret_cast<const uint32_t*>(m_rt_half_check->Mapped().data());
+	const auto  region = [&](uint32_t index) {
+		const auto* begin = words + index * HalfRateTiles::kCheckRegionDwords;
+		return std::vector<uint32_t>(begin, begin + HalfRateTiles::kCheckRegionDwords);
+	};
+	const auto report = [&](const char* what, const std::vector<uint32_t>& a, const std::vector<uint32_t>& b) {
+		const auto c = HalfRateTiles::CompareLists(a.data(), b.data(), HalfRateTiles::kCheckTiles);
+		LOGF("[rt-half-check] %s: tiles=%u same_order=%u same_set=%u different=%u overflow=%u first_diff=%d\n",
+		     what, c.tiles, c.same_order, c.same_set, c.different, c.overflowed, c.first_diff);
+	};
+	if (knob == 0) {
+		st.native_previous = std::move(st.native_latest);
+		st.native_latest   = region(HalfRateTiles::kCheckRegionNative);
+		if (!st.native_previous.empty()) {
+			report("native vs previous native phase", st.native_latest, st.native_previous);
+		}
+	} else if (!st.native_latest.empty()) {
+		report("half vs latest native phase", region(HalfRateTiles::kCheckRegionHalf), st.native_latest);
+	}
 }
 
 void BufferCache::ProcessFaultBuffer() {

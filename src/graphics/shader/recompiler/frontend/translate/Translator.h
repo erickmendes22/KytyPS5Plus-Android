@@ -271,11 +271,15 @@ private:
 	IR::U32 HalfRateConst(uint32_t value);
 	IR::F32 HalfRateFloat(float value);
 	IR::F32 HalfRateFloatOp(IR::ValueOpcode opcode, IR::F32 lhs, IR::F32 rhs);
+	IR::U32 HalfRateLocal(uint32_t axis);
 	IR::U32 HalfRateFlatIndex();
 	IR::U32 HalfRateLdsAddress(uint32_t array, IR::U32 index);
 	void    HalfRateStash(uint32_t array, IR::U32 index, IR::U32 value);
 	IR::U32 HalfRateLoad(uint32_t array, IR::U32 index);
+	void    HalfRateCull();
 	void    HalfRateRemap();
+	void    HalfRateCapture();
+	void    HalfRateFill(IR::U32 tx, IR::U32 ty, IR::U1 live);
 	void    HalfRateReconstruct();
 
 	IR::Program&    program;

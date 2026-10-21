@@ -569,7 +569,7 @@ void BuildStageStaticKey(const ShaderComputeInputInfo& info, std::vector<uint32_
 	}
 	key.push_back(static_cast<uint32_t>(info.tg_size_en) | (uint32_t {info.pack_groups} << 8u) |
 	              (uint32_t {info.bvh_live} << 16u) | (uint32_t {info.lane_branch_live} << 24u) |
-	              (uint32_t {info.dead_lane_live} << 26u) | (uint32_t {info.half_rate_tiles} << 28u));
+	              (uint32_t {info.dead_lane_live} << 26u) | (uint32_t {info.half_rate_tiles & 3u} << 28u));
 }
 
 ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context& context,
@@ -730,8 +730,12 @@ ShaderParams PrepareProgram(const HW::ComputeShaderInfo& regs, const HW::ShaderR
                             ShaderComputeInputInfo& info) {
 	const auto [data, hash] = ShaderGetMappedData(regs.cs_regs.data_addr, "ShaderGetInputInfoCS():");
 	ShaderGetStaticInputInfoCS(regs, sh, data, info);
-	if (HalfRateTiles::Applies(hash, info.rt_half_live)) {
-		info.half_rate_tiles = 1;
+	info.half_rate_tiles = HalfRateTiles::Variant(hash, info.rt_half_live, info.threads_num[0],
+	                                              info.threads_num[1], HalfRateTiles::CheckEnabled());
+	if (info.half_rate_tiles == HalfRateTiles::kVariantHalf) {
+		// One 8x8 wave per tile (shader/halfRateTiles.h); the indirect group count is unchanged.
+		info.threads_num[0] = HalfRateTiles::kGroupSize;
+		info.threads_num[1] = HalfRateTiles::kGroupSize;
 		info.lds_size_dwords += HalfRateTiles::kLdsDwords;
 	}
 	return GetShaderParams(

@@ -2,6 +2,7 @@
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/frontend/translate/LiveVertexExec.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
+#include "graphics/shader/halfRateTiles.h"
 #include "graphics/shader/shader.h"
 
 #include <algorithm>
@@ -1458,9 +1459,15 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 	std::optional<HalfRatePlan> half_rate;
 	if (options.stage == ShaderType::Compute && options.input_info.compute->half_rate_tiles != 0u) {
 		std::string reason;
-		half_rate = MakeHalfRatePlan(decoded, options.input_info.compute->lds_size_dwords, &reason);
-		LOGF("half-rate tiles: hash=0x%016" PRIx64 " %s%s\n", options.shader_hash,
-		     half_rate.has_value() ? "applied" : "not applied: ", reason.c_str());
+		const auto  variant = options.input_info.compute->half_rate_tiles;
+		const bool  capture = HalfRateTiles::CheckEnabled() && HalfRateTiles::CheckAddress() != 0u;
+		half_rate = MakeHalfRatePlan(decoded, variant, options.input_info.compute->lds_size_dwords, capture, &reason);
+		LOGF("half-rate tiles: hash=0x%016" PRIx64 " variant=%u capture=%d %s%s\n", options.shader_hash,
+		     static_cast<unsigned>(variant), capture ? 1 : 0, half_rate.has_value() ? "applied" : "not applied: ",
+		     reason.c_str());
+		if (half_rate.has_value() && !half_rate->half && !half_rate->capture) {
+			half_rate.reset();
+		}
 	}
 	for (const auto& cfg_block: cfg.blocks) {
 		auto*      block = blocks_by_id.at(cfg_block.id);

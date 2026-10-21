@@ -221,6 +221,7 @@ inline constexpr auto EmitSendmsg      = EmitVoid;
 inline constexpr auto EmitTtraceData   = EmitVoid;
 inline constexpr auto EmitInstPrefetch = EmitVoid;
 void                  EmitBarrier(EmitterState& state);
+void                  EmitDebugLogStoreU32(EmitterState& state, uint32_t index, uint32_t value, uint32_t exec);
 void                  EmitStoreCompletion(EmitterState& state);
 void                  EmitMeshAllocate(ValueEmitContext& ctx, const IR::Inst& inst);
 uint32_t              EmitMeshDrawParameter(ValueEmitContext& ctx, const IR::Inst& inst);

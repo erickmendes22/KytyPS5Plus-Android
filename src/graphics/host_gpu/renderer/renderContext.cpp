@@ -223,6 +223,7 @@ void RenderContext::RunGarbageCollector() {
 	m_texture_cache.RunGarbageCollector();
 	m_buffer_cache.RunGarbageCollector();
 	m_buffer_cache.PollLoopGuardLog();
+	m_buffer_cache.PollRtHalfCheck();
 }
 
 void RenderContext::AddInterruptEq(LibKernel::EventQueue::KernelEqueue eq, int event_id) {

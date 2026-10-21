@@ -1,5 +1,6 @@
 // KYTY_LOOP_GUARD (graphics/shader/loopGuard.h): per-invocation iteration counting through
 // guarded loop headers, the forced exit condition and the trip log.
+#include "graphics/shader/halfRateTiles.h"
 #include "graphics/shader/loopGuard.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 
@@ -39,7 +40,33 @@ uint32_t GuardLogWord(EmitterState& state, uint32_t log, uint32_t index) {
 	return pointer;
 }
 
+// A uint32 runtime array at a constant buffer device address.
+uint32_t LogWordsAt(EmitterState& state, uint64_t address) {
+	const auto words = state.builder.DecoratedType(
+	    spv::OpTypeRuntimeArray, {{spv::OpDecorate, {spv::DecorationArrayStride, sizeof(uint32_t)}}},
+	    TypeU32(state));
+	const auto block = state.builder.DecoratedType(
+	    spv::OpTypeStruct,
+	    {{spv::OpMemberDecorate, {0, spv::DecorationOffset, 0}}, {spv::OpDecorate, {spv::DecorationBlock}}},
+	    words);
+	return Unary(state, spv::OpConvertUToPtr, TypePointer(state, spv::StorageClassPhysicalStorageBuffer, block),
+	             ConstantU64(state, address));
+}
+
 } // namespace
+
+// KYTY_RT_HALF_CHECK: one word of the check log, in lanes with exec set.
+void EmitDebugLogStoreU32(EmitterState& state, uint32_t index, uint32_t value, uint32_t exec) {
+	if (state.debug_log_address == 0) {
+		return;
+	}
+	EmitIfCondition(state, exec, [&] {
+		const auto log     = LogWordsAt(state, state.debug_log_address);
+		const auto pointer = GuardLogWord(state, log, index);
+		state.builder.AddFunction(spv::OpStore, pointer, value, spv::MemoryAccessAlignedMask,
+		                          static_cast<uint32_t>(sizeof(uint32_t)));
+	});
+}
 
 void EmitLoopGuardVariables(EmitterState& state) {
 	if (!state.loop_guard) {
