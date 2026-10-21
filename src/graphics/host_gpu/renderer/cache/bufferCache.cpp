@@ -595,6 +595,10 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	LOGF("BDA page table: %s, %" PRIu64 " MiB (dense %" PRIu64 " MiB)\n",
 	     m_bda_table_sized ? "sized (KYTY_BDA_TABLE=dense opts out)" : "dense", (m_bda_table_pages * 8u) >> 20u,
 	     BDA_PAGETABLE_SIZE >> 20u);
+	m_scheduler.BeginCommand();
+	for (auto* buffer: {m_bda_pagetable_buffer.get(), m_fault_manager.GetFaultBuffer()}) {
+		buffer->Fill(0, buffer->Size(), 0);
+	}
 	const auto null_id =
 	    m_slot_buffers.insert(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0, AllFlags, 16);
 	EXIT_IF(null_id != NULL_BUFFER_ID);
