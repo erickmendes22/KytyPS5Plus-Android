@@ -4,6 +4,7 @@
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <string_view>
 #include <vector>
@@ -290,6 +291,15 @@ void Translator::HalfRateBefore(const Decoder::Instruction& inst) {
 			break;
 		case H::kPcGroupId:
 			if (half_rate->retrace_pass) HalfRateRetraceGroup();
+			break;
+		case H::kPcColorStore:
+			// Diagnostic: KYTY_RT_HALF_RETRACE_RED=1 makes pass 2 store pure red.
+			if (half_rate->retrace_pass && std::getenv("KYTY_RT_HALF_RETRACE_RED") != nullptr) {
+				ir.SetVectorReg(static_cast<IR::VectorReg>(3), HalfRateConst(0x40800000u)); // 4.0f
+				ir.SetVectorReg(static_cast<IR::VectorReg>(4), HalfRateConst(0));
+				ir.SetVectorReg(static_cast<IR::VectorReg>(5), HalfRateConst(0));
+				ir.SetVectorReg(static_cast<IR::VectorReg>(6), HalfRateConst(0x3f800000u));
+			}
 			break;
 		default: break;
 	}
