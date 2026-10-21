@@ -178,6 +178,7 @@ private:
 	std::shared_ptr<Item> MakePipeItem();
 	bool                m_pipe_on = false; // KYTY_GPU_PIPELINE for the packets being processed
 	bool                m_fan_on  = false; // KYTY_GPU_FAN (implies m_pipe_on): walks fan out to WalkFan workers
+	bool                m_drain_lite = false; // KYTY_DRAIN_LITE: front-only packets skip the drain
 
 	RenderContext&   m_renderer;
 	HW::Context      m_ctx;

@@ -3,6 +3,7 @@
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
+#include "graphics/guest_gpu/command_processor/frontOnlyPackets.h"
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -1290,8 +1291,8 @@ KYTY_HW_UC_PARSER(HwUcSetGdsOaRegisters) {
 KYTY_CP_OP_PARSER(CpOpAcquireMem) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0055800 && cmd_id != 0xc0065800);
-	return KYTY_PM4_LEN(cmd_id) - 1;
+	EXIT_NOT_IMPLEMENTED(!FrontOnlyPackets::AcquireMemValid(cmd_id));
+	return FrontOnlyPackets::AcquireMemBodyDwords(cmd_id);
 }
 
 KYTY_CP_OP_PARSER(CpOpDispatchDirect) {
@@ -2196,20 +2197,16 @@ KYTY_CP_OP_PARSER(CpOpNumInstances) {
 KYTY_CP_OP_PARSER(CpOpPopMarker) {
 	KYTY_PROFILER_FUNCTION();
 
-	auto dw_num = (cmd_id >> 16u) & 0x3fffu;
-
 	static std::atomic<uint32_t> pop_marker_log_count {0};
 	if (pop_marker_log_count.fetch_add(1) < 64) {
 		LOGF("Pop marker\n");
 	}
 
-	return dw_num + 1;
+	return FrontOnlyPackets::MarkerBodyDwords(cmd_id);
 }
 
 KYTY_CP_OP_PARSER(CpOpPushMarker) {
 	KYTY_PROFILER_FUNCTION();
-
-	auto dw_num = (cmd_id >> 16u) & 0x3fffu;
 
 	const char* str = reinterpret_cast<const char*>(buffer);
 
@@ -2218,7 +2215,7 @@ KYTY_CP_OP_PARSER(CpOpPushMarker) {
 		LOGF("Push marker: %s\n", str);
 	}
 
-	return dw_num + 1;
+	return FrontOnlyPackets::MarkerBodyDwords(cmd_id);
 }
 
 KYTY_CP_OP_PARSER(CpOpReleaseMem) {

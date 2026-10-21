@@ -14,6 +14,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
+#include "graphics/guest_gpu/command_processor/frontOnlyPackets.h"
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
@@ -35,6 +36,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -249,26 +252,9 @@ void CommandProcessor::Reset() {
 }
 
 void CommandProcessor::ApplyContextStateOperation(ContextStateOperation operation) {
-	switch (operation) {
-		case ContextStateOperation::Clear: m_ctx.Reset(); break;
-		case ContextStateOperation::Push:
-			EXIT_IF(m_context_state_pushed);
-			m_saved_ctx            = m_ctx;
-			m_context_state_pushed = true;
-			break;
-		case ContextStateOperation::Pop:
-			EXIT_IF(!m_context_state_pushed);
-			m_ctx                  = m_saved_ctx;
-			m_saved_ctx            = {};
-			m_context_state_pushed = false;
-			break;
-		case ContextStateOperation::PushClear:
-			EXIT_IF(m_context_state_pushed);
-			m_saved_ctx            = m_ctx;
-			m_context_state_pushed = true;
-			m_ctx.Reset();
-			break;
-		default: EXIT("unknown context state operation: %u\n", static_cast<uint32_t>(operation));
+	const auto op = static_cast<uint32_t>(operation);
+	if (!FrontOnlyPackets::ApplyContextState(op, m_ctx, m_saved_ctx, m_context_state_pushed)) {
+		EXIT("bad context state operation %u (pushed=%d)\n", op, m_context_state_pushed ? 1 : 0);
 	}
 }
 
@@ -841,32 +827,17 @@ void CommandProcessor::SuspendPm4() {
 	g_current_execution->m_suspended = true;
 }
 
-// KYTY_GPU_PIPELINE: packets the front handles without draining the record thread. They only
-// update the command processor's own state (registers, index state, buffer chaining) or queue a
-// draw/dispatch record job; anything else may touch renderer state the record thread owns.
-static bool IsPipelinedPacket(uint32_t opcode, uint32_t r) {
-	switch (opcode) {
-		case Pm4::IT_NOP: return r == 0; // custom ops (flips, markers, release_mem, ...) drain
-		case Pm4::IT_SET_CONTEXT_REG:
-		case Pm4::IT_SET_SH_REG:
-		case Pm4::IT_SET_UCONFIG_REG:
-		case Pm4::IT_SET_UCONFIG_REG_INDEX:
-		// Register lists read from guest memory at parse time, through the same per-register
-		// functions as the direct packets (b6_fan2: 0x64 167/frame and 0x9f 54/frame drained).
-		case Pm4::IT_SET_CONTEXT_REG_INDIRECT:
-		case Pm4::IT_SET_SH_REG_INDIRECT:
-		case Pm4::IT_SET_UCONFIG_REG_INDIRECT:
-		case Pm4::IT_INDEX_BASE:
-		case Pm4::IT_INDEX_BUFFER_SIZE:
-		case Pm4::IT_INDEX_TYPE:
-		case Pm4::IT_NUM_INSTANCES:
-		case Pm4::IT_DRAW_INDEX_2:
-		case Pm4::IT_DRAW_INDEX_OFFSET_2:
-		case Pm4::IT_DRAW_INDEX_AUTO:
-		case Pm4::IT_DISPATCH_DIRECT:
-		case Pm4::IT_INDIRECT_BUFFER: return true;
-		default: return false;
-	}
+// KYTY_DRAIN_LITE=1 (off by default): the front-only packets (frontOnlyPackets.h: PM4 markers,
+// ACQUIRE_MEM, R_CONTEXT_STATE) no longer drain the record thread. With KYTY_LIVE_KNOBS=1 the
+// live key drain_lite=0/1 overrides it per guest submission (in-run A/B).
+static bool DrainLiteEnabled() {
+	static const bool default_on = [] {
+		const char* value = std::getenv("KYTY_DRAIN_LITE");
+		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
+		LOGF("KYTY_DRAIN_LITE: front-only packets %s the record thread\n", on ? "skip draining" : "drain");
+		return on;
+	}();
+	return LiveKnobs::Int("drain_lite", default_on ? 1 : 0) != 0;
 }
 
 void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
@@ -877,8 +848,9 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 	constexpr uint32_t kIdleSubmitMinWork = 16;
 	// KYTY_GPU_PIPELINE: draws and dispatches are recorded by the record thread; every other packet
 	// drains it first (gpuPipeline.h), and so does leaving this function.
-	m_fan_on  = WalkFan::Enabled();
-	m_pipe_on = m_fan_on || GpuPipeline::Enabled();
+	m_fan_on     = WalkFan::Enabled();
+	m_pipe_on    = m_fan_on || GpuPipeline::Enabled();
+	m_drain_lite = m_pipe_on && DrainLiteEnabled();
 	if (m_pipe_on) {
 		GpuPipeline::InstallReportSection();
 	}
@@ -994,7 +966,8 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			     total_dw - remaining_dw, packet_header);
 		}
 
-		const bool inline_packet = m_pipe_on && !IsPipelinedPacket(opcode, KYTY_PM4_R(packet_header));
+		const bool inline_packet =
+		    m_pipe_on && !FrontOnlyPackets::IsPipelined(opcode, KYTY_PM4_R(packet_header), m_drain_lite);
 		if (inline_packet) {
 			// The record thread is idle from here until the next queued item: stamp what it and
 			// the previous inline packet acquired, as the unpipelined loop does per packet.
