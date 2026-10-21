@@ -78,6 +78,8 @@ ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 	    .select_fold          = EnvToggle("KYTY_SELECT_FOLD", turnip),
 	    .vs_live_exec         = EnvToggle("KYTY_VS_LIVE_EXEC", turnip),
 	    .dead_lane            = EnvToggle("KYTY_DEAD_LANE_FOLD", false),
+	    .dead_lane_defaults   = turnip && std::getenv("KYTY_DEAD_LANE_FOLD") == nullptr &&
+	                          EnvToggle("KYTY_DEAD_LANE_FOLD_DEFAULT", true),
 	    .alias_slots          = EnvToggle("KYTY_ALIAS_SLOTS", turnip),
 	    .lane_broadcast       = EnvToggle("KYTY_LANE_BROADCAST", turnip),
 	    .first_lane_sets      = EnvToggle("KYTY_FIRSTLANE_SETS", false),
@@ -100,11 +102,11 @@ ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: native_float_min_max={} "
 	                                      "robust_buffer_loads={} lane_exec_branches={} lane_branch_defaults={} "
 	                                      "wqm_entry_lane_fold={} wave_slices={} quad_dpp={} "
-	                                      "bvh_vec={} packed_interp={} drop_carried={} select_fold={} vs_live_exec={} dead_lane={} alias_slots={} lane_broadcast={} first_lane_sets={} bvh_opt={} "
+	                                      "bvh_vec={} packed_interp={} drop_carried={} select_fold={} vs_live_exec={} dead_lane={} dead_lane_defaults={} alias_slots={} lane_broadcast={} first_lane_sets={} bvh_opt={} "
 	                                      "ubo_constants={}B x{}{}\n",
 	                                      paths.native_float_min_max, paths.robust_buffer_loads,
 	                                      paths.lane_exec_branches, paths.lane_branch_defaults, paths.wqm_entry_lane_fold,
-	                                      paths.wave_slices, paths.quad_dpp, paths.bvh_vector_loads, paths.packed_interp, paths.drop_carried, paths.select_fold, paths.vs_live_exec, paths.dead_lane, paths.alias_slots,
+	                                      paths.wave_slices, paths.quad_dpp, paths.bvh_vector_loads, paths.packed_interp, paths.drop_carried, paths.select_fold, paths.vs_live_exec, paths.dead_lane, paths.dead_lane_defaults, paths.alias_slots,
 	                                      paths.lane_broadcast, paths.first_lane_sets, paths.bvh_emulation,
 	                                      paths.uniform_constant_buffer_bytes,
 	                                      paths.uniform_buffers_per_stage,

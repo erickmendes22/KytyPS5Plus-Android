@@ -47,6 +47,9 @@ struct ShaderFastPaths {
 	bool vs_live_exec = false;
 	// ShaderDeviceFeatures::dead_lane_fold (KYTY_DEAD_LANE_FOLD; default off).
 	bool dead_lane = false;
+	// deadLaneDefaults.h: dead_lane_fold for the listed guest shaders (Mesa Turnip, while
+	// KYTY_DEAD_LANE_FOLD is unset; KYTY_DEAD_LANE_FOLD_DEFAULT=0 opts out).
+	bool dead_lane_defaults = false;
 	// ShaderDeviceFeatures::single_mode_alias_slots (KYTY_ALIAS_SLOTS; default Mesa Turnip).
 	bool alias_slots = false;
 	// ShaderDeviceFeatures::constant_lane_broadcast (KYTY_LANE_BROADCAST).

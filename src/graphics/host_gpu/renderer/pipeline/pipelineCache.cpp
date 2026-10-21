@@ -19,6 +19,7 @@
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/hostShaderQuirks.h"
+#include "graphics/host_gpu/renderer/pipeline/deadLaneDefaults.h"
 #include "graphics/host_gpu/renderer/pipeline/laneBranchDefaults.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
@@ -572,7 +573,8 @@ struct PipelineCache::ProgramCache {
 		         .drop_carried_vertex_data = fast_paths.drop_carried,
 		         .fold_same_condition_selects = fast_paths.select_fold,
 		         .vs_live_vertex_exec         = fast_paths.vs_live_exec,
-		         .dead_lane_fold              = fast_paths.dead_lane,
+		         .dead_lane_fold              = fast_paths.dead_lane ||
+		                           (fast_paths.dead_lane_defaults && DeadLaneFoldByDefault(hash)),
 		         .single_mode_alias_slots     = fast_paths.alias_slots,
 		         .storage_image_array_non_uniform_indexing =
 		             graphics.optional_features.storage_image_array_non_uniform_indexing,
