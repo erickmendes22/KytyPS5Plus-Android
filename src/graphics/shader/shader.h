@@ -212,6 +212,10 @@ struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
 	// ShaderDeviceFeatures::bvh_emulation (n & 0x0f) and bvh_vector_loads (n & 0x10) for this
 	// program; 0 keeps the device features.
 	uint8_t            bvh_live                   = 0;
+	// KYTY_LIVE_KNOBS lane_branches=<0|1> (in-run A/B of ShaderDeviceFeatures::lane_exec_branches
+	// for compute programs; KYTY_LANE_BRANCHES_ONLY / _SKIP still select the hashes): 1 = off,
+	// 2 = on, 0 keeps the device features.
+	uint8_t            lane_branch_live           = 0;
 	ShaderStageRuntime stage;
 };
 

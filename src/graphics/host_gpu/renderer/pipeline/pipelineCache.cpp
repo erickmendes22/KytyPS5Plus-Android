@@ -598,6 +598,11 @@ struct PipelineCache::ProgramCache {
 				options.device_features.bvh_emulation    = input_info.bvh_live & 0x0fu;
 				options.device_features.bvh_vector_loads = (input_info.bvh_live & 0x10u) != 0u;
 			}
+			if (input_info.lane_branch_live != 0u) {
+				options.device_features.lane_exec_branches =
+				    input_info.lane_branch_live == 2u &&
+				    LaneFastPathAllowed(LaneFastPath::LaneBranches, hash);
+			}
 		}
 		options.device_quirks = device_quirks;
 		options.shader_hash = hash;

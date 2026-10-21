@@ -340,6 +340,14 @@ static uint8_t LiveBvhOptions() {
 	return value < 0 ? uint8_t {0} : static_cast<uint8_t>(0x80u | (static_cast<uint32_t>(value) & 0x1fu));
 }
 
+// KYTY_LIVE_KNOBS lane_branches=<0|1>: lane_exec_branches for compute programs compiled from now
+// on (ShaderComputeInputInfo::lane_branch_live; the KYTY_LANE_BRANCHES_ONLY / _SKIP hash filters
+// still apply); absent keeps KYTY_LANE_BRANCHES.
+static uint8_t LiveLaneBranches() {
+	const auto value = LiveKnobs::Int("lane_branches", -1);
+	return value < 0 ? uint8_t {0} : value == 0 ? uint8_t {1} : uint8_t {2};
+}
+
 static bool ComputeGroupPackCandidate(const ShaderComputeInputInfo& input_info, uint32_t threads,
                                       uint32_t groups_x, bool turnip) {
 	return ComputeGroupPackEnabled(turnip) && !input_info.dispatch_thread_dimensions && threads <= 32u &&
@@ -415,6 +423,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	ShaderComputeInputInfo input_info {};
 	input_info.async_compute = async_compute;
 	input_info.bvh_live      = LiveBvhOptions();
+	input_info.lane_branch_live = LiveLaneBranches();
 	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
 	input_info.dispatch_thread_dimensions = use_thread_dimensions;
 	input_info.workgroup_counts[0] = thread_group_x;
@@ -623,6 +632,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	input_info.async_compute = async_compute;
 	input_info.indirect_args_address = args_addr;
 	input_info.bvh_live              = LiveBvhOptions();
+	input_info.lane_branch_live      = LiveLaneBranches();
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);
 	if (input_info.stage.program != nullptr &&
