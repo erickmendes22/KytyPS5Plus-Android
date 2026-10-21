@@ -283,6 +283,15 @@ struct ShaderDeviceFeatures {
 	bool shader_float64                   = true; // Float64 arithmetic
 	bool shader_shared_int64_atomics      = true; // Int64 atomics on Workgroup (LDS) memory
 	bool signed_zero_inf_nan_preserve_f32 = true; // SignedZeroInfNanPreserve at width 32
+	// KYTY_FTZ32 (graphics/shader/ftz32.h): Ftz32::Op bits whose explicit FP32 denormal input
+	// flush is left to the device, with DenormFlushToZero declared at width 32. 0: flush all.
+	uint32_t ftz32_ops                    = 0;
+	// KYTY_PS_LIVE_ELECT: in pixel shaders, the lane that performs a wave-aggregated DS_APPEND /
+	// DS_CONSUME counter update is elected among non-helper invocations. Guest EXEC holds no helper
+	// lanes there (GCN adds them only through S_WQM), but the host may count helper invocations as
+	// active in subgroup ballots, and their atomics have no effect, so an elected helper lane leaves
+	// its wave with an undefined base index (duplicate append-buffer slots).
+	bool pixel_live_election              = false;
 	// Graphics stages whose invocations may use subgroup ballot and shuffle
 	// (VkPhysicalDeviceVulkan11Properties::subgroupSupportedStages/Operations). In a stage
 	// without them each invocation is emitted as a one-lane wave instead.
@@ -297,9 +306,9 @@ struct ShaderDeviceFeatures {
 	// DPP quad permutations (quad_perm, row_xmask:1..3) become GroupNonUniformQuad swaps and
 	// broadcasts in pixel and compute shaders instead of an indexed shuffle, which Mesa ir3
 	// lowers to a loop over the distinct lane deltas (KYTY_QUAD_DPP; needs the quad subgroup
-	// feature). Same results: both read the same lane of the quad. Off by default: Astro Bot
-	// desert gameplay (Turnip v32, --gpu-turbo, one back-to-back pair) went from 162 to 159 GPU
-	// ms per frame (fps median 5.80 -> 5.90), within run-to-run noise.
+	// feature; default Mesa Turnip, =0 opts out). Both read the same lane of the quad; the quad
+	// ops also read helper lanes, which the shuffle path gates to 0 / the old value. Astro Bot's
+	// G-buffer and f112e0ba pixel shaders lose their 12 ir3 loops each.
 	bool subgroup_quad_dpp       = false;
 	// IMAGE_BVH(64)_INTERSECT_RAY reads the node's first 64 bytes as four 16-byte loads up front
 	// instead of one 4-byte load per word where it is used (KYTY_BVH_VEC=1, opt-in). ir3 on the

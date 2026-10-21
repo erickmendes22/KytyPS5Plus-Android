@@ -227,6 +227,8 @@ VALUE_OPCODE(FPFract32, F32, F32)
 VALUE_OPCODE(FPFract64, F64, F64)
 
 VALUE_OPCODE(LaneId, U32)
+// Pixel stage: the invocation is a helper invocation (KYTY_PS_LIVE_ELECT; false elsewhere).
+VALUE_OPCODE(IsHelperInvocation, U1)
 VALUE_OPCODE(Ballot, U32x4, U1)
 VALUE_OPCODE(ReadFirstLane, U32, U32, U1)
 VALUE_OPCODE(ReadLane, U32, U32, U32)

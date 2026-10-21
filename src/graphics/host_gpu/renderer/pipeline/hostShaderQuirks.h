@@ -21,12 +21,16 @@ struct GraphicContext;
 // KYTY_WQM_LANE_FOLD, KYTY_WAVE_SLICES, KYTY_UBO_CONSTANTS, KYTY_QUAD_DPP (1 on, 0 off).
 // Logs the result.
 struct ShaderFastPaths {
+	// KYTY_FTZ32 (default on with Mesa Turnip, =0 opts out): ShaderDeviceFeatures::ftz32_ops from the device check (ftzProbe.h).
+	uint32_t ftz32_ops        = 0;
+	// KYTY_PS_LIVE_ELECT=1 (default off): ShaderDeviceFeatures::pixel_live_election.
+	bool pixel_live_election  = false;
 	bool native_float_min_max = false;
 	bool robust_buffer_loads  = false;
 	bool lane_exec_branches   = false;
 	bool wqm_entry_lane_fold  = false;
 	bool wave_slices          = false;
-	// ShaderDeviceFeatures::subgroup_quad_dpp (KYTY_QUAD_DPP).
+	// ShaderDeviceFeatures::subgroup_quad_dpp (KYTY_QUAD_DPP; default Mesa Turnip, =0 opts out).
 	bool quad_dpp             = false;
 	// ShaderDeviceFeatures::bvh_vector_loads (KYTY_BVH_VEC, default off).
 	bool bvh_vector_loads = false;
@@ -54,7 +58,7 @@ struct ShaderFastPaths {
 	// KYTY_UBO_CONSTANTS=cs: compute programs only; the other stages keep storage buffers.
 	bool uniform_constants_compute_only = false;
 };
-[[nodiscard]] ShaderFastPaths ResolveShaderFastPaths(const GraphicContext& graphics);
+[[nodiscard]] ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics);
 
 // Per-shader bisecting of the lane fast paths: <NAME>_ONLY=<hex prefixes> keeps the path only for
 // matching guest hashes, <NAME>_SKIP=<hex prefixes> drops it for them (KYTY_PIPELINE_STATS

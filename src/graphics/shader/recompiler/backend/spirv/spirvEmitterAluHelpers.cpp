@@ -135,6 +135,13 @@ uint32_t EmitMinMaxF32Value(EmitterState& state, uint32_t lhs, uint32_t rhs, boo
 	return EmitBitcastU32ToF32(state, result_bits);
 }
 
+uint32_t EmitFlushF32DenormInput(EmitterState& state, uint32_t value, uint32_t ftz32_op) {
+	// KYTY_FTZ32: the device check showed this operation flushes denormal inputs to a zero of
+	// the same sign under the module's DenormFlushToZero mode (graphics/shader/ftz32.h).
+	if ((state.device_features.ftz32_ops & ftz32_op) != 0u) return value;
+	return EmitFlushF32DenormToSignedZero(state, value);
+}
+
 uint32_t EmitFlushF32DenormToSignedZero(EmitterState& state, uint32_t value) {
 	const auto bits      = state.builder.AllocateId();
 	const auto abs_bits  = state.builder.AllocateId();

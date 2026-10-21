@@ -352,6 +352,7 @@ add_gpu_blit_shader(gpu_blit_color_to_ms_depth gpu_blit_color_to_ms_depth.frag)
 add_gpu_blit_shader(gpu_video_out_overlay gpu_video_out_overlay.frag)
 add_gpu_blit_shader(gpu_imgui_hdr gpu_video_out_overlay.frag -DIMGUI_HDR=1)
 add_gpu_blit_shader(gpu_clock_probe gpu_clock_probe.comp)
+add_gpu_blit_shader(gpu_ftz_probe gpu_ftz_probe.comp)
 list(APPEND kyty_emulator_src ${gpu_blit_shader_headers})
 
 list(APPEND kyty_emulator_src
@@ -675,6 +676,23 @@ add_executable(controller_settings_tests EXCLUDE_FROM_ALL
 target_link_libraries(controller_settings_tests common fmt::fmt SDL3::SDL3-static)
 target_include_directories(controller_settings_tests PRIVATE ${inc_headers})
 
+add_executable(ftz32_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Ftz32Tests.cpp")
+target_include_directories(ftz32_tests PRIVATE ${inc_headers})
+add_executable(bda_table_size_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BdaTableSizeTests.cpp")
+target_include_directories(bda_table_size_tests PRIVATE ${inc_headers})
+add_executable(lane_election_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/LaneElectionTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/translate/LaneElection.cpp"
+)
+target_link_libraries(lane_election_tests fmt::fmt xbyak::xbyak)
+target_include_directories(lane_election_tests PRIVATE ${inc_headers})
+add_executable(loop_guard_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/LoopGuardTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/LoopGuardPlan.cpp"
+)
+target_link_libraries(loop_guard_tests fmt::fmt xbyak::xbyak)
+target_include_directories(loop_guard_tests PRIVATE ${inc_headers})
+
 add_executable(pad_script_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PadScriptTests.cpp")
 target_link_libraries(pad_script_tests common fmt::fmt)
 target_include_directories(pad_script_tests PRIVATE ${inc_headers})
@@ -828,6 +846,10 @@ if(BUILD_TESTING)
 	add_test(NAME pipeline_probe COMMAND $<TARGET_FILE:pipeline_probe_tests>)
 	add_test(NAME register_override COMMAND $<TARGET_FILE:register_override_tests>)
 	add_test(NAME walk_fan COMMAND $<TARGET_FILE:walk_fan_tests>)
+	add_test(NAME ftz32 COMMAND $<TARGET_FILE:ftz32_tests>)
+	add_test(NAME bda_table_size COMMAND $<TARGET_FILE:bda_table_size_tests>)
+	add_test(NAME loop_guard COMMAND $<TARGET_FILE:loop_guard_tests>)
+	add_test(NAME lane_election COMMAND $<TARGET_FILE:lane_election_tests>)
 	add_test(NAME host_input COMMAND $<TARGET_FILE:host_input_tests>)
 	add_test(NAME save_data_memory COMMAND $<TARGET_FILE:save_data_memory_tests>)
 	add_test(NAME png_enc COMMAND $<TARGET_FILE:png_enc_tests>)
@@ -918,6 +940,10 @@ if(BUILD_TESTING)
 		pad_haptics_tests
 		controller_settings_tests
 		pad_script_tests
+		ftz32_tests
+		bda_table_size_tests
+		loop_guard_tests
+		lane_election_tests
 		host_input_tests
 		save_data_memory_tests
 		png_enc_tests

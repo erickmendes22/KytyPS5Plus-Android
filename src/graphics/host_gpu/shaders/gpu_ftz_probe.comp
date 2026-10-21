@@ -1,0 +1,34 @@
+// KYTY_FTZ32 device check (renderer/pipeline/ftzProbe.cpp): under the 32-bit DenormFlushToZero
+// execution mode, what do the operations whose inputs the shader recompiler flushes explicitly
+// (GCN flushes FP32 denormal inputs to a zero of the same sign) return for denormal inputs?
+// The host compares each result with the GCN one and drops the explicit flush only where they match.
+#version 450
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+// ftzProbe.cpp adds the DenormFlushToZero capability, SPV_KHR_float_controls and the 32-bit
+// execution mode to the compiled module (glslang has no GLSL syntax for them).
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+// inputs[0..3]: denormal bit patterns; results[i * 8 + op]: the op's result bits for input i.
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Data {
+    uint inputs[4];
+    uint results[32];
+};
+
+layout(push_constant, std430) uniform Params {
+    uint64_t data;
+};
+
+void main() {
+    Data d = Data(data);
+    for (uint i = 0u; i < 4u; i++) {
+        const float x = uintBitsToFloat(d.inputs[i]);
+        d.results[i * 8u + 0u] = floatBitsToUint(1.0 / x);
+        d.results[i * 8u + 1u] = floatBitsToUint(inversesqrt(x));
+        d.results[i * 8u + 2u] = floatBitsToUint(sqrt(x));
+        d.results[i * 8u + 3u] = floatBitsToUint(exp2(x));
+        d.results[i * 8u + 4u] = floatBitsToUint(log2(x));
+        d.results[i * 8u + 5u] = floatBitsToUint(x * 1.0);
+    }
+}

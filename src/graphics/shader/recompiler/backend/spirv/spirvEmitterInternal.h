@@ -8,6 +8,7 @@
 #include "graphics/shader/recompiler/backend/spirv/SpirvBuilder.h"
 #include "graphics/shader/recompiler/ir/MeshEmulationLayout.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/recompiler/ir/passes/LoopGuardPlan.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
 #include <algorithm>
@@ -22,6 +23,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -162,6 +164,17 @@ struct EmitterState {
 	uint32_t                   current_label                         = 0;
 	const IR::Block*           current_block                         = nullptr;
 	uint32_t                   pixel_valid_mask_variable             = 0;
+	// KYTY_PS_LIVE_ELECT: BuiltIn HelperInvocation (pixel stage), 0 when not declared.
+	uint32_t                   helper_invocation_variable            = 0;
+	// KYTY_LOOP_GUARD (graphics/shader/loopGuard.h): Function u32 variables (iterations through
+	// guarded loop headers; whether this invocation logged its trip), and the plan by block.
+	bool                       loop_guard                            = false;
+	uint64_t                   loop_guard_log_address                = 0;
+	uint32_t                   loop_guard_counter                    = 0;
+	uint32_t                   loop_guard_logged                     = 0;
+	std::unordered_map<const IR::Block*, IR::LoopGuardPoint> loop_guard_by_guard;
+	std::unordered_set<const IR::Block*>                     loop_guard_headers;
+	std::unordered_map<const IR::Block*, const IR::Block*>   loop_guard_log_blocks; // -> header
 	uint32_t                   subgroup_local_invocation_id_variable = 0;
 	uint32_t                   subgroup_size_variable                = 0;
 	uint32_t                   per_vertex_variable                   = 0;
@@ -619,6 +632,9 @@ uint32_t EmitMinMaxF32Value(EmitterState& state, uint32_t lhs, uint32_t rhs, boo
 inline constexpr auto EmitTruncF32Value = EmitGlsl<GLSLstd450Trunc, IR::Type::F32, uint32_t>;
 
 uint32_t EmitFlushF32DenormToSignedZero(EmitterState& state, uint32_t value);
+// The input flush of a transcendental op (Ftz32::Op `ftz32_op`), unless KYTY_FTZ32 leaves it to
+// the device.
+uint32_t EmitFlushF32DenormInput(EmitterState& state, uint32_t value, uint32_t ftz32_op);
 
 uint32_t EmitTrigCycleF32(EmitterState& state, uint32_t src, bool preserve_signed_zero);
 
@@ -675,6 +691,14 @@ auto EmitIndexSwitch(EmitterState& state, uint32_t index, uint32_t count,
 		return phi[2];
 	}
 }
+
+// KYTY_LOOP_GUARD (spirvEmitterLoopGuard.cpp; no-ops unless state.loop_guard).
+void     EmitLoopGuardVariables(EmitterState& state); // in the entry block, with the other OpVariables
+void     EmitLoopGuardInit(EmitterState& state);
+void     EmitLoopGuardCount(EmitterState& state);
+uint32_t EmitLoopGuardTripped(EmitterState& state, uint32_t factor);
+uint32_t EmitLoopGuardCondition(EmitterState& state, uint32_t condition, bool exit_on_true);
+void     EmitLoopGuardLog(EmitterState& state, const IR::Block* header, uint32_t factor);
 
 template <typename Fn>
 void EmitIfCondition(EmitterState& state, uint32_t condition, Fn&& fn) {

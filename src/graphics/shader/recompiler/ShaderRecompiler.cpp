@@ -838,6 +838,7 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	    .input_info       = options.input_info,
 	    .embedded_fetch   = embedded_fetch.loads.empty() ? nullptr : &embedded_fetch,
 	    .live_vertex_exec = options.device_features.vs_live_vertex_exec,
+	    .pixel_live_election = options.device_features.pixel_live_election,
 	};
 	LOGF("%s phase begin: stage=%s hash=0x%016" PRIx64 " IR TranslateProgram\n",
 	     GetDumpLabel(options), StageName(options.stage), options.shader_hash);

@@ -121,6 +121,45 @@ void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
 	std::lock_guard lock(m_mapped_ranges_mutex);
 	m_mapped_ranges.Add(vaddr, size);
 	m_buffer_cache.QueueBdaSync(vaddr, size);
+	m_buffer_cache.NoteMappedEnd(vaddr, size);
+	LogMappedSpread(vaddr, size);
+}
+
+// How much of the dense BDA page table (one entry per 16 KiB page of the lower window plus the
+// extended window) the guest's GPU mappings actually reach: logged when a high-water mark moves
+// by a whole MiB of table (UE5 titles move it by 64 KiB a few hundred times while booting).
+void RenderContext::LogMappedSpread(uint64_t vaddr, uint64_t size) {
+	const auto end      = vaddr + size;
+	const bool extended = vaddr >= LibKernel::Memory::kExtendedMemoryBase;
+	bool       moved    = false;
+	m_mapped_bytes += size;
+	if (!extended && end > m_mapped_lower_high) {
+		m_mapped_lower_high = end;
+		moved               = true;
+	}
+	if (extended && (m_mapped_ext_low == 0 || vaddr < m_mapped_ext_low)) {
+		m_mapped_ext_low = vaddr;
+		moved            = true;
+	}
+	if (extended && end > m_mapped_ext_high) {
+		m_mapped_ext_high = end;
+		moved             = true;
+	}
+	const auto table_mib = [](uint64_t bytes) { return (bytes >> BufferCache::CACHING_PAGEBITS) * 8u >> 20u; };
+	const auto lower_mib = table_mib(m_mapped_lower_high);
+	const auto ext_mib   = table_mib(m_mapped_ext_high - m_mapped_ext_low);
+	if (moved && (lower_mib != m_logged_lower_mib || ext_mib != m_logged_ext_mib || m_logged_lower_mib == UINT64_MAX)) {
+		m_logged_lower_mib = lower_mib;
+		m_logged_ext_mib   = ext_mib;
+		LOGF("GPU mapped spread: lower high=0x%010" PRIx64 " (%" PRIu64 " MiB of table) extended=[0x%010" PRIx64
+		     ", 0x%010" PRIx64 ") (%" PRIu64 " MiB of table) mapped %" PRIu64 " MiB in %zu ranges\n",
+		     m_mapped_lower_high, lower_mib, m_mapped_ext_low, m_mapped_ext_high, ext_mib,
+		     m_mapped_bytes >> 20u, [&] {
+			     size_t count = 0;
+			     m_mapped_ranges.ForEach([&](uint64_t, uint64_t) { ++count; });
+			     return count;
+		     }());
+	}
 }
 
 void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
@@ -159,6 +198,8 @@ void RenderContext::PrepareBda() {
 		Log::WriteToConsoleAndLog("GPU: using buffer device address (BDA) shader memory access.\n");
 		m_bda_logged = true;
 	}
+	// Grow the sized page table to the mapped high-water before this draw prepares its bindings.
+	m_buffer_cache.GrowBdaTableToMapped();
 	std::shared_lock lock(m_mapped_ranges_mutex);
 	m_buffer_cache.SynchronizeBda(m_mapped_ranges);
 	m_fault_process_pending = true;
@@ -172,6 +213,7 @@ void RenderContext::RunGarbageCollector() {
 	m_texture_cache.ProcessDownloadImages();
 	m_texture_cache.RunGarbageCollector();
 	m_buffer_cache.RunGarbageCollector();
+	m_buffer_cache.PollLoopGuardLog();
 }
 
 void RenderContext::AddInterruptEq(LibKernel::EventQueue::KernelEqueue eq, int event_id) {

@@ -33,6 +33,7 @@ public:
 
 	uint32_t AllocateId();
 	void     RequireVersion(uint32_t version);
+	[[nodiscard]] uint32_t Version() const { return m_version; }
 	void     RequireCapability(spv::Capability capability);
 	void     RequireExtension(const char* name);
 	uint32_t Import(const char* name);

@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 
 #include "common/logging/log.h"
+#include "graphics/shader/loopGuard.h"
 
 #include <algorithm>
 #include <bit>
@@ -799,6 +800,17 @@ void DefineInputs(EmitterState& state) {
 			                            builtin);
 		}
 	}
+	if (state.program.stage == ShaderType::Pixel && state.device_features.pixel_live_election &&
+	    !state.subgroup_isolated) {
+		const auto variable = DefineInterfaceVariable(state, TypeBool(state), spv::StorageClassInput,
+		                                              "gl_HelperInvocation");
+		state.helper_invocation_variable = variable;
+		state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationBuiltIn,
+		                            spv::BuiltInHelperInvocation);
+		if (state.builder.Version() >= 0x00010600u) {
+			state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationVolatile);
+		}
+	}
 	if (state.program.info.subgroup_local_invocation_id && !state.subgroup_isolated) {
 		const auto variable = DefineInterfaceVariable(state, TypeU32(state), spv::StorageClassInput,
 		                                              "gl_SubgroupInvocationID");
@@ -986,7 +998,41 @@ void DefineOutputs(EmitterState& state) {
 
 } // namespace
 
+// KYTY_LOOP_GUARD: plans the guarded loops of a listed shader (structured emission only; the
+// dispatcher fallback counts its own iterations instead) and reserves the counter variables.
+static void PlanLoopGuard(EmitterState& state) {
+	const auto& program = state.program;
+	if (!LoopGuard::Guards(program.shader_hash) || program.blocks.empty()) {
+		return;
+	}
+	state.loop_guard             = true;
+	state.loop_guard_log_address = LoopGuard::LogAddress();
+	state.loop_guard_counter     = state.builder.AllocateId();
+	state.loop_guard_logged      = state.builder.AllocateId();
+	if (!program.dispatcher_fallback) {
+		const auto plan = IR::PlanLoopGuards(program.blocks);
+		for (const auto& loop: plan.loops) {
+			if (!state.loop_guard_by_guard.emplace(loop.guard, loop).second) {
+				continue; // one exit branch per block
+			}
+			state.loop_guard_headers.insert(loop.header);
+			if (loop.log_block != nullptr) {
+				state.loop_guard_log_blocks.emplace(loop.log_block, loop.header);
+			}
+		}
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "KYTY_LOOP_GUARD: shader {:016x}: {} loops guarded, {} without an exit branch, limit {}{}\n",
+		    program.shader_hash, state.loop_guard_headers.size(), plan.unguarded.size(), LoopGuard::Limit(),
+		    state.loop_guard_log_address != 0 ? "" : " (no log)"));
+	} else {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "KYTY_LOOP_GUARD: shader {:016x}: dispatcher fallback, iterations capped at {} x 16\n",
+		    program.shader_hash, LoopGuard::Limit()));
+	}
+}
+
 void DefineModule(EmitterState& state) {
+	PlanLoopGuard(state);
 	state.interface_variables.reserve(state.program.info.inputs.size() +
 	                                  state.program.info.outputs.size());
 	DefineInputs(state);
@@ -1033,7 +1079,7 @@ void DefineModule(EmitterState& state) {
 	if (state.program.info.buffer_u16) {
 		state.builder.RequireCapability(spv::CapabilityStorageBuffer16BitAccess);
 	}
-	if (state.program.info.uses_dma) {
+	if (state.program.info.uses_dma || state.loop_guard_log_address != 0) {
 		state.builder.RequireCapability(spv::CapabilityInt64);
 		state.builder.RequireCapability(spv::CapabilityPhysicalStorageBufferAddresses);
 		state.builder.RequireExtension("SPV_KHR_physical_storage_buffer");
@@ -1123,7 +1169,8 @@ void DefineModule(EmitterState& state) {
 		state.builder.RequireExtension("SPV_KHR_fragment_shader_barycentric");
 	}
 	state.builder.RequireExtension("SPV_KHR_float_controls");
-	state.builder.AddMemoryModel(state.program.info.uses_dma || MeshEmulated(state)
+	state.builder.AddMemoryModel(state.program.info.uses_dma || MeshEmulated(state) ||
+	                                     state.loop_guard_log_address != 0
 	                                 ? spv::AddressingModelPhysicalStorageBuffer64
 	                                 : spv::AddressingModelLogical,
 	                             spv::MemoryModelGLSL450);
@@ -1135,6 +1182,12 @@ void DefineModule(EmitterState& state) {
 		state.builder.RequireCapability(spv::CapabilitySignedZeroInfNanPreserve);
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve,
 		                               32u);
+	}
+	// KYTY_FTZ32: the device flushes FP32 denormals (the explicit input flushes it was checked to
+	// match are left out, EmitFlushF32DenormInput).
+	if (state.device_features.ftz32_ops != 0u) {
+		state.builder.RequireCapability(spv::CapabilityDenormFlushToZero);
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeDenormFlushToZero, 32u);
 	}
 	// Native F16 arithmetic (IR::LowerNativeFloat16): RDNA2 half math rounds to nearest even and
 	// keeps denormals, signed zero, infinities and NaNs.

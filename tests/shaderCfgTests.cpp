@@ -64,10 +64,29 @@
 namespace Libs::Graphics {
 namespace {
 
+// KYTY_TEST_KEEP_GOING=1: report a failed check (or exceeded SPIR-V budget, or invalid SPIR-V)
+// and continue, so one run lists every stale expectation; main then exits 1 with the count.
+bool KeepGoing() {
+  static const bool keep_going = [] {
+    const char *value = std::getenv("KYTY_TEST_KEEP_GOING");
+    return value != nullptr && std::strcmp(value, "1") == 0;
+  }();
+  return keep_going;
+}
+
+int g_failures = 0;
+
+void Fail() {
+  if (!KeepGoing()) {
+    std::abort();
+  }
+  g_failures++;
+}
+
 void Check(bool value, const char *text) {
   if (!value) {
     std::fprintf(stderr, "ShaderCfgTests: failed: %s\n", text);
-    std::abort();
+    Fail();
   }
 }
 
@@ -216,7 +235,7 @@ void CheckSpirvBinaryValidates(const std::vector<uint32_t> &binary) {
   if (!tools.Validate(binary)) {
     std::fprintf(stderr, "SPIR-V binary validation failed:\n%s\n",
                  messages.c_str());
-    std::abort();
+    Fail();
   }
 }
 
@@ -579,7 +598,7 @@ void CheckSpirvBudget(const char *name, const std::vector<uint32_t> &binary,
         budget.loop_merges, budget.selection_merges, budget.branches,
         budget.conditional_branches, budget.switches, budget.ballots,
         budget.quad_broadcasts);
-    std::abort();
+    Fail();
   }
 }
 
@@ -16568,25 +16587,29 @@ void TestGraphicsPushConstantPlacement() {
         "SPIR-V push-data block did not use the canonical zero base");
   CheckSpirvBinaryValidates(placed.spirv);
 
-  auto exact = RecompileForTest(shader, options, nullptr, nullptr, 28);
+  // Shader data ends at ShaderDataDwordLimit: the last RescaleDwordCount dwords carry the
+  // --render-scale state (8d0e1ee8), so four dwords fit exactly at 24.
+  constexpr uint32_t ExactStart = ShaderRecompiler::IR::PushData::ShaderDataDwordLimit - 4u;
+  auto exact = RecompileForTest(shader, options, nullptr, nullptr, ExactStart);
   Check(exact.program.bindings.UsesPushData() &&
-            exact.program.bindings.push_data_start_dword == 28 &&
+            exact.program.bindings.push_data_start_dword == ExactStart &&
             exact.program.bindings.ShaderDataDwords() == 4,
         "exact-fit shader data did not use the remaining push space");
-  uint32_t cursor = 28;
+  uint32_t cursor = ExactStart;
   exact.program.bindings.AdvancePushData(cursor);
-  Check(cursor == 32, "exact-fit shader data advanced the cursor incorrectly");
+  Check(cursor == ShaderRecompiler::IR::PushData::ShaderDataDwordLimit,
+        "exact-fit shader data advanced the cursor incorrectly");
   CheckSpirvBinaryValidates(exact.spirv);
 
-  auto spill = RecompileForTest(shader, options, nullptr, nullptr, 29);
+  auto spill = RecompileForTest(shader, options, nullptr, nullptr, ExactStart + 1u);
   auto full = RecompileForTest(shader, options, nullptr, nullptr, 32);
   Check(!spill.program.bindings.UsesPushData() &&
             spill.program.bindings.descriptor_counts[static_cast<size_t>(BindingKind::ShaderData)] == 1 &&
             spill.program.bindings == full.program.bindings && spill.spirv == full.spirv,
         "insufficient push space did not produce canonical storage-backed data");
-  cursor = 29;
+  cursor = ExactStart + 1u;
   spill.program.bindings.AdvancePushData(cursor);
-  Check(cursor == 29, "spilled shader data consumed push space");
+  Check(cursor == ExactStart + 1u, "spilled shader data consumed push space");
   CheckSpirvBinaryValidates(spill.spirv);
 }
 
@@ -17231,7 +17254,7 @@ void TestNewShaderRecompilerSpirvSizeBaselines() {
   const auto wqm_result = compile("wqm", wqm,
                                   {.words = 407,
                                    .instructions = 99,
-                                   .variables = 4,
+                                   .variables = 5,
                                    .loads = 3,
                                    .stores = 2,
                                    .labels = 6,
@@ -17480,5 +17503,9 @@ int main() {
 
   TestNewShaderRecompilerVop3LaneReadDestinationEncoding();
 
+  if (g_failures != 0) {
+    std::fprintf(stderr, "ShaderCfgTests: %d failed checks (KYTY_TEST_KEEP_GOING)\n", g_failures);
+    return 1;
+  }
   return 0;
 }

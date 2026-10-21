@@ -94,7 +94,14 @@ public:
 	// --gpu-indirect fixed-up draw records, created on the first GPU indirect draw.
 	[[nodiscard]] MeshEmulationRing& GetIndirectDrawRing();
 	[[nodiscard]] const Buffer* GetGdsBuffer() const noexcept { return &m_gds_buffer; }
-	[[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept { return &m_bda_pagetable_buffer; }
+	// The current BDA page table (KYTY_BDA_TABLE): it can be replaced by a larger one when it grows,
+	// so callers take it when they record the binding (RenderExecutor::RecordBindings).
+	[[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept { return m_bda_pagetable_buffer.get(); }
+	// Guest GPU mapping high-water (RenderContext::MapMemory, any thread): the table grows to cover
+	// it at the next PrepareBda, before any draw binds it.
+	void NoteMappedEnd(uint64_t vaddr, uint64_t size) noexcept;
+	// GPU thread, before a BDA draw or dispatch prepares its bindings.
+	void GrowBdaTableToMapped();
 	[[nodiscard]] Buffer* GetFaultBuffer() noexcept { return m_fault_manager.GetFaultBuffer(); }
 	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainBufferForImage(uint64_t vaddr, uint64_t size);
 	void FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool is_gds);
@@ -121,6 +128,9 @@ public:
 		m_memory_tracker.QueueBdaSync(Kernel::AddressFold::Fold(vaddr), size);
 	}
 	void               RunGarbageCollector();
+	// KYTY_LOOP_GUARD (graphics/shader/loopGuard.h): logs new "[loop-guard]" trips (at most once
+	// a second unless `force`).
+	void               PollLoopGuardLog(bool force = false);
 	// Bytes of guest-mirroring buffers the cache owns, and the mesh emulation ring (0 if unused).
 	[[nodiscard]] uint64_t TotalUsedMemory() const noexcept { return m_total_used_memory; }
 	[[nodiscard]] uint64_t MeshRingCapacity() const noexcept;
@@ -154,6 +164,10 @@ private:
 	                                      Common::AddressLayout::kTrackerAddressBits, 20>;
 	static_assert(CACHING_PAGESIZE == (uint64_t {1} << PageTable::kPageBits));
 	void WriteDataBuffer(Buffer& buffer, uint64_t address, const void* source, uint64_t size);
+	// Replaces the BDA page table with one covering `needed_pages` (no-op when it already does):
+	// in-stream copy of the old entries, zero fill of the rest, old buffer freed once the open
+	// command buffer completes (draws recorded before keep their binding valid). GPU thread.
+	void EnsureBdaTablePages(uint64_t needed_pages);
 	void TouchBuffer(const Buffer& buffer);
 	[[nodiscard]] OverlapResult ResolveOverlaps(uint64_t vaddr, uint64_t size);
 	void JoinOverlap(BufferId new_id, BufferId overlap_id, bool accumulate_stream_score);
@@ -196,7 +210,13 @@ private:
 	CommandScheduler&                                 m_scheduler;
 	FaultManager                                      m_fault_manager;
 	Buffer                                            m_gds_buffer;
-	Buffer                                            m_bda_pagetable_buffer;
+	std::unique_ptr<Buffer>                           m_bda_pagetable_buffer;
+	std::unique_ptr<Buffer>                           m_loop_guard_log;
+	uint32_t                                          m_loop_guard_logged    = 0;
+	int64_t                                           m_loop_guard_polled_ms = 0;
+	uint64_t                                          m_bda_table_pages = 0;
+	bool                                              m_bda_table_sized = false;
+	std::atomic<uint64_t>                             m_bda_mapped_pages {0};
 	Common::SlotVector<Buffer>                        m_slot_buffers;
 	Common::LeastRecentlyUsedCache<BufferId, uint64_t> m_lru_cache;
 	BufferMap                                         m_buffers;

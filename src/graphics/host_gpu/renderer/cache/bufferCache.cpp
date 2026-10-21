@@ -13,12 +13,14 @@
 #include "graphics/host_gpu/gpuFatal.h"
 #include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/cache/bdaTableSize.h"
 #include "graphics/host_gpu/renderer/cache/meshEmulationRing.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/loopGuard.h"
 #include "graphics/shader/meshBoundsCheck.h"
 #include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
@@ -30,6 +32,7 @@
 #endif
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
 #include <cstdlib>
 #include <cstring>
@@ -144,7 +147,8 @@ void BufferCache::ChangeRegister(BufferId id) {
 		for (uint64_t i = 0; i < size_pages; ++i) {
 			addresses.push_back(buffer.BufferDeviceAddress() + (i << CACHING_PAGEBITS));
 		}
-		WriteDataBuffer(m_bda_pagetable_buffer, table_offset,
+		EnsureBdaTablePages(PageIndex(buffer.CpuAddress()) + size_pages);
+		WriteDataBuffer(*m_bda_pagetable_buffer, table_offset,
 		                addresses.data(), addresses.size() * sizeof(vk::DeviceAddress));
 		m_memory_tracker.QueueBdaSync(buffer.CpuAddress(), buffer.Size());
 	} else {
@@ -154,10 +158,72 @@ void BufferCache::ChangeRegister(BufferId id) {
 		EXIT_IF(buffer.Size() > m_total_used_memory);
 		m_total_used_memory -= buffer.Size();
 		m_lru_cache.Free(buffer.lru_id);
-		m_bda_pagetable_buffer.Fill(table_offset,
+		m_bda_pagetable_buffer->Fill(table_offset,
 		                            size_pages * sizeof(vk::DeviceAddress), 0);
 		buffer.is_deleted = true;
 	}
+}
+
+void BufferCache::NoteMappedEnd(uint64_t vaddr, uint64_t size) noexcept {
+	if (size == 0 || vaddr > UINT64_MAX - size) {
+		return;
+	}
+	const auto last  = Kernel::AddressFold::Fold(vaddr + size - 1);
+	const auto pages = std::min<uint64_t>(PageIndex(last) + 1, CACHING_NUMPAGES);
+	auto       seen  = m_bda_mapped_pages.load(std::memory_order_relaxed);
+	while (pages > seen && !m_bda_mapped_pages.compare_exchange_weak(seen, pages, std::memory_order_relaxed)) {
+	}
+}
+
+void BufferCache::GrowBdaTableToMapped() {
+	const auto mapped = m_bda_mapped_pages.load(std::memory_order_relaxed);
+	if (mapped > m_bda_table_pages) {
+		EnsureBdaTablePages(mapped);
+	}
+}
+
+void BufferCache::EnsureBdaTablePages(uint64_t needed_pages) {
+	const auto pages = BdaTableSize::GrowTo(m_bda_table_pages, needed_pages, CACHING_NUMPAGES);
+	if (pages == m_bda_table_pages) {
+		EXIT_IF(needed_pages > m_bda_table_pages);
+		return;
+	}
+	constexpr auto entry      = sizeof(vk::DeviceAddress);
+	const auto     old_bytes  = m_bda_table_pages * entry;
+	const auto     new_bytes  = pages * entry;
+	auto           table      = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
+	                                                     AllFlags, new_bytes);
+	SetVulkanObjectNameF(m_graphics.device, table->Handle(), "BDA Page Table Buffer");
+	m_scheduler.EndRendering(PassEnd::Buffer);
+	const auto command = m_scheduler.Current().Handle();
+	// Earlier table writes and shader reads of the old table, then the copy and the fill.
+	vk::MemoryBarrier2 before {};
+	before.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+	before.srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+	before.dstStageMask  = vk::PipelineStageFlagBits2::eTransfer;
+	before.dstAccessMask = vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite;
+	vk::DependencyInfo dependency {};
+	dependency.memoryBarrierCount = 1;
+	dependency.pMemoryBarriers    = &before;
+	command.pipelineBarrier2(dependency);
+	const vk::BufferCopy copy {0, 0, old_bytes};
+	command.copyBuffer(m_bda_pagetable_buffer->Handle(), table->Handle(), 1, &copy);
+	command.fillBuffer(table->Handle(), old_bytes, new_bytes - old_bytes, 0);
+	auto after          = before;
+	after.srcStageMask  = vk::PipelineStageFlagBits2::eTransfer;
+	after.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+	after.dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+	after.dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+	dependency.pMemoryBarriers = &after;
+	command.pipelineBarrier2(dependency);
+	LOGF("BDA page table grown: %" PRIu64 " -> %" PRIu64 " MiB (covers 0x%010" PRIx64 ")\n", old_bytes >> 20u,
+	     new_bytes >> 20u, pages << CACHING_PAGEBITS);
+	// Bindings recorded into the open command buffer still name the old table: free it only once
+	// that command buffer has completed.
+	std::shared_ptr<Buffer> old(std::move(m_bda_pagetable_buffer));
+	m_scheduler.DeferOperation([old = std::move(old)]() mutable { old.reset(); });
+	m_bda_pagetable_buffer = std::move(table);
+	m_bda_table_pages      = pages;
 }
 
 void BufferCache::TouchBuffer(const Buffer& buffer) {
@@ -467,7 +533,7 @@ void BufferCache::DescribeFaultAddresses(std::span<const uint64_t> addresses) co
 			}
 		}
 	};
-	describe("bda-pagetable", m_bda_pagetable_buffer);
+	describe("bda-pagetable", *m_bda_pagetable_buffer);
 	describe("staging", m_staging_buffer);
 	describe("stream", m_stream_buffer);
 	describe("download", m_download_buffer);
@@ -484,28 +550,61 @@ void BufferCache::DescribeFaultAddresses(std::span<const uint64_t> addresses) co
 	}
 }
 
+// KYTY_STAGING_MIB: the upload ring. Larger uploads than the ring take a temporary buffer
+// (UploadMemory), so the ring only has to hold a frame or two of streaming uploads; Android
+// defaults to 128 MiB (tablet memory pressure: c13_t1_evict), other hosts keep 512 MiB.
+static uint64_t StagingBufferSize() {
+#if defined(__ANDROID__)
+	constexpr uint64_t kDefaultMib = 128;
+#else
+	constexpr uint64_t kDefaultMib = 512;
+#endif
+	const char* value = std::getenv("KYTY_STAGING_MIB");
+	const auto  mib   = value != nullptr ? std::strtoull(value, nullptr, 10) : kDefaultMib;
+	return std::clamp<uint64_t>(mib, 16, 2048) * 1024 * 1024;
+}
+
 BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
                          PageManager& page_manager, TextureCache& texture_cache)
     : m_graphics(graphics), m_scheduler(scheduler), m_fault_manager(graphics, scheduler, *this),
       m_gds_buffer(graphics, scheduler, MemoryUsage::Stream, 0, AllFlags, GdsBufferSize),
-      m_bda_pagetable_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 0, AllFlags,
-                             BDA_PAGETABLE_SIZE),
       m_memory_tracker(page_manager),
-      m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 512 * MiB),
+      m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, StagingBufferSize()),
       m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
       m_texture_cache(texture_cache), m_targeted_readback(Config::TargetedReadbackEnabled()) {
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));
 	m_gds_buffer.Flush(0, m_gds_buffer.Size());
-	SetVulkanObjectNameF(m_graphics.device, m_bda_pagetable_buffer.Handle(),
+	m_bda_table_sized = BdaTableSize::Sized(std::getenv("KYTY_BDA_TABLE"),
+	                                        graphics.optional_features.robust_buffer_access2_dword);
+	m_bda_table_pages = m_bda_table_sized ? BdaTableSize::PagesFor(0, CACHING_NUMPAGES) : CACHING_NUMPAGES;
+	m_bda_pagetable_buffer = std::make_unique<Buffer>(graphics, scheduler, MemoryUsage::DeviceLocal, 0,
+	                                                  AllFlags, m_bda_table_pages * sizeof(vk::DeviceAddress));
+	SetVulkanObjectNameF(m_graphics.device, m_bda_pagetable_buffer->Handle(),
 	                     "BDA Page Table Buffer");
+	LOGF("BDA page table: %s, %" PRIu64 " MiB (dense %" PRIu64 " MiB)\n",
+	     m_bda_table_sized ? "sized (KYTY_BDA_TABLE=dense opts out)" : "dense", (m_bda_table_pages * 8u) >> 20u,
+	     BDA_PAGETABLE_SIZE >> 20u);
 	const auto null_id =
 	    m_slot_buffers.insert(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0, AllFlags, 16);
 	EXIT_IF(null_id != NULL_BUFFER_ID);
 	SetVulkanObjectNameF(m_graphics.device, GetBuffer(null_id).Handle(), "Kyty.NullBuffer");
 	g_fault_cache = this;
 	AddGpuFatalHook(DumpFaultNeighbors);
+	if (LoopGuard::Enabled()) {
+		// Guarded shaders bake the log's address in when they compile.
+		m_loop_guard_log = std::make_unique<Buffer>(
+		    m_graphics, m_scheduler, MemoryUsage::Download, 0,
+		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+		    LoopGuard::kLogBytes);
+		EXIT_IF(m_loop_guard_log->Mapped().size() < LoopGuard::kLogBytes);
+		std::memset(m_loop_guard_log->Mapped().data(), 0, LoopGuard::kLogBytes);
+		m_loop_guard_log->Flush(0, LoopGuard::kLogBytes);
+		LoopGuard::SetLogAddress(m_loop_guard_log->BufferDeviceAddress());
+		LOGF("KYTY_LOOP_GUARD=%s, limit %u, trip log at 0x%016" PRIx64 "\n", LoopGuard::Spec(),
+		     LoopGuard::Limit(), m_loop_guard_log->BufferDeviceAddress());
+	}
 	if (MeshBoundsCheck::Enabled()) {
 		// Mesh shaders bake the violation log's address in when they compile.
 		GetMeshEmulationRing().EnableBoundsLog();
@@ -1194,6 +1293,38 @@ void BufferCache::RunGarbageCollector() {
 		Unregister(id);
 		m_slot_buffers.erase(id);
 	}
+}
+
+void BufferCache::PollLoopGuardLog(bool force) {
+	if (!m_loop_guard_log) {
+		return;
+	}
+	const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                        std::chrono::steady_clock::now().time_since_epoch())
+	                        .count();
+	if (!force && now_ms - m_loop_guard_polled_ms < 1000) {
+		return;
+	}
+	m_loop_guard_polled_ms = now_ms;
+	m_loop_guard_log->Invalidate(0, LoopGuard::kLogBytes);
+	const auto* words = reinterpret_cast<const uint32_t*>(m_loop_guard_log->Mapped().data());
+	const auto  count = words[0];
+	if (count == m_loop_guard_logged && !force) {
+		return;
+	}
+	LOGF("[loop-guard] %u invocations tripped so far\n", count);
+	const auto stored = std::min(count, LoopGuard::kMaxEntries);
+	for (uint32_t entry = force ? 0u : std::min(m_loop_guard_logged, LoopGuard::kMaxEntries); entry < stored;
+	     entry++) {
+		const auto* e = words + LoopGuard::kHeaderDwords + entry * LoopGuard::kEntryDwords;
+		std::string values;
+		for (uint32_t i = 0; i < LoopGuard::kPhis; i++) {
+			values += fmt::format("{}{:08x}", i == 0 ? "" : ",", e[4 + i]);
+		}
+		LOGF("[loop-guard] #%u shader=0x%08x%08x loop_header=%u iterations=%u phis=%s\n", entry, e[1], e[0],
+		     e[2], e[3], values.c_str());
+	}
+	m_loop_guard_logged = count;
 }
 
 void BufferCache::ProcessFaultBuffer() {
