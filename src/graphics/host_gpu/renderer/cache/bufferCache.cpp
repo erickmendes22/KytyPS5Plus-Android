@@ -1140,10 +1140,15 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 			auto& history     = m_stream_history[vaddr ^ (size << 48u)];
 			history.unchanged = history.hash == hash ? history.unchanged + 1 : 0;
 			history.hash      = hash;
-			// Live stream_backoff=1: a range promoted before (its pages were written again since)
+			// stream_backoff (KYTY_STREAM_BACKOFF, default on): a range promoted before (its pages were written again since)
 			// needs twice as many unchanged copies per earlier promotion, up to 64x, so ranges that
 			// share pages with data the CPU rewrites every frame stop faulting each frame.
-			const uint32_t backoff  = LiveKnobs::Int("stream_backoff", 0) != 0 ? std::min<uint32_t>(history.promotions, 6) : 0;
+			static const int64_t backoff_env = [] {
+				// KYTY_STREAM_BACKOFF=0 opts out; on by default with KYTY_STREAM_PROMOTE.
+				const char* value = std::getenv("KYTY_STREAM_BACKOFF");
+				return static_cast<int64_t>(value != nullptr && std::strcmp(value, "0") == 0 ? 0 : 1);
+			}();
+			const uint32_t backoff  = LiveKnobs::Int("stream_backoff", backoff_env) != 0 ? std::min<uint32_t>(history.promotions, 6) : 0;
 			const uint32_t required = static_cast<uint32_t>(promote) << backoff;
 			if (history.unchanged >= required) {
 				history.unchanged = 0;
