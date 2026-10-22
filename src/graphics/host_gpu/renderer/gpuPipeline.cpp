@@ -105,8 +105,9 @@ bool Enabled() {
 
 bool BatchEnabled() {
 	static const bool env_on = [] {
+		// Default on with KYTY_GPU_FAN=auto (the auto mode turns the pipeline on and off), else off.
 		const char* value = std::getenv("KYTY_PIPE_BATCH");
-		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
+		const bool  on    = value != nullptr ? std::strcmp(value, "1") == 0 : WalkFan::AutoMode();
 		LOGF("KYTY_PIPE_BATCH: batched record-thread handoff %s\n", on ? "on" : "off");
 		return on;
 	}();

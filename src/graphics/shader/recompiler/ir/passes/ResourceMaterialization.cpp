@@ -1,4 +1,5 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
+#include "graphics/shader/recompiler/ir/passes/WalkCost.h"
 
 #include "common/assert.h"
 #include "graphics/guest_gpu/gpu_format.h"
@@ -1557,6 +1558,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& scratch,
                           const SrtRuntime& runtime, ResourceSnapshot& snapshot,
                           ResourceSpecialization& specialization) {
+	const WalkCost::Scope walk_cost; // KYTY_GPU_FAN=auto
 	if (scratch.selector_keys.size() != program.selector_keys.size()) scratch.selector_keys = program.selector_keys;
 	for (auto& keys: scratch.selector_keys) keys.resolved = false;
 	if (!program.resource_tracking_complete ||
