@@ -95,4 +95,31 @@ class PresetCatalogTest {
         }
         assertEquals(emptyList<String>(), warnings)
     }
+
+    /** Astro's performance mode: launch options only, with a game patch for the shipped eboot version. */
+    @Test
+    fun shippedAstroPerformanceModeIsValid() {
+        val shipped = PresetCatalog(DirectoryPresetSource(File("src/main/assets/${PresetCatalog.ASSET_ROOT}"))) { warnings += it }
+        val perf = shipped.forTitle("PPSA21567").single()
+        assertEquals("perf720", perf.id)
+        assertEquals("Performance mode (720p, faster lighting)", perf.name)
+        assertEquals(emptyList<String>(), perf.files)
+        assertEquals("1", perf.launch.env["KYTY_RT_HALF"])
+        val patchName = requireNotNull(perf.launch.gamePatch)
+        val patch = org.json.JSONObject(String(shipped.launchFileBytes(perf, patchName)))
+        assertEquals("PPSA21567", patch.getString("id"))
+        assertEquals("01.019.000", patch.getString("version"))
+        assertEquals("eboot.bin", patch.getString("process"))
+        val mods = patch.getJSONArray("mods")
+        assertTrue(mods.length() > 0)
+        for (m in 0 until mods.length()) {
+            val memory = mods.getJSONObject(m).getJSONArray("memory")
+            for (w in 0 until memory.length()) {
+                val write = memory.getJSONObject(w)
+                assertEquals(write.toString(), write.getString("off").length, write.getString("on").length)
+                assertTrue(write.toString(), write.getString("offset").startsWith("0x"))
+            }
+        }
+        assertEquals(emptyList<String>(), warnings)
+    }
 }

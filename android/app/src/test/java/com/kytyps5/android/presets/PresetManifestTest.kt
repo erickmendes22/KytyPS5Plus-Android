@@ -39,7 +39,8 @@ class PresetManifestTest {
     @Test
     fun rejectsInvalidManifests() {
         assertTrue(invalidReason("{").startsWith("not JSON"))
-        assertEquals("unsupported schemaVersion 2", invalidReason(manifest(schema = 2)))
+        assertEquals("unsupported schemaVersion 3", invalidReason(manifest(schema = 3)))
+        assertEquals("unsupported schemaVersion 0", invalidReason(manifest(schema = 0)))
         assertEquals("id \"res50\" does not match folder \"other\"", invalidReason(manifest(), folder = "other"))
         assertEquals("invalid id \"Res 50\"", invalidReason(manifest(id = "Res 50"), folder = "Res 50"))
         assertEquals("unknown target \"app0\"", invalidReason(manifest(target = "app0")))

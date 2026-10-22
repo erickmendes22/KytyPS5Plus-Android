@@ -34,13 +34,40 @@ data class GamePreset(
     val description: String,
     val target: PresetTarget,
     val files: List<String>,
+    val launch: PresetLaunch = PresetLaunch(),
 )
+
+/**
+ * Emulator launch options a preset adds while it is on (schema 2): environment variables for the
+ * emulator's own knobs, --render-scale, and a --game-patch file shipped in the preset under
+ * launch/<[gamePatch]>. GameActivity appends them to the command line (see [PresetLaunchArgs]).
+ */
+data class PresetLaunch(
+    val env: Map<String, String> = emptyMap(),
+    val renderScale: Float? = null,
+    val gamePatch: String? = null,
+) {
+    val isEmpty: Boolean get() = env.isEmpty() && renderScale == null && gamePatch == null
+
+    companion object {
+        /** Only the emulator's own knobs: a preset cannot change the loader, Mesa or Android variables. */
+        val ENV_KEY = Regex("^KYTY_[A-Z0-9_]{1,60}$")
+        val ENV_VALUE = Regex("^[A-Za-z0-9_.:+-]{1,64}$")
+        const val MIN_RENDER_SCALE = 0.25f // src/main.cpp Config::MIN/MAX_RENDER_SCALE
+        const val MAX_RENDER_SCALE = 2.0f
+        const val GAME_PATCH_SUFFIX = ".json"
+    }
+}
 
 /** preset.json; see [GamePreset]. */
 object PresetManifest {
     const val FILE_NAME = "preset.json"
     const val FILES_DIR = "files"
-    const val SCHEMA_VERSION = 1
+    const val LAUNCH_DIR = "launch"
+
+    /** 1: files only. 2: adds "launch" (emulator options); "files" may then be empty or absent. */
+    const val SCHEMA_VERSION = 2
+    private val SCHEMAS = 1..SCHEMA_VERSION
 
     private val ID = Regex("^[a-z0-9][a-z0-9_-]{0,31}$")
 
@@ -62,19 +89,29 @@ object PresetManifest {
             return Result.Invalid("not JSON: ${e.message}")
         }
         val schema = obj.optInt("schemaVersion", -1)
-        if (schema != SCHEMA_VERSION) return Result.Invalid("unsupported schemaVersion $schema")
+        if (schema !in SCHEMAS) return Result.Invalid("unsupported schemaVersion $schema")
         val id = obj.stringOr("id").trim()
         if (!ID.matches(id)) return Result.Invalid("invalid id \"$id\"")
         if (id != folderName) return Result.Invalid("id \"$id\" does not match folder \"$folderName\"")
         val name = obj.stringOr("name").trim()
         if (name.isEmpty()) return Result.Invalid("missing name")
-        val targetValue = obj.stringOr("target")
-        val target = PresetTarget.fromStorage(targetValue) ?: return Result.Invalid("unknown target \"$targetValue\"")
-        val array = obj.optJSONArray("files") ?: return Result.Invalid("missing files")
-        val files = (0 until array.length()).map { array.stringAt(it) }
-        if (files.isEmpty()) return Result.Invalid("no files")
+        val launch = when {
+            !obj.has("launch") -> PresetLaunch()
+            schema < 2 -> return Result.Invalid("launch needs schemaVersion 2")
+            else -> when (val parsed = parseLaunch(obj.optJSONObject("launch"))) {
+                is LaunchResult.Ok -> parsed.launch
+                is LaunchResult.Invalid -> return Result.Invalid(parsed.reason)
+            }
+        }
+        val array = obj.optJSONArray("files")
+        if (array == null && (schema < 2 || obj.has("files"))) return Result.Invalid("missing files")
+        val files = array?.let { a -> (0 until a.length()).map { a.stringAt(it) } }.orEmpty()
+        if (files.isEmpty() && launch.isEmpty) return Result.Invalid("no files")
         files.firstOrNull { !isSafeRelativePath(it) }?.let { return Result.Invalid("unsafe path \"$it\"") }
         if (files.toSet().size != files.size) return Result.Invalid("duplicate file")
+        // A launch-only preset places nothing; its state is still kept beside download_data's.
+        val targetValue = obj.stringOr("target", if (files.isEmpty()) PresetTarget.DOWNLOAD_DATA.storageValue else "")
+        val target = PresetTarget.fromStorage(targetValue) ?: return Result.Invalid("unknown target \"$targetValue\"")
         return Result.Ok(
             GamePreset(
                 titleId = titleId,
@@ -83,8 +120,53 @@ object PresetManifest {
                 description = obj.stringOr("description").trim(),
                 target = target,
                 files = files,
+                launch = launch,
             ),
         )
+    }
+
+    private sealed interface LaunchResult {
+        data class Ok(val launch: PresetLaunch) : LaunchResult
+        data class Invalid(val reason: String) : LaunchResult
+    }
+
+    /** "launch": {"env": {"KYTY_X": "1"}, "renderScale": 0.75, "gamePatch": "x.json"}; every field optional. */
+    private fun parseLaunch(obj: JSONObject?): LaunchResult {
+        obj ?: return LaunchResult.Invalid("launch is not an object")
+        val known = setOf("env", "renderScale", "gamePatch")
+        obj.keys().asSequence().firstOrNull { it !in known }?.let { return LaunchResult.Invalid("unknown launch option \"$it\"") }
+        val env = linkedMapOf<String, String>()
+        if (obj.has("env")) {
+            val envObj = obj.optJSONObject("env") ?: return LaunchResult.Invalid("launch env is not an object")
+            for (key in envObj.keys().asSequence().sorted()) {
+                if (!PresetLaunch.ENV_KEY.matches(key)) return LaunchResult.Invalid("env name \"$key\" is not a KYTY_ knob")
+                val value = envObj.opt(key)
+                if (value !is String || !PresetLaunch.ENV_VALUE.matches(value)) {
+                    return LaunchResult.Invalid("invalid value for $key")
+                }
+                env[key] = value
+            }
+        }
+        val renderScale = if (obj.has("renderScale")) {
+            val value = obj.opt("renderScale")
+            val scale = (value as? Number)?.toFloat()
+            if (scale == null || scale.isNaN() || scale < PresetLaunch.MIN_RENDER_SCALE || scale > PresetLaunch.MAX_RENDER_SCALE) {
+                return LaunchResult.Invalid("renderScale must be a number in ${PresetLaunch.MIN_RENDER_SCALE}..${PresetLaunch.MAX_RENDER_SCALE}")
+            }
+            scale
+        } else {
+            null
+        }
+        val gamePatch = if (obj.has("gamePatch")) {
+            val path = obj.opt("gamePatch") as? String
+            if (path == null || !isSafeRelativePath(path) || !path.endsWith(PresetLaunch.GAME_PATCH_SUFFIX)) {
+                return LaunchResult.Invalid("gamePatch must be a relative .json path")
+            }
+            path
+        } else {
+            null
+        }
+        return LaunchResult.Ok(PresetLaunch(env, renderScale, gamePatch))
     }
 
     /** A forward-slash path below the target folder: no leading slash, no ".", "..", or empty segments. */

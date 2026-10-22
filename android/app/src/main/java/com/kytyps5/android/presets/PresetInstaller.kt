@@ -34,6 +34,7 @@ class PresetInstaller(
         titleId: String,
         available: List<GamePreset>,
         enabledIds: Set<String>,
+        launchBytes: (GamePreset, String) -> ByteArray = ::noLaunchSource,
         bytes: (GamePreset, String) -> ByteArray,
     ): Report {
         val applied = mutableListOf<String>()
@@ -42,7 +43,7 @@ class PresetInstaller(
         available.forEach { preset ->
             try {
                 if (preset.id in enabledIds) {
-                    apply(preset) { path -> bytes(preset, path) }
+                    apply(preset, launchBytes = { path -> launchBytes(preset, path) }) { path -> bytes(preset, path) }
                     applied += preset.id
                 } else if (remove(titleId, preset.id)) {
                     removed += preset.id
@@ -62,11 +63,19 @@ class PresetInstaller(
         return Report(applied, removed, errors)
     }
 
-    /** Places [preset]'s files (contents from [bytes] by preset path) and records them. */
+    /**
+     * Places [preset]'s files (contents from [bytes] by preset path) and records them, and keeps its
+     * launch file ([PresetLaunch.gamePatch], contents from [launchBytes]) at [launchFile].
+     */
     @Throws(IOException::class)
-    fun apply(preset: GamePreset, bytes: (String) -> ByteArray) {
+    fun apply(
+        preset: GamePreset,
+        launchBytes: (String) -> ByteArray = { noLaunchSource(preset, it) },
+        bytes: (String) -> ByteArray,
+    ) {
         // Read everything first: a missing preset file must not leave a half-applied preset.
         val contents = preset.files.associateWith(bytes)
+        val launchContents = preset.launch.gamePatch?.let { it to launchBytes(it) }
         val targetDir = preset.target.directory(filesDir, preset.titleId)
         val previous = readState(preset.titleId, preset.id)
         val ours = previous?.files?.associateBy { it.path }.orEmpty()
@@ -81,7 +90,16 @@ class PresetInstaller(
         // Record before writing, so a crash part-way leaves files a later removal still knows about.
         writeState(AppliedState(preset.titleId, preset.id, preset.target, records))
         contents.forEach { (path, data) -> writeIfChanged(File(targetDir, path), data) }
+        val launchDir = launchDir(preset.titleId, preset.id)
+        launchContents?.let { (path, data) -> writeIfChanged(File(launchDir, path), data) }
+        // Launch files an older version of the preset shipped.
+        val keep = launchContents?.let { File(launchDir, it.first) }
+        launchDir.walkBottomUp().filter { it.isFile && it != keep }.forEach { it.delete() }
+        if (launchContents == null) launchDir.deleteRecursively()
     }
+
+    /** Where [presetId]'s launch file [path] is kept for [titleId] while the preset is on. */
+    fun launchFile(titleId: String, presetId: String, path: String): File = File(launchDir(titleId, presetId), path)
 
     /** Removes what [presetId] placed for [titleId] and restores backups; false when nothing was applied. */
     @Throws(IOException::class)
@@ -89,6 +107,7 @@ class PresetInstaller(
         val state = readState(titleId, presetId) ?: return false
         state.files.forEach { removeFile(state, it) }
         backupDir(titleId, presetId).deleteRecursively()
+        launchDir(titleId, presetId).deleteRecursively()
         if (!stateFile(titleId, presetId).delete()) throw IOException("cannot delete state for $presetId")
         return true
     }
@@ -133,6 +152,8 @@ class PresetInstaller(
     private fun stateFile(titleId: String, presetId: String) = File(File(stateRoot, titleId), presetId + STATE_SUFFIX)
 
     private fun backupDir(titleId: String, presetId: String) = File(File(stateRoot, titleId), presetId + BACKUP_SUFFIX)
+
+    private fun launchDir(titleId: String, presetId: String) = File(File(stateRoot, titleId), presetId + LAUNCH_SUFFIX)
 
     private fun readState(titleId: String, presetId: String): AppliedState? {
         val file = stateFile(titleId, presetId)
@@ -189,6 +210,10 @@ class PresetInstaller(
         const val STATE_DIR_NAME = "_GamePresets"
         private const val STATE_SUFFIX = ".json"
         private const val BACKUP_SUFFIX = ".backup"
+        private const val LAUNCH_SUFFIX = ".launch"
+
+        private fun noLaunchSource(preset: GamePreset, path: String): ByteArray =
+            throw IOException("${preset.id}: no source for launch file $path")
     }
 }
 

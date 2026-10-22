@@ -6,6 +6,7 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import com.kytyps5.android.presets.GamePresets
+import com.kytyps5.android.presets.PresetLaunchArgs
 import org.libsdl.app.SDLActivity
 
 /**
@@ -16,17 +17,21 @@ class GameActivity : SDLActivity() {
 
     private var overlays: GameOverlays? = null
 
+    /** Launch options of the title's presets that are on (set in onCreate, before SDL asks for the arguments). */
+    private var presetLaunch = PresetLaunchArgs.Plan(emptyList(), emptyList())
+
     /** SDL loads these in order in onCreate: shared SDL3 first, then the emulator. */
     override fun getLibraries(): Array<String> = arrayOf("SDL3", "main")
 
     /**
      * Command line for the emulator, placed on the launching Intent by MainActivity. The app's
      * private files directory is passed first as --data-dir so logs, shader dumps and caches land
-     * in app storage instead of the (unwritable) process directory.
+     * in app storage instead of the (unwritable) process directory. The launch options of the
+     * game's presets that are on come last (PresetLaunchArgs).
      */
     override fun getArguments(): Array<String> {
         val launchArgs = intent?.getStringArrayExtra(LaunchArgs.EXTRA_GAME_ARGS) ?: emptyArray()
-        return arrayOf(LaunchArgs.FLAG_DATA_DIR, filesDir.absolutePath) + launchArgs
+        return PresetLaunchArgs.apply(arrayOf(LaunchArgs.FLAG_DATA_DIR, filesDir.absolutePath) + launchArgs, presetLaunch)
     }
 
     /**
@@ -45,7 +50,7 @@ class GameActivity : SDLActivity() {
         GameEnvironment.apply(intent?.getStringArrayExtra(LaunchArgs.EXTRA_ENV))
         // Also before super.onCreate: the game's config presets must be in place when it boots.
         // The path comes from the launch args too, so adb launches (tools/kyrun.sh) get them as well.
-        GamePresets(this, LauncherSettings(this)).prepareLaunch(
+        presetLaunch = GamePresets(this, LauncherSettings(this)).prepareLaunch(
             intent?.getStringExtra(LaunchArgs.EXTRA_GAME_PATH)
                 ?: intent?.getStringArrayExtra(LaunchArgs.EXTRA_GAME_ARGS)?.let(LaunchArgs::gamePath),
         )

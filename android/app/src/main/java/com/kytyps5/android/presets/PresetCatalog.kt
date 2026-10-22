@@ -54,6 +54,11 @@ class PresetCatalog(private val source: PresetSource, private val log: (String) 
     fun fileBytes(preset: GamePreset, path: String): ByteArray =
         source.read(join(join(preset.titleId, preset.id), "${PresetManifest.FILES_DIR}/$path"))
 
+    /** Bytes of a launch file of [preset] ([PresetLaunch.gamePatch]), shipped under launch/. */
+    @Throws(IOException::class)
+    fun launchFileBytes(preset: GamePreset, path: String): ByteArray =
+        source.read(join(join(preset.titleId, preset.id), "${PresetManifest.LAUNCH_DIR}/$path"))
+
     private fun load(titleFolder: String, presetFolder: String): GamePreset? {
         val manifestPath = "$titleFolder/$presetFolder/${PresetManifest.FILE_NAME}"
         val json = try {
