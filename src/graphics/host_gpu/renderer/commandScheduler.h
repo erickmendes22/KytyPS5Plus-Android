@@ -113,6 +113,7 @@ private:
 		uint64_t          debug_submit_id {0};
 		uint32_t          debug_arg0 {0}, debug_arg1 {0}, debug_arg2 {0}, debug_arg3 {0};
 		uint64_t          debug_arg4 {0};
+		uint32_t          work {0}; // draws + dispatches (KYTY_SUBMIT_STATS)
 	};
 
 	void BeginNext();

@@ -590,6 +590,8 @@ target_include_directories(rp_ops_fold_tests PRIVATE ${inc_headers})
 add_executable(dead_lane_defaults_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/DeadLaneDefaultsTests.cpp")
 target_include_directories(dead_lane_defaults_tests PRIVATE ${inc_headers})
 
+add_executable(fan_auto_policy_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FanAutoPolicyTests.cpp")
+target_include_directories(fan_auto_policy_tests PRIVATE ${inc_headers})
 add_executable(half_rate_tiles_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HalfRateTilesTests.cpp")
 target_include_directories(half_rate_tiles_tests PRIVATE ${inc_headers})
 
@@ -814,6 +816,8 @@ target_sources(shader_recompiler_compute_tests PRIVATE
 	"${gpu_test_ms_depth_header}")
 
 add_kyty_full_emulator_test(virtual_memory_allocation_tests "${KYTY_TESTS_DIR}/VirtualMemoryAllocationTests.cpp")
+# GpuPipeline::RecordThread handoff; run with KYTY_PIPE_BATCH=0 and =1.
+add_kyty_full_emulator_test(gpu_pipeline_batch_tests "${KYTY_TESTS_DIR}/GpuPipelineBatchTests.cpp")
 target_compile_definitions(virtual_memory_allocation_tests PRIVATE
 	KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS=1)
 

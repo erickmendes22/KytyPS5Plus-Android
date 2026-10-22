@@ -29,6 +29,7 @@
 #include "kernel/memory.h"
 #include "kernel/threadPlacement.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
+#include "graphics/host_gpu/renderer/submitStats.h"
 #include "libs/agc.h"
 #include "libs/errno.h"
 
@@ -273,7 +274,7 @@ void CommandProcessor::FlushForInterrupt() {
 	                     std::chrono::steady_clock::now().time_since_epoch())
 	                     .count();
 	const auto flush_ns =
-	    Config::SubmitCoalesceEnabled() ? kInterruptFlushCoalesceNs : kInterruptFlushNs;
+	    Config::SubmitCoalesceEnabled() ? SubmitStats::InterruptFlushNs(kInterruptFlushCoalesceNs) : kInterruptFlushNs;
 	if (m_interrupt_pending_ns == 0) {
 		m_interrupt_pending_ns = now;
 	} else if (now - m_interrupt_pending_ns >= flush_ns) {
@@ -445,7 +446,7 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 	const bool idle_submit  = Config::IdleSubmitEnabled();
 	// Small enough to refill an idle GPU quickly, large enough that a submit's fixed cost
 	// (a few ms of driver time on Turnip/KGSL, on the submit thread) stays amortised.
-	constexpr uint32_t kIdleSubmitMinWork = 16;
+	const uint32_t kIdleSubmitMinWork = SubmitStats::IdleMinWork();
 	if (src_sel == 2) {
 		buffer_cache.FillBuffer(
 		    dst_address_or_offset, num_bytes,
@@ -481,7 +482,7 @@ bool GuestGpu::TryDeferFlush() {
 		// Something else (a flip, a download) ended the command buffer since: a new batch.
 		m_deferred_count = 0;
 	}
-	if (m_deferred_count >= kMaxDeferredFlushes) {
+	if (m_deferred_count >= SubmitStats::CoalesceMax()) {
 		return false;
 	}
 	{
@@ -847,7 +848,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 	const bool idle_submit  = Config::IdleSubmitEnabled();
 	// Small enough to refill an idle GPU quickly, large enough that a submit's fixed cost
 	// (a few ms of driver time on Turnip/KGSL, on the submit thread) stays amortised.
-	constexpr uint32_t kIdleSubmitMinWork = 16;
+	const uint32_t kIdleSubmitMinWork = SubmitStats::IdleMinWork();
 	// KYTY_GPU_PIPELINE: draws and dispatches are recorded by the record thread; every other packet
 	// drains it first (gpuPipeline.h), and so does leaving this function.
 	m_fan_on     = WalkFan::Enabled();
@@ -1162,7 +1163,7 @@ void CommandProcessor::QueueRecord(Common::UniqueFunction<void, CommandBuffer&>&
 		record(scheduler.Current());
 		m_renderer.GetBufferCache().StampPendingWrites();
 		PublishWalkView();
-		constexpr uint32_t kIdleSubmitMinWork = 16;
+		const uint32_t kIdleSubmitMinWork = SubmitStats::IdleMinWork();
 		if (Config::IdleSubmitEnabled() && scheduler.Active() &&
 		    scheduler.GpuStarved(kIdleSubmitMinWork)) {
 			Common::PerfStats::Count(Common::PerfStats::Counter::IdleSubmits);

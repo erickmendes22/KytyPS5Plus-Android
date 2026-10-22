@@ -7,6 +7,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
+#include "graphics/host_gpu/renderer/submitStats.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 
 #include <algorithm>
@@ -66,6 +67,7 @@ void AppendReport(std::string& out, double per_frame) {
 		out += part;
 	}
 	RpStats::Append(out, per_frame);
+	SubmitStats::Append(out, per_frame);
 	using WalkFan::Outcome;
 	const auto take = [&](Outcome o) { return static_cast<double>(WalkFan::TakeCount(o)) * per_frame; };
 	std::snprintf(part, sizeof(part), " fan: sub=%.0f ok=%.0f gpu_mod=%.1f no_backing=%.1f invalid=%.1f inval=%.1f",
@@ -101,6 +103,17 @@ bool Enabled() {
 	return LiveKnobs::Int("gpu_pipe", env_on ? 1 : 0) != 0;
 }
 
+bool BatchEnabled() {
+	static const bool env_on = [] {
+		// Default on with KYTY_GPU_FAN=auto (the auto mode turns the pipeline on and off), else off.
+		const char* value = std::getenv("KYTY_PIPE_BATCH");
+		const bool  on    = value != nullptr ? std::strcmp(value, "1") == 0 : WalkFan::AutoMode();
+		LOGF("KYTY_PIPE_BATCH: batched record-thread handoff %s\n", on ? "on" : "off");
+		return on;
+	}();
+	return LiveKnobs::Int("pipe_batch", env_on ? 1 : 0) != 0;
+}
+
 RecordThread::RecordThread() {
 	pthread_attr_t attr;
 	pthread_attr_init(&attr);
@@ -126,12 +139,16 @@ void* RecordThread::Entry(void* self) {
 
 void RecordThread::Enqueue(Common::UniqueFunction<void>&& job) {
 	std::unique_lock lock(m_mutex);
-	if (m_jobs.size() >= kMaxQueued) {
+	if (m_jobs.size() + m_running >= kMaxQueued + 1) {
 		const Common::PerfStats::ScopedWait wait(Common::PerfStats::Wait::GpuPipeFull);
-		m_done.wait(lock, [this] { return m_jobs.size() < kMaxQueued; });
+		++m_full_waiters;
+		m_done.wait(lock, [this] { return m_jobs.size() + m_running < kMaxQueued + 1; });
+		--m_full_waiters;
 	}
 	m_jobs.push_back(std::move(job));
-	m_work.notify_one();
+	if (!m_batch || m_sleeping) {
+		m_work.notify_one();
+	}
 }
 
 void RecordThread::Drain() {
@@ -140,7 +157,9 @@ void RecordThread::Drain() {
 		return;
 	}
 	const Common::PerfStats::ScopedWait wait(Common::PerfStats::Wait::GpuPipeDrain);
+	++m_drain_waiters;
 	m_done.wait(lock, [this] { return m_jobs.empty() && !m_busy; });
+	--m_drain_waiters;
 }
 
 size_t RecordThread::Queued() const {
@@ -167,28 +186,52 @@ void RecordThread::Run(const std::stop_token& stop) {
 	t_on_back = true;
 	pthread_setname_np(pthread_self(), "KytyGpuRecord");
 	Common::PerfStats::SampleThisThreadWallClock(); // --perf-stats wall stacks of both stages
+	std::deque<Common::UniqueFunction<void>> batch;
 	for (;;) {
-		Common::UniqueFunction<void> job;
+		const bool batched = BatchEnabled();
 		{
 			std::unique_lock lock(m_mutex);
+			m_batch    = batched;
+			m_sleeping = true;
 			m_work.wait(lock, [&] { return stop.stop_requested() || !m_jobs.empty(); });
+			m_sleeping = false;
 			if (m_jobs.empty()) {
 				return;
 			}
-			job    = std::move(m_jobs.front());
-			m_busy = true;
-			m_jobs.pop_front();
+			if (batched) {
+				batch.swap(m_jobs);
+			} else {
+				batch.push_back(std::move(m_jobs.front()));
+				m_jobs.pop_front();
+			}
+			m_running = static_cast<uint32_t>(batch.size());
+			m_busy    = true;
 		}
-		m_done.notify_all(); // a slot is free
-		{
-			const Common::PerfStats::ScopedWait busy(Common::PerfStats::Wait::GpuPipeRecord);
-			job();
+		if (!batched) {
+			m_done.notify_all(); // a slot is free
 		}
-		{
-			std::lock_guard lock(m_mutex);
-			m_busy = false;
+		for (auto& job: batch) {
+			{
+				const Common::PerfStats::ScopedWait busy(Common::PerfStats::Wait::GpuPipeRecord);
+				job();
+			}
+			job = {};
+			bool wake = !batched;
+			{
+				std::lock_guard lock(m_mutex);
+				--m_running;
+				if (m_running == 0) {
+					m_busy = false;
+				}
+				// Batched: wake the front only if it waits for a slot, or for a drain that is now done.
+				wake = wake || m_full_waiters != 0 ||
+				       (m_drain_waiters != 0 && m_running == 0 && m_jobs.empty());
+			}
+			if (wake) {
+				m_done.notify_all();
+			}
 		}
-		m_done.notify_all();
+		batch.clear();
 	}
 }
 

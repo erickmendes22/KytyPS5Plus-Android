@@ -280,7 +280,13 @@ void NoteBackingWrite(uint64_t host_address, uint64_t size);
 WalkPool& Pool();
 
 // KYTY_GPU_FAN=0/1 (default 1 on Android, 0 elsewhere) or live gpu_fan=0/1; read by the front at submission boundaries.
+// KYTY_GPU_FAN=auto (or KYTY_FAN_AUTO=1): on while the mean SRT walk costs >= 25 us, off once it
+// falls to <= 18 us (KYTY_FAN_AUTO_ON_US / _OFF_US), per 2 s window with a 6 s dwell
+// (fanAutoPolicy.h); every window and switch is logged as "[fan-auto]". The fan-out also turns
+// the two-stage pipeline on, so auto decides both. Calls from the front only (it updates the policy).
 [[nodiscard]] bool Enabled();
+// KYTY_GPU_FAN=auto is in effect.
+[[nodiscard]] bool AutoMode();
 // Live fan_memo=1 (default 0): ProgramCache::SubmitWalk remembers request key -> entry (LookupMemo).
 [[nodiscard]] bool MemoEnabled();
 // Live fan_shadow=1: the recorder also walks every accepted job itself and compares.
