@@ -71,20 +71,11 @@ TileManager::~TileManager() {
 			m_graphics.device.destroyPipeline(pipeline, nullptr);
 		}
 	}
-	if (m_d16_to_d24 != nullptr) {
-		m_graphics.device.destroyPipeline(m_d16_to_d24, nullptr);
-	}
-	if (m_d16_to_d32 != nullptr) {
-		m_graphics.device.destroyPipeline(m_d16_to_d32, nullptr);
-	}
-	if (m_d24_to_d16 != nullptr) {
-		m_graphics.device.destroyPipeline(m_d24_to_d16, nullptr);
-	}
-	if (m_d32_to_d16 != nullptr) {
-		m_graphics.device.destroyPipeline(m_d32_to_d16, nullptr);
-	}
-	if (m_color_transform != nullptr) {
-		m_graphics.device.destroyPipeline(m_color_transform, nullptr);
+	for (auto pipeline:
+	     {m_d16_to_d24, m_d16_to_d32, m_d24_to_d16, m_d32_to_d16, m_color_transform}) {
+		if (pipeline != nullptr) {
+			m_graphics.device.destroyPipeline(pipeline, nullptr);
+		}
 	}
 	if (m_pipeline_layout != nullptr) {
 		m_graphics.device.destroyPipelineLayout(m_pipeline_layout, nullptr);
@@ -220,42 +211,37 @@ vk::Pipeline TileManager::GetPipeline(uint32_t slot) {
 	if (m_pipelines[slot] != nullptr) {
 		return m_pipelines[slot];
 	}
-	struct Shader {
-		const uint32_t* code;
-		size_t          words;
-	};
-	static constexpr std::array<Shader, FamilyCount> shaders {{
-	    {GPU_TILER_STANDARD256_SPV, std::size(GPU_TILER_STANDARD256_SPV)},
-	    {GPU_TILER_STANDARD4_SPV, std::size(GPU_TILER_STANDARD4_SPV)},
-	    {GPU_TILER_STANDARD4_3D_SPV, std::size(GPU_TILER_STANDARD4_3D_SPV)},
-	    {GPU_TILER_STANDARD64_SPV, std::size(GPU_TILER_STANDARD64_SPV)},
-	    {GPU_TILER_STANDARD64_3D_SPV, std::size(GPU_TILER_STANDARD64_3D_SPV)},
-	    {GPU_TILER_PRT_SPV, std::size(GPU_TILER_PRT_SPV)},
-	    {GPU_TILER_PRT_3D_SPV, std::size(GPU_TILER_PRT_3D_SPV)},
-	    {GPU_TILER_RENDER_TARGET_SPV, std::size(GPU_TILER_RENDER_TARGET_SPV)},
-	    {GPU_TILER_DEPTH_SPV, std::size(GPU_TILER_DEPTH_SPV)},
-	}};
-	const uint32_t                                   element_index = slot % BytesPerElementCount;
+	static constexpr std::array<std::span<const uint32_t>, FamilyCount> shaders {
+	    GPU_TILER_STANDARD256_SPV, GPU_TILER_STANDARD4_SPV,     GPU_TILER_STANDARD4_3D_SPV,
+	    GPU_TILER_STANDARD64_SPV,  GPU_TILER_STANDARD64_3D_SPV, GPU_TILER_PRT_SPV,
+	    GPU_TILER_PRT_3D_SPV,      GPU_TILER_RENDER_TARGET_SPV, GPU_TILER_DEPTH_SPV};
+	const uint32_t                   element_index   = slot % BytesPerElementCount;
 	const uint32_t                   direction_index = slot / (FamilyCount * BytesPerElementCount);
 	const uint32_t                   family_index    = (slot / BytesPerElementCount) % FamilyCount;
 	const uint32_t                   values[] {1u << element_index, direction_index};
 	const vk::SpecializationMapEntry entries[] {{0, 0, 4}, {1, 4, 4}};
 	const vk::SpecializationInfo     specialization {2, entries, sizeof(values), values};
-	const auto module =
-	    CompileSPV({shaders[family_index].code, shaders[family_index].words}, m_graphics.device);
+	m_pipelines[slot] = CreatePipeline(shaders[family_index], &specialization);
+	return m_pipelines[slot];
+}
+
+vk::Pipeline TileManager::CreatePipeline(std::span<const uint32_t>     code,
+                                         const vk::SpecializationInfo* specialization) const {
+	const auto                        module = CompileSPV(code, m_graphics.device);
 	vk::PipelineShaderStageCreateInfo stage {};
 	stage.stage               = vk::ShaderStageFlagBits::eCompute;
 	stage.module              = module;
 	stage.pName               = "main";
-	stage.pSpecializationInfo = &specialization;
+	stage.pSpecializationInfo = specialization;
 	vk::ComputePipelineCreateInfo create {};
-	create.stage  = stage;
-	create.layout = m_pipeline_layout;
-	const auto result =
-	    m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr, &m_pipelines[slot]);
+	create.stage          = stage;
+	create.layout         = m_pipeline_layout;
+	vk::Pipeline pipeline = nullptr;
+	const auto   result =
+	    m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr, &pipeline);
 	m_graphics.device.destroyShaderModule(module, nullptr);
 	RequireVulkanSuccess(result, "create TileManager pipeline");
-	return m_pipelines[slot];
+	return pipeline;
 }
 
 void TileManager::Record(vk::Buffer source, uint64_t source_offset, uint64_t source_capacity,
@@ -434,39 +420,21 @@ uint32_t TileManager::ConversionRows(uint64_t offset, uint64_t row_stride, uint6
 
 void TileManager::ConvertD16(Result source, Result target, D16Direction direction, bool d32,
                              const D16Layout& layout) {
-	vk::Pipeline* pipeline_pointer = nullptr;
+	vk::Pipeline*             pipeline_pointer = nullptr;
+	std::span<const uint32_t> code;
 	if (direction == D16Direction::Promote) {
 		pipeline_pointer = d32 ? &m_d16_to_d32 : &m_d16_to_d24;
+		code             = GPU_TILER_PROMOTE_D16_SPV;
 	} else {
 		pipeline_pointer = d32 ? &m_d32_to_d16 : &m_d24_to_d16;
+		code             = GPU_TILER_DEMOTE_D16_SPV;
 	}
 	auto& pipeline = *pipeline_pointer;
 	if (pipeline == nullptr) {
 		const uint32_t                   value = d32 ? 1u : 0u;
 		const vk::SpecializationMapEntry entry {0, 0, sizeof(value)};
 		const vk::SpecializationInfo     specialization {1, &entry, sizeof(value), &value};
-		const uint32_t*                  code  = nullptr;
-		size_t                           words = 0;
-		if (direction == D16Direction::Promote) {
-			code  = GPU_TILER_PROMOTE_D16_SPV;
-			words = std::size(GPU_TILER_PROMOTE_D16_SPV);
-		} else {
-			code  = GPU_TILER_DEMOTE_D16_SPV;
-			words = std::size(GPU_TILER_DEMOTE_D16_SPV);
-		}
-		const auto module = CompileSPV({code, words}, m_graphics.device);
-		vk::PipelineShaderStageCreateInfo stage {};
-		stage.stage               = vk::ShaderStageFlagBits::eCompute;
-		stage.module              = module;
-		stage.pName               = "main";
-		stage.pSpecializationInfo = &specialization;
-		vk::ComputePipelineCreateInfo create {};
-		create.stage  = stage;
-		create.layout = m_pipeline_layout;
-		const auto result =
-		    m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr, &pipeline);
-		m_graphics.device.destroyShaderModule(module, nullptr);
-		RequireVulkanSuccess(result, "create D16 conversion pipeline");
+		pipeline = CreatePipeline(code, &specialization);
 	}
 
 	const uint64_t source_element =
@@ -599,18 +567,7 @@ void TileManager::TransformColor(Result input, Result output, ColorTransform tra
 	        output.size < input.size);
 	const auto pixels = static_cast<uint32_t>(input.size / element_bytes);
 	if (m_color_transform == nullptr) {
-		const auto module = CompileSPV(GPU_TILER_COLOR_TRANSFORM_SPV, m_graphics.device);
-		vk::PipelineShaderStageCreateInfo stage {};
-		stage.stage  = vk::ShaderStageFlagBits::eCompute;
-		stage.module = module;
-		stage.pName  = "main";
-		vk::ComputePipelineCreateInfo create {};
-		create.stage  = stage;
-		create.layout = m_pipeline_layout;
-		const auto result =
-		    m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr, &m_color_transform);
-		m_graphics.device.destroyShaderModule(module, nullptr);
-		RequireVulkanSuccess(result, "create color transform pipeline");
+		m_color_transform = CreatePipeline(GPU_TILER_COLOR_TRANSFORM_SPV, nullptr);
 	}
 	const auto input_binding  = BindStorage(input, input.size);
 	const auto output_binding = BindStorage(output, input.size);
