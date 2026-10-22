@@ -73,7 +73,7 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 	if (access == PageFaultAccess::Write) {
 		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemWriteFault);
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
-		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
+		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size, RefreshCause::ForFault());
 		// KYTY_FAULT_WINDOW_KB=<n> (power of two, 8..1024; 0 = off): a write fault also makes
 		// the clean buffer-tracked pages of its aligned n KiB block writable, so a guest that
 		// fills a buffer page by page takes one fault per block instead of one per 4 KiB page
@@ -114,7 +114,7 @@ bool RenderContext::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 		return false;
 	}
 	m_buffer_cache.InvalidateMemory(vaddr, size);
-	m_texture_cache.InvalidateMemory(vaddr, size);
+	m_texture_cache.InvalidateMemory(vaddr, size, RefreshCause::Source::Kernel);
 	return true;
 }
 

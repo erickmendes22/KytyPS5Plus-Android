@@ -71,6 +71,9 @@ ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 	    .wave_slices          = EnvToggle("KYTY_WAVE_SLICES", false),
 	    .quad_dpp             = EnvToggle("KYTY_QUAD_DPP", turnip) &&
 	                graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eQuad),
+	    .relative_swizzle     = EnvToggle("KYTY_SWIZZLE_RELATIVE", false) &&
+	                        graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eShuffleRelative) &&
+	                        graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eShuffle),
 	    .bvh_vector_loads     = EnvToggle("KYTY_BVH_VEC", false),
 	    .packed_interp        = EnvToggle("KYTY_PACKED_INTERP", turnip) &&
 	                     !graphics.optional_features.fragment_shader_barycentric,
@@ -111,6 +114,7 @@ ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 	                                      paths.uniform_constant_buffer_bytes,
 	                                      paths.uniform_buffers_per_stage,
 	                                      paths.uniform_constants_compute_only ? " (compute only)" : ""));
+	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: relative_swizzle={}\n", paths.relative_swizzle));
 	paths.ftz32_ops = ProbeFtz32Ops(graphics, turnip);
 	paths.pixel_live_election = EnvToggle("KYTY_PS_LIVE_ELECT", turnip);
 	if (paths.pixel_live_election) {

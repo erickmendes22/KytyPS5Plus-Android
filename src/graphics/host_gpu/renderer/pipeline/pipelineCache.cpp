@@ -567,6 +567,7 @@ struct PipelineCache::ProgramCache {
 		         .subgroup_arithmetic =
 		             graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eArithmetic),
 		         .subgroup_quad_dpp = fast_paths.quad_dpp,
+		         .relative_swizzle  = fast_paths.relative_swizzle,
 		         .bvh_vector_loads  = fast_paths.bvh_vector_loads,
 		         .bvh_emulation     = fast_paths.bvh_emulation,
 		         .packed_varying_locations = fast_paths.packed_interp ? PackedVaryingLocations() : 0u,
@@ -1080,7 +1081,7 @@ struct PipelineCache::ProgramCache {
             f.uniform_buffers_per_stage, f.native_float16, f.subgroup_quad_dpp, f.bvh_vector_loads, f.packed_varying_locations, f.drop_carried_vertex_data, f.fold_same_condition_selects, f.vs_live_vertex_exec, f.dead_lane_fold, f.single_mode_alias_slots, fast_paths.uniform_constants_compute_only,
             f.constant_lane_broadcast, f.subgroup_size_min,
             f.compute_required_subgroup_min, f.compute_required_subgroup_max,
-            f.first_lane_value_sets, f.bvh_emulation) + fmt::format(" ftz32={} pslive={}", f.ftz32_ops, f.pixel_live_election) +
+            f.first_lane_value_sets, f.bvh_emulation) + fmt::format(" ftz32={} pslive={} rswz={}", f.ftz32_ops, f.pixel_live_election, f.relative_swizzle) +
             fmt::format(" loopguard={}/{}", LoopGuard::Spec() != nullptr ? LoopGuard::Spec() : "",
                         LoopGuard::Limit());
 		return XXH3_64bits(text.data(), text.size());

@@ -67,8 +67,10 @@ public:
 
 	[[nodiscard]] bool ClearImageFromBuffer(CommandBuffer& command, uint64_t address, uint64_t size,
 	                                        uint32_t packed_clear);
-	void               InvalidateMemory(uint64_t address, uint64_t size);
-	void               InvalidateMemoryFromGPU(uint64_t address, uint64_t size);
+	void               InvalidateMemory(uint64_t address, uint64_t size,
+	                                    RefreshCause::Source source = RefreshCause::Source::Other);
+	void               InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
+	                                           RefreshCause::Source source = RefreshCause::Source::GpuBuffer);
 	[[nodiscard]] bool IsRegionRegistered(uint64_t address, uint64_t size);
 
 	[[nodiscard]] bool IsMeta(uint64_t address);
@@ -182,7 +184,8 @@ private:
 	void CopyImageMip(ImageId destination, ImageId source, uint32_t mip, uint32_t layer);
 	void ValidateImageDesc(const ImageDesc& desc) const;
 
-	void               InvalidateCpuAliases(uint64_t address, uint64_t size);
+	void               InvalidateCpuAliases(uint64_t address, uint64_t size,
+	                                        RefreshCause::Source source = RefreshCause::Source::Other);
 	[[nodiscard]] bool DownloadImageMemory(ImageId id);
 
 	GraphicContext&                                   m_graphics;

@@ -25,6 +25,7 @@
 #include "libs/audio.h"
 
 #include <algorithm>
+#include <fmt/format.h>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -1269,22 +1270,46 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 
 // --perf-stats: which images are re-uploaded from guest memory, and why. Logs an image on its
 // 1st, 2nd, 4th, 8th, ... refresh (at most 600 lines), so images refreshed every frame stand out.
+// src= / bsrc= name what made the guest bytes newer (RefreshCause). Every 256 refreshes an
+// [img-refresh-sum] line totals the refreshed bytes by source and by image kind.
 static void NoteImageRefresh(const Image& image, bool buffer_modified, bool cpu_dirty) {
 	static std::mutex                             mutex;
 	static std::unordered_map<uint64_t, uint32_t> counts;
 	static uint32_t                               logged = 0;
+	static uint64_t                               refreshes = 0;
+	static std::array<uint64_t, static_cast<size_t>(RefreshCause::Source::Count)> bytes_by_source {};
+	static uint64_t                               rt_bytes = 0;
+	static uint64_t                               total_bytes = 0;
 	std::lock_guard lock(mutex);
+	const auto source = buffer_modified ? image.buffer_source : image.dirty_source;
+	bytes_by_source[static_cast<size_t>(source)] += image.info.data.size;
+	total_bytes += image.info.data.size;
+	if (image.usage.render_target || image.usage.storage || image.IsGpuModified()) {
+		rt_bytes += image.info.data.size;
+	}
+	if (++refreshes % 256 == 0) {
+		std::string line;
+		for (size_t i = 0; i < bytes_by_source.size(); i++) {
+			line += fmt::format(" {}={}", RefreshCause::Name(static_cast<RefreshCause::Source>(i)),
+			                    bytes_by_source[i] >> 20u);
+		}
+		LOGF("[img-refresh-sum] refreshes=%" PRIu64 " MiB=%" PRIu64 " (target/storage %" PRIu64
+		     ") by source:%s\n",
+		     refreshes, total_bytes >> 20u, rt_bytes >> 20u, line.c_str());
+	}
 	const auto      n = ++counts[image.info.data.address];
 	if (!std::has_single_bit(n) || logged >= 600) {
 		return;
 	}
 	logged++;
 	LOGF("[img-refresh] addr=0x%010" PRIx64 " size=0x%" PRIx64 " %ux%ux%u fmt=%s tile=%u n=%u"
-	     " buffer_modified=%d cpu_dirty=%d\n",
+	     " buffer_modified=%d cpu_dirty=%d src=%s bsrc=%s rt=%d storage=%d\n",
 	     image.info.data.address, image.info.data.size, image.info.extent.width,
 	     image.info.extent.height, image.info.extent.depth,
 	     vk::to_string(image.info.pixel_format).c_str(),
-	     static_cast<uint32_t>(image.info.tile_mode), n, buffer_modified ? 1 : 0, cpu_dirty ? 1 : 0);
+	     static_cast<uint32_t>(image.info.tile_mode), n, buffer_modified ? 1 : 0, cpu_dirty ? 1 : 0,
+	     RefreshCause::Name(image.dirty_source), RefreshCause::Name(image.buffer_source),
+	     image.usage.render_target ? 1 : 0, image.usage.storage ? 1 : 0);
 }
 
 void TextureCache::RefreshImage(ImageId id) {
@@ -1840,13 +1865,13 @@ void TextureCache::NoteClearForRpStats(Image& image, const vk::ImageSubresourceR
 	image.rp_clear_pending = full_color;
 }
 
-void TextureCache::InvalidateMemory(uint64_t address, uint64_t size) {
+void TextureCache::InvalidateMemory(uint64_t address, uint64_t size, RefreshCause::Source source) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {address, size}.Valid()) {
 		EXIT("TextureCache: invalid memory-invalidation range\n");
 	}
 	std::scoped_lock lock {m_lock};
-	InvalidateCpuAliases(address, size);
+	InvalidateCpuAliases(address, size, source);
 }
 
 void TextureCache::DownloadDepth(Image& image, Buffer& destination, uint64_t destination_offset) {
@@ -2026,7 +2051,8 @@ bool TextureCache::DownloadImageMemory(ImageId id) {
 	return true;
 }
 
-void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
+void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
+                                           RefreshCause::Source source) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {address, size}.Valid()) {
 		return;
@@ -2040,11 +2066,15 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
 		if (image.IsGpuModified()) {
 			image.ClearGpuModified();
 		}
+		if (!image.IsBufferModified()) {
+			image.buffer_source = source;
+		}
 		image.MarkBufferModified();
 	}
 }
 
-void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
+void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
+                                        RefreshCause::Source source) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	const auto page_begin = Common::AlignDown(address, TRACKER_PAGE_SIZE);
 	const auto page_end   = Common::AlignUp(address + size, TRACKER_PAGE_SIZE);
@@ -2052,6 +2082,9 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
 		auto owner = m_slot_images.try_get(id);
 		if (owner == nullptr) {
 			continue;
+		}
+		if (!owner->IsCpuDirty()) {
+			owner->dirty_source = source;
 		}
 		if (owner->Overlaps(address, size)) {
 			owner->MarkCpuDirty();

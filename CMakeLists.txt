@@ -706,6 +706,8 @@ add_executable(ftz32_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Ftz32Tests.cpp")
 target_include_directories(ftz32_tests PRIVATE ${inc_headers})
 add_executable(bda_table_size_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BdaTableSizeTests.cpp")
 target_include_directories(bda_table_size_tests PRIVATE ${inc_headers})
+add_executable(ds_swizzle_lanes_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/DsSwizzleLanesTests.cpp")
+target_include_directories(ds_swizzle_lanes_tests PRIVATE ${inc_headers})
 add_executable(lane_election_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/LaneElectionTests.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/translate/LaneElection.cpp"

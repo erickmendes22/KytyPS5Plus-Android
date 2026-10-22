@@ -8,6 +8,8 @@
 #include <bit>
 #include <utility>
 
+#include "graphics/shader/recompiler/backend/spirv/dsSwizzleLanes.h"
+
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 namespace {
 
@@ -1793,13 +1795,75 @@ void EmitSharedAtomicMaskedOr32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	                 });
 }
 
+namespace {
+
+// KYTY_SWIZZLE_RELATIVE: DS_SWIZZLE patterns that read a fixed lane offset within each 32-lane
+// group (dsSwizzleLanes.h), as relative shuffles. Mesa ir3 (a7xx/a8xx) turns an indexed shuffle
+// into a rotate by (index - invocation), which is divergent here (two deltas for a rotate) and
+// becomes a loop; a shuffle up/down/xor by a constant is one shfl. Same lanes read, same
+// exec/activity gating.
+using RelativeSwizzle = DsSwizzle::Relative;
+
+bool RelativeSwizzleAvailable(const ValueEmitContext& ctx) {
+	const auto& state = ctx.state;
+	return state.device_features.relative_swizzle && ctx.other_half == nullptr &&
+	       state.lane_half == 0 && state.lane_count == 1 && !state.subgroup_isolated &&
+	       state.device_features.subgroup_size_min >= 32u;
+}
+
+uint32_t EmitRelativeShuffle(EmitterState& state, spv::Op op, uint32_t type, uint32_t value,
+                             uint32_t amount) {
+	state.builder.RequireCapability(op == spv::OpGroupNonUniformShuffleXor
+	                                    ? spv::CapabilityGroupNonUniformShuffle
+	                                    : spv::CapabilityGroupNonUniformShuffleRelative);
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(op, type, result, ConstantU32(state, spv::ScopeSubgroup), value,
+	                          ConstantU32(state, amount));
+	return result;
+}
+
+// `value` (of `type`) as read from the swizzle's source lane.
+uint32_t EmitRelativeRead(EmitterState& state, const RelativeSwizzle& swizzle, uint32_t type,
+                          uint32_t value, uint32_t wrapped) {
+	if (swizzle.amount == 0u) return value;
+	if (swizzle.kind == RelativeSwizzle::Kind::Xor) {
+		return EmitRelativeShuffle(state, spv::OpGroupNonUniformShuffleXor, type, value, swizzle.amount);
+	}
+	// Rotate: lanes below 32 - amount read `amount` lanes up, the rest wrap back to the start of
+	// their own 32-lane group (32 - amount lanes down).
+	const auto down = EmitRelativeShuffle(state, spv::OpGroupNonUniformShuffleDown, type, value,
+	                                      swizzle.amount);
+	const auto up = EmitRelativeShuffle(state, spv::OpGroupNonUniformShuffleUp, type, value,
+	                                    32u - swizzle.amount);
+	return Select(state, type, wrapped, up, down); // DsSwizzle::RelativeSourceLane
+}
+
+} // namespace
+
 uint32_t EmitSwizzleU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto& state = ctx.state;
 	state.builder.AddFunction(spv::OpStore, ctx.scratch_u32_variable, ctx.Arg(inst, 0));
-	const auto source = EmitNative<spv::OpLoad, IR::Type::U32>(state, ctx.scratch_u32_variable);
-	const auto target = EmitDsSwizzleTargetLane(state, EmitSubgroupLocalInvocationId(state),
-	                                            inst.Arg(1).IsImmediate() ? inst.Arg(1).U32() : 0);
-	return EmitDsMaskedLaneRead(state, source, target, ctx.Arg(inst, 2));
+	const auto source  = EmitNative<spv::OpLoad, IR::Type::U32>(state, ctx.scratch_u32_variable);
+	const auto control = inst.Arg(1).IsImmediate() ? inst.Arg(1).U32() : 0;
+	const auto target  = EmitDsSwizzleTargetLane(state, EmitSubgroupLocalInvocationId(state), control);
+	const auto swizzle = DsSwizzle::Classify(control);
+	if (swizzle.kind == RelativeSwizzle::Kind::None || !RelativeSwizzleAvailable(ctx)) {
+		return EmitDsMaskedLaneRead(state, source, target, ctx.Arg(inst, 2));
+	}
+	// Same result as EmitDsMaskedLaneRead: the source lane's value if that lane is active and
+	// in EXEC, else 0.
+	uint32_t wrapped = 0;
+	if (swizzle.kind == RelativeSwizzle::Kind::Rotate && swizzle.amount != 0u) {
+		const auto lane = Binary(state, spv::OpBitwiseAnd, TypeU32(state),
+		                         EmitSubgroupLocalInvocationId(state), ConstantU32(state, 31));
+		wrapped = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), lane,
+		                 ConstantU32(state, 32u - swizzle.amount));
+	}
+	const auto shuffled    = EmitRelativeRead(state, swizzle, TypeU32(state), source, wrapped);
+	const auto source_exec = EmitRelativeRead(state, swizzle, TypeBool(state), ctx.Arg(inst, 2), wrapped);
+	const auto source_active =
+	    AndCondition(state, source_exec, EmitSubgroupLaneActiveBool(state, target));
+	return Select(state, TypeU32(state), source_active, shuffled, ConstantU32(state, 0));
 }
 
 uint32_t EmitPermuteU32(ValueEmitContext& ctx, const IR::Inst& inst) {

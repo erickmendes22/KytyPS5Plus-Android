@@ -3,6 +3,7 @@
 
 #include "common/alignment.h"
 #include "graphics/host_gpu/renderer/image/rpFold.h"
+#include "graphics/host_gpu/renderer/cache/refreshCause.h"
 #include "common/assert.h"
 #include "common/slotVector.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -186,6 +187,10 @@ public:
 	size_t           lru_id             = 0;
 	// CommandBuffer::PassSerial() of the last render pass a draw used this image in.
 	uint64_t         pass_serial        = 0;
+	// --perf-stats [img-refresh]: what first made the guest bytes newer than the native image
+	// (CPU side) and what last marked them buffer-modified (GPU buffer writes). Diagnostic only.
+	RefreshCause::Source dirty_source  = RefreshCause::Source::New;
+	RefreshCause::Source buffer_source = RefreshCause::Source::Other;
 
 private:
 	friend struct ImageTestAccess;

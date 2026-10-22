@@ -867,7 +867,25 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 			     StageName(options.stage), options.shader_hash, half_ops);
 		}
 	}
+	// Passes slower than 100 ms are logged by name (UE5 PPSA14708's cs b48e83a9 spent ~29 s
+	// between translation and emission).
+	auto       pass_begin = std::chrono::steady_clock::now();
+	const auto pass_done  = [&](const char* pass) {
+		const auto now = std::chrono::steady_clock::now();
+		const auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(now - pass_begin).count();
+		pass_begin     = now;
+		if (ms >= 100) {
+			LOGF("%s slow pass: stage=%s hash=0x%016" PRIx64 " pass=%s elapsed_ms=%lld insts=%zu\n",
+			     GetDumpLabel(options), StageName(options.stage), options.shader_hash, pass,
+			     static_cast<long long>(ms), [&ir] {
+				     size_t count = 0;
+				     for (const auto* block: ir.blocks) count += static_cast<size_t>(std::distance(block->begin(), block->end()));
+				     return count;
+			     }());
+		}
+	};
 	IR::RewriteToSsa(ir.blocks);
+	pass_done("RewriteToSsa");
 	const bool wqm_entry_lane_fold = options.device_features.wqm_entry_lane_fold;
 	const bool first_lane_sets     = options.device_features.first_lane_value_sets;
 	const auto simplify = [&ir, wqm_entry_lane_fold, first_lane_sets] {
@@ -877,6 +895,7 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 		IR::EliminateDeadCode(ir.blocks);
 	};
 	simplify();
+	pass_done("simplify1");
 	const auto read_lane_stats = IR::EliminateReadLane(
 	    ir, ir.wave_size,
 	    options.device_features.subgroup_arithmetic ||
@@ -885,8 +904,10 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 		LOGF("%s read-lane elimination: reads=%" PRIu32 " reductions=%" PRIu32 "\n",
 		     GetDumpLabel(options), read_lane_stats.rewritten_reads, read_lane_stats.rewritten_reductions);
 	}
+	pass_done("EliminateReadLane");
 	// Cleanup also exposes profitable folds by removing dead predicate consumers.
 	simplify();
+	pass_done("simplify2");
 	if (options.device_features.native_float16) {
 		const auto half = IR::LowerNativeFloat16(ir.blocks);
 		if (half.scalar != 0u || half.packed != 0u) {
@@ -902,6 +923,7 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 			for (const auto& inst: *block)
 				EXIT_NOT_IMPLEMENTED(inst.GetOpcode() == IR::ValueOpcode::GetShaderBase);
 	}
+	pass_done("fp16");
 	LowerTessellationMemory(ir, options);
 	std::string cfg_dump;
 	if (options.dump_ir) {
@@ -911,7 +933,9 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 			     MakeIrDump(cfg_dump, ir).c_str());
 		}
 	}
+	pass_begin = std::chrono::steady_clock::now();
 	IR::TrackResources(ir, decoded, native_cfg, options.input_info);
+	pass_done("TrackResources");
 	ir.uniform_buffer_limit = options.device_features.uniform_constant_buffer_bytes;
 	TranslateResult result;
 	result.program = std::move(ir);

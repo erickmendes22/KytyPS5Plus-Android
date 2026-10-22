@@ -35,6 +35,8 @@ struct ShaderFastPaths {
 	bool wave_slices          = false;
 	// ShaderDeviceFeatures::subgroup_quad_dpp (KYTY_QUAD_DPP; default Mesa Turnip, =0 opts out).
 	bool quad_dpp             = false;
+	// ShaderDeviceFeatures::relative_swizzle (KYTY_SWIZZLE_RELATIVE; default off).
+	bool relative_swizzle     = false;
 	// ShaderDeviceFeatures::bvh_vector_loads (KYTY_BVH_VEC, default off).
 	bool bvh_vector_loads = false;
 	// ShaderDeviceFeatures::packed_varying_locations (KYTY_PACKED_INTERP; default Mesa Turnip).
