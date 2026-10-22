@@ -66,6 +66,10 @@ object LaunchArgs {
     /** Directory of an imported Vulkan driver package; omitted for the system driver. */
     const val FLAG_GPU_DRIVER = "--gpu-driver"
 
+    /** The game path in an emulator command line (the value after --game), or null. */
+    fun gamePath(args: Array<String>): String? =
+        args.indexOf(FLAG_GAME).takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }?.takeIf { it.isNotEmpty() }
+
     fun forGame(
         gamePath: String,
         resolution: Resolution,

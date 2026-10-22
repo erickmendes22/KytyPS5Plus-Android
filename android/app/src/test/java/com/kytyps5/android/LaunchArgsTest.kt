@@ -122,4 +122,14 @@ class LaunchArgsTest {
         // Settings saved before the option existed follow the global setting.
         assertEquals(null, GameSettings.fromJson("""{"resolution":"1080","hud":true}""").gpuTurbo)
     }
+
+    @Test
+    fun gamePathIsTheValueAfterTheGameFlag() {
+        val args = LaunchArgs.forGame("/sdcard/g/PPSA14708.exfat", Resolution.HD_720, "/drv")
+        assertEquals("/sdcard/g/PPSA14708.exfat", LaunchArgs.gamePath(args))
+        assertEquals("/x", LaunchArgs.gamePath(arrayOf("--perf-stats", "--game", "/x", "--printf-direction", "File")))
+        assertEquals(null, LaunchArgs.gamePath(arrayOf("--perf-stats")))
+        assertEquals(null, LaunchArgs.gamePath(arrayOf("--game")))
+        assertEquals(null, LaunchArgs.gamePath(arrayOf("--game", "")))
+    }
 }

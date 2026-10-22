@@ -26,6 +26,7 @@ import com.kytyps5.android.input.OverlayProfileStore
 import com.kytyps5.android.library.CoverLoader
 import com.kytyps5.android.library.GameGridAdapter
 import com.kytyps5.android.library.GameSettingsDialog
+import com.kytyps5.android.presets.GamePresets
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -69,6 +70,7 @@ class MainActivity : Activity() {
             activity = this,
             settings = settings,
             layouts = OverlayProfileStore(File(filesDir, OverlayProfileStore.DIRECTORY_NAME)),
+            presets = GamePresets(this, settings),
             driverLabel = { drivers.gameButtonText(it.path) },
             chooseDriver = { game, done -> drivers.chooseForGame(game, done) },
         )

@@ -79,6 +79,15 @@ class LauncherSettings(context: Context) {
         prefs.edit().apply { if (driverId == null) remove(key) else putString(key, driverId) }.apply()
     }
 
+    /** Ids of the shipped config presets (GamePresets) turned on for a title; none by default (opt-in). */
+    fun enabledPresets(titleId: String): Set<String> =
+        prefs.getStringSet(KEY_GAME_PRESETS_PREFIX + titleId, null)?.toSet().orEmpty()
+
+    fun setEnabledPresets(titleId: String, presetIds: Set<String>) {
+        val key = KEY_GAME_PRESETS_PREFIX + titleId
+        prefs.edit().apply { if (presetIds.isEmpty()) remove(key) else putStringSet(key, presetIds.toSet()) }.apply()
+    }
+
     companion object {
         /** Stored driver id meaning "the device's own Vulkan driver". */
         const val SYSTEM_DRIVER = ""
@@ -95,5 +104,6 @@ class LauncherSettings(context: Context) {
         private const val KEY_TOUCH_CONTROLS = "touch_controls_enabled"
         private const val KEY_GPU_TURBO = "gpu_turbo"
         private const val KEY_GAME_SETTINGS_PREFIX = "game_settings:"
+        private const val KEY_GAME_PRESETS_PREFIX = "game_presets:"
     }
 }

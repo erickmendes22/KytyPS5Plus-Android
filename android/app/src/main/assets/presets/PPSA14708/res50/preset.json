@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "res50",
+  "name": "Render at 50% (1080p)",
+  "description": "UE5 renders at 50% / 1080p instead of 4K: much faster (about 2.3x), slightly softer image. Also avoids the magenta ground tiles seen at 4K.",
+  "target": "download_data",
+  "files": [
+    "commandos/saved/unreal engine/engine/config/userengine.ini",
+    "commandos/saved/unreal engine/engine/config/userdeviceprofiles.ini",
+    "commandos/saved/ps5/engine.ini",
+    "commandos/saved/ps5/deviceprofiles.ini"
+  ]
+}

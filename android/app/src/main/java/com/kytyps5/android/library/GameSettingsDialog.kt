@@ -12,22 +12,26 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Spinner
+import android.widget.Switch
 import android.widget.TextView
 import com.kytyps5.android.GameEntry
 import com.kytyps5.android.LauncherSettings
 import com.kytyps5.android.RenderScale
 import com.kytyps5.android.Resolution
 import com.kytyps5.android.input.OverlayProfileStore
+import com.kytyps5.android.presets.GamePreset
+import com.kytyps5.android.presets.GamePresets
 
 /**
- * Per-game settings: resolution, GPU driver, HUD and touch-controller overrides, and environment
- * variables for Mesa/Turnip (the per-game driver + env editor of Eden, reimplemented; Eden is
- * GPL-3.0 and only its design is reused).
+ * Per-game settings: resolution, GPU driver, HUD and touch-controller overrides, the title's
+ * shipped config presets (opt-in), and environment variables for Mesa/Turnip (the per-game driver
+ * + env editor of Eden, reimplemented; Eden is GPL-3.0 and only its design is reused).
  */
 class GameSettingsDialog(
     private val activity: Activity,
     private val settings: LauncherSettings,
     private val layouts: OverlayProfileStore,
+    private val presets: GamePresets,
     private val driverLabel: (GameEntry) -> String,
     private val chooseDriver: (GameEntry, () -> Unit) -> Unit,
 ) {
@@ -51,6 +55,8 @@ class GameSettingsDialog(
             typeface = Typeface.MONOSPACE
         }
         val errors = label("", secondary = true)
+        val titleId = presets.titleIdFor(game)
+        val presetSwitches = titleId?.let { presets.available(it) }.orEmpty().map { it to presetSwitch(it) }
         val driverButton = Button(activity).apply {
             text = driverLabel(game)
             isAllCaps = false
@@ -69,6 +75,14 @@ class GameSettingsDialog(
             addView(hud.first)
             addView(touch.first)
             addView(gpuTurbo.first)
+            if (presetSwitches.isNotEmpty()) {
+                addView(label("Game presets", bold = true))
+                addView(label("Known-good config files for this game, written into its data folder before launch. Off removes them again.", secondary = true))
+                presetSwitches.forEach { (preset, switch) ->
+                    addView(switch)
+                    if (preset.description.isNotEmpty()) addView(label(preset.description, secondary = true))
+                }
+            }
             addView(label("Environment variables (one KEY=VALUE per line)", bold = true))
             addView(env)
             addView(presetsRow(env))
@@ -109,11 +123,15 @@ class GameSettingsDialog(
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                     ),
                 )
+                if (titleId != null && presetSwitches.isNotEmpty()) {
+                    presets.setEnabled(titleId, presetSwitches.filter { it.second.isChecked }.map { it.first.id }.toSet())
+                }
                 dialog.dismiss()
             }
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
                 settings.setGameSettings(game.path, GameSettings.DEFAULT)
                 settings.setGameGpuDriverOverride(game.path, null)
+                if (titleId != null && presetSwitches.isNotEmpty()) presets.setEnabled(titleId, emptySet())
                 dialog.dismiss()
             }
         }
@@ -130,6 +148,13 @@ class GameSettingsDialog(
             addView(spinner)
         }
         return row to { when (spinner.selectedItemPosition) { 1 -> true; 2 -> false; else -> null } }
+    }
+
+    private fun presetSwitch(preset: GamePreset) = Switch(activity).apply {
+        text = preset.name
+        textSize = 15f
+        isChecked = presets.isEnabled(preset)
+        setPadding(0, 8.dp, 0, 0)
     }
 
     private fun presetsRow(env: EditText): View = Button(activity).apply {

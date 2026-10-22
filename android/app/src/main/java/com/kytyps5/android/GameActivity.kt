@@ -5,6 +5,7 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import com.kytyps5.android.presets.GamePresets
 import org.libsdl.app.SDLActivity
 
 /**
@@ -42,6 +43,12 @@ class GameActivity : SDLActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         // Before super.onCreate: SDL loads the emulator (and Mesa reads TU_DEBUG etc.) from there on.
         GameEnvironment.apply(intent?.getStringArrayExtra(LaunchArgs.EXTRA_ENV))
+        // Also before super.onCreate: the game's config presets must be in place when it boots.
+        // The path comes from the launch args too, so adb launches (tools/kyrun.sh) get them as well.
+        GamePresets(this, LauncherSettings(this)).prepareLaunch(
+            intent?.getStringExtra(LaunchArgs.EXTRA_GAME_PATH)
+                ?: intent?.getStringArrayExtra(LaunchArgs.EXTRA_GAME_ARGS)?.let(LaunchArgs::gamePath),
+        )
         super.onCreate(savedInstanceState)
         enterImmersiveMode()
         if (!mBrokenLibraries) installOverlays()
