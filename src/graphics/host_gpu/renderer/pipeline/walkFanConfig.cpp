@@ -20,9 +20,10 @@ enum class FanMode { Off, On, Auto };
 
 FanMode EnvMode() {
 	static const FanMode mode = [] {
-		// Default on for Android (Mesa Turnip, the validated target); KYTY_GPU_FAN=0 opts out.
+		// Default auto for Android (Mesa Turnip, the validated target): fan-out + pipeline only while
+		// SRT walks are expensive. KYTY_GPU_FAN=0 / =1 force off / on.
 #if defined(__ANDROID__)
-		constexpr FanMode default_mode = FanMode::On;
+		constexpr FanMode default_mode = FanMode::Auto;
 #else
 		constexpr FanMode default_mode = FanMode::Off;
 #endif
