@@ -4,6 +4,7 @@
 #include "graphics/host_gpu/renderer/pipeline/fanAutoPolicy.h"
 #include "graphics/shader/recompiler/ir/passes/WalkCost.h"
 
+#include <atomic>
 #include <chrono>
 #include <cinttypes>
 #include <cstdio>
@@ -77,11 +78,21 @@ bool AutoEngaged() {
 
 } // namespace
 
+namespace {
+std::atomic<bool> g_last_enabled {false};
+} // namespace
+
 bool Enabled() {
 	const FanMode mode = EnvMode();
 	// The live key gpu_fan=0/1 overrides every mode (A/B runs).
 	const bool fallback = mode == FanMode::Auto ? AutoEngaged() : mode == FanMode::On;
-	return LiveKnobs::Int("gpu_fan", fallback ? 1 : 0) != 0;
+	const bool enabled  = LiveKnobs::Int("gpu_fan", fallback ? 1 : 0) != 0;
+	g_last_enabled.store(enabled, std::memory_order_relaxed);
+	return enabled;
+}
+
+bool LastEnabled() {
+	return g_last_enabled.load(std::memory_order_relaxed);
 }
 
 bool AutoMode() {
