@@ -45,6 +45,38 @@ namespace {
 
 constexpr uint64_t NumFramesBeforeRemoval = 32;
 
+// --perf-stats: why the cache replaces or drops an image while resolving an overlap (each
+// replacement is a new native image, uploaded again from guest memory). Logs the first 400
+// events with both layouts and a per-reason total every 256 events ([img-recreate]).
+void NoteRecreate(const char* reason, const ImageInfo& requested, const ImageInfo& cached) {
+	if (!Common::PerfStats::Enabled()) {
+		return;
+	}
+	static std::mutex                               mutex;
+	static std::unordered_map<std::string, uint64_t> counts;
+	static uint64_t                                 events = 0;
+	std::lock_guard lock(mutex);
+	counts[reason]++;
+	if (++events <= 400) {
+		LOGF("[img-recreate] %s addr=0x%010" PRIx64 " req=%ux%ux%u %s tile=%u lv=%u ly=%u size=0x%" PRIx64
+		     " cached=0x%010" PRIx64 " %ux%ux%u %s tile=%u lv=%u ly=%u size=0x%" PRIx64 "\n",
+		     reason, requested.data.address, requested.extent.width, requested.extent.height,
+		     requested.extent.depth, vk::to_string(requested.pixel_format).c_str(),
+		     static_cast<uint32_t>(requested.tile_mode), requested.resources.levels,
+		     requested.resources.layers, requested.data.size, cached.data.address, cached.extent.width,
+		     cached.extent.height, cached.extent.depth, vk::to_string(cached.pixel_format).c_str(),
+		     static_cast<uint32_t>(cached.tile_mode), cached.resources.levels, cached.resources.layers,
+		     cached.data.size);
+	}
+	if (events % 256 == 0) {
+		std::string line;
+		for (const auto& [name, count]: counts) {
+			line += fmt::format(" {}={}", name, count);
+		}
+		LOGF("[img-recreate-sum] events=%" PRIu64 "%s\n", events, line.c_str());
+	}
+}
+
 [[nodiscard]] bool DecodeColorClear(const TextureCache::ImageDesc& desc, uint8_t code,
                                   vk::ClearColorValue& clear) {
 	const auto& metadata = desc.info.metadata;
@@ -801,6 +833,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		           "TextureCache: unsupported unequal-sample depth overlap copy (%u -> %u)\n",
 		           cached.backing.samples, replacement.backing.samples);
 	}
+	NoteRecreate("depth-replace", requested, cached.info);
 	FreeImage(cached_id);
 	return replacement_id;
 }
@@ -889,14 +922,17 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 			                        left.surface_z == right.surface_z;
 		                 }))) {
 			if (safe_to_delete) {
+				NoteRecreate("layout-free", requested, cached.info);
 				FreeImage(cached_id);
 			}
 			return {merged_id};
 		}
 		if (requested.GetColorTransform() != cached.info.GetColorTransform()) {
+			NoteRecreate("expand-color-transform", requested, cached.info);
 			return {ExpandImage(requested, cached_id)};
 		}
 		if (requested.IsBlock() && !cached.info.IsBlock()) {
+			NoteRecreate("expand-block", requested, cached.info);
 			return {ExpandImage(requested, cached_id)};
 		}
 		// Volume depth is not an array-layer count. A larger depth can retain the
@@ -907,6 +943,7 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		      requested.extent.width == cached.info.extent.width &&
 		      requested.extent.height == cached.info.extent.height &&
 		      requested.extent.depth > cached.info.extent.depth))) {
+			NoteRecreate("expand-volume", requested, cached.info);
 			return {ExpandImage(requested, cached_id)};
 		}
 		// PPSA08394
@@ -919,6 +956,7 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		         : requested.extent.width > cached.info.extent.width &&
 		               requested.extent.height >= cached.info.extent.height &&
 		               requested.extent.depth >= cached.info.extent.depth)) {
+			NoteRecreate("expand-view", requested, cached.info);
 			return {ExpandImage(requested, cached_id)};
 		}
 		// PS5 mip tails can expose more levels without increasing the guest allocation.
@@ -929,6 +967,7 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		      requested.extent == cached.info.extent &&
 		      cached.info.resources.levels > 1 &&
 		      requested.resources.layers == cached.info.resources.layers))) {
+			NoteRecreate("expand-mips", requested, cached.info);
 			return {ExpandImage(requested, cached_id)};
 		}
 		if (requested.type != cached.info.type) {
@@ -964,16 +1003,19 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	if (mip >= 0) {
 		const int32_t layer = cached.info.SliceOf(requested, mip);
 		if (!merged_id) {
+			NoteRecreate("expand-mip-of", requested, cached.info);
 			return {ExpandImage(requested, cached_id)};
 		}
 		cached.binding.needs_rebind |= cached.binding.is_bound || cached.binding.is_target;
 		m_slot_images[merged_id].binding.is_target |= cached.binding.is_target;
 		CopyImageMip(merged_id, cached_id, static_cast<uint32_t>(mip),
 		             static_cast<uint32_t>(layer));
+		NoteRecreate("merge-mip", requested, cached.info);
 		FreeImage(cached_id);
 		return {merged_id};
 	}
 	if (requested.data.address >= cached.info.data.address && safe_to_delete) {
+		NoteRecreate("partial-free", requested, cached.info);
 		FreeImage(cached_id);
 	}
 	return {merged_id};
@@ -1464,6 +1506,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			if (exact_format && resolved.info.pixel_format != desc.info.pixel_format) {
 				result = {};
 			} else if (resolved.info.resources < desc.info.resources) {
+				NoteRecreate("fewer-resources", desc.info, resolved.info);
 				FreeImage(result);
 				result = {};
 			}
@@ -1473,6 +1516,18 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			                    desc.type == BindingType::DepthTarget;
 			result         = InsertImage(desc.info, {}, target);
 			auto& inserted = m_slot_images[result];
+			if (Common::PerfStats::Enabled()) {
+				const Image* overlapping = nullptr;
+				for (const auto candidate: candidates) {
+					const auto* owner = m_slot_images.try_get(candidate);
+					if (owner != nullptr && candidate != result) {
+						overlapping = owner;
+						break;
+					}
+				}
+				NoteRecreate(overlapping == nullptr ? "insert-fresh" : "insert-overlapping", desc.info,
+				             overlapping == nullptr ? desc.info : overlapping->info);
+			}
 			if (m_buffer_cache.HasGpuDirtyBytes(inserted.info.data.address,
 			                                    inserted.info.data.size)) {
 				inserted.MarkBufferModified();

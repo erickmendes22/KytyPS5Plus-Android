@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -59,14 +60,33 @@ public:
 		for (const auto& use: users) affected.push_back(use.user);
 		// Pattern folds inspect nested operands even when intermediate operations
 		// stay dynamic. Visit consumers once per change, including cyclic Phi edges.
+		// KYTY_FOLD_USER_DEPTH=<n> (n > 0) stops after n levels of consumers: the full cone
+		// is walked for every change, which is quadratic in straight-line code (UE5 PPSA14708's
+		// cs b48e83a9, 73k instructions: ~27 s). Unset or 0: the whole cone (unchanged).
+		const uint32_t max_depth = UserDepthLimit();
+		size_t   level_end = affected.size();
+		uint32_t depth     = 1;
 		for (size_t i = 0; i < affected.size(); ++i) {
+			if (i == level_end) {
+				level_end = affected.size();
+				++depth;
+			}
 			auto* inst = affected[i];
 			const auto found = locations.find(inst);
 			if (found == locations.end() || found->second.visited == generation) continue;
 			found->second.visited = generation;
 			Queue(inst);
+			if (max_depth != 0u && depth >= max_depth) continue;
 			for (const auto& use: inst->Uses()) affected.push_back(use.user);
 		}
+	}
+
+	static uint32_t UserDepthLimit() {
+		static const uint32_t limit = [] {
+			const char* value = std::getenv("KYTY_FOLD_USER_DEPTH");
+			return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 0u;
+		}();
+		return limit;
 	}
 
 	Block::iterator Prepend(Block& block, Block::iterator before, ValueOpcode opcode,
