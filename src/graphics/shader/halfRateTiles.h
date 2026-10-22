@@ -1,7 +1,7 @@
 #ifndef GRAPHICS_SHADER_HALF_RATE_TILES_H
 #define GRAPHICS_SHADER_HALF_RATE_TILES_H
 
-// KYTY_RT_HALF=1 / KYTY_LIVE_KNOBS rt_half=0|1 (experiment, off by default): Astro Bot's tiled
+// KYTY_RT_HALF=0|1|2 / KYTY_LIVE_KNOBS rt_half=0|1|2 (default 2 with Mesa Turnip, see EnvMode): Astro Bot's tiled
 // deferred-lighting kernel CS 6856320a (research/NEXT.md "c17_rtC") shades one pixel in four.
 // The game's resolution and every other pass are unchanged.
 //
@@ -231,9 +231,29 @@ inline bool EnvFlag(const char* name) {
 	return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 }
 
-inline bool EnvEnabled() {
-	static const bool enabled = EnvFlag("KYTY_RT_HALF");
-	return enabled;
+// rt_half mode without a live knob: KYTY_RT_HALF=0 (off), 1 (half rate) or 2 (half rate with the
+// edge-quadrant re-shade). Unset (or anything else): 2 with Mesa Turnip, 0 elsewhere (user decision
+// 2026-10-22: c17_rtR12, RT 1.25-1.32x with native-looking edges).
+inline constexpr uint8_t kModeOff      = 0;
+inline constexpr uint8_t kModeHalf     = 1;
+inline constexpr uint8_t kModeAdaptive = 2;
+
+[[nodiscard]] constexpr uint8_t ResolveMode(const char* env, bool turnip) {
+	if (env != nullptr && env[0] != '\0' && env[1] == '\0' && env[0] >= '0' && env[0] <= '2') {
+		return static_cast<uint8_t>(env[0] - '0');
+	}
+	return turnip ? kModeAdaptive : kModeOff;
+}
+
+// Set once by the buffer cache when the device is known (before any shader compiles).
+inline std::atomic<bool>& DeviceTurnipStorage() {
+	static std::atomic<bool> turnip {false};
+	return turnip;
+}
+inline void SetDeviceTurnip(bool turnip) { DeviceTurnipStorage().store(turnip, std::memory_order_release); }
+
+inline uint8_t EnvMode() {
+	return ResolveMode(std::getenv("KYTY_RT_HALF"), DeviceTurnipStorage().load(std::memory_order_acquire));
 }
 
 inline bool CheckEnabled() {
@@ -249,24 +269,16 @@ inline std::atomic<uint64_t>& CheckAddressStorage() {
 inline uint64_t CheckAddress() { return CheckAddressStorage().load(std::memory_order_acquire); }
 inline void     SetCheckAddress(uint64_t address) { CheckAddressStorage().store(address, std::memory_order_release); }
 
-// live: 0 = KYTY_RT_HALF decides, 1 = off, 2 = on.
-inline bool EnvAdaptive() {
-	static const bool adaptive = [] {
-		const char* value = std::getenv("KYTY_RT_HALF");
-		return value != nullptr && std::strcmp(value, "2") == 0;
-	}();
-	return adaptive;
-}
-
 inline bool Applies(uint64_t hash, uint8_t live) {
 	if (hash != kShaderHash) {
 		return false;
 	}
-	return live == 0 ? EnvEnabled() : live >= 2;
+	// live: 0 = the default mode (EnvMode), 1 = off, 2 = half, 3 = half with the edge re-shade.
+	return live == 0 ? EnvMode() != kModeOff : live >= 2;
 }
 
 inline bool AppliesAdaptive(uint8_t live) {
-	return live == 0 ? EnvAdaptive() : live == 3;
+	return live == 0 ? EnvMode() == kModeAdaptive : live == 3;
 }
 
 // The variant a program of this hash compiles as: half, capture-only (check log on), or none.

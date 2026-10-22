@@ -111,8 +111,38 @@ void TestCompare() {
 	      "boundary counts appear in the cycle");
 }
 
+// Default mode (user decision 2026-10-22): rt_half=2 with Mesa Turnip, off elsewhere; KYTY_RT_HALF
+// overrides.
+static_assert(H::ResolveMode(nullptr, true) == H::kModeAdaptive);
+static_assert(H::ResolveMode(nullptr, false) == H::kModeOff);
+static_assert(H::ResolveMode("", true) == H::kModeAdaptive);
+static_assert(H::ResolveMode("0", true) == H::kModeOff);
+static_assert(H::ResolveMode("1", true) == H::kModeHalf);
+static_assert(H::ResolveMode("2", false) == H::kModeAdaptive);
+static_assert(H::ResolveMode("x", false) == H::kModeOff);
+static_assert(H::ResolveMode("12", true) == H::kModeAdaptive); // not a mode: the default
+
+void TestDefaultMode() {
+	unsetenv("KYTY_RT_HALF");
+	H::SetDeviceTurnip(true);
+	Check(H::EnvMode() == H::kModeAdaptive, "Turnip, KYTY_RT_HALF unset: mode 2");
+	Check(H::Variant(H::kShaderHash, 0, 16, 16, false) == H::kVariantAdaptive, "Turnip default compiles the rt_half=2 variant");
+	Check(H::Variant(H::kShaderHash, 1, 16, 16, false) == 0, "live rt_half=0 still turns it off on Turnip");
+	Check(H::Variant(0xd2c5a6652fd00b38ull, 0, 16, 16, false) == 0, "other kernels stay unpatched by default");
+	setenv("KYTY_RT_HALF", "0", 1);
+	Check(H::EnvMode() == H::kModeOff, "Turnip, KYTY_RT_HALF=0: off");
+	Check(H::Variant(H::kShaderHash, 0, 16, 16, false) == 0, "KYTY_RT_HALF=0 opts out on Turnip");
+	setenv("KYTY_RT_HALF", "1", 1);
+	Check(H::Variant(H::kShaderHash, 0, 16, 16, false) == H::kVariantHalf, "KYTY_RT_HALF=1 selects plain half rate");
+	unsetenv("KYTY_RT_HALF");
+	H::SetDeviceTurnip(false);
+	Check(H::EnvMode() == H::kModeOff, "non-Turnip, KYTY_RT_HALF unset: off");
+	Check(H::Variant(H::kShaderHash, 0, 16, 16, false) == 0, "non-Turnip default leaves the kernel native");
+}
+
 void TestVariant() {
 	unsetenv("KYTY_RT_HALF");
+	H::SetDeviceTurnip(false);
 	Check(H::Variant(H::kShaderHash, 2, 16, 16, false) == H::kVariantHalf, "live rt_half=1 selects the half variant");
 	Check(H::Variant(H::kShaderHash, 1, 16, 16, false) == 0, "live rt_half=0 keeps the kernel");
 	Check(H::Variant(H::kShaderHash, 1, 16, 16, true) == H::kVariantCaptureOnly, "check log captures the native kernel");
@@ -127,6 +157,7 @@ void TestVariant() {
 int main() {
 	TestCompare();
 	TestVariant();
+	TestDefaultMode();
 	if (g_failures != 0) return 1;
 	std::printf("HalfRateTilesTests: ok\n");
 	return 0;

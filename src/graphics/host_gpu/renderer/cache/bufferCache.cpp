@@ -607,7 +607,15 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 		LOGF("KYTY_LOOP_GUARD=%s, limit %u, trip log at 0x%016" PRIx64 "\n", LoopGuard::Spec(),
 		     LoopGuard::Limit(), m_loop_guard_log->BufferDeviceAddress());
 	}
-	if (std::getenv("KYTY_RT_HALF") != nullptr || std::getenv("KYTY_LIVE_KNOBS") != nullptr) {
+	HalfRateTiles::SetDeviceTurnip(m_graphics.IsMesaTurnip());
+	const auto rt_half_mode = HalfRateTiles::EnvMode();
+	LOGF("rt_half: mode %u (KYTY_RT_HALF=%s, Mesa Turnip %s) for RT lighting 0x%016" PRIx64 "\n",
+	     static_cast<unsigned>(rt_half_mode), std::getenv("KYTY_RT_HALF") != nullptr ? std::getenv("KYTY_RT_HALF") : "unset",
+	     m_graphics.IsMesaTurnip() ? "yes" : "no", HalfRateTiles::kShaderHash);
+	// The re-trace buffer is needed when the default mode is 2, or when live knobs may select it
+	// (unless KYTY_RT_HALF=0 turned the feature off).
+	if (rt_half_mode == HalfRateTiles::kModeAdaptive ||
+	    (std::getenv("KYTY_LIVE_KNOBS") != nullptr && rt_half_mode != HalfRateTiles::kModeOff)) {
 		// rt_half=2 (two dispatches): pass 1 lists edge pixels here, pass 2 dispatches over the compact
 		// list (indirect arguments at offset 0). Its address is baked in when the kernel compiles.
 		// Host-visible in check mode so PollRtHalfCheck can read the lists back.
@@ -1370,7 +1378,7 @@ void BufferCache::PollRtHalfCheck() {
 		return;
 	}
 	st.polled_ms    = now_ms;
-	const auto knob = LiveKnobs::Int("rt_half", HalfRateTiles::EnvEnabled() ? 1 : 0);
+	const auto knob = LiveKnobs::Int("rt_half", HalfRateTiles::EnvMode());
 	if (knob != st.knob) {
 		st.knob          = knob;
 		st.knob_since_ms = now_ms;

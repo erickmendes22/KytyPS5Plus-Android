@@ -380,6 +380,13 @@ static uint8_t LiveRtHalf() {
 	return value < 0 ? uint8_t {0} : value == 0 ? uint8_t {1} : value == 2 ? uint8_t {3} : uint8_t {2};
 }
 
+// rt_half=2 needs pass 2 (recorded for indirect dispatches only) and the re-trace buffer; without
+// them the adaptive variant would leave its edge pixels unwritten, so it falls back to rt_half=1.
+static uint8_t RtHalfFor(uint8_t live, bool two_pass_possible) {
+	const bool adaptive = live == 3u || (live == 0u && HalfRateTiles::EnvMode() == HalfRateTiles::kModeAdaptive);
+	return adaptive && !two_pass_possible ? uint8_t {2} : live;
+}
+
 // KYTY_LIVE_KNOBS rt_fill=4|9|0|99: the half-rate fill mode (shader/halfRateTiles.h).
 static uint8_t LiveRtFill() {
 	return HalfRateTiles::FillModeFromKnob(LiveKnobs::Int("rt_fill", 4));
@@ -414,7 +421,7 @@ ShaderComputeInputInfo RenderExecutor::DirectDispatchInputInfo(const HW::Compute
 	input_info.bvh_live      = LiveBvhOptions();
 	input_info.lane_branch_live = LiveLaneBranches();
 	input_info.dead_lane_live = LiveDeadLane();
-	input_info.rt_half_live   = LiveRtHalf();
+	input_info.rt_half_live   = RtHalfFor(LiveRtHalf(), false); // direct dispatches have no pass 2
 	input_info.rt_fill_live   = LiveRtFill();
 	const bool use_thread_dimensions = (mode & DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0;
 	input_info.dispatch_thread_dimensions = use_thread_dimensions;
@@ -722,9 +729,10 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	input_info.bvh_live              = LiveBvhOptions();
 	input_info.lane_branch_live      = LiveLaneBranches();
 	input_info.dead_lane_live        = LiveDeadLane();
-	input_info.rt_half_live          = LiveRtHalf();
+	input_info.rt_half_live          = RtHalfFor(LiveRtHalf(), m_context.GetBufferCache().RetraceBuffer() != nullptr);
 	input_info.rt_fill_live          = LiveRtFill();
-	if (input_info.rt_half_live == 3u && input_info.rt_fill_live == HalfRateTiles::kFillRetracePass) {
+	if ((input_info.rt_half_live == 3u || (input_info.rt_half_live == 0u && HalfRateTiles::EnvMode() == HalfRateTiles::kModeAdaptive)) &&
+	    input_info.rt_fill_live == HalfRateTiles::kFillRetracePass) {
 		input_info.rt_fill_live = HalfRateTiles::kFillNearest4; // that code marks pass 2 of rt_half=2
 	}
 	const auto pass2_input = input_info; // rt_half=2 pass 2 starts from the same inputs
