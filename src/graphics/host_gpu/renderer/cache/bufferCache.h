@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <map>
+#include <unordered_map>
 #include <shared_mutex>
 #include <memory>
 #include <span>
@@ -37,6 +38,7 @@ class BufferCache {
 public:
 	static constexpr uint32_t CACHING_PAGEBITS  = 14;
 	static constexpr uint64_t CACHING_PAGESIZE  = uint64_t {1} << CACHING_PAGEBITS;
+	static constexpr size_t   kStreamHistoryMax = 65536; // KYTY_STREAM_PROMOTE entries before a reset
 	static constexpr uint64_t CACHING_NUMPAGES  = (LOWER_ADDRESS_SIZE + LibKernel::Memory::kExtendedMemorySize) >> CACHING_PAGEBITS;
 	static constexpr uint64_t BDA_PAGETABLE_SIZE =
 	    CACHING_NUMPAGES * sizeof(vk::DeviceAddress);
@@ -245,6 +247,22 @@ private:
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;
+	// KYTY_STREAM_CACHED=1: a host-cached stream buffer for ObtainBuffer's small CPU-modified reads
+	// (live stream_cached=0 switches back to m_stream_buffer for an in-run A/B).
+	std::unique_ptr<StreamBuffer>                     m_stream_buffer_cached;
+	StreamBuffer&                                     SmallReadStream();
+	// KYTY_STREAM_PROMOTE (bufferCache.cpp ObtainBuffer): per small range streamed, the content hash
+	// of its last copy and how many copies in a row were unchanged (GPU thread / record thread).
+	struct StreamHistory {
+		uint64_t hash       = 0;
+		uint32_t unchanged  = 0;
+		uint32_t promotions = 0; // times this range was promoted (live stream_backoff=1 raises the bar)
+	};
+	std::unordered_map<uint64_t, StreamHistory>       m_stream_history;
+	// Ranges promoted so far, so switching the live key back to 0 can make them CPU-modified
+	// again (a clean in-run A/B: the "off" arm streams them as before).
+	std::vector<std::pair<uint64_t, uint64_t>>        m_stream_promoted;
+	int64_t                                           m_stream_promote_prev = 0;
 	StreamBuffer                                      m_download_buffer;
 	StreamBuffer                                      m_device_buffer;
 	std::unique_ptr<MeshEmulationRing>                m_mesh_emulation_ring;

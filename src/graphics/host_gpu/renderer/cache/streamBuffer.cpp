@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
 #include <numeric>
 #include <vk_mem_alloc.h>
@@ -21,10 +22,13 @@ namespace {
 constexpr size_t WATCHES_INITIAL_RESERVE = 0x4000;
 constexpr size_t WATCHES_RESERVE_CHUNK   = 0x1000;
 
-[[nodiscard]] VmaAllocationCreateFlags AllocationFlags(MemoryUsage usage) {
+[[nodiscard]] VmaAllocationCreateFlags AllocationFlags(MemoryUsage usage, bool host_cached) {
+	if (host_cached && usage != MemoryUsage::DeviceLocal) {
+		return VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+	}
 	switch (usage) {
-		case MemoryUsage::Upload:
 		case MemoryUsage::Stream:
+		case MemoryUsage::Upload:
 			return VMA_ALLOCATION_CREATE_MAPPED_BIT |
 			       VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 		case MemoryUsage::Download:
@@ -60,7 +64,7 @@ constexpr size_t WATCHES_RESERVE_CHUNK   = 0x1000;
 } // namespace
 
 Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
-               uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size)
+               uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size, bool host_cached)
     : m_graphics(&graphics), m_scheduler(&scheduler), m_usage(usage), m_cpu_address(cpu_address),
       m_size(size) {
 	KYTY_PROFILER_FUNCTION();
@@ -73,11 +77,14 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 	const bool with_bda = bool(flags & vk::BufferUsageFlagBits::eShaderDeviceAddress);
 	VmaAllocationCreateInfo allocation_info {};
 	allocation_info.flags =
-	    VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | AllocationFlags(usage);
+	    VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | AllocationFlags(usage, host_cached);
 	allocation_info.usage = AllocationUsage(usage);
 	allocation_info.preferredFlags = usage == MemoryUsage::DeviceLocal
 	                                     ? VkMemoryPropertyFlags {}
 	                                     : VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	if (host_cached && usage != MemoryUsage::DeviceLocal) {
+		allocation_info.preferredFlags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+	}
 
 	VmaAllocationInfo allocation_result {};
 	VkBuffer          native_buffer = VK_NULL_HANDLE;
@@ -113,6 +120,11 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 	vmaGetAllocationMemoryProperties(graphics.allocator, m_allocation, &properties);
 	m_coherent = (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
 	m_host_visible = (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+	if (usage == MemoryUsage::Stream) {
+		LOGF("Buffer: stream%s usage %d, %" PRIu64 " bytes, memory flags 0x%x (coherent=%d cached=%d)\n",
+		     host_cached ? " (host-cached)" : "", static_cast<int>(usage), size, static_cast<unsigned>(properties), m_coherent ? 1 : 0,
+		     (properties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0 ? 1 : 0);
+	}
 	if (allocation_result.pMappedData != nullptr) {
 		m_mapped = {static_cast<uint8_t*>(allocation_result.pMappedData),
 		            static_cast<size_t>(size)};
@@ -273,11 +285,11 @@ void Buffer::Fill(uint64_t offset, uint64_t size, uint32_t value) {
 }
 
 StreamBuffer::StreamBuffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
-                           uint64_t size)
+                           uint64_t size, bool host_cached)
     // Device-addressable: BufferCache::ObtainBuffer hands out stream-buffer slices for small
     // CPU-written reads, and consumers such as indirect-draw fixups take their device address.
     : Buffer(graphics, scheduler, usage, 0, AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-             size),
+             size, host_cached),
       m_current_watches(WATCHES_INITIAL_RESERVE), m_previous_watches(WATCHES_INITIAL_RESERVE) {}
 
 bool StreamBuffer::NormalizeReservation(bool coherent, uint64_t atom, uint64_t& size,
