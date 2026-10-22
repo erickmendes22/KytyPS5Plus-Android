@@ -810,6 +810,8 @@ target_sources(shader_recompiler_compute_tests PRIVATE
 	"${gpu_test_ms_depth_header}")
 
 add_kyty_full_emulator_test(virtual_memory_allocation_tests "${KYTY_TESTS_DIR}/VirtualMemoryAllocationTests.cpp")
+# GpuPipeline::RecordThread handoff; run with KYTY_PIPE_BATCH=0 and =1.
+add_kyty_full_emulator_test(gpu_pipeline_batch_tests "${KYTY_TESTS_DIR}/GpuPipelineBatchTests.cpp")
 target_compile_definitions(virtual_memory_allocation_tests PRIVATE
 	KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS=1)
 

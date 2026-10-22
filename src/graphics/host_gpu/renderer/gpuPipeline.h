@@ -27,8 +27,16 @@ namespace Libs::Graphics::GpuPipeline {
 // Read by the front at item boundaries.
 [[nodiscard]] bool Enabled();
 
+// KYTY_PIPE_BATCH=1 (default 0); with KYTY_LIVE_KNOBS=1 the live key pipe_batch=0/1 overrides it.
+// Batched handoff: the record thread takes every queued job at once and the two threads only wake
+// each other when the other one sleeps (a full queue, a drain, an idle record thread), instead of
+// three condition-variable broadcasts per job (a futex syscall each on bionic). Read by the record
+// thread before each batch.
+[[nodiscard]] bool BatchEnabled();
+
 // The record thread's job queue. Jobs run in order; Drain() returns once every job queued so far
-// has finished. Bounded: Enqueue blocks while kMaxQueued jobs wait.
+// has finished. Bounded: Enqueue blocks while kMaxQueued jobs wait (with batched handoff: while
+// kMaxQueued jobs are queued or taken but unfinished).
 class RecordThread {
 public:
 	static constexpr uint32_t kMaxQueued = 64;
@@ -54,6 +62,13 @@ private:
 	std::condition_variable                  m_done;
 	std::deque<Common::UniqueFunction<void>> m_jobs;
 	bool                                     m_busy = false;
+	// Batched handoff (BatchEnabled): the mode of the current batch, the jobs taken but not
+	// finished, whether the record thread sleeps on m_work, and the front threads waiting on m_done.
+	bool                                     m_batch         = false;
+	uint32_t                                 m_running       = 0;
+	bool                                     m_sleeping      = false;
+	uint32_t                                 m_full_waiters  = 0;
+	uint32_t                                 m_drain_waiters = 0;
 	// The recorder re-walks SRTs (fallback, stolen fan-out jobs), which recurse deeply
 	// (SrtWalker::EvaluateWide); bionic's default 1 MiB thread stack is not enough (walk workers:
 	// d9b44d54). A pthread with kStackBytes (virtual; touched pages only).
