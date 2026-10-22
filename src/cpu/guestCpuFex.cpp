@@ -222,8 +222,14 @@ FEXCore::Core::CpuStateFrame* CurrentFrame() {
 	return t_attached.state->Thread->CurrentFrame;
 }
 
+// How an entry call treats the guest frame-pointer chain.
+enum class FrameChain {
+	kContinue, // nested call from an HLE thunk: keep the trapped guest RBP so walks reach the caller
+	kRoot,     // outermost call on a thread: RBP points at a zeroed root frame record
+};
+
 uint64_t RunGuest(FEXCore::Core::CpuStateFrame* frame, uint64_t stack_base, uint64_t entry,
-                  std::span<const uint64_t> int_args) {
+                  std::span<const uint64_t> int_args, FrameChain chain) {
 	if (int_args.size() > kMaxCallArgs) {
 		Die("CallGuest supports at most 6 integer arguments");
 	}
@@ -231,10 +237,22 @@ uint64_t RunGuest(FEXCore::Core::CpuStateFrame* frame, uint64_t stack_base, uint
 	SavedGuestRegs saved;
 	saved.Save(frame->State);
 
-	auto& gregs = frame->State.gregs;
+	auto&    gregs = frame->State.gregs;
+	uint64_t top   = stack_base & ~uint64_t {15};
+	if (chain == FrameChain::kRoot) {
+		// Same root record as the x86 host entry paths (RunEntry, RunOnGuestStack): {saved rbp = 0,
+		// return address = 0}. Guest frame-pointer walkers stop at a zero return address or a zero
+		// RBP; without it the entry's saved RBP is whatever the thread started with (0), and a walk
+		// that only tests the return address reads [0 + 8] (Unity's backtrace in PPSA28855).
+		top -= 16;
+		auto* record = reinterpret_cast<uint64_t*>(top);
+		record[0]    = 0;
+		record[1]    = 0;
+		gregs[FEXCore::X86State::REG_RBP] = top;
+	}
 	// HandleCallback pushes its return trampoline below RSP; start 8 mod 16 so the callee sees a normal
 	// post-call alignment.
-	gregs[FEXCore::X86State::REG_RSP] = (stack_base & ~uint64_t {15}) - 8;
+	gregs[FEXCore::X86State::REG_RSP] = top - 8;
 
 	constexpr uint32_t kArgRegs[kMaxCallArgs] = {
 	    FEXCore::X86State::REG_RDI, FEXCore::X86State::REG_RSI, FEXCore::X86State::REG_RDX,
@@ -330,16 +348,18 @@ void SetGuestFsBase(uint64_t base) {
 uint64_t CallGuest(uint64_t entry, std::span<const uint64_t> int_args) {
 	if (Fex::g_hle_frame != nullptr) {
 		auto* frame = Fex::g_hle_frame;
-		return RunGuest(frame, frame->State.gregs[FEXCore::X86State::REG_RSP] - kRedZoneSkip, entry, int_args);
+		return RunGuest(frame, frame->State.gregs[FEXCore::X86State::REG_RSP] - kRedZoneSkip, entry, int_args,
+		                FrameChain::kContinue);
 	}
 	if (t_attached.state == nullptr) {
 		Die("CallGuest on a host thread that is not attached");
 	}
-	return RunGuest(CurrentFrame(), t_attached.stack_top - kEntryStackSlack, entry, int_args);
+	return RunGuest(CurrentFrame(), t_attached.stack_top - kEntryStackSlack, entry, int_args, FrameChain::kRoot);
 }
 
 uint64_t CallGuestOnStack(uint64_t stack_top, uint64_t entry, std::span<const uint64_t> int_args) {
-	return RunGuest(CurrentFrame(), stack_top - kEntryStackSlack, entry, int_args);
+	const FrameChain chain = Fex::g_hle_frame != nullptr ? FrameChain::kContinue : FrameChain::kRoot;
+	return RunGuest(CurrentFrame(), stack_top - kEntryStackSlack, entry, int_args, chain);
 }
 
 uint64_t AllocateGuestCode(std::span<const uint8_t> code) {

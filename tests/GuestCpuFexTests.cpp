@@ -332,6 +332,22 @@ void TestAddressFold() {
   std::puts("PASS T10 guest address folding");
 }
 
+// T11: an outermost guest call (thread entry, main entry) starts with RBP on a zeroed frame record
+// {saved rbp = 0, return address = 0}, as the x86 host path sets up. Guest frame-pointer walkers
+// (Unity's backtrace loop reads [rbp + 8] until it is 0) must stop there instead of reading 0x8.
+void TestRootFrameRecord() {
+  // mov rax, rbp ; test rax, rax ; jz bad ; mov rcx, [rbp] ; or rcx, [rbp + 8] ; jnz bad
+  // mov eax, 1 ; ret ; bad: xor eax, eax ; ret
+  const uint64_t probe = X86Code()
+                             .Op({0x48, 0x89, 0xE8, 0x48, 0x85, 0xC0, 0x74, 0x10})
+                             .Op({0x48, 0x8B, 0x4D, 0x00, 0x48, 0x0B, 0x4D, 0x08, 0x75, 0x06})
+                             .Op({0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3, 0x31, 0xC0, 0xC3})
+                             .Install();
+  Check(CallGuest(probe, {}) == 1, "T11 root frame record on the attached stack");
+  Check(CallGuestOnStack(MapStack(), probe, {}) == 1, "T11 root frame record on an explicit stack");
+  std::puts("PASS T11 root frame record");
+}
+
 int main() {
   Check(Init(), "translator init");
   Check(AttachCurrentThread(MapStack()), "attach main thread");
@@ -349,6 +365,7 @@ int main() {
   TestImportedHleFunction();
   TestImportedCallbackRoundTrip();
   TestAddressFold();
+  TestRootFrameRecord();
 
   DetachCurrentThread();
   std::puts("GuestCpuFexTests: all cases passed");
