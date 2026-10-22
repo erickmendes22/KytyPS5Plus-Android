@@ -2485,3 +2485,41 @@ void* RuntimeLinker::ApplicationHeapMalloc(uint64_t size) {
 }
 
 } // namespace Loader
+
+namespace Loader::GuestAbi::HleTrace {
+
+bool Enabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_HLE_TRACE");
+		return value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	return enabled;
+}
+
+bool Take(std::atomic<uint32_t>& counter) {
+	static const uint32_t limit = [] {
+		const char* value = std::getenv("KYTY_HLE_TRACE_LIMIT");
+		return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 4u;
+	}();
+	return counter.fetch_add(1, std::memory_order_relaxed) < limit;
+}
+
+void Log(const char* function, uint64_t a0, uint64_t a1, uint64_t a2, bool has_result, uint64_t result) {
+	// __PRETTY_FUNCTION__ of InvokeWith: keep the "Fn = &..." part.
+	std::string_view name(function);
+	if (const auto pos = name.find("Fn = "); pos != std::string_view::npos) {
+		name.remove_prefix(pos + 5);
+		if (const auto end = name.find_first_of(";]"); end != std::string_view::npos) {
+			name = name.substr(0, end);
+		}
+	}
+	if (has_result) {
+		LOGF("[hle-trace] %.*s(0x%" PRIx64 ", 0x%" PRIx64 ", 0x%" PRIx64 ") = 0x%" PRIx64 " (%" PRId64 ")\n",
+		     static_cast<int>(name.size()), name.data(), a0, a1, a2, result, static_cast<int64_t>(result));
+	} else {
+		LOGF("[hle-trace] %.*s(0x%" PRIx64 ", 0x%" PRIx64 ", 0x%" PRIx64 ")\n", static_cast<int>(name.size()),
+		     name.data(), a0, a1, a2);
+	}
+}
+
+} // namespace Loader::GuestAbi::HleTrace
