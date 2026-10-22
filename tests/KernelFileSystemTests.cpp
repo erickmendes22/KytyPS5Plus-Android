@@ -324,6 +324,7 @@ void CheckSaveRename(const std::filesystem::path &root,
 }
 
 void TestRandomDevices() {
+  namespace Net = Libs::Network::Net;
   for (const auto* path : {"/dev/urandom", "/dev/random"}) {
     const int fd = FileSystem::KernelOpen(path, 0, 0);
     FileSystem::FileStat stat {};
@@ -333,7 +334,18 @@ void TestRandomDevices() {
     std::array<uint8_t, 32> entropy {};
     Check(FileSystem::KernelRead(fd, entropy.data(), entropy.size()) == entropy.size(),
           "character device supplies requested entropy");
+    // OpenSSL RAND_poll selects the device before reading it; a null timeout must not block.
+    std::array<uint64_t, 16> readable {};
+    readable[fd / 64] = uint64_t {1} << (fd % 64);
+    auto writable = readable;
+    const auto requested = readable;
+    Check(Net::Select(fd + 1, readable.data(), writable.data(), nullptr, nullptr) == 2 &&
+              readable == requested && writable == requested,
+          "select reports an entropy source ready at once");
     Check(FileSystem::KernelClose(fd) == OK, "close entropy source");
+    Check(Net::Select(fd + 1, readable.data(), nullptr, nullptr, nullptr) == -1 &&
+              *Libs::Posix::GetErrorAddr() == Libs::Posix::POSIX_EBADF,
+          "select rejects a closed descriptor");
   }
 }
 
@@ -2428,8 +2440,8 @@ int main(int argc, char** argv) {
   TestAioBatches();
   CheckSaveRename(temporary.Path(), "first-save");
   CheckSaveRename(temporary.Path(), "replacement-save");
-  FileSystem::Shutdown();
   CheckSocketWakeup();
+  FileSystem::Shutdown();
   CheckEtherAddressFormatting();
 #if defined(__linux__)
   TestNetCtlHostIpv4();
