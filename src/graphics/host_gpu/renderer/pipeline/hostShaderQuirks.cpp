@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/hostShaderQuirks.h"
+#include "graphics/host_gpu/renderer/pipeline/knobDefaults.h"
 
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -71,7 +72,7 @@ ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 	    .wave_slices          = EnvToggle("KYTY_WAVE_SLICES", false),
 	    .quad_dpp             = EnvToggle("KYTY_QUAD_DPP", turnip) &&
 	                graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eQuad),
-	    .relative_swizzle     = EnvToggle("KYTY_SWIZZLE_RELATIVE", false) &&
+	    .relative_swizzle     = KnobDefaults::Toggle(std::getenv("KYTY_SWIZZLE_RELATIVE"), turnip) &&
 	                        graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eShuffleRelative) &&
 	                        graphics.SubgroupOperationSupported(vk::SubgroupFeatureFlagBits::eShuffle),
 	    .bvh_vector_loads     = EnvToggle("KYTY_BVH_VEC", false),
@@ -114,7 +115,9 @@ ShaderFastPaths ResolveShaderFastPaths(GraphicContext& graphics) {
 	                                      paths.uniform_constant_buffer_bytes,
 	                                      paths.uniform_buffers_per_stage,
 	                                      paths.uniform_constants_compute_only ? " (compute only)" : ""));
-	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: relative_swizzle={}\n", paths.relative_swizzle));
+	paths.fold_user_depth = KnobDefaults::FoldUserDepth(std::getenv("KYTY_FOLD_USER_DEPTH"), turnip);
+	Log::WriteToConsoleAndLog(fmt::format("Shader fast paths: relative_swizzle={} fold_user_depth={}\n",
+	                                      paths.relative_swizzle, paths.fold_user_depth));
 	paths.ftz32_ops = ProbeFtz32Ops(graphics, turnip);
 	paths.pixel_live_election = EnvToggle("KYTY_PS_LIVE_ELECT", turnip);
 	if (paths.pixel_live_election) {

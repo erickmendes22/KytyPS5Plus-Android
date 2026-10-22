@@ -35,8 +35,11 @@ struct ShaderFastPaths {
 	bool wave_slices          = false;
 	// ShaderDeviceFeatures::subgroup_quad_dpp (KYTY_QUAD_DPP; default Mesa Turnip, =0 opts out).
 	bool quad_dpp             = false;
-	// ShaderDeviceFeatures::relative_swizzle (KYTY_SWIZZLE_RELATIVE; default off).
+	// ShaderDeviceFeatures::relative_swizzle (KYTY_SWIZZLE_RELATIVE; default Mesa Turnip, =0 opts out).
 	bool relative_swizzle     = false;
+	// ShaderDeviceFeatures::fold_user_depth (KYTY_FOLD_USER_DEPTH; 16 with Mesa Turnip, 0 elsewhere;
+	// an explicit value wins, 0 = the whole consumer cone). knobDefaults.h.
+	uint32_t fold_user_depth  = 0;
 	// ShaderDeviceFeatures::bvh_vector_loads (KYTY_BVH_VEC, default off).
 	bool bvh_vector_loads = false;
 	// ShaderDeviceFeatures::packed_varying_locations (KYTY_PACKED_INTERP; default Mesa Turnip).

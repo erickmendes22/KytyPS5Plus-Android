@@ -327,10 +327,15 @@ struct ShaderDeviceFeatures {
 	bool subgroup_quad_dpp       = false;
 	// DS_SWIZZLE_B32 rotates (rotate mode, no kept lane bits) and pure XOR swizzles become
 	// OpGroupNonUniformShuffleDown/Up/Xor by a constant instead of an indexed shuffle, which Mesa
-	// ir3 lowers to a loop over the distinct lane deltas (KYTY_SWIZZLE_RELATIVE; needs the
-	// shuffle-relative subgroup feature and a host subgroup of at least 32 lanes). UE5 PPSA14708's
-	// cs b48e83a9 runs 848 swizzle rotates. Same lanes read, same gating.
+	// ir3 lowers to a loop over the distinct lane deltas (KYTY_SWIZZLE_RELATIVE: default Mesa
+	// Turnip, =0 opts out; needs the shuffle-relative subgroup feature and a host subgroup of at
+	// least 32 lanes). UE5 PPSA14708's cs b48e83a9 runs 848 swizzle rotates: ir3 loops 848 -> 0,
+	// 219 -> ~110 ms. Same lanes read, same gating.
 	bool relative_swizzle        = false;
+	// Constant propagation requeues at most this many levels of consumers after a change instead of
+	// the whole transitive cone, which is quadratic on long straight-line programs (UE5 PPSA14708's
+	// cs b48e83a9: 27 s -> 0.3 s). 0: the whole cone (KYTY_FOLD_USER_DEPTH; knobDefaults.h).
+	uint32_t fold_user_depth     = 0;
 	// IMAGE_BVH(64)_INTERSECT_RAY reads the node's first 64 bytes as four 16-byte loads up front
 	// instead of one 4-byte load per word where it is used (KYTY_BVH_VEC=1, opt-in). ir3 on the
 	// ray-traced compute pass: 18940 -> 18180 instructions, 7318 -> 6915 NOPs; the gameplay gain
