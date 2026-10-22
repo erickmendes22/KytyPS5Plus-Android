@@ -457,12 +457,17 @@ void Translator::BUFFER_LOAD(const Decoder::Instruction& inst) {
 	            AddMemoryInfo(memory, inst.pc));
 	if (bits != 32u) {
 		WriteOperand(inst.dst, WidenSubdword(loaded, bits, sign));
-	} else if (memory.data_dwords == 1u) {
-		WriteOperand(inst.dst, loaded);
-	} else {
-		for (uint32_t component = 0; component < memory.data_dwords; component++) {
-			WriteOperand(OffsetOperand(inst.dst, component),
-			             ir.CompositeExtract(loaded, component));
+		return;
+	}
+	for (uint32_t component = 0; component < memory.data_dwords; component++) {
+		const auto dst = OffsetOperand(inst.dst, component);
+		const auto value =
+		    memory.data_dwords == 1u ? IR::U32(loaded) : ir.CompositeExtract(loaded, component);
+		// D16 formats with an odd component count keep the high half of their final VGPR.
+		if (memory.data_bits == 16u && component * 2u + 1u == memory.component_count) {
+			Write16Bits(dst, value);
+		} else {
+			WriteOperand(dst, value);
 		}
 	}
 }

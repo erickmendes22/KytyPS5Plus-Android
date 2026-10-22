@@ -16988,6 +16988,23 @@ void TestCapturedBufferStoreFormatD16HiXDecode() {
         "captured BUFFER_STORE_FORMAT_D16_HI_X lost its high half, index, or coherence flags");
 }
 
+void TestCapturedBufferLoadD16XyzwDecode() {
+  namespace Decoder = ShaderRecompiler::Decoder;
+  const uint32_t code[] = {0xe20c2000u, 0x8001100cu};
+  Decoder::Instruction inst;
+  Decoder::DecodeInstruction(code, 0, inst);
+  Check(inst.opcode == Decoder::Opcode::BUFFER_LOAD_FORMAT_D16_XYZW &&
+            inst.word_count == 2 && inst.data_dwords == 2 && inst.data_bits == 16 &&
+            inst.data_components == 4 && inst.formatted && !inst.typed,
+        "captured D16 XYZW load lost its four components in two packed VGPRs");
+  Check(inst.dst.kind == Decoder::OperandKind::Vgpr && inst.dst.reg == 16 &&
+            inst.dst.sdwa_sel == 6 &&
+            inst.src0.kind == Decoder::OperandKind::Vgpr && inst.src0.reg == 12 &&
+            inst.src1.kind == Decoder::OperandKind::Sgpr && inst.src1.reg == 4 &&
+            inst.idxen && !inst.offen,
+        "captured D16 XYZW load lost its full destination VGPRs or index");
+}
+
 void TestCapturedBufferStoreD16XyzwDecode() {
   namespace Decoder = ShaderRecompiler::Decoder;
   const uint32_t code[] = {0xe21c6000u, 0x8002000eu};
@@ -17823,6 +17840,7 @@ int main() {
   TestCapturedBufferLoadUbyteD16Decode();
   TestCapturedBufferStoreShortD16HiDecode();
   TestCapturedBufferStoreFormatD16HiXDecode();
+  TestCapturedBufferLoadD16XyzwDecode();
   TestCapturedBufferStoreD16XyzwDecode();
   TestNewShaderRecompilerUnsupportedMemoryDecode();
 
