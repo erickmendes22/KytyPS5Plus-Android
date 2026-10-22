@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "perf720",
   "name": "Performance mode (720p, faster lighting)",
-  "description": "Trades image quality for speed: the game renders at 1280x720 instead of 1920x1080 and post-processes at 1664x936 instead of 2432x1368 (code patch for game version 01.019.000), and ray-traced lighting runs at half rate without the edge re-trace (softer edges). About +30-40% fps.",
+  "description": "Trades image quality for speed: the game renders at 1280x720 instead of 1920x1080 and post-processes at 1664x936 instead of 2432x1368 (code patch for game version 01.019.000), and ray-traced lighting runs at half rate without the edge re-trace (softer edges). About +15-25% fps (measured 13.5 -> 15.7 fps at the throttled GPU clock, 16.2 -> 18.7-20 in camera turns at higher clocks).",
   "launch": {
     "env": {
       "KYTY_RT_HALF": "1"
