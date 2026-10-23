@@ -56,7 +56,11 @@ object Diagnostics {
         ZipOutputStream(stream.buffered()).use { zip ->
             val logs = File(context.filesDir, "logs")
             val files = logs.listFiles()
-                ?.filter { it.isFile && (it.extension == "log" || it.extension == "txt") }
+                ?.filter {
+                    it.isFile && it.length() > 0 &&
+                        (it.extension == "log" || it.extension == "txt") &&
+                        it.name != "host-faults.log" && it.name != "fatal-signals.log"
+                }
                 ?.sortedBy { it.name }
                 .orEmpty()
             for (file in files) {
