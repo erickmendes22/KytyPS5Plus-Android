@@ -380,7 +380,10 @@ void CommandScheduler::CheckActive() const {
 }
 
 CommandBuffer& CommandScheduler::Current() {
-	EXIT_IF(m_command.IsInvalid());
+	// Active (registers bound) as before, or a begun command buffer without registers: the
+	// BufferCache constructor zero-fills the BDA and fault tables before any register state exists
+	// (upstream 4644c529). The record pipeline reaches Current() while active between submits.
+	EXIT_IF(!Active() && m_command.IsInvalid());
 	return m_command;
 }
 
