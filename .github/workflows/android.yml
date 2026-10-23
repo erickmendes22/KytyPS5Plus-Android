@@ -153,7 +153,8 @@ jobs:
           {
             echo "Automatic build of \`${GITHUB_SHA::8}\` ($(git log -1 --format=%s))."
             echo
-            echo "Install **${apk}**. The Turnip GPU driver is bundled."
+            echo "Install **${apk}**. The Turnip GPU driver is bundled. Nightlies install over each other."
+            echo "Coming from v0.1.0-alpha? Uninstall it once first; it was signed with a different key."
             echo "SHA-256: \`${sha}\`"
             echo
             echo "Status, roadmap and how to help: [docs/android](https://github.com/${GITHUB_REPOSITORY}/tree/android-boot-wip/docs/android)."
