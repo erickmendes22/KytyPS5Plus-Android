@@ -1,11 +1,10 @@
 name: Android APK
 
-# Every push to android-boot-wip builds the APK and refreshes the rolling "nightly" pre-release;
-# a v* tag publishes a versioned pre-release. Signing uses the repository's KYTY_* secrets.
+# Every push to android-boot-wip builds an APK exclusively as an Actions artifact.
+# No GitHub Releases are created. Signing uses the repository's KYTY_* secrets.
 on:
   push:
     branches: [ android-boot-wip ]
-    tags: [ 'v*' ]
     paths-ignore: [ 'docs/**', '**.md' ]
   workflow_dispatch:
 
@@ -14,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   NDK_VERSION: 28.2.13676358
@@ -101,13 +100,8 @@ jobs:
       - name: Version
         id: version
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            name="${GITHUB_REF_NAME#v}"; tag="$GITHUB_REF_NAME"
-          else
-            name="0.1.0-nightly.${GITHUB_RUN_NUMBER}"; tag="nightly"
-          fi
+          name="0.1.0-actions.${GITHUB_RUN_NUMBER}"
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "code=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_OUTPUT"
 
       - name: Signing key
@@ -142,36 +136,3 @@ jobs:
           name: KytyPS5-Android-${{ steps.version.outputs.name }}
           path: KytyPS5-Android-*.apk
 
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          NAME: ${{ steps.version.outputs.name }}
-        run: |
-          apk="KytyPS5-Android-${NAME}.apk"
-          sha=$(sha256sum "$apk" | cut -d' ' -f1)
-          {
-            echo "Automatic build of \`${GITHUB_SHA::8}\` ($(git log -1 --format=%s))."
-            echo
-            echo "Install **${apk}**. The Turnip GPU driver is bundled."
-            if [ -n "${KYTY_KEYSTORE_FILE:-}" ]; then
-              echo "Signed with the persistent release key; upgrades over builds with that same key are supported."
-            else
-              echo "WARNING: No persistent signing key is configured for this fork. This APK uses the runner's temporary debug key. Uninstall previous builds of this fork before installing a new one."
-            fi
-            echo "The original v0.1.0-alpha uses a different signing key and must be uninstalled first."
-            echo "SHA-256: \`${sha}\`"
-            echo
-            echo "Status, roadmap and how to help: [docs/android](https://github.com/${GITHUB_REPOSITORY}/tree/android-boot-wip/docs/android)."
-            echo
-            echo "Recent changes:"
-            git log -15 --format='- %s (%h)' --no-merges
-          } > notes.md
-          if [ "$TAG" = nightly ]; then
-            gh release delete nightly --cleanup-tag --yes 2>/dev/null || true
-            gh release create nightly "$apk" --target "$GITHUB_SHA" --prerelease \
-              --title "Nightly (${NAME})" --notes-file notes.md
-          else
-            gh release create "$TAG" "$apk" --prerelease --title "KytyPS5 Android ${TAG}" \
-              --notes-file notes.md || gh release upload "$TAG" "$apk" --clobber
-          fi
