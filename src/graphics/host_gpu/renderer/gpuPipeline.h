@@ -3,6 +3,7 @@
 
 #include "common/uniqueFunction.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -36,7 +37,8 @@ namespace Libs::Graphics::GpuPipeline {
 
 // The record thread's job queue. Jobs run in order; Drain() returns once every job queued so far
 // has finished. Bounded: Enqueue blocks while kMaxQueued jobs wait (with batched handoff: while
-// kMaxQueued jobs are queued or taken but unfinished).
+// kMaxQueued jobs are queued or taken but unfinished). With KYTY_PIPE_SPIN (pipeSpin.h) the three
+// waits (drain, full queue, the idle record thread) spin briefly before they sleep.
 class RecordThread {
 public:
 	static constexpr uint32_t kMaxQueued = 64;
@@ -69,6 +71,11 @@ private:
 	bool                                     m_sleeping      = false;
 	uint32_t                                 m_full_waiters  = 0;
 	uint32_t                                 m_drain_waiters = 0;
+	// KYTY_PIPE_SPIN (pipeSpin.h): lock-free mirrors that the spinning waits poll. Written under
+	// m_mutex, read without it: jobs queued or taken but unfinished (m_jobs.size() + m_running),
+	// and jobs in m_jobs. A job's completion is released through m_outstanding.
+	std::atomic<uint32_t>                    m_outstanding {0};
+	std::atomic<uint32_t>                    m_queued {0};
 	// The recorder re-walks SRTs (fallback, stolen fan-out jobs), which recurse deeply
 	// (SrtWalker::EvaluateWide); bionic's default 1 MiB thread stack is not enough (walk workers:
 	// d9b44d54). A pthread with kStackBytes (virtual; touched pages only).

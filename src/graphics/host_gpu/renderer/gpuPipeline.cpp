@@ -6,6 +6,7 @@
 #include "common/perfWaits.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
+#include "graphics/host_gpu/renderer/pipeSpin.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
 #include "graphics/host_gpu/renderer/submitStats.h"
 #include "graphics/host_gpu/renderer/uploadStats.h"
@@ -15,12 +16,14 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <pthread.h>
 #include <cstring>
 #include <memory>
+#include <optional>
 
 namespace Libs::Graphics::GpuPipeline {
 
@@ -116,6 +119,25 @@ bool BatchEnabled() {
 	return LiveKnobs::Int("pipe_batch", env_on ? 1 : 0) != 0;
 }
 
+} // namespace Libs::Graphics::GpuPipeline
+
+namespace Libs::Graphics::PipeSpin {
+
+int64_t Current() {
+	static const int64_t start = [] {
+		const int64_t us = SpinMicros(std::getenv("KYTY_PIPE_SPIN"), kAndroid);
+		LOGF("KYTY_PIPE_SPIN: front/record/walk handoffs spin %" PRId64 " us before sleeping\n", us);
+		return us;
+	}();
+	const int64_t us = Effective(start, LiveKnobs::Int("pipe_spin", -1));
+	g_cached_us.store(us, std::memory_order_relaxed);
+	return us;
+}
+
+} // namespace Libs::Graphics::PipeSpin
+
+namespace Libs::Graphics::GpuPipeline {
+
 RecordThread::RecordThread() {
 	pthread_attr_t attr;
 	pthread_attr_init(&attr);
@@ -140,25 +162,45 @@ void* RecordThread::Entry(void* self) {
 }
 
 void RecordThread::Enqueue(Common::UniqueFunction<void>&& job) {
+	// One pipe_full wait over the spin and the sleep.
+	std::optional<Common::PerfStats::ScopedWait> full_wait;
+	if (m_outstanding.load(std::memory_order_relaxed) >= kMaxQueued + 1) {
+		full_wait.emplace(Common::PerfStats::Wait::GpuPipeFull);
+		(void)PipeSpin::SpinFor(PipeSpin::Current(), [this] {
+			return m_outstanding.load(std::memory_order_acquire) < kMaxQueued + 1;
+		});
+	}
 	std::unique_lock lock(m_mutex);
 	if (m_jobs.size() + m_running >= kMaxQueued + 1) {
-		const Common::PerfStats::ScopedWait wait(Common::PerfStats::Wait::GpuPipeFull);
+		if (!full_wait) {
+			full_wait.emplace(Common::PerfStats::Wait::GpuPipeFull);
+		}
 		++m_full_waiters;
 		m_done.wait(lock, [this] { return m_jobs.size() + m_running < kMaxQueued + 1; });
 		--m_full_waiters;
 	}
 	m_jobs.push_back(std::move(job));
+	m_outstanding.fetch_add(1, std::memory_order_relaxed);
+	m_queued.fetch_add(1, std::memory_order_release);
 	if (!m_batch || m_sleeping) {
 		m_work.notify_one();
 	}
 }
 
 void RecordThread::Drain() {
+	// Every job's effects are released by its m_outstanding decrement (acquired here).
+	if (Idle()) {
+		return;
+	}
+	const Common::PerfStats::ScopedWait wait(Common::PerfStats::Wait::GpuPipeDrain);
+	if (PipeSpin::SpinFor(PipeSpin::Current(),
+	                      [this] { return m_outstanding.load(std::memory_order_acquire) == 0; })) {
+		return;
+	}
 	std::unique_lock lock(m_mutex);
 	if (m_jobs.empty() && !m_busy) {
 		return;
 	}
-	const Common::PerfStats::ScopedWait wait(Common::PerfStats::Wait::GpuPipeDrain);
 	++m_drain_waiters;
 	m_done.wait(lock, [this] { return m_jobs.empty() && !m_busy; });
 	--m_drain_waiters;
@@ -179,8 +221,8 @@ RecordThread* BackIfCreated() {
 }
 
 bool RecordThread::Idle() const {
-	std::lock_guard lock(m_mutex);
-	return m_jobs.empty() && !m_busy;
+	// m_jobs.empty() && !m_busy, without the lock (the record thread takes it once per job).
+	return m_outstanding.load(std::memory_order_acquire) == 0;
 }
 
 void RecordThread::Run(const std::stop_token& stop) {
@@ -191,6 +233,11 @@ void RecordThread::Run(const std::stop_token& stop) {
 	std::deque<Common::UniqueFunction<void>> batch;
 	for (;;) {
 		const bool batched = BatchEnabled();
+		// KYTY_PIPE_SPIN: the next job usually follows within microseconds (the front's inline
+		// packet after a drain); spinning saves a futex sleep here and a wake-up on the front.
+		(void)PipeSpin::SpinFor(PipeSpin::Current(), [&] {
+			return m_queued.load(std::memory_order_acquire) != 0 || stop.stop_requested();
+		});
 		{
 			std::unique_lock lock(m_mutex);
 			m_batch    = batched;
@@ -206,6 +253,7 @@ void RecordThread::Run(const std::stop_token& stop) {
 				batch.push_back(std::move(m_jobs.front()));
 				m_jobs.pop_front();
 			}
+			m_queued.store(static_cast<uint32_t>(m_jobs.size()), std::memory_order_relaxed);
 			m_running = static_cast<uint32_t>(batch.size());
 			m_busy    = true;
 		}
@@ -225,6 +273,7 @@ void RecordThread::Run(const std::stop_token& stop) {
 				if (m_running == 0) {
 					m_busy = false;
 				}
+				m_outstanding.fetch_sub(1, std::memory_order_release);
 				// Batched: wake the front only if it waits for a slot, or for a drain that is now done.
 				wake = wake || m_full_waiters != 0 ||
 				       (m_drain_waiters != 0 && m_running == 0 && m_jobs.empty());

@@ -102,6 +102,7 @@ private:
 	std::atomic<State>      m_state {State::Queued};
 	std::mutex              m_mutex;
 	std::condition_variable m_done;
+	uint32_t                m_waiters = 0; // threads sleeping on m_done (under m_mutex)
 };
 
 // The recorder's verdict on a finished job (the pickup rule): not ok -> Failed; any refused read
@@ -242,6 +243,11 @@ private:
 	std::condition_variable               m_idle;
 	std::deque<std::shared_ptr<WalkJob>>  m_queue;
 	uint32_t                              m_running = 0;
+	// Bionic's condition variables make a futex syscall per notify: wake only threads that sleep.
+	uint32_t                              m_sleepers     = 0; // workers sleeping on m_work
+	uint32_t                              m_idle_waiters = 0; // Quiesce() callers on m_idle
+	// KYTY_PIPE_SPIN: m_queue.size() for workers that spin before they sleep (written under m_mutex).
+	std::atomic<uint32_t>                 m_queued_hint {0};
 	// A worker thread with its own stack size: SRT walks recurse deeply (EvaluateWide), and the
 	// default 1 MiB of a bionic thread overflowed on Astro Bot's intro content (c14_fanlive1).
 	class Worker {

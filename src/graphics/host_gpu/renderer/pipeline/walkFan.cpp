@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
+#include "graphics/host_gpu/renderer/pipeSpin.h"
 
 #include <algorithm>
 #include <chrono>
@@ -66,11 +67,17 @@ bool WalkJob::TryClaim() {
 }
 
 void WalkJob::Finish() {
+	bool waiting = false;
 	{
 		std::lock_guard lock(m_mutex);
 		m_state.store(State::Done, std::memory_order_release);
+		waiting = m_waiters != 0;
 	}
-	m_done.notify_all();
+	// Bionic's condition variables make a futex syscall per notify, waiter or not (~965 jobs per
+	// Astro Bot frame): only wake a recorder that sleeps.
+	if (waiting) {
+		m_done.notify_all();
+	}
 }
 
 bool WalkJob::TakeOrWait(const WalkContext& context) {
@@ -78,9 +85,12 @@ bool WalkJob::TakeOrWait(const WalkContext& context) {
 		Run(context);
 		return true;
 	}
-	if (!Done()) {
+	// KYTY_PIPE_SPIN: a running walk usually finishes within microseconds.
+	if (!PipeSpin::SpinFor(PipeSpin::Cached(), [this] { return Done(); })) {
 		std::unique_lock lock(m_mutex);
+		++m_waiters;
 		m_done.wait(lock, [this] { return m_state.load(std::memory_order_acquire) == State::Done; });
+		--m_waiters;
 	}
 	return false;
 }
@@ -132,20 +142,31 @@ WalkPool::~WalkPool() {
 }
 
 void WalkPool::Submit(std::shared_ptr<WalkJob> job) {
+	uint32_t sleepers = 0;
 	{
 		std::lock_guard lock(m_mutex);
 		m_queue.push_back(std::move(job));
+		m_queued_hint.store(static_cast<uint32_t>(m_queue.size()), std::memory_order_release);
+		sleepers = m_sleepers;
 	}
-	m_work.notify_one();
+	if (sleepers != 0) {
+		m_work.notify_one();
+	}
 }
 
 void WalkPool::SubmitBatch(std::vector<std::shared_ptr<WalkJob>>& jobs) {
 	if (jobs.empty()) return;
+	uint32_t sleepers = 0;
 	{
 		std::lock_guard lock(m_mutex);
 		for (auto& job: jobs) m_queue.push_back(job);
+		m_queued_hint.store(static_cast<uint32_t>(m_queue.size()), std::memory_order_release);
+		sleepers = m_sleepers;
 	}
-	if (jobs.size() == 1) {
+	if (sleepers == 0) {
+		return; // every worker is busy or spinning: it sees the jobs without a wake-up
+	}
+	if (jobs.size() == 1 || sleepers == 1) {
 		m_work.notify_one();
 	} else {
 		m_work.notify_all();
@@ -183,7 +204,9 @@ uint32_t WalkPool::Workers() const {
 
 void WalkPool::Quiesce() {
 	std::unique_lock lock(m_mutex);
+	++m_idle_waiters;
 	m_idle.wait(lock, [this] { return m_queue.empty() && m_running == 0; });
+	--m_idle_waiters;
 }
 
 WalkPool::Worker::Worker(WalkPool& pool, uint32_t index): m_pool(pool), m_index(index) {
@@ -218,11 +241,19 @@ void WalkPool::Run(uint32_t index, const std::stop_token& stop) {
 #endif
 	for (;;) {
 		std::shared_ptr<WalkJob> job;
+		// KYTY_PIPE_SPIN: the front submits the next item's jobs within microseconds.
+		(void)PipeSpin::SpinFor(PipeSpin::Cached(), [&] {
+			return m_queued_hint.load(std::memory_order_acquire) != 0 || stop.stop_requested();
+		});
 		{
 			std::unique_lock lock(m_mutex);
-			if (!m_work.wait(lock, stop, [this] { return !m_queue.empty(); })) return;
+			++m_sleepers;
+			const bool got = m_work.wait(lock, stop, [this] { return !m_queue.empty(); });
+			--m_sleepers;
+			if (!got) return;
 			job = std::move(m_queue.front());
 			m_queue.pop_front();
+			m_queued_hint.store(static_cast<uint32_t>(m_queue.size()), std::memory_order_relaxed);
 			m_running++;
 		}
 		// The recorder may have taken it already (TakeOrWait); then there is nothing to do.
@@ -235,11 +266,15 @@ void WalkPool::Run(uint32_t index, const std::stop_token& stop) {
 				job->Finish();
 			}
 		}
+		bool idle_waiters = false;
 		{
 			std::lock_guard lock(m_mutex);
 			m_running--;
+			idle_waiters = m_idle_waiters != 0;
 		}
-		m_idle.notify_all();
+		if (idle_waiters) {
+			m_idle.notify_all();
+		}
 	}
 }
 
