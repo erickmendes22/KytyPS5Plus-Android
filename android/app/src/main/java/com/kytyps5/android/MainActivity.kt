@@ -20,6 +20,8 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.GridView
+import android.widget.FrameLayout
+import android.widget.ScrollView
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
@@ -50,6 +52,7 @@ class MainActivity : Activity() {
     private lateinit var resolutionGroup: RadioGroup
     private lateinit var renderScaleGroup: RadioGroup
     private lateinit var message: TextView
+    private lateinit var scanStatus: TextView
     private lateinit var covers: CoverLoader
     private lateinit var grid: GameGridAdapter
     private lateinit var gameSettings: GameSettingsDialog
@@ -110,6 +113,7 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    /** The game library and device options are separate pages so neither can hide the other. */
     private fun buildUi(): View {
         nativeStatus = label(
             if (NativeLibrary.isInstalled(this)) {
@@ -123,78 +127,139 @@ class MainActivity : Activity() {
             text = "Grant all-files access"
             setOnClickListener { openAllFilesAccessSettings() }
         }
-        folderPath = label(settings.gamesRoot, sizeSp = 16f)
+        folderPath = label(settings.gamesRoot, sizeSp = 14f)
         resolutionGroup = buildResolutionGroup()
         renderScaleGroup = buildRenderScaleGroup()
+        scanStatus = label("Games: waiting for first scan", sizeSp = 15f, bold = true)
         message = label("", secondary = true)
 
-        val content = LinearLayout(this).apply {
+        val gamesPage = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(16.dp, 16.dp, 16.dp, 16.dp)
-            addView(label("KytyPS5", sizeSp = 22f, bold = true))
-            addView(nativeStatus)
-            addView(storageStatus)
-            addView(grantButton)
             addView(label("Games folder", bold = true))
+            // Keeping the path on its own line avoids squeezing it between two buttons.
+            addView(folderPath)
             addView(
                 LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    addView(folderPath, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                     addView(Button(context).apply {
-                        text = "Choose folder…"
+                        text = "Choose folder"
                         setOnClickListener { openFolderPicker() }
-                    })
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                     addView(Button(context).apply {
                         text = "Rescan"
                         setOnClickListener { onScanRequested() }
-                    })
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 },
             )
-            // File-level entry point for games invisible to the automatic scanner.
-            // This does not alter the game's files or the native emulator.
             addView(
                 LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
                     addView(Button(context).apply {
-                        text = "Choose eboot / ELF…"
+                        text = "Choose eboot / ELF"
                         setOnClickListener { openGameFilePicker() }
-                    })
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                     addView(Button(context).apply {
-                        text = "Enter game path…"
+                        text = "Enter path"
                         setOnClickListener { openManualGamePath() }
-                    })
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 },
             )
+            addView(scanStatus)
+            val gameGrid = GridView(context).apply {
+                adapter = grid
+                numColumns = GridView.AUTO_FIT
+                columnWidth = (COVER_DP + 12).dp
+                stretchMode = GridView.STRETCH_SPACING_UNIFORM
+                verticalSpacing = 4.dp
+            }
+            val emptyState = label(
+                "No games are displayed. The scan status above shows whether " +
+                    "the directory is empty, inaccessible or still scanning.",
+                secondary = true,
+            ).apply {
+                gravity = Gravity.CENTER
+            }
             addView(
-                LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    addView(label("Resolution  ", bold = true))
-                    addView(resolutionGroup)
-                    addView(label("  Render scale  ", bold = true))
-                    addView(renderScaleGroup)
-                    addView(toggle("Performance HUD", settings.hudEnabled) { settings.hudEnabled = it })
-                    addView(toggle("Touch controls", settings.touchControlsEnabled) { settings.touchControlsEnabled = it })
-                    addView(toggle(GameSettingsDialog.GPU_TURBO_LABEL, settings.gpuTurbo) { settings.gpuTurbo = it })
-                },
-            )
-            addView(label("GPU driver", bold = true))
-            addView(drivers.build(onChanged = {}))
-            addView(message)
-            addView(
-                GridView(context).apply {
-                    adapter = grid
-                    numColumns = GridView.AUTO_FIT
-                    columnWidth = (COVER_DP + 12).dp
-                    stretchMode = GridView.STRETCH_SPACING_UNIFORM
-                    verticalSpacing = 4.dp
+                FrameLayout(context).apply {
+                    addView(
+                        gameGrid,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        ),
+                    )
+                    addView(
+                        emptyState,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            Gravity.CENTER,
+                        ),
+                    )
+                    gameGrid.emptyView = emptyState
                 },
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
             )
         }
-        // Edge-to-edge (targetSdk 35): keep content below the status bar and above the nav bar.
+
+        val settingsPage = ScrollView(this).apply {
+            visibility = View.GONE
+            fillViewport = false
+        }
+        settingsPage.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(label("Video", sizeSp = 18f, bold = true))
+                addView(label("Output resolution", bold = true))
+                addView(resolutionGroup)
+                addView(label("Internal render scale", bold = true))
+                addView(renderScaleGroup)
+                addView(label("Performance and controls", sizeSp = 18f, bold = true))
+                addView(toggle("Performance HUD", settings.hudEnabled) { settings.hudEnabled = it })
+                addView(toggle("Touch controls", settings.touchControlsEnabled) { settings.touchControlsEnabled = it })
+                addView(toggle(GameSettingsDialog.GPU_TURBO_LABEL, settings.gpuTurbo) { settings.gpuTurbo = it })
+                addView(label("GPU driver", sizeSp = 18f, bold = true))
+                addView(drivers.build(onChanged = {}))
+                addView(label("Options are saved automatically. Game-specific options " +
+                    "remain available from the game's settings button.", secondary = true))
+            },
+            ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+
+        val gamesTab = Button(this).apply { text = "Games" }
+        val settingsTab = Button(this).apply { text = "Settings" }
+        fun showPage(games: Boolean) {
+            gamesPage.visibility = if (games) View.VISIBLE else View.GONE
+            settingsPage.visibility = if (games) View.GONE else View.VISIBLE
+            gamesTab.isEnabled = !games
+            settingsTab.isEnabled = games
+        }
+        gamesTab.setOnClickListener { showPage(true) }
+        settingsTab.setOnClickListener { showPage(false) }
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16.dp, 16.dp, 16.dp, 16.dp)
+            addView(label("KytyPS5+", sizeSp = 22f, bold = true))
+            addView(nativeStatus)
+            addView(storageStatus)
+            addView(grantButton)
+            addView(
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(gamesTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(settingsTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                },
+            )
+            // Keep general messages readable without overwriting game scan results.
+            addView(message)
+            addView(gamesPage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(settingsPage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        showPage(true)
         content.setOnApplyWindowInsetsListener { view, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars())
             view.setPadding(16.dp + bars.left, 16.dp + bars.top, 16.dp + bars.right, 16.dp + bars.bottom)
@@ -315,15 +380,18 @@ class MainActivity : Activity() {
         val game = File(path)
         when {
             game.isDirectory -> {
-                settings.gamesRoot = game.absolutePath
-                folderPath.text = settings.gamesRoot
-                scanGames(settings.gamesRoot)
+                if (File(game, GameLibrary.EBOOT).isFile) {
+                    launch(GameLibrary.readEntry(game))
+                } else {
+                    settings.gamesRoot = game.absolutePath
+                    folderPath.text = settings.gamesRoot
+                    scanGames(settings.gamesRoot)
+                }
             }
             game.isFile && game.name.equals(GameLibrary.EBOOT, ignoreCase = true) -> {
                 val folder = game.parentFile ?: return
-                settings.gamesRoot = folder.absolutePath
-                folderPath.text = settings.gamesRoot
-                scanGames(settings.gamesRoot)
+                // Direct launch deliberately bypasses the library scanner.
+                launch(GameLibrary.readEntry(folder))
             }
             game.isFile && game.extension.lowercase() in setOf("elf", "self", "zar", "exfat") -> {
                 // This route starts the selected file directly, bypassing library discovery.
@@ -374,7 +442,7 @@ class MainActivity : Activity() {
     /** Scans off the main thread. Only the most recent request may update the list. */
     private fun scanGames(root: String) {
         val request = ++scanRequest
-        showMessage("Scanning $root ...")
+        scanStatus.text = "Scanning games in $root …"
         worker.execute {
             val result = try {
                 GameLibrary.scan(File(root))
@@ -391,7 +459,7 @@ class MainActivity : Activity() {
     private fun renderScan(result: ScanResult) {
         grid.games = (result as? ScanResult.Found)?.games.orEmpty()
         when (result) {
-            is ScanResult.Failure -> showMessage(result.message)
+            is ScanResult.Failure -> scanStatus.text = "Scan failed: ${result.message}"
             is ScanResult.Found -> {
                 val diagnostics = result.diagnostics
                 val summary = "${diagnostics.visitedDirectories} folders checked"
@@ -408,12 +476,11 @@ class MainActivity : Activity() {
                 }
                 val detail = (listOf(summary) + warnings).joinToString("; ")
                 if (result.games.isEmpty()) {
-                    showMessage("No games in ${settings.gamesRoot}. $detail. " +
-                        "Choose the parent folder of your PS5 dumps. Supported: eboot.bin, " +
-                        "sce_sys/param.json, .elf, .self, .zar or .exfat.")
+                    scanStatus.text = "0 games detected in ${settings.gamesRoot}. $detail. " +
+                        "Try Choose eboot / ELF or Enter path to test a dump directly."
                 } else {
-                    showMessage("${result.games.size} game(s) found ($detail). " +
-                        "Tap to play; ⚙ or long-press for settings.")
+                    scanStatus.text = "${result.games.size} game(s) detected ($detail). " +
+                        "Tap to play; long-press for game settings."
                 }
             }
         }
@@ -476,7 +543,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQUEST_PICK_GAMES_FOLDER = 1
-        const val REQUEST_PICK_GAME_FILE = 2
+        const val REQUEST_PICK_GAME_FILE = 3
         const val COVER_DP = 150
     }
 
