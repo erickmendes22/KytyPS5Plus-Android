@@ -4,6 +4,7 @@
 [![GPU](https://img.shields.io/badge/GPU-Adreno%20%2B%20Mesa%20Turnip-red.svg)](#requirements)
 [![Status](https://img.shields.io/badge/status-experimental-orange.svg)](docs/android/STATUS.md)
 [![License](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/tarek369/KytyPS5-Android?include_prereleases&label=download)](https://github.com/tarek369/KytyPS5-Android/releases)
 
 **PlayStation 5 games on Android tablets and phones.**
 
@@ -72,12 +73,12 @@ Full details are in **[docs/android/STATUS.md](docs/android/STATUS.md)**, and **
 
 ## Getting started
 
-There are no prebuilt releases yet. Build it from source with
-[docs/android/CONTRIBUTING.md](docs/android/CONTRIBUTING.md) (Android NDK 28.2, CMake, Ninja, Gradle), then
-install the APK. To add a game:
-
-1. Copy your game dump (a folder, or an `.exfat` image) to the device's `Download` folder.
-2. Pick it in the launcher.
+1. Download the latest APK from **[Releases](https://github.com/tarek369/KytyPS5-Android/releases)** and install
+   it. The Turnip GPU driver is bundled. To build it yourself instead, follow
+   [docs/android/CONTRIBUTING.md](docs/android/CONTRIBUTING.md) (Android NDK 28.2, CMake, Ninja, Gradle).
+2. Copy your game dump (a folder, or an `.exfat` image) to the device's `Download` folder.
+3. Open KytyPS5 and pick the game in the launcher. Per-game presets such as Performance mode are in its
+   settings.
 
 ## Contributing
 
