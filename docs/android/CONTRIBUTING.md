@@ -25,6 +25,11 @@ ninja -C _Build/android -k 0 kyty_emulator
 cd android && ./gradlew testDebugUnitTest assembleDebug -PkytyNativeDir=<dir with libmain.so, SDL3 and adrenotools hook libs>
 ```
 
+CI: `.github/workflows/android.yml` builds the release APK on every push to `android-boot-wip`, runs the
+unit tests, and refreshes the `nightly` pre-release. A `v*` tag publishes a versioned pre-release. Release
+signing uses the repository secrets `KYTY_KEYSTORE_B64`, `KYTY_KEYSTORE_PASSWORD`, `KYTY_KEY_ALIAS` and
+`KYTY_KEY_PASSWORD`; without them, the release APK is unsigned.
+
 If FEX patches change, re-apply them before building:
 
 ```bash

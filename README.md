@@ -73,8 +73,9 @@ Full details are in **[docs/android/STATUS.md](docs/android/STATUS.md)**, and **
 
 ## Getting started
 
-1. Download the latest APK from **[Releases](https://github.com/tarek369/KytyPS5-Android/releases)** and install
-   it. The Turnip GPU driver is bundled. To build it yourself instead, follow
+1. Download an APK from **[Releases](https://github.com/tarek369/KytyPS5-Android/releases)** and install it.
+   `Nightly` is built automatically from every push; `v…` releases are milestones. The Turnip GPU driver is
+   bundled. To build it yourself instead, follow
    [docs/android/CONTRIBUTING.md](docs/android/CONTRIBUTING.md) (Android NDK 28.2, CMake, Ninja, Gradle).
 2. Copy your game dump (a folder, or an `.exfat` image) to the device's `Download` folder.
 3. Open KytyPS5 and pick the game in the launcher. Per-game presets such as Performance mode are in its

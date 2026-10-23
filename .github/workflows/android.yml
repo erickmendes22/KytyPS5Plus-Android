@@ -1,0 +1,156 @@
+name: Android APK
+
+# Every push to android-boot-wip builds the APK and refreshes the rolling "nightly" pre-release;
+# a v* tag publishes a versioned pre-release. Signing uses the repository's KYTY_* secrets.
+on:
+  push:
+    branches: [ android-boot-wip ]
+    tags: [ 'v*' ]
+    paths-ignore: [ 'docs/**', '**.md' ]
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  NDK_VERSION: 28.2.13676358
+
+jobs:
+  apk:
+    name: Build APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost
+          df -h /
+
+      - name: Host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslang-tools ccache
+
+      - name: Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Android NDK
+        run: |
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${NDK_VERSION}" > /dev/null
+          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-android-${{ github.sha }}
+          restore-keys: ccache-android-
+
+      - name: Configure
+        run: |
+          cmake -S . -B _Build/android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 -DCMAKE_BUILD_TYPE=Release \
+            -DKYTY_GUEST_CPU_FEX=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build native libraries
+        run: |
+          ccache --max-size=3G
+          ninja -C _Build/android kyty_emulator
+          ccache --show-stats
+
+      - name: Stage native libraries
+        run: |
+          ST=$RUNNER_TEMP/native
+          mkdir -p $ST/3rdparty/SDL3 $ST/3rdparty/libadrenotools/src/hook
+          STRIP="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          "$STRIP" --strip-debug -o $ST/libmain.so _Build/android/libmain.so
+          cp _Build/android/3rdparty/SDL3/libSDL3.so $ST/3rdparty/SDL3/
+          cp _Build/android/3rdparty/libadrenotools/src/hook/*.so $ST/3rdparty/libadrenotools/src/hook/
+          ls -la $ST $ST/3rdparty/SDL3 $ST/3rdparty/libadrenotools/src/hook
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            name="${GITHUB_REF_NAME#v}"; tag="$GITHUB_REF_NAME"
+          else
+            name="0.1.0-nightly.${GITHUB_RUN_NUMBER}"; tag="nightly"
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "code=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_OUTPUT"
+
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.KYTY_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "KYTY_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          fi
+
+      - name: Unit tests and APK
+        working-directory: android
+        env:
+          KYTY_KEYSTORE_PASSWORD: ${{ secrets.KYTY_KEYSTORE_PASSWORD }}
+          KYTY_KEY_ALIAS: ${{ secrets.KYTY_KEY_ALIAS }}
+          KYTY_KEY_PASSWORD: ${{ secrets.KYTY_KEY_PASSWORD }}
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          ./gradlew --no-daemon testDebugUnitTest assembleRelease \
+            -PkytyNativeDir="$RUNNER_TEMP/native" \
+            -PkytyVersionCode=${{ steps.version.outputs.code }} \
+            -PkytyVersionName=${{ steps.version.outputs.name }}
+          out=app/build/outputs/apk/release
+          apk=$(ls $out/*.apk | head -1)
+          mv "$apk" "$GITHUB_WORKSPACE/KytyPS5-Android-${{ steps.version.outputs.name }}.apk"
+          rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KytyPS5-Android-${{ steps.version.outputs.name }}
+          path: KytyPS5-Android-*.apk
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          apk="KytyPS5-Android-${NAME}.apk"
+          sha=$(sha256sum "$apk" | cut -d' ' -f1)
+          {
+            echo "Automatic build of \`${GITHUB_SHA::8}\` ($(git log -1 --format=%s))."
+            echo
+            echo "Install **${apk}**. The Turnip GPU driver is bundled."
+            echo "SHA-256: \`${sha}\`"
+            echo
+            echo "Status, roadmap and how to help: [docs/android](https://github.com/${GITHUB_REPOSITORY}/tree/android-boot-wip/docs/android)."
+            echo
+            echo "Recent changes:"
+            git log -15 --format='- %s (%h)' --no-merges
+          } > notes.md
+          if [ "$TAG" = nightly ]; then
+            gh release delete nightly --cleanup-tag --yes 2>/dev/null || true
+            gh release create nightly "$apk" --target "$GITHUB_SHA" --prerelease \
+              --title "Nightly (${NAME})" --notes-file notes.md
+          else
+            gh release create "$TAG" "$apk" --prerelease --title "KytyPS5 Android ${TAG}" \
+              --notes-file notes.md || gh release upload "$TAG" "$apk" --clobber
+          fi
