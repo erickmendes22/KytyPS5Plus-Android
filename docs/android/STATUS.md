@@ -1,6 +1,6 @@
 # KytyPS5 Android: status
 
-_Last updated: 2026-10-23 · branch `android-boot-wip`_
+_Last updated: 2026-10-23 · branch `android-boot-wip` (default)_
 
 This is an Android (ARM64) port of KytyPS5, maintained as its own project in this repository. It runs PS5
 games on an Android tablet. The x86-64 guest code runs on an embedded FEXCore JIT, and the guest GPU work is
