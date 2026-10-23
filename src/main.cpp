@@ -73,12 +73,23 @@ static void WriteLogcatLine(std::string& line) {
 	line.clear();
 }
 
-static void DrainPipeToLogcat(int read_fd) {
+// Bounded per-session log for crash reports. Always persist the raw bytes first so that a
+// partial last line or an abrupt abort is still useful; logcat remains available as before.
+constexpr size_t kMaxSessionLogBytes = 16u * 1024u * 1024u;
+
+static void DrainPipeToLogcat(int read_fd, std::FILE* disk_log) {
 	std::string line;
 	char        buffer[512];
-	ssize_t     count = 0;
+	ssize_t     count          = 0;
+	size_t      disk_written   = 0;
 
 	while ((count = ::read(read_fd, buffer, sizeof(buffer))) > 0) {
+		if (disk_log != nullptr && disk_written < kMaxSessionLogBytes) {
+			const size_t length = std::min(static_cast<size_t>(count),
+			                              kMaxSessionLogBytes - disk_written);
+			disk_written += std::fwrite(buffer, 1, length, disk_log);
+			::fflush(disk_log);
+		}
 		for (ssize_t i = 0; i < count; i++) {
 			if (buffer[i] == '\n') {
 				WriteLogcatLine(line);
@@ -90,15 +101,54 @@ static void DrainPipeToLogcat(int read_fd) {
 			}
 		}
 	}
-
 	if (!line.empty()) {
 		WriteLogcatLine(line);
 	}
+	if (disk_log != nullptr) {
+		::fflush(disk_log);
+		::fclose(disk_log);
+	}
 }
 
-static void RedirectStdioToLogcat() {
+// SDL passes --data-dir as an absolute app-private path. Open the log *before* VirtualMemory
+// or FEX initialization so early failures reach disk. Preserve the preceding session on boot.
+static std::FILE* OpenAndroidSessionLog(int argc, char* argv[]) {
+	for (int i = 1; i + 1 < argc; ++i) {
+		if (std::string_view(argv[i]) != "--data-dir") {
+			continue;
+		}
+		const auto dir = std::filesystem::path(argv[i + 1]) / "logs";
+		std::error_code ec;
+		std::filesystem::create_directories(dir, ec);
+		if (ec) {
+			__android_log_print(ANDROID_LOG_ERROR, "Kyty", "Log folder: %s", ec.message().c_str());
+			return nullptr;
+		}
+		const auto current  = dir / "session.log";
+		const auto previous = dir / "previous-session.log";
+		if (std::filesystem::exists(current, ec)) {
+			ec.clear();
+			std::filesystem::copy_file(current, previous,
+			                           std::filesystem::copy_options::overwrite_existing, ec);
+			if (ec) {
+				__android_log_print(ANDROID_LOG_WARN, "Kyty", "Previous log: %s", ec.message().c_str());
+			}
+		}
+		auto* log = ::fopen(current.string().c_str(), "wb");
+		if (log == nullptr) {
+			__android_log_print(ANDROID_LOG_ERROR, "Kyty", "Cannot open %s", current.string().c_str());
+		}
+		return log;
+	}
+	__android_log_write(ANDROID_LOG_WARN, "Kyty", "No --data-dir argument; cannot save native log");
+	return nullptr;
+}
+
+static void RedirectStdioToLogcat(int argc, char* argv[]) {
+	auto* disk_log = OpenAndroidSessionLog(argc, argv);
 	int fds[2] = {-1, -1};
 	if (::pipe(fds) != 0) {
+		if (disk_log != nullptr) ::fclose(disk_log);
 		return;
 	}
 
@@ -106,8 +156,13 @@ static void RedirectStdioToLogcat() {
 	::dup2(fds[1], STDERR_FILENO);
 	::close(fds[1]);
 	::setvbuf(stdout, nullptr, _IOLBF, 0);
+	::setvbuf(stderr, nullptr, _IONBF, 0);
 
-	std::thread([read_fd = fds[0]] { DrainPipeToLogcat(read_fd); }).detach();
+	std::thread([read_fd = fds[0], disk_log] { DrainPipeToLogcat(read_fd, disk_log); }).detach();
+	if (disk_log != nullptr) {
+		::printf("[KytyDiagnostic] Native logging enabled: logs/session.log\n");
+		::fflush(stdout);
+	}
 }
 #endif
 
@@ -848,7 +903,7 @@ static void UnblockSynchronousSignals() {
 static int Main(int argc, char* argv[]) {
 #if defined(KYTY_ANDROID)
 	UnblockSynchronousSignals();
-	RedirectStdioToLogcat();
+	RedirectStdioToLogcat(argc, argv);
 #endif
 
 	VirtualMemory::Init();
