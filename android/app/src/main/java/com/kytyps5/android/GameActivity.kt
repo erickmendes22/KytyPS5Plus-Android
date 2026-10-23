@@ -46,6 +46,12 @@ class GameActivity : SDLActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Persist the last launch even if SDL or the native runtime aborts before opening its log.
+        Diagnostics.saveLaunch(
+            this,
+            intent?.getStringExtra(LaunchArgs.EXTRA_GAME_PATH) ?: "(unknown)",
+            intent?.getStringArrayExtra(LaunchArgs.EXTRA_GAME_ARGS) ?: emptyArray(),
+        )
         // Before super.onCreate: SDL loads the emulator (and Mesa reads TU_DEBUG etc.) from there on.
         GameEnvironment.apply(intent?.getStringArrayExtra(LaunchArgs.EXTRA_ENV))
         // Also before super.onCreate: the game's config presets must be in place when it boots.
