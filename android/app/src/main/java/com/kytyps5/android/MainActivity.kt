@@ -165,6 +165,10 @@ class MainActivity : Activity() {
                 },
             )
             addView(scanStatus)
+            addView(Button(context).apply {
+                text = "Export Logs (ZIP)"
+                setOnClickListener { openLogExport() }
+            })
             val gameGrid = GridView(context).apply {
                 adapter = grid
                 numColumns = GridView.AUTO_FIT
@@ -402,9 +406,40 @@ class MainActivity : Activity() {
         }
     }
 
+    /** User chooses a destination (including Download); the app never needs root access. */
+    private fun openLogExport() {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/zip"
+            putExtra(Intent.EXTRA_TITLE, Diagnostics.suggestedFileName())
+        }
+        try {
+            startActivityForResult(intent, REQUEST_EXPORT_LOGS)
+        } catch (e: ActivityNotFoundException) {
+            showMessage("No document picker is available for exporting logs.")
+        }
+    }
+
     @Deprecated("Platform Activity result API; this launcher has no AndroidX dependency.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_EXPORT_LOGS) {
+            if (resultCode == RESULT_OK) {
+                data?.data?.let { destination ->
+                    showMessage("Exporting logs…")
+                    worker.execute {
+                        val outcome = try {
+                            Diagnostics.export(this, destination)
+                        } catch (e: Exception) {
+                            Log.e("KytyDiagnostics", "Log export failed", e)
+                            "Log export failed: ${e.message ?: e.javaClass.simpleName}"
+                        }
+                        mainHandler.post { if (!isFinishing) showMessage(outcome) }
+                    }
+                }
+            }
+            return
+        }
         if (requestCode == REQUEST_PICK_GAME_FILE && resultCode == RESULT_OK) {
             val uri = data?.data
             val path = if (uri?.authority == "com.android.externalstorage.documents") {
@@ -544,6 +579,7 @@ class MainActivity : Activity() {
     private companion object {
         const val REQUEST_PICK_GAMES_FOLDER = 1
         const val REQUEST_PICK_GAME_FILE = 3
+        const val REQUEST_EXPORT_LOGS = 4
         const val COVER_DP = 150
     }
 
