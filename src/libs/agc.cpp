@@ -1619,39 +1619,63 @@ uint32_t KYTY_SYSV_ABI AgcDriverGetDefaultOwner() {
 	return 0x8a6c9018u;
 }
 
-uint32_t KYTY_SYSV_ABI AgcDriverGetResourceRegistrationMaxNameLength() {
-	PRINT_NAME();
+// PS5 AGC registration APIs carry output pointers, not just return codes.
+// Old stubs returned "not implemented" without writing outputs, so the guest
+// could use uninitialized stack values as lengths/opaque handles. Port the
+// independently validated contracts from Prosper's AGC startup fixes:
+// length=0xfc, sized backing storage, and nonzero opaque registration IDs.
+// The host does not interpret registration memory yet.
+constexpr uint32_t kAgcRegistrationInvalidArgument = 0x80d19005u;
+static std::atomic<uint32_t> g_agc_next_owner_handle {1};
+static std::atomic<uint32_t> g_agc_next_resource_handle {1};
 
-	return 0x8a6c9018u;
+static uint32_t NextRegistrationHandle(std::atomic<uint32_t>& next) {
+	uint32_t handle = next.fetch_add(1, std::memory_order_relaxed);
+	if (handle == 0) handle = next.fetch_add(1, std::memory_order_relaxed);
+	return handle;
 }
 
-uint32_t KYTY_SYSV_ABI AgcDriverInitResourceRegistration() {
+uint32_t KYTY_SYSV_ABI AgcDriverGetResourceRegistrationMaxNameLength(uint32_t* out_length) {
 	PRINT_NAME();
+	if (out_length == nullptr) return 0x80d19013u;
+	*out_length = 0xfcu;
+	return OK;
+}
 
-	return 0x8a6c9018u;
+uint32_t KYTY_SYSV_ABI AgcDriverInitResourceRegistration(void* memory, uint64_t memory_size,
+                                                           uint32_t owner_capacity) {
+	PRINT_NAME();
+	(void)owner_capacity;
+	if (memory == nullptr || memory_size < 0x100) return kAgcRegistrationInvalidArgument;
+	return OK;
 }
 
 uint32_t KYTY_SYSV_ABI
-AgcDriverQueryResourceRegistrationUserMemoryRequirements(uint64_t* size_in_bytes) {
+AgcDriverQueryResourceRegistrationUserMemoryRequirements(uint64_t* size_in_bytes,
+                                                           uint32_t resource_capacity,
+                                                           uint32_t owner_capacity) {
 	PRINT_NAME();
-
-	if (size_in_bytes != nullptr) {
-		*size_in_bytes = 0;
-	}
-
-	return 0x8a6c9018u;
+	if (size_in_bytes == nullptr) return kAgcRegistrationInvalidArgument;
+	// Conservative opaque backing allocation; the registration bookkeeping is host-side.
+	constexpr uint64_t kHeaderSize = 0x100, kResourceSize = 0x40, kOwnerSize = 0x20;
+	const uint64_t size = kHeaderSize + uint64_t {resource_capacity} * kResourceSize +
+	                      uint64_t {owner_capacity} * kOwnerSize;
+	*size_in_bytes = (size + 0x3f) & ~uint64_t {0x3f};
+	return OK;
 }
 
-int KYTY_SYSV_ABI AgcDriverRegisterOwner() {
+int KYTY_SYSV_ABI AgcDriverRegisterOwner(uint32_t* out_owner_handle) {
 	PRINT_NAME();
-
-	return static_cast<int>(0x8a6c9018u);
+	if (out_owner_handle == nullptr) return static_cast<int>(kAgcRegistrationInvalidArgument);
+	*out_owner_handle = NextRegistrationHandle(g_agc_next_owner_handle);
+	return OK;
 }
 
-int KYTY_SYSV_ABI AgcDriverRegisterResource() {
+int KYTY_SYSV_ABI AgcDriverRegisterResource(uint32_t* out_resource_handle) {
 	PRINT_NAME();
-
-	return static_cast<int>(0x8a6c9018u);
+	if (out_resource_handle == nullptr) return static_cast<int>(kAgcRegistrationInvalidArgument);
+	*out_resource_handle = NextRegistrationHandle(g_agc_next_resource_handle);
+	return OK;
 }
 
 int KYTY_SYSV_ABI AgcDriverUnregisterOwnerAndResources(uint32_t owner_handle) {
