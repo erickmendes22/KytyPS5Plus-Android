@@ -4,6 +4,7 @@
 #include "loader/guestAbi.h"
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +47,21 @@ namespace Loader::GuestAbi {
 // translation unit that registers it, before the registration.
 template <auto Fn>
 struct HleManualThunk : std::false_type {};
+
+// KYTY_HLE_TRACE (diagnostics): see InvokeWith.
+namespace HleTrace {
+// Read lazily: --env applies after static initialisation.
+bool Enabled();
+// True for the first calls of a function (its own counter), up to the limit.
+bool Take(std::atomic<uint32_t>& counter);
+void Log(const char* function, uint64_t a0, uint64_t a1, uint64_t a2, bool has_result, uint64_t result);
+} // namespace HleTrace
+
+template <auto Fn>
+std::atomic<uint32_t>& HleTraceCounter() {
+	static std::atomic<uint32_t> counter {0};
+	return counter;
+}
 
 namespace Detail {
 
@@ -372,11 +388,29 @@ void InvokeWith(CallFrame& f, ParamList<P...> /*params*/) {
 	// A MEMORY-class return consumes RDI for the hidden pointer.
 	constexpr bool kHiddenReturn = IsMemoryAggregate<Ret>();
 	constexpr auto kLocations    = PlanArgs<P...>(kHiddenReturn ? 1 : 0);
+	// KYTY_HLE_TRACE=1: the first KYTY_HLE_TRACE_LIMIT (4) calls of each HLE function are logged
+	// with their first integer arguments and integer result (HleTrace, runtimeLinker.cpp).
+	const char* const name  = __PRETTY_FUNCTION__; // names Fn (the lambda's own does not)
+	const bool        trace = HleTrace::Enabled() && HleTrace::Take(HleTraceCounter<Fn>());
+	const uint64_t a0 = trace ? f.IntArg(0) : 0, a1 = trace ? f.IntArg(1) : 0, a2 = trace ? f.IntArg(2) : 0;
 	[&]<std::size_t... I>(std::index_sequence<I...>) {
 		if constexpr (std::is_void_v<Ret>) {
 			Fn(FetchArg<P>(f, kLocations[I])...);
+			if (trace) {
+				HleTrace::Log(name, a0, a1, a2, false, 0);
+			}
 		} else {
-			StoreResult<Ret>(f, Fn(FetchArg<P>(f, kLocations[I])...));
+			auto result = Fn(FetchArg<P>(f, kLocations[I])...);
+			if (trace) {
+				uint64_t value = 0;
+				if constexpr (std::is_integral_v<Ret> || std::is_enum_v<Ret>) {
+					value = static_cast<uint64_t>(result);
+				} else if constexpr (std::is_pointer_v<Ret>) {
+					value = reinterpret_cast<uint64_t>(result);
+				}
+				HleTrace::Log(name, a0, a1, a2, true, value);
+			}
+			StoreResult<Ret>(f, result);
 		}
 	}(std::index_sequence_for<P...> {});
 }

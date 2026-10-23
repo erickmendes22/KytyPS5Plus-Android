@@ -1,4 +1,6 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/cache/streamDefaults.h"
+#include "graphics/host_gpu/renderer/uploadStats.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
 
@@ -27,6 +29,8 @@
 #include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "kernel/memory.h"
+
+#include <xxhash.h>
 
 #include <algorithm>
 #if !defined(_WIN32)
@@ -576,6 +580,9 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
       m_texture_cache(texture_cache), m_targeted_readback(Config::TargetedReadbackEnabled()) {
+	if (StreamDefaults::CachedStream(std::getenv("KYTY_STREAM_CACHED"), StreamDefaults::kAndroid)) {
+		m_stream_buffer_cached = std::make_unique<StreamBuffer>(graphics, scheduler, MemoryUsage::Stream, 64 * MiB, true);
+	}
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));
 	m_gds_buffer.Flush(0, m_gds_buffer.Size());
 	m_bda_table_sized = BdaTableSize::Sized(std::getenv("KYTY_BDA_TABLE"),
@@ -1036,6 +1043,7 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		native.copyBuffer(source, buffer.Handle(), static_cast<uint32_t>(copies.size()),
 		                  copies.data());
 		Common::PerfStats::Count(Common::PerfStats::Counter::UploadBytes, total_size);
+		UploadStats::NoteSync(total_size);
 		auto after          = before;
 		after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
 		after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
@@ -1068,6 +1076,27 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 	return source.first->Handle();
 }
 
+namespace {
+
+// KYTY_STREAM_PROMOTE=<n> (default 2 on Android, 0 = off elsewhere; live key stream_promote): see ObtainBuffer.
+int64_t StreamPromoteThreshold() {
+	static const int64_t env = [] {
+		const int64_t n = StreamDefaults::PromoteThreshold(std::getenv("KYTY_STREAM_PROMOTE"), StreamDefaults::kAndroid);
+		LOGF("KYTY_STREAM_PROMOTE: %s\n", n > 0 ? "on" : "off");
+		return n;
+	}();
+	return LiveKnobs::Int("stream_promote", env);
+}
+
+} // namespace
+
+StreamBuffer& BufferCache::SmallReadStream() {
+	if (m_stream_buffer_cached != nullptr && LiveKnobs::Int("stream_cached", 1) != 0) {
+		return *m_stream_buffer_cached;
+	}
+	return m_stream_buffer;
+}
+
 std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t size,
                                                        bool is_written, bool is_texel_buffer,
                                                        BufferId id) {
@@ -1082,13 +1111,86 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	    m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
 		const auto alignment = std::max<uint64_t>(
 		    m_graphics.physical_device_properties.limits.minUniformBufferOffsetAlignment, 1);
-		auto [mapped, offset] = m_stream_buffer.Map(size, alignment, false);
-		if (mapped != nullptr) {
-			if (!LibKernel::Memory::CopySparseMemory(vaddr, mapped, size)) {
+		const bool stats   = UploadStats::Enabled();
+		const auto start   = stats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
+		auto&      stream  = SmallReadStream();
+		const auto promote = StreamPromoteThreshold();
+		if (promote == 0 && m_stream_promote_prev > 0) {
+			for (const auto& [address, bytes]: m_stream_promoted) {
+				(void)m_memory_tracker.MarkCleanPagesCpuModified(address, bytes);
+			}
+			m_stream_promoted.clear();
+			m_stream_history.clear();
+		}
+		m_stream_promote_prev = promote;
+		if (promote > 0) {
+			// KYTY_STREAM_PROMOTE: a range whose bytes came out the same `promote` times in a row
+			// takes the cached-buffer path below once, which uploads it and clears its CPU-modified
+			// pages (write-protected again), so later draws bind the cached copy instead of streaming
+			// it again. A CPU write faults the page back to CPU-modified and streaming resumes.
+			thread_local std::vector<uint8_t> scratch;
+			scratch.resize(size);
+			if (!LibKernel::Memory::CopySparseMemory(vaddr, scratch.data(), size)) {
 				EXIT("BufferCache: failed to read sparse guest buffer memory\n");
 			}
-			m_stream_buffer.Commit();
-			return {&m_stream_buffer, offset};
+			const uint64_t hash = XXH3_64bits(scratch.data(), static_cast<size_t>(size));
+			if (m_stream_history.size() > kStreamHistoryMax) {
+				m_stream_history.clear();
+			}
+			auto& history     = m_stream_history[vaddr ^ (size << 48u)];
+			history.unchanged = history.hash == hash ? history.unchanged + 1 : 0;
+			history.hash      = hash;
+			// stream_backoff (KYTY_STREAM_BACKOFF, default on): a range promoted before (its pages were written again since)
+			// needs twice as many unchanged copies per earlier promotion, up to 64x, so ranges that
+			// share pages with data the CPU rewrites every frame stop faulting each frame.
+			static const int64_t backoff_env = [] {
+				// KYTY_STREAM_BACKOFF=0 opts out; on by default with KYTY_STREAM_PROMOTE.
+				const char* value = std::getenv("KYTY_STREAM_BACKOFF");
+				return static_cast<int64_t>(value != nullptr && std::strcmp(value, "0") == 0 ? 0 : 1);
+			}();
+			const uint32_t backoff  = LiveKnobs::Int("stream_backoff", backoff_env) != 0 ? std::min<uint32_t>(history.promotions, 6) : 0;
+			const uint32_t required = static_cast<uint32_t>(promote) << backoff;
+			if (history.unchanged >= required) {
+				history.unchanged = 0;
+				history.promotions++;
+				if (m_stream_promoted.size() < kStreamHistoryMax * 4) {
+					m_stream_promoted.emplace_back(vaddr, size);
+				}
+				UploadStats::NotePromotion();
+			} else {
+				auto [mapped, offset] = stream.Map(size, alignment, false);
+				if (mapped != nullptr) {
+					std::memcpy(mapped, scratch.data(), static_cast<size_t>(size));
+					stream.Commit();
+					if (stats) {
+						UploadStats::NoteStream(vaddr, size, scratch.data(),
+						                        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+						                                                  std::chrono::steady_clock::now() - start)
+						                                                  .count()));
+					}
+					return {&stream, offset};
+				}
+			}
+		} else {
+			auto [mapped, offset] = stream.Map(size, alignment, false);
+			if (mapped != nullptr) {
+				if (!LibKernel::Memory::CopySparseMemory(vaddr, mapped, size)) {
+					EXIT("BufferCache: failed to read sparse guest buffer memory\n");
+				}
+				stream.Commit();
+				if (stats) {
+					const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+					                    std::chrono::steady_clock::now() - start)
+					                    .count();
+					// Hash a cached copy, not the write-combined stream memory.
+					thread_local std::vector<uint8_t> scratch;
+					scratch.resize(size);
+					if (LibKernel::Memory::CopySparseMemory(vaddr, scratch.data(), size)) {
+						UploadStats::NoteStream(vaddr, size, scratch.data(), static_cast<uint64_t>(ns));
+					}
+				}
+				return {&stream, offset};
+			}
 		}
 	}
 

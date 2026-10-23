@@ -37,8 +37,10 @@ inline constexpr vk::BufferUsageFlags AllFlags =
 
 class Buffer {
 public:
+	// host_cached: prefer host-cached (and coherent) memory over write-combined memory for a
+	// mapped buffer the CPU writes in small pieces (KYTY_STREAM_CACHED, BufferCache).
 	Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
-	       uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size);
+	       uint64_t cpu_address, vk::BufferUsageFlags flags, uint64_t size, bool host_cached = false);
 	~Buffer();
 	KYTY_CLASS_NO_COPY(Buffer);
 
@@ -109,7 +111,7 @@ private:
 class StreamBuffer final: public Buffer {
 public:
 	StreamBuffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsage usage,
-	             uint64_t size);
+	             uint64_t size, bool host_cached = false);
 
 	[[nodiscard]] std::pair<uint8_t*, uint64_t> Map(uint64_t size, uint64_t alignment = 0,
 	                                                bool allow_wait = true);

@@ -151,11 +151,6 @@ bool ResourceMemo::RebaseStartValue() {
 	return value == nullptr || value[0] != '0';
 }
 
-bool ResourceMemo::StartValue() {
-	const char* value = std::getenv("KYTY_SRT_MEMO");
-	return value != nullptr && value[0] == '1';
-}
-
 ResourceMemo::Stats ResourceMemo::TakeStats() {
 	return {.hits     = g_hits.exchange(0, std::memory_order_relaxed),
 	        .misses   = g_misses.exchange(0, std::memory_order_relaxed),

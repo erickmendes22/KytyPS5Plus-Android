@@ -287,6 +287,8 @@ WalkPool& Pool();
 [[nodiscard]] bool Enabled();
 // KYTY_GPU_FAN=auto is in effect.
 [[nodiscard]] bool AutoMode();
+// The front's last Enabled() result (any thread; KYTY_SRT_MEMO=auto follows it).
+[[nodiscard]] bool LastEnabled();
 // Live fan_memo=1 (default 0): ProgramCache::SubmitWalk remembers request key -> entry (LookupMemo).
 [[nodiscard]] bool MemoEnabled();
 // Live fan_shadow=1: the recorder also walks every accepted job itself and compares.
