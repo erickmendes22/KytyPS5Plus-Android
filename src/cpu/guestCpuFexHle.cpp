@@ -10,7 +10,6 @@
 #include <atomic>
 #include <cerrno>
 #include <cinttypes>
-#include <string_view>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -36,8 +35,12 @@ std::atomic<SafePointHook>                    g_safe_point_hook {nullptr};
 // without relying on SIGSEGV callbacks (which never fired on the reported device).
 constexpr size_t kBootRingSlots       = 1024;
 constexpr size_t kBootRingRecordBytes = 256;
-constexpr uint64_t kMaxBootRingEvents = 131072; // limit diagnostic work during long gameplay
+// Never stop collecting after a fixed event count. Only the newest 1024 records occupy disk.
 std::atomic<uint64_t> g_boot_ring_sequence {0};
+// Mutex HLE calls dominate Astro Bot startup (over 65k/second in one captured boot).
+// Sample successful lock/unlock transitions; preserve every other HLE call and all mutex errors.
+std::atomic<uint64_t> g_mutex_calls {0};
+constexpr uint64_t kMutexSampleMask = 4095;
 std::atomic<bool>     g_boot_ring_enabled {false};
 char*                 g_boot_ring = nullptr;
 std::once_flag        g_boot_ring_once;
@@ -66,7 +69,6 @@ void RecordBootHle(const char* phase, uint32_t id, std::string_view symbol, uint
                    uint64_t a0, uint64_t a1, uint64_t a2) {
     if (!g_boot_ring_enabled.load(std::memory_order_acquire)) return;
     const uint64_t seq = g_boot_ring_sequence.fetch_add(1, std::memory_order_relaxed);
-    if (seq >= kMaxBootRingEvents) return;
     char buffer[kBootRingRecordBytes];
     std::memset(buffer, ' ', sizeof(buffer));
     const int written = std::snprintf(buffer, sizeof(buffer) - 2,
@@ -219,15 +221,25 @@ uint64_t HleSyscall(FEXCore::Core::CpuStateFrame* frame, uint64_t arg0, uint64_t
 	ScopedHleFrame scope(frame);
 	const std::string_view name = Loader::GuestHost::CurrentTrapName();
 	if (name == "Gen5::AgcInit") InitializeBootRing();
+	// High-frequency mutex calls rapidly overwrote more valuable events. Keep a
+	// heartbeat sample and every error; log all non-mutex calls without truncation.
+	const bool is_mutex = name == "LibKernel::PthreadMutexLock" ||
+	                      name == "LibKernel::PthreadMutexUnlock";
+	const bool enabled = g_boot_ring_enabled.load(std::memory_order_acquire);
+	const bool sampled = enabled && (!is_mutex ||
+	    (g_mutex_calls.fetch_add(1, std::memory_order_relaxed) & kMutexSampleMask) == 0);
 	uint64_t caller = 0;
-	if (g_boot_ring_enabled.load(std::memory_order_acquire)) {
+	if (enabled) {
 		std::memcpy(&caller, reinterpret_cast<const void*>(guest_rsp + 8), sizeof(caller));
-		RecordBootHle("ENTER", id, name, caller, arg0, arg1, arg2);
+		if (sampled) RecordBootHle("ENTER", id, name, caller, arg0, arg1, arg2);
 	}
 	FexCallFrame call_frame(frame, {arg0, arg1, arg2, arg3, arg4, arg5}, guest_rsp + kStackSlotOffset, sve256);
 	thunk(call_frame);
-	if (g_boot_ring_enabled.load(std::memory_order_relaxed)) {
-		RecordBootHle("RETURN", id, name, caller, call_frame.IntReturn(), 0, 0);
+	if (enabled) {
+		const uint64_t result = call_frame.IntReturn();
+		if (sampled) RecordBootHle("RETURN", id, name, caller, result, 0, 0);
+		else if (is_mutex && result != 0)
+			RecordBootHle("MUTEX_ERROR", id, name, caller, result, arg0, 0);
 	}
 	// Safe point: the trapped guest state is consistent and the thunk is done with it.
 	if (auto* hook = g_safe_point_hook.load(std::memory_order_acquire); hook != nullptr) {
