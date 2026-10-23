@@ -160,8 +160,13 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            if (releaseKeystore != null) {
-                signingConfig = signingConfigs.getByName("release")
+            // A fresh fork does not inherit the upstream GitHub Actions signing secrets.
+            // Fall back to an installable debug-signed APK rather than publishing an unsigned APK.
+            // Configure KYTY_* signing secrets for stable upgrade-compatible releases.
+            signingConfig = if (releaseKeystore != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
             }
         }
     }
