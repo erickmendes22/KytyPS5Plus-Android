@@ -4,6 +4,10 @@
 #include "common/hostArch.h"
 #include "common/processExitHooks.h"
 
+#if KYTY_HOST_ARM64 && defined(KYTY_ANDROID)
+#include "cpu/guestCpu.h"
+#endif
+
 #include <atomic>
 #include <cstdio>
 
@@ -329,6 +333,20 @@ static void SignalHandler(int signal_number, siginfo_t* signal_info, void* nativ
 		return;
 	}
 
+#if defined(KYTY_ANDROID)
+    // This handler replaces the process SIGSEGV disposition after FEX has started.
+    // Only host faults belong to Kyty's own native page tracker. If the faulting PC is
+    // inside JIT-translated guest code, return directly to FEX's saved signal handler:
+    // attempting to report it as an unrecoverable Kyty host fault kills the game before
+    // FEX can repair the page, decode the instruction or apply guest address folding.
+    if (signal_number == SIGSEGV) {
+        Cpu::GuestCpu::GuestRegisters guest_regs {};
+        if (Cpu::GuestCpu::CaptureFaultingGuestRegisters(native_context, &guest_regs)) {
+            ChainToPrevious(signal_number, signal_info, native_context);
+            return;
+        }
+    }
+#endif
 	const auto handler = g_handler.load(std::memory_order_acquire);
 	if (handler != nullptr && handler(info)) {
 		return;
