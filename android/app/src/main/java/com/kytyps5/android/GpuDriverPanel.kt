@@ -35,14 +35,28 @@ class GpuDriverPanel(
     fun build(onChanged: () -> Unit): View {
         onDriversChanged = onChanged
         refresh()
+        // Two rows of actions instead of one over-wide horizontal row on phones.
         return LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(current, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(button("Change…") { chooseGlobal() })
-            addView(button("Download…") { openBrowser() })
-            addView(button("Import zip…") { openPicker() })
-            addView(button("Remove…") { chooseToRemove() })
+            orientation = LinearLayout.VERTICAL
+            addView(current)
+            addView(
+                LinearLayout(activity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(button("Change") { chooseGlobal() },
+                        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(button("Download") { openBrowser() },
+                        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                },
+            )
+            addView(
+                LinearLayout(activity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(button("Import ZIP") { openPicker() },
+                        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(button("Remove") { chooseToRemove() },
+                        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                },
+            )
         }
     }
 
