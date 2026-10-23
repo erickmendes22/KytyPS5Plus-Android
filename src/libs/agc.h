@@ -92,12 +92,17 @@ uint64_t KYTY_SYSV_ABI  AgcDcbContextStateOpGetSize(uint32_t operation);
 void KYTY_SYSV_ABI      AgcGetIsTrinityMode(uint8_t* result);
 
 uint32_t KYTY_SYSV_ABI AgcDriverGetDefaultOwner();
-uint32_t KYTY_SYSV_ABI AgcDriverGetResourceRegistrationMaxNameLength();
-uint32_t KYTY_SYSV_ABI AgcDriverInitResourceRegistration();
+// PS5 AGC registration ABI: these APIs publish results via the first guest pointer.
+// Declaring them with no arguments silently discarded the caller's output buffer.
+uint32_t KYTY_SYSV_ABI AgcDriverGetResourceRegistrationMaxNameLength(uint32_t* out_length);
+uint32_t KYTY_SYSV_ABI AgcDriverInitResourceRegistration(void* memory, uint64_t memory_size,
+                                                          uint32_t owner_capacity);
 uint32_t KYTY_SYSV_ABI
-AgcDriverQueryResourceRegistrationUserMemoryRequirements(uint64_t* size_in_bytes);
-int KYTY_SYSV_ABI AgcDriverRegisterOwner();
-int KYTY_SYSV_ABI AgcDriverRegisterResource();
+AgcDriverQueryResourceRegistrationUserMemoryRequirements(uint64_t* size_in_bytes,
+                                                          uint32_t resource_capacity,
+                                                          uint32_t owner_capacity);
+int KYTY_SYSV_ABI AgcDriverRegisterOwner(uint32_t* out_owner_handle);
+int KYTY_SYSV_ABI AgcDriverRegisterResource(uint32_t* out_resource_handle);
 int KYTY_SYSV_ABI AgcDriverUnregisterOwnerAndResources(uint32_t owner_handle);
 int KYTY_SYSV_ABI AgcDriverUnregisterResource();
 int KYTY_SYSV_ABI AgcDriverRegisterWorkloadStream(uint32_t stream_id, const void* stream);
