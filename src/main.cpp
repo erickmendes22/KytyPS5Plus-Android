@@ -11,6 +11,7 @@
 #include "graphics/presentation/window/vulkanDriver.h"
 #include "kytyGitVersion.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <csignal>
