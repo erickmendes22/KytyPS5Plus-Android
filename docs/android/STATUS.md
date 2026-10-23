@@ -15,7 +15,7 @@ Reference device: **OnePlus Pad 3** (Snapdragon 8 Elite, Adreno 830, 16 GB RAM),
 |---|---|---|---|
 | Vampire Survivors | PPSA21703 | **Playable** | ~60 fps |
 | Totally Reliable Delivery Service (Unity) | PPSA28855 | **Nearly playable** | 28–35 fps in gameplay |
-| Astro Bot | PPSA21567 | Runs, slow | 13–17 fps at native res; **16–20 fps** with Performance mode (opt-in) |
+| Astro Bot | PPSA21567 | Runs, slow | 12–17 fps at native res; **~20 fps** with Performance mode (opt-in) |
 | Commandos: Origins (UE5) | PPSA14708 | Boots to the title menu, very slow | ~2 fps (turn on the `res50` preset, see below) |
 
 Speeds are 3-second means at the same GPU clock step. The tablet throttles after a few minutes, which costs
@@ -75,6 +75,11 @@ Presets can carry env knobs (`KYTY_*` only), `--render-scale` and a `--game-patc
   - Per-game presets.
   - A thermal-aware GPU clock policy.
 
+- **GPU front-end threads (2026-10-23, default on Android):** Astro Bot in Performance mode goes from 15.2 to 20.4 fps
+  at the same clock, with no visual change. Two changes do it:
+  - `KYTY_PIPE_SPIN`: the front, record and walk threads hand work over with a short spin instead of a sleep.
+  - `KYTY_CPU_PLACE` split mode: while the two-stage pipeline runs, the GPU front and record threads get the two
+    prime cores to themselves.
 - **Upstream sync (2026-10-23):** 69 of upstream KytyPS5's 155 newer commits are cherry-picked. They include:
   - no more global barriers for PM4 flush events (fewer render-pass breaks on Adreno);
   - zero-initialised BDA/fault tables;
@@ -87,7 +92,7 @@ Presets can carry env knobs (`KYTY_*` only), `--render-scale` and a `--game-patc
 
 | Game | Bottleneck |
 |---|---|
-| Astro Bot (Performance mode) | **CPU-side GPU front-end.** The record thread and the SRT walk workers set the ~50–65 ms frame. GPU work is ~40–48 ms/frame. |
+| Astro Bot (Performance mode) | ~48 ms frames: the GPU (~43 ms/frame) and the SRT walk workers, which wait on a shared memory lock about 10% of their time. |
 | Delivery Service | CPU: guest write faults on CPU-written buffers, plus per-draw record cost. |
 | Commandos (UE5) | Memory traffic: uploads and copies of large guest buffers. It needs zero-copy uploads. |
 

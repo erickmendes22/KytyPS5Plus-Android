@@ -3,19 +3,16 @@
 _Last updated: 2026-10-23._ Items are ordered by expected gain per effort. Anyone can pick one up; open an issue
 saying which so work isn't duplicated.
 
-## In progress
+## Done recently
 
-1. **Record-thread / GPU front-end speed-up.** This is the main limit for Astro Bot and Delivery Service now.
-   - **Candidates:**
-     - place the record, front and walk threads on the prime cores (cpu6–7 sit mostly idle while the hot
-       threads run on cpu0–5 at ~1.7 GHz);
-     - drop or defer front→record drains for packets that don't need an idle record thread (~128 drains/frame
-       on Astro: POP_MARKER, EVENT_WRITE, RELEASE_MEM, ACQUIRE_MEM);
-     - cheaper per-draw descriptor and state work.
-   - **Target:** Astro 20 → 25 fps, Delivery Service 35 → 45 fps.
+- **GPU front-end threads:** spin handoffs plus prime-core placement give Astro Bot Performance mode +34%
+  (15.2 → 20.4 fps). The sustained thermals of the prime-core placement over long sessions are still to be checked.
 
 ## Next
 
+1. **Walk-worker memory lock.** The SRT walk workers spend about 10% of their time in futex calls inside
+   `WorkerWalk::Read`, on the backing store's `std::shared_mutex` in `memoryAddressSpace.inc`. A read-mostly
+   lock, or lock-free reads, is the next front-end win.
 2. **Performance mode toggle in the in-game menu.** Switch presets without going back to the launcher.
    Small and self-contained (Kotlin, `android/app/.../presets`).
 3. **Zero-copy guest memory → Vulkan (Commandos / UE5).** UE5 spends its frame copying large guest buffers.

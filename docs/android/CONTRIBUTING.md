@@ -65,6 +65,8 @@ Then rebuild `_Build/android/fex/build`.
 | `KYTY_STREAM_PROMOTE` | `2` | Promote unchanged small CPU-written reads off the stream path; `0` off |
 | `KYTY_STREAM_CACHED` | `1` | Host-cached stream buffer for small reads |
 | `KYTY_SRT_MEMO` | `auto` | SRT materialization memo while fan-out is off |
+| `KYTY_PIPE_SPIN` | `60` µs | Spin before sleeping in the GPU front/record/walk handoffs; `0` off |
+| `KYTY_CPU_PLACE` | split (`8`) | Prime cores for the GPU front + record threads while pipelined; `0` off |
 | `KYTY_CS_PACK` | on (Turnip) | Pack two small workgroups per host workgroup |
 | `KYTY_TITLE_WORKAROUNDS` | off | Per-title workaround lines |
 | `KYTY_VK_VALIDATION` | off | Vulkan validation layer (core+sync) |

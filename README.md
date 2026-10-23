@@ -27,7 +27,7 @@ Measured on a OnePlus Pad 3 (Snapdragon 8 Elite, Adreno 830):
 |---|---|---|
 | Vampire Survivors | ✅ Playable | ~60 fps |
 | Totally Reliable Delivery Service | 🟡 Nearly playable | 28–35 fps |
-| Astro Bot | 🟠 Runs, slow | 13–17 fps; 16–20 fps in Performance mode |
+| Astro Bot | 🟠 Runs, slow | 12–17 fps; ~20 fps in Performance mode |
 | Commandos: Origins (Unreal Engine 5) | 🔴 Boots, very slow | ~2 fps |
 
 Full details are in **[docs/android/STATUS.md](docs/android/STATUS.md)**, and **[docs/android/ROADMAP.md](docs/android/ROADMAP.md)** covers what's next.
