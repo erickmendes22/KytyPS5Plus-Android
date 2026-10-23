@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
@@ -273,7 +274,12 @@ class MainActivity : Activity() {
         val request = ++scanRequest
         showMessage("Scanning $root ...")
         worker.execute {
-            val result = GameLibrary.scan(File(root))
+            val result = try {
+                GameLibrary.scan(File(root))
+            } catch (e: Exception) {
+                Log.e("KytyGameScan", "Scan failed for $root", e)
+                ScanResult.Failure("Scan error in $root: ${e.message ?: e.javaClass.simpleName}")
+            }
             mainHandler.post {
                 if (request == scanRequest && !isFinishing) renderScan(result)
             }
@@ -284,10 +290,29 @@ class MainActivity : Activity() {
         grid.games = (result as? ScanResult.Found)?.games.orEmpty()
         when (result) {
             is ScanResult.Failure -> showMessage(result.message)
-            is ScanResult.Found -> when {
-                result.games.isEmpty() ->
-                    showMessage("No games found here. Choose a folder containing game dumps (a folder with sce_sys/param.json, or a .zar or .exfat file).")
-                else -> showMessage("${result.games.size} game(s) found. Tap to play, ⚙ or long-press for game settings.")
+            is ScanResult.Found -> {
+                val diagnostics = result.diagnostics
+                val summary = "${diagnostics.visitedDirectories} folders checked"
+                val warnings = mutableListOf<String>()
+                if (diagnostics.unreadableDirectories.isNotEmpty()) {
+                    warnings += "${diagnostics.unreadableDirectories.size} folders could not be read " +
+                        "(first: ${diagnostics.unreadableDirectories.first()})"
+                }
+                if (diagnostics.depthLimitedDirectories > 0) {
+                    warnings += "scan depth limit reached"
+                }
+                if (diagnostics.hitDirectoryLimit) {
+                    warnings += "scan stopped at folder limit"
+                }
+                val detail = (listOf(summary) + warnings).joinToString("; ")
+                if (result.games.isEmpty()) {
+                    showMessage("No games in ${settings.gamesRoot}. $detail. " +
+                        "Choose the parent folder of your PS5 dumps. Supported: eboot.bin, " +
+                        "sce_sys/param.json, .elf, .self, .zar or .exfat.")
+                } else {
+                    showMessage("${result.games.size} game(s) found ($detail). " +
+                        "Tap to play; ⚙ or long-press for settings.")
+                }
             }
         }
     }
