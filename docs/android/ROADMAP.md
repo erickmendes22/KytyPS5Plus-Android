@@ -22,9 +22,15 @@ saying which so work isn't duplicated.
    - `VK_EXT_external_memory_host` is not in Turnip, and soft-dirty is not in the 6.6 kernel, so this needs
      either a Turnip patch or an import path via AHardwareBuffer/dma-buf.
    - Estimate 1.5–2 weeks. Without it UE5 games stay unplayable.
-4. **More games.** Each new title shows which fixes generalise. Please report the title ID, how far it gets,
+4. **Upstream round 2.** These upstream KytyPS5 commits conflict with our front-end, caches and shader changes and need porting:
+   - **a358b847:** the flip-wait stall moves into the command processor.
+   - **b5405794 and 4059179e:** colour-clear selection on the GPU and proven compute fills, which cut GPU→CPU readbacks.
+   - **More shader work:** the remaining DPP/ALU instruction cuts and the DPP crash fix 9dcff95e.
+   - **Later:** the bindless image-heap series and the shader "Profile" refactor.
+   - **Note:** upstream 66f488a1 makes boolean options value-less, so the app's launch arguments must change with it.
+5. **More games.** Each new title shows which fixes generalise. Please report the title ID, how far it gets,
    fps, and a log (`--printf-direction File`, `files/_kyty.txt`).
-5. **Resolution patches for more titles.** This follows the Astro `perf720` method: find the render-size tables
+6. **Resolution patches for more titles.** This follows the Astro `perf720` method: find the render-size tables
    in rodata, ship a `--game-patch` JSON in a preset. See `android/app/src/main/assets/presets/PPSA21567/perf720/`.
 
 ## Known problems

@@ -75,6 +75,14 @@ Presets can carry env knobs (`KYTY_*` only), `--render-scale` and a `--game-patc
   - Per-game presets.
   - A thermal-aware GPU clock policy.
 
+- **Upstream sync (2026-10-23):** 69 of upstream KytyPS5's 155 newer commits are cherry-picked. They include:
+  - no more global barriers for PM4 flush events (fewer render-pass breaks on Adreno);
+  - zero-initialised BDA/fault tables;
+  - FIFO guest-mutex handoff;
+  - about 50 shader correctness and instruction-count fixes.
+  
+  The rest needs porting onto our multi-threaded GPU front-end (see ROADMAP).
+
 ## Where the time goes now
 
 | Game | Bottleneck |
