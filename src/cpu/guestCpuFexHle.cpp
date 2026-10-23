@@ -14,6 +14,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
+#include <mutex>
+#include <string_view>
+#include <sys/mman.h>
+#include <unistd.h>
 
 namespace Cpu::GuestCpu {
 namespace {
@@ -25,9 +30,57 @@ constexpr size_t kStackSlotOffset = 16; // [RSP] = id, [RSP+8] = return address,
 std::array<std::atomic<HleThunk>, kMaxHleIds> g_thunks {};
 std::atomic<uint32_t>                         g_next_dynamic_id {kFirstDynamicHleId};
 std::atomic<SafePointHook>                    g_safe_point_hook {nullptr};
-// Record the first 768 HLE transitions following AGC init, enough to span initial shaders
-// and identify the first failing post-shader call without logging long-running gameplay.
-std::atomic<uint32_t>                         g_agc_boot_hle_remaining {0};
+// The previous linear trace stopped at 768 calls during shader initialisation, *before*
+// the crash. Keep a small shared-file ring of the most recent HLE transitions instead.
+// MAP_SHARED retains the data in the kernel's page cache if Android terminates the process,
+// without relying on SIGSEGV callbacks (which never fired on the reported device).
+constexpr size_t kBootRingSlots       = 1024;
+constexpr size_t kBootRingRecordBytes = 256;
+constexpr uint64_t kMaxBootRingEvents = 131072; // limit diagnostic work during long gameplay
+std::atomic<uint64_t> g_boot_ring_sequence {0};
+std::atomic<bool>     g_boot_ring_enabled {false};
+char*                 g_boot_ring = nullptr;
+std::once_flag        g_boot_ring_once;
+
+void InitializeBootRing() {
+    std::call_once(g_boot_ring_once, [] {
+        const int fd = ::open("logs/recent-hle.log", O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (fd < 0) {
+            std::fprintf(stderr, "[KytyDiagnostic] Cannot open HLE ring\n");
+            return;
+        }
+        constexpr size_t length = kBootRingSlots * kBootRingRecordBytes;
+        if (::ftruncate(fd, static_cast<off_t>(length)) == 0) {
+            auto* ptr = ::mmap(nullptr, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            if (ptr != MAP_FAILED) {
+                g_boot_ring = static_cast<char*>(ptr);
+                g_boot_ring_enabled.store(true, std::memory_order_release);
+                std::fprintf(stderr, "[KytyDiagnostic] Recent HLE ring enabled (no signal handler)\n");
+            }
+        }
+        ::close(fd);
+    });
+}
+
+void RecordBootHle(const char* phase, uint32_t id, std::string_view symbol, uint64_t caller,
+                   uint64_t a0, uint64_t a1, uint64_t a2) {
+    if (!g_boot_ring_enabled.load(std::memory_order_acquire)) return;
+    const uint64_t seq = g_boot_ring_sequence.fetch_add(1, std::memory_order_relaxed);
+    if (seq >= kMaxBootRingEvents) return;
+    char buffer[kBootRingRecordBytes];
+    std::memset(buffer, ' ', sizeof(buffer));
+    const int written = std::snprintf(buffer, sizeof(buffer) - 2,
+         "seq=%08llu %s id=%u symbol=%.*s caller=%016llx a0=%016llx a1=%016llx a2=%016llx",
+         static_cast<unsigned long long>(seq), phase, id, static_cast<int>(symbol.size()),
+         symbol.data(), static_cast<unsigned long long>(caller),
+         static_cast<unsigned long long>(a0), static_cast<unsigned long long>(a1),
+         static_cast<unsigned long long>(a2));
+    if (written < 0) return;
+    // Fixed records are self-describing and sortable by sequence after ring wrap.
+    buffer[sizeof(buffer) - 1] = '\n';
+    std::memcpy(g_boot_ring + (seq % kBootRingSlots) * kBootRingRecordBytes, buffer,
+                sizeof(buffer));
+}
 
 // Stub layout (x86-64):
 //   mov r10, rcx          49 89 CA        ; SYSCALL clobbers RCX, so the fourth argument moves to R10
@@ -164,36 +217,17 @@ uint64_t HleSyscall(FEXCore::Core::CpuStateFrame* frame, uint64_t arg0, uint64_t
 	const bool sve256 = Cpu::GuestCpu::Fex::GetRuntime().sve256;
 	ScopedHleId    id_scope(id);
 	ScopedHleFrame scope(frame);
-	const std::string_view hle_name = Loader::GuestHost::CurrentTrapName();
-	if (hle_name.find("23LRUSvYu1M") != std::string_view::npos ||
-	    hle_name.find("AgcInit") != std::string_view::npos) {
-		g_agc_boot_hle_remaining.store(768, std::memory_order_relaxed);
-	}
-	bool trace = false;
-	uint32_t remaining = g_agc_boot_hle_remaining.load(std::memory_order_relaxed);
-	while (remaining != 0) {
-		if (g_agc_boot_hle_remaining.compare_exchange_weak(
-		        remaining, remaining - 1, std::memory_order_relaxed)) {
-			trace = true;
-			break;
-		}
-	}
-	if (trace) {
-		// The FEX thunk's RIP is always the same stub; the return address after the
-		// trapped HLE ID points back into the real x86-64 guest code.
-		uint64_t caller = 0;
+	const std::string_view name = Loader::GuestHost::CurrentTrapName();
+	if (name == "Gen5::AgcInit") InitializeBootRing();
+	uint64_t caller = 0;
+	if (g_boot_ring_enabled.load(std::memory_order_acquire)) {
 		std::memcpy(&caller, reinterpret_cast<const void*>(guest_rsp + 8), sizeof(caller));
-		std::fprintf(stderr, "[KytyBootHLE] ENTER id=%u symbol=%.*s caller=%016" PRIx64
-		                     " arg0=%016" PRIx64 " arg1=%016" PRIx64
-		                     " arg2=%016" PRIx64 " rsp=%016" PRIx64 "\n",
-		             id, static_cast<int>(hle_name.size()), hle_name.data(), caller,
-		             arg0, arg1, arg2, guest_rsp);
+		RecordBootHle("ENTER", id, name, caller, arg0, arg1, arg2);
 	}
 	FexCallFrame call_frame(frame, {arg0, arg1, arg2, arg3, arg4, arg5}, guest_rsp + kStackSlotOffset, sve256);
 	thunk(call_frame);
-	if (trace) {
-		std::fprintf(stderr, "[KytyBootHLE] RETURN id=%u value=%016" PRIx64 "\n", id,
-		             call_frame.IntReturn());
+	if (g_boot_ring_enabled.load(std::memory_order_relaxed)) {
+		RecordBootHle("RETURN", id, name, caller, call_frame.IntReturn(), 0, 0);
 	}
 	// Safe point: the trapped guest state is consistent and the thunk is done with it.
 	if (auto* hook = g_safe_point_hook.load(std::memory_order_acquire); hook != nullptr) {
