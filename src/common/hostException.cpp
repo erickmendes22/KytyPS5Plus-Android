@@ -234,6 +234,41 @@ static void ChainToDefault(int signal_number) noexcept {
 	::sigaction(signal_number, &restore, nullptr);
 }
 
+#if defined(KYTY_ANDROID) && KYTY_HOST_ARM64
+// The FEX signal delegator is installed before Kyty loads PS5 executables. Preserve its
+// dispositions when Kyty adds its page-tracking handler. An unclaimed SIGSEGV must reach
+// FEX so the translator can decode/recover a guest fault instead of being killed by the
+// kernel on its next instruction. This is also necessary for its host-fault diagnostics.
+static struct sigaction g_previous_sigsegv {};
+static struct sigaction g_previous_sigbus {};
+static struct sigaction g_previous_sigill {};
+
+static struct sigaction* PreviousSignalAction(int signal_number) {
+    switch (signal_number) {
+        case SIGSEGV: return &g_previous_sigsegv;
+        case SIGBUS:  return &g_previous_sigbus;
+        case SIGILL:  return &g_previous_sigill;
+        default:      return nullptr;
+    }
+}
+
+static void ChainToPrevious(int signal_number, siginfo_t* info, void* context) {
+    const auto* previous = PreviousSignalAction(signal_number);
+    if (previous == nullptr || previous->sa_handler == SIG_DFL) {
+        ChainToDefault(signal_number);
+        return;
+    }
+    if (previous->sa_handler == SIG_IGN) return;
+    // Forward the unchanged siginfo and ucontext to the FEX signal delegator. It may
+    // recover a guest memory access, in which case execution simply resumes.
+    if ((previous->sa_flags & SA_SIGINFO) != 0) {
+        previous->sa_sigaction(signal_number, info, context);
+    } else {
+        previous->sa_handler(signal_number);
+    }
+}
+#endif
+
 #if KYTY_HOST_ARM64
 // ESR_EL1 fields (ARM ARM D17.2.40): exception class and the data-abort write-not-read bit.
 constexpr uint64_t ESR_EC_SHIFT               = 26;
@@ -299,7 +334,11 @@ static void SignalHandler(int signal_number, siginfo_t* signal_info, void* nativ
 		return;
 	}
 
+#if defined(KYTY_ANDROID)
+    ChainToPrevious(signal_number, signal_info, native_context);
+#else
 	ChainToDefault(signal_number);
+#endif
 }
 #else
 bool IsWriteFault(const void* native_context) {
@@ -410,6 +449,17 @@ bool InstallHandler(Handler handler) {
 	action.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
 
 	for (const int signal_number: {SIGSEGV, SIGBUS, SIGILL}) {
+#if defined(KYTY_ANDROID) && KYTY_HOST_ARM64
+        // Save the FEX/Android handlers before replacing them; otherwise a page fault
+        // which Kyty cannot claim terminates the process instead of reaching FEX.
+        auto* previous = PreviousSignalAction(signal_number);
+        if (::sigaction(signal_number, nullptr, previous) != 0) {
+            g_handler.store(nullptr, std::memory_order_release);
+            g_install_state.store(0, std::memory_order_release);
+            std::printf("sigaction(%d) could not query previous handler\n", signal_number);
+            return false;
+        }
+#endif
 		if (::sigaction(signal_number, &action, nullptr) != 0) {
 			g_handler.store(nullptr, std::memory_order_release);
 			g_install_state.store(0, std::memory_order_release);
