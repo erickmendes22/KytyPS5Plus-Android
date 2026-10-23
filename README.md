@@ -5,6 +5,7 @@
 [![Status](https://img.shields.io/badge/status-experimental-orange.svg)](docs/android/STATUS.md)
 [![License](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/tarek369/KytyPS5-Android?include_prereleases&label=download)](https://github.com/tarek369/KytyPS5-Android/releases)
+[![Stars](https://img.shields.io/github/stars/tarek369/KytyPS5-Android?style=social)](https://github.com/tarek369/KytyPS5-Android/stargazers)
 
 **PlayStation 5 games on Android tablets and phones.**
 
@@ -12,6 +13,8 @@ KytyPS5 Android is a port of the [KytyPS5](https://github.com/KytyPS5/KytyPS5) P
 Android ARM64. The games' x86-64 code runs on an embedded [FEXCore](https://github.com/FEX-Emu/FEX) JIT. Their
 GPU work is translated to Vulkan and runs on Qualcomm Adreno GPUs through the open-source Mesa Turnip driver.
 It is a separate project with its own goals: speed on mobile GPUs, thermals, touch controls and per-game tuning.
+
+⭐ **If you'd like PS5 games on Android, star the repo.** It helps more people find the project and bring in contributors.
 
 > [!IMPORTANT]
 > This project is not affiliated with Sony Interactive Entertainment or PlayStation. It does not distribute
@@ -95,6 +98,10 @@ Help is very welcome: performance work, more games tested, more devices tested, 
 Much of this port was developed with AI coding agents working under human direction. Every change is built,
 unit-tested and measured on a real device before it lands. Contributions made with AI help are welcome. Say
 so in the pull request and describe how you tested.
+
+## Star history
+
+[![Star History Chart](https://api.star-history.com/svg?repos=tarek369/KytyPS5-Android&type=Date)](https://star-history.com/#tarek369/KytyPS5-Android&Date)
 
 ## Credits
 
