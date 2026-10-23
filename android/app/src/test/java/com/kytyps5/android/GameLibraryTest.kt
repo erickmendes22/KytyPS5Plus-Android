@@ -113,11 +113,64 @@ class GameLibraryTest {
     }
 
     @Test
-    fun scanStopsAtMaxDepth() {
+    fun scanFindsGamesMoreThanThreeFoldersDeep() {
         val deep = File(root, "a/b/c/d/game")
         File(deep, "sce_sys").mkdirs()
-        File(deep, "sce_sys/param.json").writeText("""{"titleName":"Too Deep"}""")
-        assertTrue((GameLibrary.scan(root) as ScanResult.Found).games.isEmpty())
+        File(deep, "eboot.bin").writeBytes(byteArrayOf(1))
+        File(deep, "sce_sys/param.json").writeText("""{"titleName":"Deep Game"}""")
+        val result = GameLibrary.scan(root) as ScanResult.Found
+        assertEquals(listOf("Deep Game"), result.games.map { it.title })
+        assertTrue(result.diagnostics.visitedDirectories >= 6)
+    }
+
+    @Test
+    fun scanHonorsDepthLimit() {
+        val path = (0..GameLibrary.MAX_SCAN_DEPTH).joinToString("/") { "folder$it" }
+        val deep = File(root, "$path/game")
+        deep.mkdirs()
+        File(deep, "eboot.bin").writeBytes(byteArrayOf(1))
+        val result = GameLibrary.scan(root) as ScanResult.Found
+        assertTrue(result.games.isEmpty())
+        assertTrue(result.diagnostics.depthLimitedDirectories > 0)
+    }
+
+    @Test
+    fun scanDetectsEbootDumpWithoutParamJsonUsingSfoMetadata() {
+        val game = File(root, "PPSA21567").apply { mkdirs() }
+        File(game, "eboot.bin").writeBytes(byteArrayOf(1))
+        val sys = File(game, "sce_sys").apply { mkdirs() }
+        File(sys, "param.sfo").writeBytes(
+            com.kytyps5.android.library.SfoFixture.build(
+                "TITLE" to "ASTRO BOT", "TITLE_ID" to "PPSA21567",
+            ),
+        )
+        val result = GameLibrary.scan(root) as ScanResult.Found
+        assertEquals(1, result.games.size)
+        assertEquals("ASTRO BOT", result.games.single().title)
+        assertEquals("PPSA21567", result.games.single().titleId)
+        assertEquals(game.absolutePath, result.games.single().path)
+    }
+
+    @Test
+    fun scanRecognizesLooseElfAndSelfFiles() {
+        File(root, "test.elf").writeBytes(byteArrayOf(1))
+        File(root, "demo.SELF").writeBytes(byteArrayOf(1))
+        val result = GameLibrary.scan(root) as ScanResult.Found
+        assertEquals(listOf("demo", "test"), result.games.map { it.title })
+        assertEquals("SELF executable", GameLibrary.imageLabel(File(root, "demo.SELF")))
+    }
+
+    @Test
+    fun scanDoesNotDuplicateEbootWithinRecognizedGame() {
+        val game = File(root, "Game").apply { mkdirs() }
+        File(game, "eboot.bin").writeBytes(byteArrayOf(1))
+        File(game, GameLibrary.PARAM_JSON).apply {
+            parentFile!!.mkdirs()
+            writeText("""{"titleName":"Game"}""")
+        }
+        val result = GameLibrary.scan(root) as ScanResult.Found
+        assertEquals(1, result.games.size)
+        assertEquals(game.absolutePath, result.games.single().path)
     }
 
     @Test
