@@ -18,7 +18,6 @@
 #include <FEXCore/Utils/Allocator.h>
 #include <FEXCore/Utils/PrctlUtils.h>
 
-#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <unistd.h>
@@ -48,120 +47,6 @@ Runtime g_runtime {};
 
 std::atomic<HostFaultHandler> g_fault_handler {nullptr};
 
-#if defined(KYTY_ANDROID)
-// Async-signal-safe fault recorder: a real native SIGSEGV often kills Android before its
-// tombstone is available to the app. FEX delivers the host signal here before guest handling.
-// Never swallow/modify the signal: return false so FEX sees exactly the same fault as before.
-std::atomic<int>      g_host_fault_fd {-1};
-std::atomic<uint32_t> g_host_fault_count {0};
-constexpr uint32_t    kMaxRecordedHostFaults = 8192;
-
-void AppendLiteral(char* line, size_t& len, const char* text) {
-    while (*text != '\0' && len < 240) {
-        line[len++] = *text++;
-    }
-}
-
-void AppendHex(char* line, size_t& len, uint64_t value) {
-    constexpr char kHex[] = "0123456789abcdef";
-    for (int bit = 60; bit >= 0 && len < 240; bit -= 4) {
-        line[len++] = kHex[(value >> bit) & 15];
-    }
-}
-
-bool RecordHostSegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/,
-                    void* info, void* ucontext) {
-    const auto n = g_host_fault_count.fetch_add(1, std::memory_order_relaxed);
-    if (n >= kMaxRecordedHostFaults) return false;
-    const int fd = g_host_fault_fd.load(std::memory_order_relaxed);
-    if (fd < 0) return false;
-    char line[256] {};
-    size_t len = 0;
-    AppendLiteral(line, len, "SIGSEGV host_pc=0x");
-    AppendHex(line, len, FEX::ArchHelpers::Context::GetPc(ucontext));
-    AppendLiteral(line, len, " fault_addr=0x");
-    const auto* si = static_cast<const siginfo_t*>(info);
-    AppendHex(line, len, reinterpret_cast<uintptr_t>(si != nullptr ? si->si_addr : nullptr));
-    AppendLiteral(line, len, " signal_code=0x");
-    AppendHex(line, len, static_cast<uint32_t>(si != nullptr ? si->si_code : 0));
-    AppendLiteral(line, len, "\n");
-    (void)::write(fd, line, len); // No allocations, locks, printf, or stdio in signal context.
-    return false;
-}
-
-// FEX's first-host-callback above only receives faults that reach the guest signal
-// delegator. The Android SIGSEGV in PPSA21564 did not reach it. Add a process-wide
-// forwarding observer *after* FEX installs its own disposition. This records the
-// actual native PC even if the fault belongs to SDL, Mesa or an unattached thread.
-// It does not consume the signal: the previous handler still gets siginfo/ucontext.
-constexpr uint64_t kSignalLogRecords = 512;
-constexpr size_t   kSignalLogRecordSize = 160;
-std::atomic<int> g_signal_log_fd {-1};
-std::atomic<uint64_t> g_signal_log_sequence {0};
-struct sigaction g_previous_segv {};
-
-void AppendSignalRecord(int signum, siginfo_t* info, void* ucontext) {
-    const int fd = g_signal_log_fd.load(std::memory_order_relaxed);
-    if (fd < 0) return;
-    const uint64_t sequence = g_signal_log_sequence.fetch_add(1, std::memory_order_relaxed);
-    char line[kSignalLogRecordSize];
-    for (size_t i = 0; i < sizeof(line); ++i) line[i] = ' ';
-    size_t length = 0;
-    AppendLiteral(line, length, "n=0x");
-    AppendHex(line, length, sequence);
-    AppendLiteral(line, length, " sig=0x");
-    AppendHex(line, length, static_cast<uint32_t>(signum));
-    AppendLiteral(line, length, " code=0x");
-    AppendHex(line, length, static_cast<uint32_t>(info != nullptr ? info->si_code : 0));
-    AppendLiteral(line, length, " pc=0x");
-    AppendHex(line, length, FEX::ArchHelpers::Context::GetPc(ucontext));
-    AppendLiteral(line, length, " addr=0x");
-    AppendHex(line, length, reinterpret_cast<uintptr_t>(info != nullptr ? info->si_addr : nullptr));
-    line[sizeof(line) - 1] = '\n';
-    // Fixed-position circular log retains the final faults, even when many recoverable
-    // page faults precede the fatal one. pwrite and atomics are safe here.
-    (void)::pwrite(fd, line, sizeof(line),
-                   static_cast<off_t>((sequence % kSignalLogRecords) * sizeof(line)));
-}
-
-void ForwardingSigsegv(int signum, siginfo_t* info, void* ucontext) {
-    AppendSignalRecord(signum, info, ucontext);
-    if (g_previous_segv.sa_handler == SIG_IGN) return;
-    if (g_previous_segv.sa_handler == SIG_DFL) {
-        (void)::sigaction(signum, &g_previous_segv, nullptr);
-        (void)::raise(signum);
-        return;
-    }
-    if ((g_previous_segv.sa_flags & SA_SIGINFO) != 0) {
-        g_previous_segv.sa_sigaction(signum, info, ucontext);
-    } else {
-        g_previous_segv.sa_handler(signum);
-    }
-}
-
-void InstallNativeSignalObserver() {
-    const int fd = ::open("logs/fatal-signals.log", O_CREAT | O_RDWR | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0) {
-        std::fprintf(stderr, "[KytyDiagnostic] Could not open native signal capture\n");
-        return;
-    }
-    struct sigaction previous {};
-    if (::sigaction(SIGSEGV, nullptr, &previous) != 0) {
-        ::close(fd);
-        return;
-    }
-    g_previous_segv = previous;
-    struct sigaction observer = previous;
-    observer.sa_sigaction = ForwardingSigsegv;
-    observer.sa_flags |= SA_SIGINFO;
-    if (::sigaction(SIGSEGV, &observer, nullptr) != 0) {
-        ::close(fd);
-        return;
-    }
-    g_signal_log_fd.store(fd, std::memory_order_release);
-    std::fprintf(stderr, "[KytyDiagnostic] Native SIGSEGV observer enabled (previous handler preserved)\n");
-}
-#endif
 
 struct AttachedGuestThread {
 	FEX::HLE::ThreadStateObject* state     = nullptr;
@@ -308,15 +193,6 @@ bool BringUpTranslator() {
 		return false;
 	}
 
-#if defined(KYTY_ANDROID)
-    // The app has already selected --data-dir before guest translator setup, and the native
-    // launch log creates logs/. Open once here; the signal callback only calls write(2).
-    const int fault_fd = ::open("logs/host-faults.log", O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0600);
-    if (fault_fd >= 0) {
-        g_host_fault_fd.store(fault_fd, std::memory_order_release);
-        signals->RegisterHostSignalHandlerFirst(SIGSEGV, RecordHostSegv, true);
-    }
-#endif
 
 	// The VDSO carries FEX's callback return trampoline (GetThunkCallbackRET). FEXInterpreter maps it
 	// before any guest code runs; without it every host->guest callback returns to address 0.
@@ -329,9 +205,6 @@ bool BringUpTranslator() {
 	signals->SetVDSOSymbols();
 	signals->UninstallTLSState(init_thread);
 	syscalls->TM.DestroyThread(init_thread);
-#if defined(KYTY_ANDROID)
-    InstallNativeSignalObserver();
-#endif
 
 	g_runtime.ctx      = ctx.get();
 	g_runtime.signals  = signals.get();
