@@ -1,6 +1,7 @@
 package com.kytyps5.android
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Typeface
@@ -19,6 +20,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.GridView
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -149,6 +151,22 @@ class MainActivity : Activity() {
                     })
                 },
             )
+            // File-level entry point for games invisible to the automatic scanner.
+            // This does not alter the game's files or the native emulator.
+            addView(
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(Button(context).apply {
+                        text = "Choose eboot / ELF…"
+                        setOnClickListener { openGameFilePicker() }
+                    })
+                    addView(Button(context).apply {
+                        text = "Enter game path…"
+                        setOnClickListener { openManualGamePath() }
+                    })
+                },
+            )
             addView(
                 LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
@@ -251,9 +269,93 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Directly select an executable when a folder picker cannot locate a valid PS5 dump. */
+    private fun openGameFilePicker() {
+        if (!Environment.isExternalStorageManager()) {
+            showMessage("Grant all-files access before opening a game.")
+            return
+        }
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        try {
+            startActivityForResult(intent, REQUEST_PICK_GAME_FILE)
+        } catch (e: ActivityNotFoundException) {
+            showMessage("No file picker is available. Use Enter game path instead.")
+        }
+    }
+
+    /** Accept a native filesystem path as a fallback for file providers exposing opaque URIs. */
+    private fun openManualGamePath() {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            setText(settings.gamesRoot)
+            selectAll()
+            hint = "/storage/emulated/0/Games/PPSAxxxxx/eboot.bin"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Game folder or executable path")
+            .setView(input)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Open") { _, _ -> openGameAtPath(input.text.toString()) }
+            .show()
+    }
+
+    private fun openGameAtPath(input: String) {
+        if (!Environment.isExternalStorageManager()) {
+            showMessage("Grant all-files access before opening a game.")
+            return
+        }
+        val path = input.trim().removeSurrounding("\"")
+        if (path.isEmpty()) {
+            showMessage("Enter a game directory or an executable path.")
+            return
+        }
+        val game = File(path)
+        when {
+            game.isDirectory -> {
+                settings.gamesRoot = game.absolutePath
+                folderPath.text = settings.gamesRoot
+                scanGames(settings.gamesRoot)
+            }
+            game.isFile && game.name.equals(GameLibrary.EBOOT, ignoreCase = true) -> {
+                val folder = game.parentFile ?: return
+                settings.gamesRoot = folder.absolutePath
+                folderPath.text = settings.gamesRoot
+                scanGames(settings.gamesRoot)
+            }
+            game.isFile && game.extension.lowercase() in setOf("elf", "self", "zar", "exfat") -> {
+                // This route starts the selected file directly, bypassing library discovery.
+                launch(GameEntry(game, game.nameWithoutExtension))
+            }
+            game.isFile -> showMessage("Unsupported file: ${game.name}. Select eboot.bin, ELF, SELF, ZAR or exFAT.")
+            else -> showMessage("File/folder not accessible: ${game.path}. Check storage permission and path.")
+        }
+    }
+
     @Deprecated("Platform Activity result API; this launcher has no AndroidX dependency.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_PICK_GAME_FILE && resultCode == RESULT_OK) {
+            val uri = data?.data
+            val path = if (uri?.authority == "com.android.externalstorage.documents") {
+                try {
+                    StoragePaths.documentIdToPath(DocumentsContract.getDocumentId(uri))
+                } catch (e: IllegalArgumentException) {
+                    null
+                }
+            } else {
+                null
+            }
+            if (path == null) {
+                showMessage("This file provider does not expose a real file path. " +
+                    "Choose Internal storage in the Android picker or use Enter game path.")
+            } else {
+                openGameAtPath(path)
+            }
+            return
+        }
         if (requestCode == GpuDriverPanel.REQUEST_PICK_DRIVER && resultCode == RESULT_OK) {
             data?.data?.let(drivers::onPicked)
             return
@@ -374,6 +476,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQUEST_PICK_GAMES_FOLDER = 1
+        const val REQUEST_PICK_GAME_FILE = 2
         const val COVER_DP = 150
     }
 
