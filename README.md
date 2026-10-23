@@ -7,6 +7,14 @@
 [![Status](https://img.shields.io/badge/status-active%20development-orange.svg)](#current-status)
 [![License](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](LICENSE)
 
+> [!NOTE]
+> **This repository is the KytyPS5 Android port**, an independent project built on KytyPS5. It runs PS5 games
+> on Android ARM64 (FEXCore JIT + Vulkan on Mesa Turnip / Adreno). See
+> [docs/android/STATUS.md](docs/android/STATUS.md) for what works,
+> [docs/android/ROADMAP.md](docs/android/ROADMAP.md) for what's next, and
+> [docs/android/CONTRIBUTING.md](docs/android/CONTRIBUTING.md) to help. The Android work lives on the
+> `android-boot-wip` branch.
+
 **[Weekly updates](https://github.com/KytyPS5/KytyPS5/discussions/862)** — game progress, recent fixes, and ongoing development.
 
 **[Development on Discord](https://discord.gg/UNrkMqGaBg)** — KytyPS5 development.

@@ -2,10 +2,10 @@
 """tools/gputhread_split.py <_perf_profile.txt.gz> <unstripped libmain.so>: GPU-thread wall-stack samples bucketed by stage
 (SRT walk, program lookup, binding prep, record, PM4, waits, readback). See research/gputhread_pipeline.md."""
 import collections, importlib.util, os, re, sys
-spec = importlib.util.spec_from_file_location("profsym", "/Users/tarekhosni/Dev/Games/kytyps5-android/tools/profsym.py")
+spec = importlib.util.spec_from_file_location("profsym", os.environ.get("KYTY_PROFSYM", os.path.join(os.path.dirname(os.path.abspath(__file__)), "profsym.py")))
 ps = importlib.util.module_from_spec(spec); spec.loader.exec_module(ps)
 path, libmain = sys.argv[1], sys.argv[2]
-libs = {"libmain.so": libmain, "libc.so": "/Users/tarekhosni/Dev/Games/kytyps5-android/research/c11/libc.so"}
+libs = {"libmain.so": libmain, "libc.so": os.environ.get("KYTY_LIBC", "libc.so")}  # KYTY_LIBC: the tablet's libc.so pulled with adb
 lines = ps.read(path); cur=None; stacks=[]
 for line in lines:
     if line.startswith("## "): cur=line[3:].split()[0]; continue
