@@ -21,7 +21,10 @@
 //      and share its L2, instead of sharing cpu0-5's clock with ~3 cores of polling guest work
 //      while the prime cores idle (c17_pow1). The Android default together with KYTY_PIPE_SPIN
 //      (pipeSpin.h; alone, either one gains nothing): Astro Bot +15% at the same GPU clock step
-//      (g5_astro_ab3: 14.38 -> 16.53 fps). KYTY_CPU_PLACE=0 opts out.
+//      (g5_astro_ab3: 14.38 -> 16.53 fps). KYTY_CPU_PLACE=0 opts out. Only while the GPU thread
+//      runs two-stage (KYTY_GPU_PIPELINE / walk fan-out, NotePipelined): with the pipeline off
+//      (Totally Reliable Delivery Service under KYTY_GPU_FAN=auto) the lone GPU thread on the
+//      prime cores measured 28.3 -> 27.7 fps (g5_trds_ab2), so the bit is ignored there.
 // Critical threads: the GPU command-processor thread (the front), the KYTY_GPU_PIPELINE record
 // thread, plus guest threads whose name contains one of the substrings in KYTY_CPU_CRITICAL (','
 // ';' or '|' separated).
@@ -46,6 +49,10 @@ void RegisterCurrentThread(Role role, std::string_view name = {});
 // Re-applies the placement when `mode` (the live value, -1 = keep the start value) changed.
 // Called once per processed frame by the GPU thread; cheap when nothing changed.
 void Poll(int64_t mode);
+
+// The GPU front reports whether it currently runs two-stage (KYTY_GPU_PIPELINE): split mode (8)
+// applies only then. Cheap (an atomic store); the next Poll() applies a change.
+void NotePipelined(bool pipelined);
 
 // ADPF: one frame's wall time, reported to the hint session when bit 2 is on.
 void ReportFrame(int64_t frame_ns);

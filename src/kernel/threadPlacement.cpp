@@ -64,6 +64,7 @@ int                  g_applied_mode = 0;
 size_t               g_applied_critical = 0;
 int64_t              g_next_poll_ns     = 0;
 bool                 g_others_split     = false; // non-critical threads are kept off the prime cores
+std::atomic<bool>    g_pipelined {false};      // NotePipelined: split mode applies only while true
 std::atomic<void*>   g_session {nullptr};
 HintApi              g_hint;
 
@@ -251,6 +252,11 @@ void Apply(int mode) {
 	g_applied_critical = g_critical.size();
 }
 
+// Split mode only for the two-stage GPU thread (front + record thread).
+int WantedMode(int mode) {
+	return g_pipelined.load(std::memory_order_relaxed) ? mode : (mode & ~kSplit);
+}
+
 int StartMode() {
 #if defined(__ANDROID__)
 	constexpr bool kAndroid = true;
@@ -298,7 +304,7 @@ void RegisterCurrentThread(Role role, std::string_view name) {
 			g_critical.push_back(tid);
 		}
 		LOGF("ThreadPlacement: critical thread %d (%.*s)\n", tid, static_cast<int>(name.size()), name.data());
-		Apply(g_mode.load());
+		Apply(WantedMode(g_mode.load()));
 	} else if (g_others_split) {
 		SetAffinity(tid, GetCpus().non_prime);
 	} else if ((g_applied_mode & (kPin | kExclusive)) == (kPin | kExclusive)) {
@@ -315,13 +321,18 @@ void Poll(int64_t mode) {
 	g_next_poll_ns = now + kPollNs;
 	// No live value: back to the start value (a knob phase without cpu_place).
 	g_mode.store(mode >= 0 && mode <= kModeBits ? static_cast<int>(mode) : StartMode());
-	const int wanted = g_mode.load();
+	// Split mode only for the two-stage GPU thread (front + record thread).
+	const int wanted = WantedMode(g_mode.load());
 	// Exclusive placement is re-applied every poll: threads created since inherit their creator's set.
 	// With pinning on, re-applied every poll: the fastest cores follow the thermal limits, and
 	// threads created since inherit their creator's set.
 	if (wanted != g_applied_mode || g_applied_critical != g_critical.size() || (wanted & (kPin | kSplit)) != 0) {
 		Apply(wanted);
 	}
+}
+
+void NotePipelined(bool pipelined) {
+	g_pipelined.store(pipelined, std::memory_order_relaxed);
 }
 
 void ReportFrame(int64_t frame_ns) {
@@ -357,6 +368,7 @@ namespace Kernel::ThreadPlacement {
 
 void RegisterCurrentThread(Role /*role*/, std::string_view /*name*/) {}
 void Poll(int64_t /*mode*/) {}
+void NotePipelined(bool /*pipelined*/) {}
 void ReportFrame(int64_t /*frame_ns*/) {}
 
 int ParseMode(std::string_view text) {
