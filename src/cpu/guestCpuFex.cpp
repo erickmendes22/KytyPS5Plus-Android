@@ -18,6 +18,7 @@
 #include <FEXCore/Utils/Allocator.h>
 #include <FEXCore/Utils/PrctlUtils.h>
 
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <unistd.h>
@@ -45,6 +46,48 @@ constexpr uint64_t kEntryStackSlack    = 64;  // headroom below a stack top befo
 Runtime g_runtime {};
 
 std::atomic<HostFaultHandler> g_fault_handler {nullptr};
+
+#if defined(KYTY_ANDROID)
+// Async-signal-safe fault recorder: a real native SIGSEGV often kills Android before its
+// tombstone is available to the app. FEX delivers the host signal here before guest handling.
+// Never swallow/modify the signal: return false so FEX sees exactly the same fault as before.
+std::atomic<int>      g_host_fault_fd {-1};
+std::atomic<uint32_t> g_host_fault_count {0};
+constexpr uint32_t    kMaxRecordedHostFaults = 8192;
+
+void AppendLiteral(char* line, size_t& len, const char* text) {
+    while (*text != '\0' && len < 240) {
+        line[len++] = *text++;
+    }
+}
+
+void AppendHex(char* line, size_t& len, uint64_t value) {
+    constexpr char kHex[] = "0123456789abcdef";
+    for (int bit = 60; bit >= 0 && len < 240; bit -= 4) {
+        line[len++] = kHex[(value >> bit) & 15];
+    }
+}
+
+bool RecordHostSegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/,
+                    void* info, void* ucontext) {
+    const auto n = g_host_fault_count.fetch_add(1, std::memory_order_relaxed);
+    if (n >= kMaxRecordedHostFaults) return false;
+    const int fd = g_host_fault_fd.load(std::memory_order_relaxed);
+    if (fd < 0) return false;
+    char line[256] {};
+    size_t len = 0;
+    AppendLiteral(line, len, "SIGSEGV host_pc=0x");
+    AppendHex(line, len, FEX::ArchHelpers::Context::GetPc(ucontext));
+    AppendLiteral(line, len, " fault_addr=0x");
+    const auto* si = static_cast<const siginfo_t*>(info);
+    AppendHex(line, len, reinterpret_cast<uintptr_t>(si != nullptr ? si->si_addr : nullptr));
+    AppendLiteral(line, len, " signal_code=0x");
+    AppendHex(line, len, static_cast<uint32_t>(si != nullptr ? si->si_code : 0));
+    AppendLiteral(line, len, "\n");
+    (void)::write(fd, line, len); // No allocations, locks, printf, or stdio in signal context.
+    return false;
+}
+#endif
 
 struct AttachedGuestThread {
 	FEX::HLE::ThreadStateObject* state     = nullptr;
@@ -190,6 +233,16 @@ bool BringUpTranslator() {
 		std::fprintf(stderr, "kyty guest cpu: FEXCore failed to initialise\n");
 		return false;
 	}
+
+#if defined(KYTY_ANDROID)
+    // The app has already selected --data-dir before guest translator setup, and the native
+    // launch log creates logs/. Open once here; the signal callback only calls write(2).
+    const int fault_fd = ::open("logs/host-faults.log", O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0600);
+    if (fault_fd >= 0) {
+        g_host_fault_fd.store(fault_fd, std::memory_order_release);
+        signals->RegisterHostSignalHandlerFirst(SIGSEGV, RecordHostSegv, true);
+    }
+#endif
 
 	// The VDSO carries FEX's callback return trampoline (GetThunkCallbackRET). FEXInterpreter maps it
 	// before any guest code runs; without it every host->guest callback returns to address 0.
