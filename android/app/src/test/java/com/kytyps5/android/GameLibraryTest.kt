@@ -190,6 +190,21 @@ class GameLibraryTest {
     }
 
     @Test
+    fun malformedMetadataDoesNotHideCompleteEbootDump() {
+        val game = File(root, "PPSA21567 ASTRO BOT").apply { mkdirs() }
+        File(game, "eboot.bin").writeBytes(byteArrayOf(1, 2, 3))
+        File(game, "sce_sys").mkdirs()
+        File(game, GameLibrary.PARAM_JSON).writeText("{corrupt json")
+
+        val result = GameLibrary.scan(root) as ScanResult.Found
+
+        assertEquals(1, result.games.size)
+        assertEquals("PPSA21567 ASTRO BOT", result.games.single().title)
+        assertEquals(game.absolutePath, result.games.single().path)
+        assertTrue(result.diagnostics.unreadableDirectories.isEmpty())
+    }
+
+    @Test
     fun readEntryReadsTitleIdAndIcon() {
         makeGame("PPSA21567", """{"titleId":"PPSA21567","titleName":"ASTRO BOT"}""")
         val icon = File(root, "PPSA21567/" + GameLibrary.ICON).apply { writeBytes(byteArrayOf(1, 2, 3)) }
