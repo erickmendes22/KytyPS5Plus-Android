@@ -1,10 +1,9 @@
 name: Build and Release KytyPS5
 
+# Upstream's desktop builds. This repository is the Android port (see android.yml), so they run
+# only on demand.
 on:
   workflow_dispatch:
-  push:
-    branches: [ main, master ]
-  pull_request:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

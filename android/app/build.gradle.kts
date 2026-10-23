@@ -133,17 +133,36 @@ android {
         applicationId = "com.kytyps5.android"
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI passes -PkytyVersionCode=<run number> -PkytyVersionName=<tag or 0.1.0-nightly.N> so every
+        // published APK installs over the previous one.
+        versionCode = providers.gradleProperty("kytyVersionCode").getOrElse("1").toInt()
+        versionName = providers.gradleProperty("kytyVersionName").getOrElse("0.1.0")
 
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
     }
 
+    // Release signing from the environment (CI secrets); without KYTY_KEYSTORE_FILE the release APK
+    // is left unsigned and local builds keep using the debug key.
+    val releaseKeystore = System.getenv("KYTY_KEYSTORE_FILE")?.takeIf { it.isNotEmpty() }?.let { file(it) }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = System.getenv("KYTY_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KYTY_KEY_ALIAS")
+                keyPassword = System.getenv("KYTY_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
