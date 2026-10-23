@@ -204,7 +204,7 @@ class MainActivity : Activity() {
 
         val settingsPage = ScrollView(this).apply {
             visibility = View.GONE
-            fillViewport = false
+            isFillViewport = false
         }
         settingsPage.addView(
             LinearLayout(this).apply {
@@ -223,7 +223,7 @@ class MainActivity : Activity() {
                 addView(label("Options are saved automatically. Game-specific options " +
                     "remain available from the game's settings button.", secondary = true))
             },
-            ScrollView.LayoutParams(
+            FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ),
