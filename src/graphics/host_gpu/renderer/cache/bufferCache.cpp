@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/cache/streamDefaults.h"
 #include "graphics/host_gpu/renderer/uploadStats.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
@@ -579,7 +580,7 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
       m_texture_cache(texture_cache), m_targeted_readback(Config::TargetedReadbackEnabled()) {
-	if (const char* cached = std::getenv("KYTY_STREAM_CACHED"); cached != nullptr && std::strcmp(cached, "1") == 0) {
+	if (StreamDefaults::CachedStream(std::getenv("KYTY_STREAM_CACHED"), StreamDefaults::kAndroid)) {
 		m_stream_buffer_cached = std::make_unique<StreamBuffer>(graphics, scheduler, MemoryUsage::Stream, 64 * MiB, true);
 	}
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));
@@ -1077,11 +1078,10 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 
 namespace {
 
-// KYTY_STREAM_PROMOTE=<n> (default 0 = off; live key stream_promote): see ObtainBuffer.
+// KYTY_STREAM_PROMOTE=<n> (default 2 on Android, 0 = off elsewhere; live key stream_promote): see ObtainBuffer.
 int64_t StreamPromoteThreshold() {
 	static const int64_t env = [] {
-		const char* value = std::getenv("KYTY_STREAM_PROMOTE");
-		const int64_t n   = value != nullptr ? std::strtoll(value, nullptr, 10) : 0;
+		const int64_t n = StreamDefaults::PromoteThreshold(std::getenv("KYTY_STREAM_PROMOTE"), StreamDefaults::kAndroid);
 		LOGF("KYTY_STREAM_PROMOTE: %s\n", n > 0 ? "on" : "off");
 		return n;
 	}();

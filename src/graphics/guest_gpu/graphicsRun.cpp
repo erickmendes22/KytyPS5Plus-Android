@@ -5,6 +5,7 @@
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "graphics/host_gpu/renderer/pipeline/walkReader.h"
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
+#include "graphics/host_gpu/renderer/cache/streamDefaults.h"
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
@@ -538,11 +539,11 @@ static void PollSrtMemo() {
 	// KYTY_SRT_MEMO=auto: the memo only while the walk fan-out is off. With the fan-out on, a memo
 	// sends every walk back to the recorder (PipelineCache SubmitWalk), which costs Astro ~25%
 	// (g1_astro_def); with it off (PPSA28855) the memo saves 2-5%.
-	static const int mode = [] {
-		const char* value = std::getenv("KYTY_SRT_MEMO");
-		return value != nullptr && std::strcmp(value, "auto") == 0 ? 2 : ResourceMemo::StartValue() ? 1 : 0;
-	}();
-	const bool start = mode == 1 || (mode == 2 && !WalkFan::LastEnabled());
+	// Unset: auto on Android, off elsewhere (streamDefaults.h).
+	using MemoMode = Libs::Graphics::StreamDefaults::MemoMode;
+	static const MemoMode mode = Libs::Graphics::StreamDefaults::SrtMemo(std::getenv("KYTY_SRT_MEMO"),
+	                                                                    Libs::Graphics::StreamDefaults::kAndroid);
+	const bool start = mode == MemoMode::On || (mode == MemoMode::Auto && !WalkFan::LastEnabled());
 	ResourceMemo::SetEnabled(LiveKnobs::Int("srt_memo", start ? 1 : 0) != 0);
 	static const bool rebase_start = ResourceMemo::RebaseStartValue();
 	ResourceMemo::SetRebase(LiveKnobs::Int("memo_rebase", rebase_start ? 1 : 0) != 0);

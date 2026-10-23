@@ -40,8 +40,6 @@ public:
 
 	static void  SetEnabled(bool enabled);
 	static bool  Enabled();
-	// KYTY_SRT_MEMO start value (default off).
-	static bool  StartValue();
 	// Results kept per source: KYTY_SRT_MEMO_SLOTS (default 256), SetSlots (1..1024) overrides.
 	static size_t SlotsStartValue();
 	static void   SetSlots(size_t slots);
