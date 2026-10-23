@@ -19,8 +19,10 @@ You need the Android NDK 28.2, CMake, Ninja, `glslangValidator` and Android Stud
 commit (`KYTY_FEX_GIT_TAG`), or point `KYTY_FEX_SOURCE_DIR` at a checkout.
 
 ```bash
+scripts/android/build-ffmpeg-android.sh $PWD/_Build/ffmpeg-android   # once: static FFmpeg for Android
 cmake -S . -B _Build/android -G Ninja -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
-      -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 -DCMAKE_BUILD_TYPE=Release -DKYTY_GUEST_CPU_FEX=ON -DKYTY_BUILD_LAUNCHER=OFF
+      -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 -DCMAKE_BUILD_TYPE=Release -DKYTY_GUEST_CPU_FEX=ON -DKYTY_BUILD_LAUNCHER=OFF \
+      -DFFMPEG_PREBUILT_DIR=$PWD/_Build/ffmpeg-android/install
 ninja -C _Build/android -k 0 kyty_emulator
 cd android && ./gradlew testDebugUnitTest assembleDebug -PkytyNativeDir=<dir with libmain.so, SDL3 and adrenotools hook libs>
 ```

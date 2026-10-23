@@ -59,12 +59,26 @@ jobs:
           key: ccache-android-${{ github.sha }}
           restore-keys: ccache-android-
 
+      - name: FFmpeg cache
+        id: ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: _Build/ffmpeg-android/install
+          key: ffmpeg-android-${{ hashFiles('scripts/android/build-ffmpeg-android.sh') }}-${{ env.NDK_VERSION }}
+
+      - name: FFmpeg for Android
+        if: steps.ffmpeg.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK }}
+        run: bash scripts/android/build-ffmpeg-android.sh "$PWD/_Build/ffmpeg-android"
+
       - name: Configure
         run: |
           cmake -S . -B _Build/android -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 -DCMAKE_BUILD_TYPE=Release \
             -DKYTY_GUEST_CPU_FEX=ON -DKYTY_BUILD_LAUNCHER=OFF \
+            -DFFMPEG_PREBUILT_DIR="$PWD/_Build/ffmpeg-android/install" \
             -DKYTY_BUILD_ORIGIN=Fork -DKYTY_BUILD_REPOSITORY="$GITHUB_REPOSITORY" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
