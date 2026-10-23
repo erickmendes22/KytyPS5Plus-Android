@@ -1392,7 +1392,7 @@ static int NativeMutexLock(PthreadMutexPrivate* mutex, KernelUseconds* timeout_u
 
 	// Guest mutex waits are not cancellation points, unlike the host condition wait.
 	int previous_cancel_state = 0;
-	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &previous_cancel_state);
+	HostPthreadSetcancelstate(kHostCancelDisable, &previous_cancel_state);
 	PthreadMutexPrivate::Waiter waiter;
 	waiter.thread   = self;
 	waiter.previous = mutex->last_waiter;
@@ -1423,7 +1423,7 @@ static int NativeMutexLock(PthreadMutexPrivate* mutex, KernelUseconds* timeout_u
 		}
 	}
 	lock.unlock();
-	pthread_setcancelstate(previous_cancel_state, nullptr);
+	HostPthreadSetcancelstate(previous_cancel_state, nullptr);
 	return result;
 }
 
