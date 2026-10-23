@@ -4,10 +4,13 @@
 #include "cpu/guestCpuFex.h"
 
 #include "common/perfStats.h"
+#include "loader/guestHostFunction.h"
 
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <cinttypes>
+#include <string_view>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -22,6 +25,9 @@ constexpr size_t kStackSlotOffset = 16; // [RSP] = id, [RSP+8] = return address,
 std::array<std::atomic<HleThunk>, kMaxHleIds> g_thunks {};
 std::atomic<uint32_t>                         g_next_dynamic_id {kFirstDynamicHleId};
 std::atomic<SafePointHook>                    g_safe_point_hook {nullptr};
+// Only the first 96 HLE transitions following PS5 AGC initialization are recorded.
+// This isolates immediate boot failures without flooding logs during gameplay.
+std::atomic<uint32_t>                         g_agc_boot_hle_remaining {0};
 
 // Stub layout (x86-64):
 //   mov r10, rcx          49 89 CA        ; SYSCALL clobbers RCX, so the fourth argument moves to R10
@@ -158,8 +164,27 @@ uint64_t HleSyscall(FEXCore::Core::CpuStateFrame* frame, uint64_t arg0, uint64_t
 	const bool sve256 = Cpu::GuestCpu::Fex::GetRuntime().sve256;
 	ScopedHleId    id_scope(id);
 	ScopedHleFrame scope(frame);
-	FexCallFrame   call_frame(frame, {arg0, arg1, arg2, arg3, arg4, arg5}, guest_rsp + kStackSlotOffset, sve256);
+	const std::string_view hle_name = Loader::GuestHost::CurrentTrapName();
+	if (hle_name.find("23LRUSvYu1M") != std::string_view::npos ||
+	    hle_name.find("AgcInit") != std::string_view::npos) {
+		g_agc_boot_hle_remaining.store(96, std::memory_order_relaxed);
+	}
+	bool trace = false;
+	const uint32_t remaining = g_agc_boot_hle_remaining.load(std::memory_order_relaxed);
+	if (remaining != 0) {
+		trace = g_agc_boot_hle_remaining.fetch_sub(1, std::memory_order_relaxed) > 0;
+	}
+	if (trace) {
+		std::fprintf(stderr, "[KytyBootHLE] ENTER id=%u symbol=%.*s rip=%016" PRIx64
+		                     " rsp=%016" PRIx64 "\n", id, static_cast<int>(hle_name.size()),
+		             hle_name.data(), frame->State.rip, guest_rsp);
+	}
+	FexCallFrame call_frame(frame, {arg0, arg1, arg2, arg3, arg4, arg5}, guest_rsp + kStackSlotOffset, sve256);
 	thunk(call_frame);
+	if (trace) {
+		std::fprintf(stderr, "[KytyBootHLE] RETURN id=%u value=%016" PRIx64 "\n", id,
+		             call_frame.IntReturn());
+	}
 	// Safe point: the trapped guest state is consistent and the thunk is done with it.
 	if (auto* hook = g_safe_point_hook.load(std::memory_order_acquire); hook != nullptr) {
 		hook();
