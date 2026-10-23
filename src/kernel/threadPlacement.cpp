@@ -26,6 +26,7 @@ namespace {
 constexpr int     kPin       = 1;
 constexpr int     kHint      = 2;
 constexpr int     kExclusive = 4;
+constexpr int     kSplit     = 8;
 constexpr int     kMaxCpus   = 64;
 constexpr int64_t kPollNs    = 1'000'000'000;
 // ADPF target: a 30 fps frame. Astro Bot gameplay runs slower, so every report asks for more.
@@ -37,6 +38,10 @@ struct Cpus {
 	cpu_set_t rest {};
 	int       fast_count = 0;
 	long      best_khz   = 0;
+	// kSplit: the prime cluster (highest cpuinfo_max_freq) and the other cores.
+	cpu_set_t prime {};
+	cpu_set_t non_prime {};
+	int       prime_count = 0;
 };
 
 // ADPF (API 33+), resolved at run time: the app's minSdk is 31.
@@ -58,6 +63,7 @@ std::atomic<int>     g_mode {-1};
 int                  g_applied_mode = 0;
 size_t               g_applied_critical = 0;
 int64_t              g_next_poll_ns     = 0;
+bool                 g_others_split     = false; // non-critical threads are kept off the prime cores
 std::atomic<void*>   g_session {nullptr};
 HintApi              g_hint;
 
@@ -95,6 +101,7 @@ Cpus ReadCpus() {
 	CPU_ZERO(&result.fast);
 	CPU_ZERO(&result.rest);
 	long       freq[kMaxCpus] {};
+	long       hw_max[kMaxCpus] {};
 	long       best   = -1;
 	const long online = sysconf(_SC_NPROCESSORS_CONF);
 	const int  count  = online > 0 && online < kMaxCpus ? static_cast<int>(online) : 0;
@@ -105,6 +112,18 @@ Cpus ReadCpus() {
 		}
 		best = freq[cpu] > best ? freq[cpu] : best;
 		CPU_SET(cpu, &result.all);
+		hw_max[cpu] = ReadFreq(cpu, "cpuinfo_max_freq");
+	}
+	CPU_ZERO(&result.prime);
+	CPU_ZERO(&result.non_prime);
+	const uint64_t prime = PrimeMask(hw_max, count);
+	for (int cpu = 0; cpu < count && prime != 0; cpu++) {
+		if (((prime >> static_cast<unsigned>(cpu)) & 1u) != 0) {
+			CPU_SET(cpu, &result.prime);
+			result.prime_count++;
+		} else {
+			CPU_SET(cpu, &result.non_prime);
+		}
 	}
 	for (int cpu = 0; cpu < count; cpu++) {
 		if (freq[cpu] == best && best > 0) {
@@ -142,8 +161,8 @@ bool IsCritical(int32_t tid) {
 	return false;
 }
 
-// Every thread of the process that is not critical: all cores, or the slower ones (exclusive).
-void PlaceOthers(bool exclusive) {
+// Every thread of the process that is not critical: all cores, or `others` (exclusive).
+void PlaceOthers(bool exclusive, const cpu_set_t& others) {
 	const auto& cpus = GetCpus();
 	DIR*        dir  = opendir("/proc/self/task");
 	if (dir == nullptr) {
@@ -152,7 +171,7 @@ void PlaceOthers(bool exclusive) {
 	while (const auto* entry = readdir(dir)) {
 		const auto tid = static_cast<int32_t>(std::strtol(entry->d_name, nullptr, 10));
 		if (tid > 0 && !IsCritical(tid)) {
-			SetAffinity(tid, exclusive ? cpus.rest : cpus.all);
+			SetAffinity(tid, exclusive ? others : cpus.all);
 		}
 	}
 	closedir(dir);
@@ -204,14 +223,16 @@ void Apply(int mode) {
 	if (!CPU_EQUAL(&previous.fast, &cpus.fast) && (mode & kPin) != 0) {
 		LOGF("ThreadPlacement: fastest cores now %d at %ld kHz\n", cpus.fast_count, cpus.best_khz);
 	}
-	const bool  pin  = (mode & kPin) != 0 && cpus.fast_count > 0;
+	const bool  split = (mode & kSplit) != 0 && cpus.prime_count > 0;
+	const bool  pin   = !split && (mode & kPin) != 0 && cpus.fast_count > 0;
 	for (const auto tid: g_critical) {
-		SetAffinity(tid, pin ? cpus.fast : cpus.all);
+		SetAffinity(tid, split ? cpus.prime : (pin ? cpus.fast : cpus.all));
 	}
-	const bool exclusive = pin && (mode & kExclusive) != 0;
-	if (exclusive || (g_applied_mode & kExclusive) != 0) {
-		PlaceOthers(exclusive);
+	const bool exclusive = split || (pin && (mode & kExclusive) != 0);
+	if (exclusive || (g_applied_mode & (kExclusive | kSplit)) != 0) {
+		PlaceOthers(exclusive, split ? cpus.non_prime : cpus.rest);
 	}
+	g_others_split = split;
 	const bool hint_now    = (mode & kHint) != 0;
 	const bool hint_before = (g_applied_mode & kHint) != 0;
 	if (hint_before && (!hint_now || g_applied_critical != g_critical.size())) {
@@ -221,17 +242,22 @@ void Apply(int mode) {
 		OpenSession();
 	}
 	if (mode != g_applied_mode || g_applied_critical != g_critical.size()) {
-		LOGF("ThreadPlacement: mode %d (pin=%d exclusive=%d hint=%d) over %zu critical threads\n", mode,
-		     pin ? 1 : 0, exclusive ? 1 : 0, hint_now ? 1 : 0, g_critical.size());
+		LOGF("ThreadPlacement: mode %d (pin=%d exclusive=%d hint=%d split=%d over %d prime cores) over %zu "
+		     "critical threads\n",
+		     mode, pin ? 1 : 0, exclusive ? 1 : 0, hint_now ? 1 : 0, split ? 1 : 0, cpus.prime_count,
+		     g_critical.size());
 	}
 	g_applied_mode     = mode;
 	g_applied_critical = g_critical.size();
 }
 
 int StartMode() {
-	const char* value = std::getenv("KYTY_CPU_PLACE");
-	const int   mode  = value != nullptr ? ParseMode(value) : -1;
-	return mode >= 0 ? mode : 0;
+#if defined(__ANDROID__)
+	constexpr bool kAndroid = true;
+#else
+	constexpr bool kAndroid = false;
+#endif
+	return StartModeFrom(std::getenv("KYTY_CPU_PLACE"), kAndroid);
 }
 
 bool NameIsCritical(std::string_view name) {
@@ -261,7 +287,7 @@ bool NameIsCritical(std::string_view name) {
 } // namespace
 
 void RegisterCurrentThread(Role role, std::string_view name) {
-	const bool critical = role == Role::GpuCommand || NameIsCritical(name);
+	const bool critical = role == Role::GpuCommand || role == Role::GpuRecord || NameIsCritical(name);
 	std::lock_guard lock(g_mutex);
 	if (g_mode.load() < 0) {
 		g_mode.store(StartMode());
@@ -273,6 +299,8 @@ void RegisterCurrentThread(Role role, std::string_view name) {
 		}
 		LOGF("ThreadPlacement: critical thread %d (%.*s)\n", tid, static_cast<int>(name.size()), name.data());
 		Apply(g_mode.load());
+	} else if (g_others_split) {
+		SetAffinity(tid, GetCpus().non_prime);
 	} else if ((g_applied_mode & (kPin | kExclusive)) == (kPin | kExclusive)) {
 		SetAffinity(tid, GetCpus().rest);
 	}
@@ -286,12 +314,12 @@ void Poll(int64_t mode) {
 	}
 	g_next_poll_ns = now + kPollNs;
 	// No live value: back to the start value (a knob phase without cpu_place).
-	g_mode.store(mode >= 0 && mode <= 7 ? static_cast<int>(mode) : StartMode());
+	g_mode.store(mode >= 0 && mode <= kModeBits ? static_cast<int>(mode) : StartMode());
 	const int wanted = g_mode.load();
 	// Exclusive placement is re-applied every poll: threads created since inherit their creator's set.
 	// With pinning on, re-applied every poll: the fastest cores follow the thermal limits, and
 	// threads created since inherit their creator's set.
-	if (wanted != g_applied_mode || g_applied_critical != g_critical.size() || (wanted & kPin) != 0) {
+	if (wanted != g_applied_mode || g_applied_critical != g_critical.size() || (wanted & (kPin | kSplit)) != 0) {
 		Apply(wanted);
 	}
 }
@@ -310,7 +338,15 @@ void ReportFrame(int64_t frame_ns) {
 int ParseMode(std::string_view text) {
 	int value = -1;
 	const auto [ptr, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-	return error == std::errc() && ptr == text.data() + text.size() && value >= 0 && value <= 7 ? value : -1;
+	return error == std::errc() && ptr == text.data() + text.size() && value >= 0 && value <= kModeBits ? value : -1;
+}
+
+int StartModeFrom(const char* value, bool android) {
+	if (value == nullptr) {
+		return android ? kAndroidDefaultMode : 0;
+	}
+	const int mode = ParseMode(value);
+	return mode >= 0 ? mode : 0;
 }
 
 } // namespace Kernel::ThreadPlacement
@@ -326,7 +362,15 @@ void ReportFrame(int64_t /*frame_ns*/) {}
 int ParseMode(std::string_view text) {
 	int value = -1;
 	const auto [ptr, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-	return error == std::errc() && ptr == text.data() + text.size() && value >= 0 && value <= 7 ? value : -1;
+	return error == std::errc() && ptr == text.data() + text.size() && value >= 0 && value <= kModeBits ? value : -1;
+}
+
+int StartModeFrom(const char* value, bool android) {
+	if (value == nullptr) {
+		return android ? kAndroidDefaultMode : 0;
+	}
+	const int mode = ParseMode(value);
+	return mode >= 0 ? mode : 0;
 }
 
 } // namespace Kernel::ThreadPlacement

@@ -593,6 +593,9 @@ target_include_directories(dead_lane_defaults_tests PRIVATE ${inc_headers})
 add_executable(stream_defaults_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/StreamDefaultsTests.cpp")
 target_include_directories(stream_defaults_tests PRIVATE ${inc_headers})
 
+add_executable(pipe_spin_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PipeSpinTests.cpp")
+target_include_directories(pipe_spin_tests PRIVATE ${inc_headers})
+
 add_executable(fan_auto_policy_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FanAutoPolicyTests.cpp")
 target_include_directories(fan_auto_policy_tests PRIVATE ${inc_headers})
 add_executable(half_rate_tiles_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HalfRateTilesTests.cpp")

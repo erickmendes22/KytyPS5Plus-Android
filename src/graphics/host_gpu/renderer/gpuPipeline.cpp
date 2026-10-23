@@ -11,6 +11,7 @@
 #include "graphics/host_gpu/renderer/submitStats.h"
 #include "graphics/host_gpu/renderer/uploadStats.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
+#include "kernel/threadPlacement.h"
 
 #include <algorithm>
 #include <array>
@@ -229,6 +230,7 @@ void RecordThread::Run(const std::stop_token& stop) {
 	GuestGpu::MarkGpuHelperThread();
 	t_on_back = true;
 	pthread_setname_np(pthread_self(), "KytyGpuRecord");
+	Kernel::ThreadPlacement::RegisterCurrentThread(Kernel::ThreadPlacement::Role::GpuRecord, "record");
 	Common::PerfStats::SampleThisThreadWallClock(); // --perf-stats wall stacks of both stages
 	std::deque<Common::UniqueFunction<void>> batch;
 	for (;;) {
