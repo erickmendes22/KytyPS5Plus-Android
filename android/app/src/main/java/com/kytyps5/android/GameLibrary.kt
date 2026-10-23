@@ -22,8 +22,19 @@ data class GameEntry(
     val path: String get() = folder.absolutePath
 }
 
+/** Details of what was actually searched, so an empty grid is not a silent failure. */
+data class ScanDiagnostics(
+    val visitedDirectories: Int = 0,
+    val unreadableDirectories: List<String> = emptyList(),
+    val depthLimitedDirectories: Int = 0,
+    val hitDirectoryLimit: Boolean = false,
+)
+
 sealed interface ScanResult {
-    data class Found(val games: List<GameEntry>) : ScanResult
+    data class Found(
+        val games: List<GameEntry>,
+        val diagnostics: ScanDiagnostics = ScanDiagnostics(),
+    ) : ScanResult
     data class Failure(val message: String) : ScanResult
 }
 
@@ -37,44 +48,113 @@ object GameLibrary {
     const val ZARCHIVE_EXTENSION = "zar"
     const val EXFAT_EXTENSION = "exfat"
     private val IMAGE_EXTENSIONS = setOf(ZARCHIVE_EXTENSION, EXFAT_EXTENSION)
+    private val EXECUTABLE_EXTENSIONS = setOf("elf", "self")
+    const val EBOOT = "eboot.bin"
+    private const val MAX_SCANNED_DIRECTORIES = 4096
 
     /** Subtitle for a dump image in the grid; empty for anything else. */
     fun imageLabel(file: File): String = when (file.extension.lowercase()) {
         ZARCHIVE_EXTENSION -> "ZArchive"
         EXFAT_EXTENSION -> "exFAT image"
+        "elf" -> "ELF executable"
+        "self" -> "SELF executable"
         else -> ""
     }
 
-    /** How deep below the chosen folder to look; dumps are often nested one or two levels. */
-    const val MAX_SCAN_DEPTH = 3
+    /** Also handle installers with two or more wrapper folders around the game. */
+    const val MAX_SCAN_DEPTH = 8
+
+    private class ScanState {
+        val games = mutableListOf<GameEntry>()
+        val visited = mutableSetOf<String>()
+        val unreadable = mutableListOf<String>()
+        var depthLimited = 0
+        var hitDirectoryLimit = false
+
+        fun diagnostics() = ScanDiagnostics(
+            visitedDirectories = visited.size,
+            unreadableDirectories = unreadable.toList(),
+            depthLimitedDirectories = depthLimited,
+            hitDirectoryLimit = hitDirectoryLimit,
+        )
+    }
 
     fun scan(root: File): ScanResult {
         if (!root.exists()) return ScanResult.Failure("Folder not found: ${root.path}")
         if (!root.isDirectory) return ScanResult.Failure("Not a folder: ${root.path}")
-        if (root.listFiles() == null) {
-            return ScanResult.Failure("Cannot read ${root.path}. Check all-files access.")
+        if (safeListFiles(root) == null) {
+            return ScanResult.Failure("Cannot read ${root.path}. Check all-files access and the selected games folder.")
         }
-        val games = mutableListOf<GameEntry>()
-        collect(root, depth = 0, into = games)
-        return ScanResult.Found(games.sortedBy { it.title.lowercase() })
+        val state = ScanState()
+        collect(root, depth = 0, state)
+        val games = state.games.distinctBy { it.path }.sortedBy { it.title.lowercase() }
+        Log.i(TAG, "Scan ${root.path}: ${games.size} games; ${state.visited.size} folders; " +
+            "${state.unreadable.size} unreadable; depth-limited=${state.depthLimited}; " +
+            "directory-limit=${state.hitDirectoryLimit}")
+        return ScanResult.Found(games, state.diagnostics())
     }
 
-    /** The chosen folder may itself be a game; otherwise look below it, without entering games. */
-    private fun collect(folder: File, depth: Int, into: MutableList<GameEntry>) {
-        if (isGameFolder(folder)) {
-            into += readEntry(folder)
+    /** Do not follow symlink cycles. A bad nested folder must not make the whole library empty. */
+    private fun collect(folder: File, depth: Int, state: ScanState) {
+        if (state.visited.size >= MAX_SCANNED_DIRECTORIES) {
+            state.hitDirectoryLimit = true
             return
         }
-        val children = folder.listFiles() ?: return
-        children
-            .filter { it.isFile && it.extension.lowercase() in IMAGE_EXTENSIONS }
-            .mapTo(into) { GameEntry(folder = it, title = it.nameWithoutExtension) }
-        if (depth >= MAX_SCAN_DEPTH) return
-        children.filter { it.isDirectory && !it.name.startsWith(".") }
-            .forEach { collect(it, depth + 1, into) }
+        val canonical = try {
+            folder.canonicalPath
+        } catch (e: IOException) {
+            state.unreadable.add(folder.path)
+            Log.w(TAG, "Cannot resolve game folder ${folder.path}", e)
+            return
+        } catch (e: SecurityException) {
+            state.unreadable.add(folder.path)
+            Log.w(TAG, "No access to ${folder.path}", e)
+            return
+        }
+        if (!state.visited.add(canonical)) return
+
+        // CapyPS5 recognizes the executable, not just metadata. Keep recognizing metadata-only
+        // folders for compatibility with the old launcher, but allow valid eboot-only dumps too.
+        if (isGameFolder(folder)) {
+            val game = readEntry(folder)
+            state.games.add(game)
+            Log.i(TAG, "Game: ${game.path} (${game.titleId ?: "no title ID"})")
+            return
+        }
+
+        val children = safeListFiles(folder)
+        if (children == null) {
+            state.unreadable.add(folder.path)
+            Log.w(TAG, "Cannot list game folder: ${folder.path}")
+            return
+        }
+        for (file in children) {
+            if (!file.isFile) continue
+            val ext = file.extension.lowercase()
+            if (ext in IMAGE_EXTENSIONS || ext in EXECUTABLE_EXTENSIONS) {
+                state.games.add(GameEntry(folder = file, title = file.nameWithoutExtension))
+            }
+        }
+        val subdirectories = children.filter { it.isDirectory && !it.name.startsWith(".") }
+        if (depth >= MAX_SCAN_DEPTH) {
+            state.depthLimited += subdirectories.size
+            return
+        }
+        for (subdirectory in subdirectories) {
+            if (state.hitDirectoryLimit) break
+            collect(subdirectory, depth + 1, state)
+        }
     }
 
-    private fun isGameFolder(folder: File): Boolean = File(folder, PARAM_JSON).isFile
+    private fun safeListFiles(folder: File): Array<File>? = try {
+        folder.listFiles()
+    } catch (e: SecurityException) {
+        Log.w(TAG, "Access denied: ${folder.path}", e)
+        null
+    }
+
+    private fun isGameFolder(folder: File): Boolean =
+        File(folder, EBOOT).isFile || File(folder, PARAM_JSON).isFile
 
     /** Title (param.json, then param.sfo TITLE, then folder name), title id and icon of a game folder. */
     fun readEntry(folder: File): GameEntry {
@@ -90,12 +170,19 @@ object GameLibrary {
 
     private fun readParamJson(folder: File): JSONObject? = try {
         val file = File(folder, PARAM_JSON)
-        if (file.length() > MAX_PARAM_JSON_BYTES) throw IOException("${file.path} is too large")
-        JSONObject(file.readText())
+        if (!file.isFile) null
+        else {
+            if (file.length() > MAX_PARAM_JSON_BYTES) throw IOException("${file.path} is too large")
+            JSONObject(file.readText())
+        }
     } catch (e: JSONException) {
         Log.w(TAG, "Malformed $PARAM_JSON in ${folder.path}", e)
         null
     } catch (e: IOException) {
+        Log.w(TAG, "Cannot read $PARAM_JSON in ${folder.path}", e)
+        null
+    } catch (e: SecurityException) {
+        Log.w(TAG, "No access to $PARAM_JSON in ${folder.path}", e)
         null
     }
 
@@ -105,6 +192,10 @@ object GameLibrary {
         return try {
             ParamSfo.parse(file.readBytes())
         } catch (e: IOException) {
+            Log.w(TAG, "Cannot read $PARAM_SFO in ${folder.path}", e)
+            null
+        } catch (e: SecurityException) {
+            Log.w(TAG, "No access to $PARAM_SFO in ${folder.path}", e)
             null
         }
     }
