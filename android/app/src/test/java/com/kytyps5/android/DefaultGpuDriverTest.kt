@@ -45,6 +45,24 @@ class DefaultGpuDriverTest {
     }
 
     @Test
+    fun upgradesOriginalBundledV32ButKeepsUserChoice() {
+        assertTrue(turnip.assetName.endsWith("turnip-gen8-v38-patched.zip"))
+        assertEquals(2, turnip.version)
+        assertEquals(
+            DefaultDriverPolicy.Decision.INSTALL_AND_SELECT,
+            DefaultDriverPolicy.decide(830, turnip, 1, "mainline-turnip-v32-vulkan-1-4-335"),
+        )
+        assertEquals(
+            DefaultDriverPolicy.Decision.INSTALL_ONLY,
+            DefaultDriverPolicy.decide(830, turnip, 1, LauncherSettings.SYSTEM_DRIVER),
+        )
+        assertEquals(
+            DefaultDriverPolicy.Decision.INSTALL_ONLY,
+            DefaultDriverPolicy.decide(830, turnip, 1, "turnip-gen8-v37-patched"),
+        )
+    }
+
+    @Test
     fun doesNothingAfterTheBundleVersionWasApplied() {
         // The user may have switched back to the system driver since; that choice stays.
         val decision = DefaultDriverPolicy.decide(
