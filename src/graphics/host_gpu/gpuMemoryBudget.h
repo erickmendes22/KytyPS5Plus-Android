@@ -43,6 +43,18 @@ struct Thresholds {
 	return critical ? 8 : 32;
 }
 
+// Window size bounds both the download ring and the linear tiler scratch.
+inline constexpr uint64_t        kWrittenChunkBytes = 8 * MiB;
+[[nodiscard]] constexpr uint32_t ReadbackRows(uint32_t remaining, uint32_t alignment,
+                                              uint64_t guest_row, uint64_t linear_row,
+                                              uint64_t capacity) {
+	if (!remaining || !alignment || !guest_row || !linear_row) return 0;
+	const auto available = std::min(capacity / guest_row, capacity / linear_row);
+	const auto blocks    = available / alignment;
+	if (!blocks) return 0;
+	return static_cast<uint32_t>(std::min<uint64_t>(remaining, blocks * alignment));
+}
+
 [[nodiscard]] constexpr Thresholds ForBudget(uint64_t budget) {
 	return {budget / 100 * 55, budget / 100 * 80, budget / 100 * 92};
 }

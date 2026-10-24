@@ -568,6 +568,18 @@ target_include_directories(surface_lifecycle_tests PRIVATE ${inc_headers})
 
 add_executable(gpu_memory_budget_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/GpuMemoryBudgetTests.cpp")
 target_include_directories(gpu_memory_budget_tests PRIVATE ${inc_headers})
+add_executable(image_readback_chunk_tests EXCLUDE_FROM_ALL
+    "${KYTY_TESTS_DIR}/ImageReadbackChunkTests.cpp"
+    "${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/image/imageInfo.cpp"
+    "${KYTY_SOURCE_DIR}/graphics/guest_gpu/tile.cpp"
+    "${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
+)
+target_link_libraries(image_readback_chunk_tests common fmt::fmt Vulkan::Headers)
+target_include_directories(image_readback_chunk_tests PRIVATE ${inc_headers})
+
+
+add_executable(mfgt_arena_fix_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/MfgtArenaFixTests.cpp")
+target_include_directories(mfgt_arena_fix_tests PRIVATE ${inc_headers})
 
 add_executable(dispatch_split_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/DispatchSplitTests.cpp")
 
@@ -854,6 +866,8 @@ if(BUILD_TESTING)
 	add_test(NAME render_scale COMMAND $<TARGET_FILE:render_scale_tests>)
 	add_test(NAME gpu_diagnostics COMMAND $<TARGET_FILE:gpu_diagnostics_tests>)
 	add_test(NAME gpu_memory_budget COMMAND $<TARGET_FILE:gpu_memory_budget_tests>)
+	add_test(NAME image_readback_chunk COMMAND $<TARGET_FILE:image_readback_chunk_tests>)
+	add_test(NAME mfgt_arena_fix COMMAND $<TARGET_FILE:mfgt_arena_fix_tests>)
 	add_test(NAME surface_lifecycle COMMAND $<TARGET_FILE:surface_lifecycle_tests>)
 	add_test(NAME page_manager COMMAND $<TARGET_FILE:page_manager_tests>)
 	add_test(NAME perf_waits COMMAND $<TARGET_FILE:perf_waits_tests>)

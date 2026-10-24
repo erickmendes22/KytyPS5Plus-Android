@@ -94,6 +94,11 @@ struct ImageInfo {
 	[[nodiscard]] std::vector<vk::BufferImageCopy> BufferCopies(uint64_t buffer_offset = 0,
 	                                                            uint32_t levels        = 0) const;
 
+	// A single layer and block-aligned row window; retain original mip tails/layer strides.
+	[[nodiscard]] bool ReadbackChunk(uint32_t level, uint32_t layer, uint32_t row,
+	                                 uint64_t capacity, ImageInfo& local, vk::BufferImageCopy& copy,
+	                                 uint32_t& rows) const;
+
 	[[nodiscard]] ColorTransform GetColorTransform() const noexcept {
 		if (bgra16) return ColorTransform::SwapBgra16;
 		switch (guest_format) {

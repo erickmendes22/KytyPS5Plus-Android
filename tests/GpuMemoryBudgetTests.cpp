@@ -112,12 +112,25 @@ void TestWrittenDownloadLimits() {
 } // namespace
 
 int main() {
-	TestAutoBudget();
-	TestThresholds();
-	TestEffective();
-	TestUnifiedSystemPressure();
-	TestProcessMemoryReadings();
-        TestWrittenDownloadLimits();
-        std::printf("GpuMemoryBudgetTests: ok\n");
-        return 0;
+  Check(ReadbackRows(8192, 128, 32768, 32768, 8 * MiB) == 256,
+        "bounded large image window");
+  Check(ReadbackRows(129, 128, 32768, 32768, 8 * MiB) == 129,
+        "partial final block row");
+  Check(ReadbackRows(8192, 128, 65536, 32768, 8 * MiB) == 128,
+        "guest padding limit");
+  Check(ReadbackRows(8192, 128, 32768, 65536, 8 * MiB) == 128,
+        "linear scratch limit");
+  Check(ReadbackRows(8192, 128, 32768, 32768, 4 * MiB - 1) == 0,
+        "cannot split tile block row");
+  Check(ReadbackRows(1, 0, 1, 1, UINT64_MAX) == 0 &&
+            ReadbackRows(1, 1, 0, 1, UINT64_MAX) == 0,
+        "reject invalid geometry");
+  TestAutoBudget();
+  TestThresholds();
+  TestEffective();
+  TestUnifiedSystemPressure();
+  TestProcessMemoryReadings();
+  TestWrittenDownloadLimits();
+  std::printf("GpuMemoryBudgetTests: ok\n");
+  return 0;
 }

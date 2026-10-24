@@ -19741,6 +19741,77 @@ public:
               gpu_tiled);
     };
 
+    // Real image copies through bounded windows, including tails and array XOR
+    // phases.
+    for (const auto mode :
+         {Prospero::TileMode::kStandard256B, Prospero::TileMode::kStandard4KB,
+          Prospero::TileMode::kStandard64KB, Prospero::TileMode::kPrt,
+          Prospero::TileMode::kRenderTarget}) {
+      for (const auto format : {Prospero::BufferFormat::k8_8_8_8UNorm,
+                                Prospero::BufferFormat::k16_16_16_16UNorm}) {
+        auto info = MakeTilingImage(format, 267, 521, 9, 3, mode, 0, false);
+        info.pixel_format = VulkanFormat(format);
+        Image native(m_runtime_context, scheduler, info);
+        std::vector<uint8_t> linear(info.LinearSize());
+        fill(&linear, ++case_index);
+        std::vector<uint8_t> expected(info.data.size, 0xab),
+            observed(info.data.size, 0xab);
+        for (u32 level = 0; level < info.resources.levels; ++level)
+          convert_reference(true, &expected, linear, info, level);
+        auto input =
+            CreateHostBuffer(name, align_dword(linear.size()), AllFlags,
+                             to_dwords(linear, align_dword(linear.size())));
+        const auto upload_regions = info.BufferCopies();
+        native.Upload(upload_regions, input.buffer, 0, linear.size());
+        scheduler.Finish();
+        const auto &block = info.tiling.block;
+        const uint64_t columns =
+            (uint64_t{info.mip_layout[0].pitch} + block.block_width - 1) /
+            block.block_width;
+        const uint64_t capacity = columns * block.block_size * 2;
+        uint32_t chunks = 0;
+        for (uint32_t level = 0; level < info.resources.levels; ++level) {
+          const auto height = info.MipExtent(level).height;
+          for (uint32_t layer = 0; layer < info.resources.layers; ++layer) {
+            for (uint32_t row = 0; row < height;) {
+              ImageInfo window;
+              vk::BufferImageCopy region;
+              uint32_t rows = 0;
+              Require(name, "image readback window plan",
+                      info.ReadbackChunk(level, layer, row, capacity, window,
+                                         region, rows) &&
+                          rows && window.data.size <= capacity &&
+                          window.LinearSize() <= capacity,
+                      "readback exceeded its bounded buffers");
+              const auto begin = window.data.address - info.data.address;
+              std::vector<uint8_t> prior(observed.begin() + begin,
+                                         observed.begin() + begin +
+                                             window.data.size);
+              auto output =
+                  CreateHostBuffer(name, window.data.size, AllFlags,
+                                   to_dwords(prior, window.data.size));
+              const std::array regions{region};
+              tile_manager.TileImage(native, regions, output.buffer, 0,
+                                     window.data.size, 1, &window);
+              host_barrier(output.buffer, window.data.size,
+                           vk::PipelineStageFlagBits::eComputeShader,
+                           vk::AccessFlagBits::eShaderWrite);
+              scheduler.Finish();
+              const auto bytes = read_bytes(output, window.data.size);
+              std::copy(bytes.begin(), bytes.end(), observed.begin() + begin);
+              DestroyBuffer(&output);
+              row += rows;
+              ++chunks;
+            }
+          }
+        }
+        Require(name, "multiple image windows", chunks > 3,
+                "fixture failed to exercise progression");
+        compare("chunked image readback bytes", expected, observed);
+        DestroyBuffer(&input);
+      }
+    }
+
     {
       constexpr auto format = Prospero::BufferFormat::k8UNorm;
       constexpr auto tile = Prospero::TileMode::kStandard256B;

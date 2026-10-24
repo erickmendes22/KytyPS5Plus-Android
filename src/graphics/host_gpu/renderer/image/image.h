@@ -99,6 +99,7 @@ public:
 	void CopyMip(Image& source, uint32_t mip, uint32_t layer);
 
 	void MarkCpuDirty() {
+		++m_content_version;
 		m_cpu_dirty       = true;
 		m_maybe_cpu_dirty = false;
 	}
@@ -108,6 +109,7 @@ public:
 	[[nodiscard]] bool IsMaybeCpuDirty() const { return m_maybe_cpu_dirty; }
 	void               MarkMaybeCpuDirty() {
 		if (!IsCpuDirty()) {
+			++m_content_version;
 			m_maybe_cpu_hash  = HashGuestEdges();
 			m_maybe_cpu_dirty = true;
 		}
@@ -130,7 +132,11 @@ public:
 	}
 
 	[[nodiscard]] bool IsGpuModified() const noexcept { return m_gpu_modified; }
-	void               MarkGpuModified() noexcept { m_gpu_modified = true; }
+	void               MarkGpuModified() noexcept {
+		++m_content_version;
+		m_gpu_modified = true;
+	}
+	[[nodiscard]] uint64_t ContentVersion() const noexcept { return m_content_version; }
 	void               ClearGpuModified() noexcept { m_gpu_modified = false; }
 	// KYTY_RP_STATS: a full-image colour clear not yet followed by any other use (rpStats.h).
 	bool               rp_clear_pending = false;
@@ -147,7 +153,10 @@ public:
 	};
 
 	[[nodiscard]] bool IsBufferModified() const noexcept { return m_buffer_modified; }
-	void               MarkBufferModified() noexcept { m_buffer_modified = true; }
+	void               MarkBufferModified() noexcept {
+		++m_content_version;
+		m_buffer_modified = true;
+	}
 	void               ClearBufferModified() noexcept { m_buffer_modified = false; }
 
 	[[nodiscard]] bool Overlaps(uint64_t address, uint64_t size,
@@ -214,6 +223,7 @@ private:
 	uint64_t          m_maybe_cpu_hash  = 0;
 	bool              m_cpu_dirty       = false;
 	bool              m_maybe_cpu_dirty = false;
+	uint64_t                     m_content_version = 1;
 	bool              m_gpu_modified    = false;
 	bool              m_buffer_modified = false;
 };

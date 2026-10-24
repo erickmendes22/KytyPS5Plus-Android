@@ -188,8 +188,8 @@ TileManager::Tiling TileManager::Prepare(bool tile, uint64_t tiled_capacity,
 		                      static_cast<uint32_t>(tiled_slice),
 		                      static_cast<uint32_t>(columns),
 		                      mip.surface_z,
-		                      tail ? mip.tail_x : 0u,
-		                      tail ? mip.tail_y : 0u,
+		                      mip.tail_x,
+		                      mip.tail_y,
 		                      static_cast<uint32_t>(texels)};
 		params.num_texels += static_cast<uint32_t>(texels);
 	}
@@ -362,16 +362,17 @@ void TileManager::Tile(vk::Buffer linear, uint64_t linear_offset, uint64_t linea
 
 void TileManager::TileImage(Image& image, std::span<const vk::BufferImageCopy> regions,
                             vk::Buffer tiled, uint64_t tiled_offset, uint64_t tiled_capacity,
-                            uint32_t levels) {
+                            uint32_t levels, const ImageInfo* window) {
 	EXIT_IF(regions.empty());
+	const auto&    info   = window ? *window : image.info;
 	const auto&    limits = m_graphics.GetPhysicalDeviceProperties().limits;
 	const uint64_t descriptor_alignment =
 	    std::max<uint64_t>(limits.minStorageBufferOffsetAlignment, 4);
 	const uint64_t target_base     = tiled_offset & (descriptor_alignment - 1);
-	const auto     linear_capacity = image.info.LinearSize(levels);
+	const auto     linear_capacity = info.LinearSize(levels);
 	// Reserve stream parameters before recording the image download.
 	const auto tiling =
-	    Prepare(true, tiled_capacity, linear_capacity, image.info, levels, 0, target_base);
+	    Prepare(true, tiled_capacity, linear_capacity, info, levels, 0, target_base);
 	auto linear = GetScratchBuffer(linear_capacity, tiled);
 	image.Download(regions, linear.buffer, 0, linear.size);
 	Record(linear.buffer, 0, linear_capacity, tiled, tiled_offset, tiled_capacity, tiling, false);

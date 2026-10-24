@@ -77,3 +77,41 @@ Portable budget/size-limit tests pass, including sanitizers (LeakSanitizer disab
 the environment restriction described above). Full native/Android CI and gameplay remain
 required for these follow-up changes. This is an experimental cleanup, not a claim that
 the device crash or ANR is fixed.
+
+
+## 16:54 device follow-up: chunked cold-image writeback
+
+The 16:54:15 diagnostic confirms `e13f41e5` and `--gpu-evict-written 1`.
+The mechanism executes: an interval reclaimed 661 MiB across 156 images, including
+32 downloaded images. However, `oversize_written=1226 MiB` remains and available
+system RAM falls to 93 MiB. Latest recorded driver usage is 6168 MiB. The latest
+exit report is reason 3/status 0, not the earlier signal-9 exit; neither the
+absence of that exit nor interval eviction proves sustained stability.
+
+Large eligible 2D images now advance by one window of at most 8 MiB per collector
+pass, using the existing staging ring and a bounded linear scratch request.
+Guest mip offsets, padded row pitch, array stride, packed tail coordinates and
+render-target XOR phases are preserved. Previous guest padding is read before
+the GPU overwrites active texels. The image stays registered/GPU-authoritative
+until every window has completed and its priority writeback has published.
+A busy ring reservation is deferred. Touching or changing the image resets the
+cursor; a content version also detects CPU, buffer and GPU writes between passes.
+Unregistering discards the cursor. Only completed images are retired.
+
+The existing opt-in remains PPSA10112-only by default. Bound/recent targets,
+depth/stencil, video-out, MSAA, unsupported layouts, 3D volumes, scaled backings,
+and linear images requiring a color transform remain excluded. No new guest
+capacity, shader semantics or global eviction defaults are introduced. Small
+image transfers keep their existing size limits. The `oversize_written` field
+now reports oversized candidates whose layout cannot use bounded windows;
+`writeback_chunks` and `chunk_bytes` show actual incremental progress every ten
+seconds. These values alone do not measure a frame-time improvement.
+
+Validation: portable budget tests and image-window address tests pass locally.
+The latter cover five 2D tile families, 1/2/4/8/16-byte and BC formats, mip tails,
+three array layers, padding, XOR phases, linear layouts and 256 MiB images while
+bounding both buffers. Real-image-to-tiled-window Vulkan byte-comparison tests
+were added to `--gpu-tiler-only`; they require a capable device and were not
+executed locally. CI compiles that test suite and runs the CPU address tests.
+GPU completion waits remain: an 8 MiB copy limit does not impose a time bound on
+a hung or heavily loaded GPU. Android gameplay confirmation remains required.

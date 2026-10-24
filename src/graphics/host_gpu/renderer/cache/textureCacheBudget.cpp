@@ -94,6 +94,7 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 	if (tick < idle) return;
 	const auto& staging     = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
 	const auto  limit_bytes = GpuBudget::WrittenDownloadLimit(critical, staging.Size());
+	const auto  chunk_bytes = std::min(staging.Size(), GpuBudget::kWrittenChunkBytes);
 	ImageId     candidate {};
 	uint64_t    candidate_bytes = 0;
 	m_lru_cache.ForEachItemBelow(tick - idle, [&](ImageId id) {
@@ -105,7 +106,14 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 		if (size == 0) return;
 		m_gc_written_cold_bytes += image->AccountedSize();
 		if (size > limit_bytes) {
-			m_gc_written_large_bytes += image->AccountedSize();
+			if (!CanDownloadInChunks(*image, chunk_bytes)) {
+				m_gc_written_large_bytes += image->AccountedSize();
+				return;
+			}
+		}
+		if (id == m_written_window.image && image->ContentVersion() == m_written_window.version) {
+			candidate       = id;
+			candidate_bytes = UINT64_MAX;
 			return;
 		}
 		// Reclaim a useful amount rather than spending the pass on a tiny old image.
@@ -114,7 +122,15 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 			candidate_bytes = image->AccountedSize();
 		}
 	});
-	if (!candidate || !DownloadImageMemory(candidate, false)) return;
+	if (!candidate) return;
+	if (m_slot_images[candidate].info.data.size > limit_bytes) {
+		if (DownloadImageMemoryChunk(candidate, chunk_bytes)) {
+			NoteEviction(m_slot_images[candidate], true);
+			FreeImage(candidate);
+		}
+		return;
+	}
+	if (!DownloadImageMemory(candidate, false)) return;
 	const auto completion_tick = m_scheduler.CurrentTick();
 	{
 		const Common::PerfStats::ScopedWaitSite wait_site(Common::PerfStats::Wait::SemGc);
