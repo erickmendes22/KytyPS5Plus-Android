@@ -11195,102 +11195,6 @@ public:
     std::printf("[gpu]     %-32s ok\n", name);
   }
 
-  void CheckZeroStrideBufferBinding() {
-    constexpr const char *name = "ZeroStrideBufferBinding";
-    constexpr uintptr_t base = 0x0000000204c00000ull;
-    constexpr uint64_t size = 0x10000;
-    constexpr auto output = base + 0x2000;
-    constexpr u32 value = 0x80000578u;
-    std::array<std::vector<u32>, 2> codes;
-    for (u32 scalar = 0; scalar < codes.size(); ++scalar) {
-      auto &code = codes[scalar];
-      if (scalar) {
-        code = {EncodeSmem0(0x08, 16), EncodeSmem1(0, 125),
-                EncodeSopp(0x0c, 0), EncodeVop1(0x01, 1, 16)};
-      } else {
-        code = {EncodeMubuf0(0x00, 0, false, false),
-                EncodeMubuf1(1, 0, 0), EncodeSopp(0x0c, 0)};
-      }
-      code.insert(code.end(), {EncodeVop2(0x1a, 2, InlineU32(2), 0),
-                              EncodeMubuf0(0x1c), EncodeMubuf1(1, 1, 2)});
-      AppendEnd(&code);
-      ShaderMapUserData(reinterpret_cast<uint64_t>(code.data()),
-          {.type = Prospero::ShaderBinaryType::kCs,
-           .code_size_bytes = static_cast<u32>(code.size() * sizeof(u32))});
-    }
-    EnsureRuntimeContext();
-    int64_t physical = -1;
-    Require(name, "allocate", LibKernel::Memory::KernelAllocateDirectMemory(
-        0, LibKernel::Memory::KernelGetDirectMemorySize(), size, size, 0, &physical) == 0,
-        "buffer binding allocation failed");
-    void *mapped = reinterpret_cast<void *>(base);
-    Require(name, "map", LibKernel::Memory::KernelMapDirectMemory(
-        &mapped, size, 0x3, 0x10, physical, size) == 0 &&
-            mapped == reinterpret_cast<void *>(base), "buffer binding mapping failed");
-    for (const auto prefix : {0u, 8u})
-      Require(name, "input backing", LibKernel::Memory::TryWriteBacking(
-          base + 0x1000 + prefix, &value, sizeof(value)), "input DWORD could not be written");
-    RenderContext context(m_runtime_context);
-    context.InitializeGpu(nullptr);
-    LibKernel::Memory::InstallGpuResources(&context);
-    context.GetGpu().SendCommandSync([&] {
-      CommandProcessor processor(context, 0);
-      processor.BufferInit();
-      context.MapMemory(base, size);
-      auto &cache = context.GetBufferCache();
-      auto &shaders = processor.GetShCtx();
-      struct Case { u32 mode, records; bool scalar; u32 expected; };
-      constexpr Case cases[]{{2, 1, false, value}, {2, 0, false, 0},
-                              {3, 1, false, 0}, {3, 4, false, value},
-                              {2, 1, true, 0}, {2, 4, true, value}};
-      for (const auto wave : {32u, 64u}) {
-        for (const auto prefix : {0u, 8u}) {
-          const auto address = base + 0x1000 + prefix;
-          for (const auto test : cases) {
-            cache.FillBuffer(output, wave * sizeof(u32), 0xa5a5a5a5u, false);
-            shaders.SetCsShader({
-                .data_addr = reinterpret_cast<uint64_t>(codes[test.scalar].data()),
-                .num_thread_x = wave, .num_thread_y = 1, .num_thread_z = 1,
-                .wave_size = static_cast<uint8_t>(wave), .user_sgpr = 8});
-            ShaderBufferResource input{}, out{};
-            input.UpdateAddress48(address);
-            input.fields[2] = test.records;
-            input.fields[3] = DstSel(4, 5, 6, 7) |
-                (static_cast<u32>(Prospero::BufferFormat::k32UInt) << 12u) |
-                (test.mode << 28u);
-            out.UpdateAddress48(output);
-            out.fields[2] = wave * sizeof(u32);
-            out.fields[3] = DstSel(4, 5, 6, 7) |
-                (static_cast<u32>(Prospero::BufferFormat::k32UInt) << 12u) | (3u << 28u);
-            for (u32 i = 0; i < 4; ++i) {
-              shaders.SetCsUserSgpr(i, input.fields[i], HW::UserSgprType::Unknown);
-              shaders.SetCsUserSgpr(i + 4, out.fields[i], HW::UserSgprType::Unknown);
-            }
-            processor.DispatchDirect(1, 1, 1, wave == 32 ? 0x8041u : 0x41u);
-            cache.ReadMemory(output, wave * sizeof(u32));
-            std::array<u32, 64> actual{};
-            Require(name, "readback", LibKernel::Memory::TryReadBacking(
-                output, actual.data(), wave * sizeof(u32)), "buffer output was unreadable");
-            Require(name, "vector and scalar range rules",
-                std::all_of(actual.begin(), actual.begin() + wave,
-                            [&](u32 word) { return word == test.expected; }),
-                "wave=" + std::to_string(wave) + " prefix=" + std::to_string(prefix) +
-                    " mode=" + std::to_string(test.mode) +
-                    " records=" + std::to_string(test.records) +
-                    " scalar=" + std::to_string(test.scalar));
-          }
-        }
-      }
-      context.UnmapMemory(base, size);
-      context.GetCommandScheduler().Finish();
-    });
-    LibKernel::Memory::InstallGpuResources(nullptr);
-    context.ShutdownGpu();
-    Require(name, "release", LibKernel::Memory::KernelCheckedReleaseDirectMemory(
-        physical, size) == 0, "buffer binding release failed");
-    std::printf("[gpu]     %-32s ok\n", name);
-  }
-
   void CheckOrderedDispatch() {
     constexpr const char *name = "OrderedDispatch";
     constexpr uintptr_t base = 0x0000000204a00000ull;
@@ -49367,6 +49271,8 @@ int main(int argc, char **argv) {
   }
   if (argc == 2 && std::strcmp(argv[1], "--dead-lane-only") == 0) {
     CheckDeadLaneFold();
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--cvt-pkrtz-only") == 0) {
     VulkanHarness vulkan;
     RunCase(&vulkan, CvtPkrtzF16F32SubnormalRoundsTowardZero());

@@ -1,14 +1,14 @@
 """Reuse an audited APK's native core only when all native sources/build commands are unchanged."""
 import hashlib,io,json,os,re,subprocess,tempfile,zipfile
 from pathlib import Path
-BASE='ec38b33dcf4ff6fb9a00a39a6da18ba74a469353'
+BASE='1f5c2de19adea39062700d3484fd9de1ee86684b'
 REPO='erickmendes22/KytyPS5Plus-Android'
-ARTIFACT=12548213456
-DIGEST='c1287c045b5fad808dc60fa4bb918a3c7a562cd9e54fdd950ba099a6a0e02382'
+ARTIFACT=12560921156
+DIGEST='594e285c2050280075cdf1e4274dc20ebfd707abde0029f28e1b0a793226f375'
 def git(*args):return subprocess.check_output(['git',*args],text=True)
 def unchanged():
     paths=git('diff','--name-only',BASE,'HEAD').splitlines()
-    if any(not (p.startswith(('android/','docs/')) or p=='.github/workflows/android.yml') for p in paths):return False
+    if any(not (p.startswith(('android/','docs/','tests/')) or p=='.github/workflows/android.yml') for p in paths):return False
     old=git('show',BASE+':.github/workflows/android.yml')
     new=Path('.github/workflows/android.yml').read_text()
     for step in ['Android NDK','Configure','Build native libraries','Stage native libraries']:
