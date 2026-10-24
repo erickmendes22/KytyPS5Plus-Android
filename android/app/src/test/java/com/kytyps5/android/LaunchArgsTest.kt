@@ -13,10 +13,19 @@ class LaunchArgsTest {
         val silentHill = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = "PPSA10112")
         val index = silentHill.indexOf(LaunchArgs.FLAG_GPU_EVICT_WRITTEN)
         assertEquals("1", silentHill[index + 1])
+        val blockIndex = silentHill.indexOf(LaunchArgs.FLAG_VMA_BLOCK_SIZE)
+        assertEquals("32", silentHill[blockIndex + 1])
+        assertEquals(1, silentHill.count { it == LaunchArgs.FLAG_VMA_BLOCK_SIZE })
+        val lowerCaseTitle = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = "ppsa10112")
+        assertEquals("32", lowerCaseTitle[lowerCaseTitle.indexOf(LaunchArgs.FLAG_VMA_BLOCK_SIZE) + 1])
         val astro = LaunchArgs.forGame("/games/astro", Resolution.HD_720, titleId = "PPSA21564")
         assertEquals(-1, astro.indexOf(LaunchArgs.FLAG_GPU_EVICT_WRITTEN))
+        assertEquals(-1, astro.indexOf(LaunchArgs.FLAG_VMA_BLOCK_SIZE))
+        val granTurismo = LaunchArgs.forGame("/games/mfgt", Resolution.HD_720, titleId = "PPSA24156")
+        assertEquals(-1, granTurismo.indexOf(LaunchArgs.FLAG_VMA_BLOCK_SIZE))
         val unknown = LaunchArgs.forGame("/games/PPSA10112", Resolution.HD_720)
         assertEquals(-1, unknown.indexOf(LaunchArgs.FLAG_GPU_EVICT_WRITTEN))
+        assertEquals(-1, unknown.indexOf(LaunchArgs.FLAG_VMA_BLOCK_SIZE))
     }
 
     @Test

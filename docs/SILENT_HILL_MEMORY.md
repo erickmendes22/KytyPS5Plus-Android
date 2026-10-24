@@ -115,3 +115,61 @@ were added to `--gpu-tiler-only`; they require a capable device and were not
 executed locally. CI compiles that test suite and runs the CPU address tests.
 GPU completion waits remain: an 8 MiB copy limit does not impose a time bound on
 a hung or heavily loaded GPU. Android gameplay confirmation remains required.
+
+
+## 20:24 follow-up: retained allocation blocks after working cleanup
+
+The 20:24:42 diagnostic confirms `9df30114`. User feedback reports the crash no
+longer occurs; the two latest process exits are reason 1/status 0. This is a
+successful tested session, not a guarantee of stability on every route.
+
+The 26 memory samples show 306 written-image windows / 1240 MiB copied. Oversized
+unsupported candidates remain zero. Peak driver usage is 6152 MiB. After image
+cleanup, VMA blocks stay at 4902 MiB while live VMA allocations fall to 3348 MiB:
+1554 MiB is still held in block space. Driver usage stays near 4977 MiB and
+MemAvailable reaches 114 MiB. This identifies an allocation/block-lifetime
+problem to investigate; the entire gap is **not proven to be individually free
+blocks**, nor a confirmed leak. Partially occupied blocks cannot be destroyed.
+Do not add RSS to Vulkan usage on this unified-memory device.
+
+The conservative next experiment passes the existing `--vma-block-size 32`
+only for Android launches with confirmed PPSA10112 metadata. Unknown titles,
+Astro Bot and My First Gran Turismo keep their existing allocator defaults.
+This halves the preferred block size from 64 to 32 MiB. It changes allocation
+placement from the next launch; it does not move or invalidate live resources,
+change BDA addresses, discard guest data, or run a defragmenter.
+
+Bundled VMA (`a1d434708c217b2a6c7b365f1fe41fa03a562e59`),
+`VmaAllocator_T::AllocateMemoryOfType`, already prefers a dedicated allocation
+when the request is larger than half the preferred block size. The new setting
+therefore changes that preference from >32 MiB to >16 MiB. VMA retains its
+allocation-count safeguard (stops preferring dedicated memory above 3/4 of
+`maxMemoryAllocationCount`) and fallback to ordinary blocks if dedicated
+allocation fails. Forcing `VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT` would
+bypass that safeguard, so the experiment deliberately uses the existing setting.
+The expected benefit is smaller pinned holes / earlier release of empty blocks,
+not lower texture content size. More Vulkan allocations and driver overhead are
+possible; the net effect must be measured on the same gameplay route.
+
+Startup already reports `vma block=32 MiB`, making application observable.
+Compare VMA blocks, live allocations, driver usage, MemAvailable, and frame times
+against the 64 MiB session. Keep the existing bounded writeback and eligibility
+protections. Late `cold_written=0` indicates no eligible old GPU-written images
+in those passes; reducing age protections alone cannot safely remove that
+working set. Around 1.55 GiB of written images remain active/protected.
+
+Existing generic `--render-scale` may allocate both original and alternate
+scaled backings after transfers or unsupported uses. It must not be presented
+as a guaranteed RAM reduction. A verified game-native resolution/effect change
+can reduce the actual working set; shrinking VMA blocks addresses only retention.
+
+Validation for this launch-only experiment: updated scope regression checks
+ensure the 32 MiB argument appears exactly once for confirmed SH metadata,
+including case variation, and remains absent for unknown/path-lookalike titles,
+Astro Bot and My First GT. Device memory/performance gains remain unverified.
+
+Local `git diff --check` passes. The Gradle unit-test attempt could not start:
+this environment cannot reach `services.gradle.org` to fetch the wrapper
+distribution. Do not report those Kotlin tests as passed locally. The existing
+APK workflow already runs `testDebugUnitTest` before `assembleRelease`, so scope
+checks must pass there before an APK is considered ready.
