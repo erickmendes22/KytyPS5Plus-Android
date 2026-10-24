@@ -1,6 +1,7 @@
 package com.kytyps5.android.library
 
 import com.kytyps5.android.RenderScale
+import com.kytyps5.android.hud.HudMode
 import com.kytyps5.android.Resolution
 import com.kytyps5.android.stringAt
 import com.kytyps5.android.stringOr
@@ -21,6 +22,7 @@ data class GameSettings(
     val resolution: Resolution? = null,
     val envVars: List<EnvVar> = emptyList(),
     val hud: Boolean? = null,
+    val hudMode: HudMode? = null,
     val touchControls: Boolean? = null,
     val renderScale: RenderScale? = null,
     val gpuTurbo: Boolean? = null,
@@ -30,6 +32,7 @@ data class GameSettings(
         .put("renderScale", renderScale?.storageValue ?: JSONObject.NULL)
         .put("env", JSONArray(envVars.map { it.toString() }))
         .put("hud", hud ?: JSONObject.NULL)
+        .put("hudMode", hudMode?.storageValue ?: JSONObject.NULL)
         .put("touchControls", touchControls ?: JSONObject.NULL)
         .put("gpuTurbo", gpuTurbo ?: JSONObject.NULL)
         .toString()
@@ -46,6 +49,7 @@ data class GameSettings(
                     resolution = Resolution.entries.firstOrNull { it.storageValue == obj.stringOr("resolution") },
                     envVars = EnvVars.parse((0 until env.length()).joinToString("\n") { env.stringAt(it) }).vars,
                     hud = obj.optionalBoolean("hud"),
+                    hudMode = HudMode.entries.firstOrNull { it.storageValue == obj.stringOr("hudMode") },
                     touchControls = obj.optionalBoolean("touchControls"),
                     renderScale = RenderScale.entries.firstOrNull { it.storageValue == obj.stringOr("renderScale") },
                     gpuTurbo = obj.optionalBoolean("gpuTurbo"),
