@@ -46,8 +46,9 @@ data class PresetLaunch(
     val env: Map<String, String> = emptyMap(),
     val renderScale: Float? = null,
     val gamePatch: String? = null,
+    val playgoHack: Boolean = false,
 ) {
-    val isEmpty: Boolean get() = env.isEmpty() && renderScale == null && gamePatch == null
+    val isEmpty: Boolean get() = env.isEmpty() && renderScale == null && gamePatch == null && !playgoHack
 
     companion object {
         /** Only the emulator's own knobs: a preset cannot change the loader, Mesa or Android variables. */
@@ -133,7 +134,7 @@ object PresetManifest {
     /** "launch": {"env": {"KYTY_X": "1"}, "renderScale": 0.75, "gamePatch": "x.json"}; every field optional. */
     private fun parseLaunch(obj: JSONObject?): LaunchResult {
         obj ?: return LaunchResult.Invalid("launch is not an object")
-        val known = setOf("env", "renderScale", "gamePatch")
+        val known = setOf("env", "renderScale", "gamePatch", "playgoHack")
         obj.keys().asSequence().firstOrNull { it !in known }?.let { return LaunchResult.Invalid("unknown launch option \"$it\"") }
         val env = linkedMapOf<String, String>()
         if (obj.has("env")) {
@@ -166,7 +167,13 @@ object PresetManifest {
         } else {
             null
         }
-        return LaunchResult.Ok(PresetLaunch(env, renderScale, gamePatch))
+        val playgoHack = if (obj.has("playgoHack")) {
+            obj.opt("playgoHack") as? Boolean
+                ?: return LaunchResult.Invalid("playgoHack must be true or false")
+        } else {
+            false
+        }
+        return LaunchResult.Ok(PresetLaunch(env, renderScale, gamePatch, playgoHack))
     }
 
     /** A forward-slash path below the target folder: no leading slash, no ".", "..", or empty segments. */
