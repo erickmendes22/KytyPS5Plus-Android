@@ -17,12 +17,14 @@ data class BundledDriver(
     fun supports(adrenoModel: Int?): Boolean = adrenoModel != null && adrenoModel in supportedModels
 
     companion object {
-        /** Mesa Turnip (whitebelyash tu_v32, gen8 branch): Adreno 810-840 only. */
-        val MAINLINE_TURNIP = BundledDriver(
-            assetName = "gpu_drivers/mainline-turnip-v32.zip",
-            version = 1,
+        /** StevenMXZ Turnip Gen8 V38 Patched (WinNative/Vauzi fixes), Adreno 8xx. */
+        val GEN8_V38_PATCHED = BundledDriver(
+            assetName = "gpu_drivers/turnip-gen8-v38-patched.zip",
+            version = 2,
             supportedModels = 800..899,
         )
+        // Keep the public name used by earlier launcher/tests; the package is now V38 Patched.
+        val MAINLINE_TURNIP = GEN8_V38_PATCHED
     }
 }
 
@@ -74,14 +76,19 @@ object AdrenoGpu {
 object DefaultDriverPolicy {
     enum class Decision { NOTHING, INSTALL_ONLY, INSTALL_AND_SELECT }
 
+    /** Matches only the previous APK-bundled mainline-v32 package (not user-imported builds). */
+    internal fun isPreviousBundledTurnip(id: String): Boolean =
+        id.contains("mainline", ignoreCase = true) && id.contains("v32", ignoreCase = true)
+
     /**
-     * Runs once per bundle [BundledDriver.version]: on a supported Adreno the package is installed, and it
-     * becomes the global driver only while the global choice is still the system driver. Later choices
-     * (including switching back to the system driver) are never overridden.
+     * On first setup select the patched Gen8 driver for Adreno 8xx. When upgrading from the
+     * original built-in v32, replace only that older bundled driver, never an unrelated
+     * imported driver or a user's explicit choice of the system driver.
      */
     fun decide(adrenoModel: Int?, bundle: BundledDriver, appliedVersion: Int, currentGlobal: String): Decision = when {
         appliedVersion >= bundle.version || !bundle.supports(adrenoModel) -> Decision.NOTHING
-        currentGlobal == LauncherSettings.SYSTEM_DRIVER -> Decision.INSTALL_AND_SELECT
+        appliedVersion == 0 && currentGlobal == LauncherSettings.SYSTEM_DRIVER -> Decision.INSTALL_AND_SELECT
+        appliedVersion == 1 && isPreviousBundledTurnip(currentGlobal) -> Decision.INSTALL_AND_SELECT
         else -> Decision.INSTALL_ONLY
     }
 }
