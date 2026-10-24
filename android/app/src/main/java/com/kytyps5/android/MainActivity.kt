@@ -1,6 +1,7 @@
 package com.kytyps5.android
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Typeface
@@ -45,6 +46,7 @@ class MainActivity : Activity() {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var scanRequest = 0
+    private var storageDialog: AlertDialog? = null
 
     private lateinit var nativeStatus: TextView
     private lateinit var storageStatus: TextView
@@ -84,6 +86,20 @@ class MainActivity : Activity() {
         )
         setContentView(buildUi())
         applyDefaultGpuDriver()
+        window.decorView.post { requestInitialStorageAccess() }
+    }
+
+    private fun requestInitialStorageAccess() {
+        if (isFinishing || isDestroyed || settings.storageAccessPromptShown) return
+        // Record the first opening even if access was already granted externally.
+        settings.storageAccessPromptShown = true
+        if (Environment.isExternalStorageManager()) return
+        storageDialog = AlertDialog.Builder(this)
+            .setTitle("Acesso aos arquivos")
+            .setMessage("Permita o acesso a todos os arquivos para localizar e abrir seus jogos. Na próxima tela, ative a permissão para KytyPS5 Plus.")
+            .setPositiveButton("Permitir") { _, _ -> openAllFilesAccessSettings() }
+            .setNegativeButton("Agora não", null)
+            .create().also { it.show() }
     }
 
     /** Installs the bundled Turnip on Adreno 8xx on first run (off the main thread: EGL probe + unzip). */
@@ -111,6 +127,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        storageDialog?.dismiss()
+        storageDialog = null
         worker.shutdownNow()
         covers.shutdown()
         super.onDestroy()
@@ -624,7 +642,11 @@ class MainActivity : Activity() {
         try {
             startActivity(appScoped)
         } catch (e: ActivityNotFoundException) {
-            startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            } catch (missing: ActivityNotFoundException) {
+                showMessage("Ative o acesso a todos os arquivos nas configurações do Android para KytyPS5 Plus.")
+            }
         }
     }
 

@@ -9,6 +9,11 @@ class LauncherSettings(context: Context) {
     private val prefs = context.applicationContext
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    /** The startup explanation is shown once, including when access is declined. */
+    var storageAccessPromptShown: Boolean
+        get() = prefs.getBoolean("storage_access_prompt_shown", false)
+        set(value) { prefs.edit().putBoolean("storage_access_prompt_shown", value).apply() }
+
     var gamesRoot: String
         get() = prefs.getString(KEY_GAMES_ROOT, DEFAULT_GAMES_ROOT) ?: DEFAULT_GAMES_ROOT
         set(value) {
