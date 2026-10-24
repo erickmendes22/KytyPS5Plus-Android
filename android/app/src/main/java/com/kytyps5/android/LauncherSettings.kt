@@ -99,7 +99,7 @@ class LauncherSettings(context: Context) {
     companion object {
         /** Stored driver id meaning "the device's own Vulkan driver". */
         const val SYSTEM_DRIVER = ""
-        const val DEFAULT_GAMES_ROOT = "/sdcard/KytyPS5/games"
+        const val DEFAULT_GAMES_ROOT = "/sdcard/KytyPS5Plus/games"
         const val DEFAULT_GPU_TURBO = true
         private const val PREFS_NAME = "kytyps5_launcher"
         private const val KEY_GAMES_ROOT = "games_root"

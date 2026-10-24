@@ -99,7 +99,7 @@ class DriverDownloader(
             connection.connectTimeout = TIMEOUT_MS
             connection.readTimeout = TIMEOUT_MS
             connection.instanceFollowRedirects = true
-            connection.setRequestProperty("User-Agent", "KytyPS5-Android-Launcher")
+            connection.setRequestProperty("User-Agent", "KytyPS5-Plus-Launcher")
             val code = connection.responseCode
             if (code != HttpURLConnection.HTTP_OK) {
                 connection.disconnect()

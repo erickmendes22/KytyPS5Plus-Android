@@ -17,14 +17,12 @@ data class BundledDriver(
     fun supports(adrenoModel: Int?): Boolean = adrenoModel != null && adrenoModel in supportedModels
 
     companion object {
-        /** StevenMXZ Turnip Gen8 V38 Patched (WinNative/Vauzi fixes), Adreno 8xx. */
-        val GEN8_V38_PATCHED = BundledDriver(
-            assetName = "gpu_drivers/turnip-gen8-v38-patched.zip",
-            version = 2,
+        /** Mainline Turnip V32: the sole bundled/default package for Adreno 8xx. */
+        val MAINLINE_TURNIP = BundledDriver(
+            assetName = "gpu_drivers/mainline-turnip-v32.zip",
+            version = 3,
             supportedModels = 800..899,
         )
-        // Keep the public name used by earlier launcher/tests; the package is now V38 Patched.
-        val MAINLINE_TURNIP = GEN8_V38_PATCHED
     }
 }
 
@@ -76,19 +74,15 @@ object AdrenoGpu {
 object DefaultDriverPolicy {
     enum class Decision { NOTHING, INSTALL_ONLY, INSTALL_AND_SELECT }
 
-    /** Matches only the previous APK-bundled mainline-v32 package (not user-imported builds). */
+    /** Recognizes the V38 package selected by the previous APK default policy. */
     internal fun isPreviousBundledTurnip(id: String): Boolean =
-        id.contains("mainline", ignoreCase = true) && id.contains("v32", ignoreCase = true)
+        id.contains("gen8", ignoreCase = true) && id.contains("v38", ignoreCase = true)
 
-    /**
-     * On first setup select the patched Gen8 driver for Adreno 8xx. When upgrading from the
-     * original built-in v32, replace only that older bundled driver, never an unrelated
-     * imported driver or a user's explicit choice of the system driver.
-     */
+    /** Migrate the old bundled V38 selection to V32; preserve unrelated imports/system choices. */
     fun decide(adrenoModel: Int?, bundle: BundledDriver, appliedVersion: Int, currentGlobal: String): Decision = when {
         appliedVersion >= bundle.version || !bundle.supports(adrenoModel) -> Decision.NOTHING
         appliedVersion == 0 && currentGlobal == LauncherSettings.SYSTEM_DRIVER -> Decision.INSTALL_AND_SELECT
-        appliedVersion == 1 && isPreviousBundledTurnip(currentGlobal) -> Decision.INSTALL_AND_SELECT
+        appliedVersion in 1..2 && isPreviousBundledTurnip(currentGlobal) -> Decision.INSTALL_AND_SELECT
         else -> Decision.INSTALL_ONLY
     }
 }
@@ -104,7 +98,6 @@ class DefaultGpuDriverSetup(
     fun apply(): String? {
         if (settings.bundledDriverVersion >= bundle.version) return null
         val model = AdrenoGpu.detectModel()
-        if (bundle.supports(model)) installMainlineV32Fallback()
         val decision = DefaultDriverPolicy.decide(model, bundle, settings.bundledDriverVersion, settings.gpuDriverId)
         if (decision == DefaultDriverPolicy.Decision.NOTHING) {
             settings.bundledDriverVersion = bundle.version
@@ -118,23 +111,13 @@ class DefaultGpuDriverSetup(
                 return null
             }
         }
+        if (settings.bundledDriverVersion == 2) {
+            store.list().filter { DefaultDriverPolicy.isPreviousBundledTurnip(it.id) }.forEach { store.delete(it.id) }
+        }
         settings.bundledDriverVersion = bundle.version
         if (decision != DefaultDriverPolicy.Decision.INSTALL_AND_SELECT) return null
         settings.gpuDriverId = driver.id
         return "Adreno $model detected: using ${driver.label} by default (change it under GPU driver)."
-    }
-
-    /** Keep the last known-working Turnip available, without overriding the global selection. */
-    private fun installMainlineV32Fallback() {
-        if (store.list().any { DefaultDriverPolicy.isPreviousBundledTurnip(it.id) }) return
-        try {
-            val installed = context.assets.open("gpu_drivers/mainline-turnip-v32.zip").use(store::import)
-            if (installed is DriverImportResult.Failure) {
-                Log.w(TAG, "Mainline V32 fallback could not be installed: ${installed.message}")
-            }
-        } catch (e: IOException) {
-            Log.w(TAG, "Mainline V32 fallback is not included in this APK: ${e.message}")
-        }
     }
 
     private fun importBundle(): DriverImportResult = try {

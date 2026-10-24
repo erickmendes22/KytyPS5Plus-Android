@@ -5,6 +5,8 @@ import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
+import android.view.MotionEvent
+import android.widget.ScrollView
 import android.view.InputDevice
 import android.view.View
 import android.view.ViewGroup
@@ -42,6 +44,8 @@ class GameOverlays(
     private val performanceHud = PerformanceHud(activity)
     private var hudWanted = hud
     private var mode = hudMode
+    private val menuGesture = EdgeMenuGesture(density)
+    private var menuDialog: AlertDialog? = null
     private val menuButton = TextView(activity).apply {
         text = "⋯"
         textSize = 22f
@@ -104,7 +108,26 @@ class GameOverlays(
     }
 
     /** Right-side in-game panel matching the landscape launcher's aesthetic. */
+    fun consumeMenuSwipe(event: MotionEvent): Boolean {
+        if (event.pointerCount > 1) { menuGesture.cancel(); return false }
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> menuGesture.begin(event.x, event.y, root.width)
+            MotionEvent.ACTION_MOVE -> if (menuGesture.move(event.x, event.y)) {
+                controller.releaseAll()
+                showMenu(menuButton)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val consumed = menuGesture.consumed
+                menuGesture.cancel()
+                return consumed
+            }
+        }
+        return menuGesture.consumed
+    }
+
     private fun showMenu(anchor: View) {
+        if (menuDialog?.isShowing == true) return
+        controller.releaseAll()
         val sheet = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(18.dp, 20.dp, 18.dp, 18.dp)
@@ -121,7 +144,7 @@ class GameOverlays(
             setPadding(0, 0, 0, 12.dp)
             if (size >= 15f) setTypeface(typeface, android.graphics.Typeface.BOLD)
         }
-        sheet.addView(heading("KYTYPS5+  /  IN-GAME", 11f, Color.rgb(107, 207, 255)))
+        sheet.addView(heading("KYTYPS5 PLUS  /  IN-GAME", 11f, Color.rgb(107, 207, 255)))
         sheet.addView(heading("Game menu", 21f))
         sheet.addView(heading("Change the overlay or exit the game.", 12f, Color.rgb(164, 187, 210)))
         lateinit var dialog: AlertDialog
@@ -141,6 +164,7 @@ class GameOverlays(
             }
             sheet.addView(button, LinearLayout.LayoutParams(-1, 44.dp).apply { bottomMargin = 10.dp })
         }
+        action("Retomar jogo") { dialog.dismiss() }
         action(if (controller.visibility == View.VISIBLE) "Hide touch controls" else "Show touch controls") {
             setControllerVisible(controller.visibility != View.VISIBLE)
             dialog.dismiss()
@@ -182,7 +206,13 @@ class GameOverlays(
                 }
                 .show()
         }
-        dialog = AlertDialog.Builder(activity).setView(sheet).create()
+        val scroll = ScrollView(activity).apply {
+            isFillViewport = true
+            addView(sheet, ViewGroup.LayoutParams(-1, -2))
+        }
+        dialog = AlertDialog.Builder(activity).setView(scroll, 0, 0, 0, 0).create()
+        menuDialog = dialog
+        dialog.setOnDismissListener { menuDialog = null; controller.releaseAll() }
         dialog.show()
         dialog.window?.apply {
             setBackgroundDrawableResource(android.R.color.transparent)

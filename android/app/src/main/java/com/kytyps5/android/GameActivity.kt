@@ -1,6 +1,7 @@
 package com.kytyps5.android
 
 import android.os.Bundle
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -17,6 +18,21 @@ import org.libsdl.app.SDLActivity
 class GameActivity : SDLActivity() {
 
     private var overlays: GameOverlays? = null
+    private var menuSwipeConsumed = false
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (overlays?.consumeMenuSwipe(event) == true) {
+            if (!menuSwipeConsumed) {
+                val cancel = MotionEvent.obtain(event)
+                cancel.action = MotionEvent.ACTION_CANCEL
+                super.dispatchTouchEvent(cancel)
+                cancel.recycle()
+            }
+            menuSwipeConsumed = event.actionMasked != MotionEvent.ACTION_UP && event.actionMasked != MotionEvent.ACTION_CANCEL
+            return true
+        }
+        menuSwipeConsumed = false
+        return super.dispatchTouchEvent(event)
+    }
 
     /** Launch options of the title's presets that are on (set in onCreate, before SDL asks for the arguments). */
     private var presetLaunch = PresetLaunchArgs.Plan(emptyList(), emptyList())

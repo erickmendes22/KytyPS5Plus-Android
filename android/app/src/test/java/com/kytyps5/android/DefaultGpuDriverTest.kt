@@ -45,12 +45,12 @@ class DefaultGpuDriverTest {
     }
 
     @Test
-    fun upgradesOriginalBundledV32ButKeepsUserChoice() {
-        assertTrue(turnip.assetName.endsWith("turnip-gen8-v38-patched.zip"))
-        assertEquals(2, turnip.version)
+    fun migratesBundledV38ToV32ButKeepsUserChoice() {
+        assertTrue(turnip.assetName.endsWith("mainline-turnip-v32.zip"))
+        assertEquals(3, turnip.version)
         assertEquals(
             DefaultDriverPolicy.Decision.INSTALL_AND_SELECT,
-            DefaultDriverPolicy.decide(830, turnip, 1, "mainline-turnip-v32-vulkan-1-4-335"),
+            DefaultDriverPolicy.decide(830, turnip, 2, "turnip-gen8-v38-patched-vulkan-1-4-363"),
         )
         assertEquals(
             DefaultDriverPolicy.Decision.INSTALL_ONLY,

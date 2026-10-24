@@ -34,7 +34,7 @@ class ControllerEditor(
     val view: View = HorizontalScrollView(activity).apply {
         visibility = View.GONE
         background = GradientDrawable().apply {
-            setColor(Color.argb(210, 16, 16, 20))
+            setColor(Color.argb(235, 17, 30, 49))
             cornerRadius = 12f * density
         }
         addView(

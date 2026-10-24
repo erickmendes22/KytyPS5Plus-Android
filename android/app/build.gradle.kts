@@ -77,13 +77,6 @@ data class BundledDriverPackage(val fileName: String, val url: String, val sha25
 
 val bundledDriverPackages = listOf(
     BundledDriverPackage(
-        fileName = "turnip-gen8-v38-patched.zip",
-        url = "https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases/download/v27.0.0-R1/Turnip_Gen8_V38_Patched.zip",
-        sha256 = "2bbb279a3da7680503a54a51a3051c7a4302c8fb2a089f8b183b4b5d6ba9ac17",
-    ),
-    // Known-good Astro Bot alternative: install alongside V38, never select over
-    // a user-chosen driver automatically. Preserves compatibility while V38 evolves.
-    BundledDriverPackage(
         fileName = "mainline-turnip-v32.zip",
         url = "https://github.com/whitebelyash/AdrenoToolsDrivers/releases/download/tu_v32/mainline-turnip-V32.zip",
         sha256 = "a40b086926916e3960c832fce3014c26ec946b956c46681a726d927e2700ad10",
@@ -103,6 +96,9 @@ val fetchBundledDrivers = tasks.register("fetchBundledDrivers") {
     onlyIf { bundleDrivers }
     doLast {
         bundledDriverDir.mkdirs()
+        // Remove assets staged by earlier builds; only V32 is bundled now.
+        bundledDriverDir.listFiles()?.filter { old -> bundledDriverPackages.none { it.fileName == old.name } }
+            ?.forEach { it.delete() }
         bundledDriverPackages.forEach { pkg ->
             val target = bundledDriverDir.resolve(pkg.fileName)
             if (target.isFile && sha256Of(target) == pkg.sha256) return@forEach
@@ -137,10 +133,10 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.kytyps5.android"
+        applicationId = "com.kytyps5.plus"
         minSdk = 31
         targetSdk = 35
-        // CI passes -PkytyVersionCode=<run number> -PkytyVersionName=<tag or 0.1.0-nightly.N> so every
+        // CI passes -PkytyVersionCode=<run number> -PkytyVersionName=<release version> so every
         // published APK installs over the previous one.
         versionCode = providers.gradleProperty("kytyVersionCode").getOrElse("1").toInt()
         versionName = providers.gradleProperty("kytyVersionName").getOrElse("0.1.0")

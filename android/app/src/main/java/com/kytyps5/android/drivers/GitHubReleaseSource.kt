@@ -54,6 +54,6 @@ class GitHubReleaseSource(private val perPage: Int = PER_PAGE) : ReleaseSource {
         const val PER_PAGE = 30
         const val TIMEOUT_MS = 15_000
         const val HTTP_TOO_MANY_REQUESTS = 429
-        const val USER_AGENT = "KytyPS5-Android-Launcher"
+        const val USER_AGENT = "KytyPS5-Plus-Launcher"
     }
 }

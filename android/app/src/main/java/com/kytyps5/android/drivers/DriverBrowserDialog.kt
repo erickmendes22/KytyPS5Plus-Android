@@ -70,7 +70,7 @@ class DriverBrowserDialog(
             setPadding(20.dp, 8.dp, 20.dp, 0)
             addView(header)
             addView(status)
-            addView(ScrollView(activity).apply { addView(list) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 420.dp))
+            addView(list)
         }
         spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
@@ -82,7 +82,7 @@ class DriverBrowserDialog(
         }
         AlertDialog.Builder(activity)
             .setTitle("Download GPU drivers")
-            .setView(content)
+            .setView(ScrollView(activity).apply { addView(content) })
             .setNegativeButton("Close", null)
             .setOnDismissListener {
                 cancelled.set(true)

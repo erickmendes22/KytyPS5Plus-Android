@@ -30,7 +30,9 @@ object Diagnostics {
             val dir = File(context.filesDir, "logs")
             if (!dir.isDirectory && !dir.mkdirs()) throw IOException("Cannot create ${dir.path}")
             File(dir, "last-launch.txt").writeText(buildString {
-                appendLine("KytyPS5+ launch diagnostics")
+                appendLine("KytyPS5 Plus launch diagnostics")
+                appendLine("Package: ${context.packageName}")
+                appendLine("Version: ${context.packageManager.getPackageInfo(context.packageName, 0).versionName}")
                 appendLine("Date: ${Date()}")
                 appendLine("PID: ${Process.myPid()}")
                 appendLine("Game: $path")
@@ -45,7 +47,7 @@ object Diagnostics {
     }
 
     fun suggestedFileName(): String =
-        "KytyPS5-diagnostics-" +
+        "KytyPS5-Plus-diagnostics-" +
             SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".zip"
 
     /** May run on a worker thread. Writes directly to a user-selected SAF destination. */

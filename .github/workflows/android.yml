@@ -100,7 +100,7 @@ jobs:
       - name: Version
         id: version
         run: |
-          name="0.1.0-actions.${GITHUB_RUN_NUMBER}"
+          name="0.1.0"
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "code=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_OUTPUT"
 
@@ -112,6 +112,12 @@ jobs:
             echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "KYTY_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
           fi
+
+      - name: Preserve fallback signing identity
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: kytyps5-plus-signing-v1
 
       - name: Unit tests and APK
         working-directory: android
@@ -127,16 +133,16 @@ jobs:
             -PkytyVersionName=${{ steps.version.outputs.name }}
           out=app/build/outputs/apk/release
           apk=$(ls $out/*.apk | head -1)
-          mv "$apk" "$GITHUB_WORKSPACE/KytyPS5-Android-${{ steps.version.outputs.name }}.apk"
+          mv "$apk" "$GITHUB_WORKSPACE/KytyPS5-Plus-${{ steps.version.outputs.name }}.apk"
           rm -f "$RUNNER_TEMP/release.jks"
 
       - name: Audit packaged native dependencies
         run: |
-          python3 scripts/android/audit-apk.py KytyPS5-Android-*.apk
+          python3 scripts/android/audit-apk.py KytyPS5-Plus-*.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Android-${{ steps.version.outputs.name }}
-          path: KytyPS5-Android-*.apk
+          name: KytyPS5-Plus-${{ steps.version.outputs.name }}
+          path: KytyPS5-Plus-*.apk
 

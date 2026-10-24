@@ -1,13 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.KytyPS5" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:colorAccent">#38AAEB</item>
+        <item name="android:colorAccent">#6BCFFF</item>
+        <item name="android:colorControlNormal">#A4BBD2</item>
+        <item name="android:colorBackground">#091221</item>
+        <item name="android:textColorPrimary">#EDF5FF</item>
+        <item name="android:textColorSecondary">#A4BBD2</item>
         <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
         <item name="android:windowBackground">#091221</item>
+        <item name="android:alertDialogTheme">@style/Theme.KytyPS5.Dialog</item>
+        <item name="android:buttonStyle">@style/Widget.KytyPS5.Button</item>
+        <item name="android:spinnerStyle">@style/Widget.KytyPS5.Spinner</item>
     </style>
-
-    <!-- Fullscreen, no action bar. The emulator draws edge to edge through SDL. -->
-    <style name="Theme.KytyPS5.Game" parent="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
+    <style name="Theme.KytyPS5.Dialog" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#6BCFFF</item>
+        <item name="android:colorControlNormal">#A4BBD2</item>
+        <item name="android:colorBackground">#111E31</item>
+        <item name="android:windowBackground">@drawable/panel_surface</item>
+        <item name="android:textColorPrimary">#EDF5FF</item>
+        <item name="android:textColorSecondary">#A4BBD2</item>
+        <item name="android:windowMinWidthMajor">82%</item>
+        <item name="android:windowMinWidthMinor">92%</item>
+        <item name="android:dialogPreferredPadding">16dp</item>
+        <item name="android:buttonStyle">@style/Widget.KytyPS5.Button</item>
+        <item name="android:spinnerStyle">@style/Widget.KytyPS5.Spinner</item>
+        <item name="android:buttonBarPositiveButtonStyle">@style/Widget.KytyPS5.Button</item>
+        <item name="android:buttonBarNegativeButtonStyle">@style/Widget.KytyPS5.Button</item>
+        <item name="android:buttonBarNeutralButtonStyle">@style/Widget.KytyPS5.Button</item>
+    </style>
+    <style name="Widget.KytyPS5.Button" parent="@android:style/Widget.Material.Button.Borderless">
+        <item name="android:background">@drawable/button_surface</item>
+        <item name="android:textColor">#EDF5FF</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:minHeight">42dp</item>
+        <item name="android:paddingLeft">12dp</item>
+        <item name="android:paddingRight">12dp</item>
+        <item name="android:layout_margin">3dp</item>
+    </style>
+    <style name="Widget.KytyPS5.Spinner" parent="@android:style/Widget.Material.Spinner">
+        <item name="android:popupBackground">@drawable/panel_surface</item>
+        <item name="android:popupTheme">@style/Theme.KytyPS5.Dialog</item>
+    </style>
+    <style name="Theme.KytyPS5.Game" parent="Theme.KytyPS5">
+        <item name="android:windowFullscreen">true</item>
         <item name="android:windowBackground">@android:color/black</item>
     </style>
 </resources>

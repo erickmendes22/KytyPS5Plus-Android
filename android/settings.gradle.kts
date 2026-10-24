@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "KytyPS5"
+rootProject.name = "KytyPS5Plus"
 include(":app")
