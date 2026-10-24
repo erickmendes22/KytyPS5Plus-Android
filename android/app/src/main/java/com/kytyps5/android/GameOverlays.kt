@@ -9,9 +9,10 @@ import android.view.InputDevice
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.PopupMenu
+import android.widget.LinearLayout
 import android.widget.TextView
 import com.kytyps5.android.hud.PerformanceHud
+import com.kytyps5.android.hud.HudMode
 import com.kytyps5.android.input.ControllerEditor
 import com.kytyps5.android.input.GamepadBridge
 import com.kytyps5.android.input.OverlayProfileStore
@@ -30,6 +31,7 @@ class GameOverlays(
     private val gamePath: String?,
     touchControls: Boolean,
     hud: Boolean,
+    hudMode: HudMode = HudMode.COMPACT,
 ) {
     private val density = activity.resources.displayMetrics.density
     private val Int.dp: Int get() = (this * density).toInt()
@@ -39,6 +41,7 @@ class GameOverlays(
     private val editor = ControllerEditor(activity, controller, store, gamePath) { menuButton.visibility = View.VISIBLE }
     private val performanceHud = PerformanceHud(activity)
     private var hudWanted = hud
+    private var mode = hudMode
     private val menuButton = TextView(activity).apply {
         text = "⋯"
         textSize = 22f
@@ -70,6 +73,7 @@ class GameOverlays(
 
     init {
         KytyVirtualPad.install()
+        performanceHud.setMode(mode)
         controller.layout = store.load(gamePath).layout
         setControllerVisible(touchControls && !hasPhysicalGamepad())
         performanceHud.view.visibility = if (hudWanted) View.VISIBLE else View.GONE
@@ -99,38 +103,93 @@ class GameOverlays(
         if (visible) performanceHud.start() else performanceHud.stop()
     }
 
+    /** Right-side in-game panel matching the landscape launcher's aesthetic. */
     private fun showMenu(anchor: View) {
-        val controlsShown = controller.visibility == View.VISIBLE
-        PopupMenu(activity, anchor).apply {
-            menu.add(0, MENU_CONTROLS, 0, if (controlsShown) "Hide touch controls" else "Show touch controls")
-            menu.add(0, MENU_EDIT, 1, "Edit controls layout…")
-            menu.add(0, MENU_HUD, 2, if (hudWanted) "Hide performance HUD" else "Show performance HUD")
-            menu.add(0, MENU_EXIT, 3, "Exit game")
-            setOnMenuItemClickListener { item ->
-                when (item.itemId) {
-                    MENU_CONTROLS -> setControllerVisible(!controlsShown)
-                    MENU_EDIT -> {
-                        setControllerVisible(true)
-                        menuButton.visibility = View.GONE
-                        editor.open()
-                    }
-                    MENU_HUD -> setHudVisible(!hudWanted)
-                    MENU_EXIT -> AlertDialog.Builder(activity)
-                        .setTitle("Exit game?")
-                        .setMessage("Close the running game and return to the library? Unsaved progress may be lost.")
-                        .setNegativeButton("Cancel", null)
-                        .setPositiveButton("Exit game") { _, _ ->
-                            controller.releaseAll()
-                            performanceHud.stop()
-                            // SDLActivity.onDestroy sends SDL_QUIT and stops its native thread.
-                            // Do not just hide the overlay or launch another MainActivity.
-                            activity.finish()
-                        }
-                        .show()
-                }
-                true
+        val sheet = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(18.dp, 20.dp, 18.dp, 18.dp)
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(17, 30, 49))
+                cornerRadius = 16.dp.toFloat()
+                setStroke(1.dp, Color.rgb(53, 91, 126))
             }
-        }.show()
+        }
+        fun heading(text: String, size: Float, color: Int = Color.WHITE) = TextView(activity).apply {
+            this.text = text
+            textSize = size
+            setTextColor(color)
+            setPadding(0, 0, 0, 12.dp)
+            if (size >= 15f) setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
+        sheet.addView(heading("KYTYPS5+  /  IN-GAME", 11f, Color.rgb(107, 207, 255)))
+        sheet.addView(heading("Game menu", 21f))
+        sheet.addView(heading("Change the overlay or exit the game.", 12f, Color.rgb(164, 187, 210)))
+        lateinit var dialog: AlertDialog
+        fun action(title: String, danger: Boolean = false, onClick: () -> Unit) {
+            val button = TextView(activity).apply {
+                text = title
+                textSize = 14f
+                gravity = Gravity.CENTER_VERTICAL
+                setTextColor(if (danger) Color.rgb(255, 165, 170) else Color.WHITE)
+                setPadding(14.dp, 0, 12.dp, 0)
+                background = GradientDrawable().apply {
+                    cornerRadius = 12.dp.toFloat()
+                    setColor(if (danger) Color.rgb(70, 30, 41) else Color.rgb(26, 47, 73))
+                    setStroke(1.dp, if (danger) Color.rgb(132, 59, 69) else Color.rgb(47, 79, 112))
+                }
+                setOnClickListener { onClick() }
+            }
+            sheet.addView(button, LinearLayout.LayoutParams(-1, 44.dp).apply { bottomMargin = 10.dp })
+        }
+        action(if (controller.visibility == View.VISIBLE) "Hide touch controls" else "Show touch controls") {
+            setControllerVisible(controller.visibility != View.VISIBLE)
+            dialog.dismiss()
+        }
+        action("Edit touch controls") {
+            setControllerVisible(true)
+            menuButton.visibility = View.GONE
+            editor.open()
+            dialog.dismiss()
+        }
+        action(if (hudWanted) "Hide performance HUD" else "Show performance HUD") {
+            setHudVisible(!hudWanted)
+            dialog.dismiss()
+        }
+        action("HUD style: " + mode.label) {
+            dialog.dismiss()
+            AlertDialog.Builder(activity)
+                .setTitle("Performance HUD")
+                .setSingleChoiceItems(HudMode.entries.map { it.label }.toTypedArray(),
+                    HudMode.entries.indexOf(mode)) { chooser, which ->
+                    mode = HudMode.entries[which]
+                    performanceHud.setMode(mode)
+                    LauncherSettings(activity).hudMode = mode
+                    chooser.dismiss()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+        action("Exit game", danger = true) {
+            dialog.dismiss()
+            AlertDialog.Builder(activity)
+                .setTitle("Exit game?")
+                .setMessage("Close the game and return to the library? Unsaved progress may be lost.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Exit game") { _, _ ->
+                    controller.releaseAll()
+                    performanceHud.stop()
+                    activity.finish()
+                }
+                .show()
+        }
+        dialog = AlertDialog.Builder(activity).setView(sheet).create()
+        dialog.show()
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setGravity(Gravity.END or Gravity.TOP)
+            setLayout(minOf(340.dp, (activity.resources.displayMetrics.widthPixels * 0.74f).toInt()),
+                ViewGroup.LayoutParams.MATCH_PARENT)
+        }
     }
 
     /** A real controller makes the touch overlay redundant; it can still be shown from the menu. */
