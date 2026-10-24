@@ -1,6 +1,7 @@
 package com.kytyps5.android
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
@@ -104,6 +105,7 @@ class GameOverlays(
             menu.add(0, MENU_CONTROLS, 0, if (controlsShown) "Hide touch controls" else "Show touch controls")
             menu.add(0, MENU_EDIT, 1, "Edit controls layout…")
             menu.add(0, MENU_HUD, 2, if (hudWanted) "Hide performance HUD" else "Show performance HUD")
+            menu.add(0, MENU_EXIT, 3, "Exit game")
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
                     MENU_CONTROLS -> setControllerVisible(!controlsShown)
@@ -113,6 +115,18 @@ class GameOverlays(
                         editor.open()
                     }
                     MENU_HUD -> setHudVisible(!hudWanted)
+                    MENU_EXIT -> AlertDialog.Builder(activity)
+                        .setTitle("Exit game?")
+                        .setMessage("Close the running game and return to the library? Unsaved progress may be lost.")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Exit game") { _, _ ->
+                            controller.releaseAll()
+                            performanceHud.stop()
+                            // SDLActivity.onDestroy sends SDL_QUIT and stops its native thread.
+                            // Do not just hide the overlay or launch another MainActivity.
+                            activity.finish()
+                        }
+                        .show()
                 }
                 true
             }
@@ -129,6 +143,7 @@ class GameOverlays(
         const val MENU_CONTROLS = 1
         const val MENU_EDIT = 2
         const val MENU_HUD = 3
+        const val MENU_EXIT = 4
         const val HUD_TOP_FRACTION = 0.13f
     }
 }
