@@ -6,6 +6,7 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import com.kytyps5.android.presets.GamePresets
+import com.kytyps5.android.hud.HudMode
 import com.kytyps5.android.presets.PresetLaunchArgs
 import org.libsdl.app.SDLActivity
 
@@ -72,6 +73,7 @@ class GameActivity : SDLActivity() {
             gamePath = launch.getStringExtra(LaunchArgs.EXTRA_GAME_PATH),
             touchControls = launch.getBooleanExtra(LaunchArgs.EXTRA_TOUCH_CONTROLS, true),
             hud = launch.getBooleanExtra(LaunchArgs.EXTRA_HUD, false),
+            hudMode = HudMode.fromStorage(launch.getStringExtra(LaunchArgs.EXTRA_HUD_MODE)),
         )
         addContentView(
             created.root,
