@@ -16,6 +16,7 @@ import android.widget.Switch
 import android.widget.TextView
 import com.kytyps5.android.GameEntry
 import com.kytyps5.android.LauncherSettings
+import com.kytyps5.android.hud.HudMode
 import com.kytyps5.android.RenderScale
 import com.kytyps5.android.Resolution
 import com.kytyps5.android.input.OverlayProfileStore
@@ -45,6 +46,8 @@ class GameSettingsDialog(
         val renderScale = spinner(listOf("Global (${settings.renderScale.label})") + RenderScale.entries.map { it.label })
         renderScale.setSelection(current.renderScale?.let { RenderScale.entries.indexOf(it) + 1 } ?: 0)
         val hud = triState("Performance HUD", current.hud, settings.hudEnabled)
+        val hudMode = spinner(listOf("Global (${settings.hudMode.label})") + HudMode.entries.map { it.label })
+        hudMode.setSelection(current.hudMode?.let { HudMode.entries.indexOf(it) + 1 } ?: 0)
         val touch = triState("Touch controls", current.touchControls, settings.touchControlsEnabled)
         val gpuTurbo = triState(GPU_TURBO_LABEL, current.gpuTurbo, settings.gpuTurbo)
         val env = EditText(activity).apply {
@@ -73,6 +76,8 @@ class GameSettingsDialog(
             addView(label("GPU driver", bold = true))
             addView(driverButton)
             addView(hud.first)
+            addView(label("HUD style", bold = true))
+            addView(hudMode)
             addView(touch.first)
             addView(gpuTurbo.first)
             if (presetSwitches.isNotEmpty()) {
@@ -118,6 +123,7 @@ class GameSettingsDialog(
                         resolution = resolution.selectedItemPosition.takeIf { it > 0 }?.let { Resolution.entries[it - 1] },
                         envVars = parsed.vars,
                         hud = hud.second(),
+                        hudMode = hudMode.selectedItemPosition.takeIf { it > 0 }?.let { HudMode.entries[it - 1] },
                         touchControls = touch.second(),
                         gpuTurbo = gpuTurbo.second(),
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
