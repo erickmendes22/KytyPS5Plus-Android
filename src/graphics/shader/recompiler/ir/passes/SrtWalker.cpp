@@ -617,10 +617,16 @@ namespace {
 // memo for each read), then descends through that level's child pointers.
 bool RunSrtWalkLevel(const SrtWalkLevel& level, const uint8_t* parent, uint32_t* flat,
                      ResourcePlan::EvaluationContext::Entry* entries, uint64_t generation,
-                     bool parent_is_guest) {
+                     bool parent_is_guest, SrtAddressProbe mapped) {
 	uint64_t pointer = 0;
 	if (parent_is_guest) {
-		HostRead(reinterpret_cast<uint64_t>(parent + level.pointer_offset), &pointer, sizeof(pointer));
+		// Reject a null or unmapped child pointer before dereferencing it. Earlier
+		// the host could read nullptr+0x18 *before* checking the child table base.
+		uint64_t ptr_address = 0;
+		if (!AddSignedAddress(reinterpret_cast<uint64_t>(parent), level.pointer_offset, ptr_address) ||
+		    ptr_address < GUEST_MEMORY_MIN ||
+		    (mapped != nullptr && !mapped(ptr_address, sizeof(pointer)))) return false;
+		HostRead(ptr_address, &pointer, sizeof(pointer));
 	} else {
 		std::memcpy(&pointer, parent + level.pointer_offset, sizeof(pointer));
 	}
@@ -631,31 +637,34 @@ bool RunSrtWalkLevel(const SrtWalkLevel& level, const uint8_t* parent, uint32_t*
 	const auto* table = reinterpret_cast<const uint8_t*>(base);
 	for (const auto& read: level.reads) {
 		uint32_t value = 0;
-		HostRead(reinterpret_cast<uint64_t>(table + read.offset), &value, sizeof(value));
+		uint64_t address = 0;
+		if (!AddSignedAddress(base, read.offset, address) || address < GUEST_MEMORY_MIN ||
+		    (mapped != nullptr && !mapped(address, sizeof(value)))) return false;
+		HostRead(address, &value, sizeof(value));
 		flat[read.flat_offset]                = value;
 		entries[read.entry_index].value      = value;
 		entries[read.entry_index].generation = generation;
 	}
 	for (const auto& child: level.children) {
-		if (!RunSrtWalkLevel(child, table, flat, entries, generation, true)) return false;
+		if (!RunSrtWalkLevel(child, table, flat, entries, generation, true, mapped)) return false;
 	}
 	return true;
 }
 
 bool RunSrtWalkProgram(const SrtWalkProgram& walk, const uint32_t* user_data, uint32_t* flat,
                        ResourcePlan::EvaluationContext::Entry* entries, uint64_t generation,
-                       size_t user_data_size) {
+                       size_t user_data_size, SrtAddressProbe mapped) {
 	if (user_data_size < walk.user_data_count) return false;
 	for (const auto& root: walk.roots) {
 		// The root pointer is the 64-bit user-data pair at its byte offset.
 		if (root.pointer_offset < 0 || static_cast<size_t>(root.pointer_offset) + 8u > user_data_size * 4u) {
 			if (t_read_log != nullptr) t_read_log->complete = false;
-		} else {
-			NoteUserDataRead(static_cast<size_t>(root.pointer_offset) / 4u);
-			NoteUserDataRead((static_cast<size_t>(root.pointer_offset) + 7u) / 4u);
+			return false; // Earlier continued into an out-of-bounds root memcpy.
 		}
+		NoteUserDataRead(static_cast<size_t>(root.pointer_offset) / 4u);
+		NoteUserDataRead((static_cast<size_t>(root.pointer_offset) + 7u) / 4u);
 		if (!RunSrtWalkLevel(root, reinterpret_cast<const uint8_t*>(user_data), flat, entries, generation,
-		                     false)) {
+		                     false, mapped)) {
 			return false;
 		}
 	}
@@ -1519,7 +1528,7 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 #else
 		if (RunSrtWalkProgram(*m_program.srt_code, m_runtime.user_data.data(), flat.data(),
 		                      m_context.values.data(), m_context.generation,
-		                      m_runtime.user_data.size())) {
+		                      m_runtime.user_data.size(), m_runtime.mapped)) {
 			return true;
 		}
 #endif
