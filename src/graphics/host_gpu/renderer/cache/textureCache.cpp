@@ -9,6 +9,7 @@
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/perfWaits.h"
+#include "common/processMemory.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/tile.h"
@@ -2251,6 +2252,7 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	std::array<uint64_t, Count> bytes {};
 	std::array<uint32_t, Count> images {};
 	uint64_t                    guest_bytes = 0;
+	uint64_t                    gpu_written_bytes = 0;
 	m_slot_images.ForEach([&](ImageId, const Image& image) {
 		if (image.backing.allocation == nullptr || m_graphics.allocator == nullptr) {
 			return;
@@ -2265,6 +2267,7 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 		bytes[category] += info.size;
 		images[category]++;
 		guest_bytes += image.AccountedSize();
+		if (image.SafeToDownload()) gpu_written_bytes += info.size;
 	});
 	VmaTotalStatistics stats {};
 	if (m_graphics.allocator != nullptr) {
@@ -2278,13 +2281,19 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	constexpr uint64_t MiB = 1024ull * 1024;
 	const auto device_usage =
 	    m_graphics.CanReportMemoryUsage() ? m_graphics.GetDeviceMemoryUsage() : used_memory;
-	LOGF("GPU memory: device_usage=%" PRIu64 " gc_used=%" PRIu64 " budget=%" PRIu64
+	const auto host = Common::ReadProcessMemory();
+	// Bounded diagnostic also survives the default Silent printf setting. Do not enable
+	// per-call logging merely to see memory pressure; UMA RSS and device usage can overlap.
+	Log::WriteToConsoleAndLog(fmt::sprintf(
+	     "GPU memory: device_usage=%" PRIu64 " gc_used=%" PRIu64 " budget=%" PRIu64
 	     " MiB | evicted %" PRIu64 " images %" PRIu64 " MiB (%" PRIu64 " downloaded) | buffers=%" PRIu64
 	     " MiB mesh_ring=%" PRIu64 " MiB | vma_blocks=%" PRIu64 " vma_allocs=%" PRIu64
 	     " MiB | images=%" PRIu64 " MiB (rt %u:%" PRIu64 " depth %u:%" PRIu64 " storage %u:%" PRIu64
 	     " videoout %u:%" PRIu64 " sampled %u:%" PRIu64 ") guest_accounted=%" PRIu64
 	     " | non_image=%" PRIu64 " MiB | metas=%zu | gc trigger/pressure/critical=%" PRIu64
-	     "/%" PRIu64 "/%" PRIu64 " MiB\n",
+	     "/%" PRIu64 "/%" PRIu64 " MiB | gpu_written_images=%" PRIu64
+	     " MiB evict_written=%u | host_available=%" PRIu64 " rss=%" PRIu64
+	     " anon=%" PRIu64 " swap=%" PRIu64 " MiB host_fields=%u\n",
 	     device_usage / MiB, used_memory / MiB, m_graphics.MemoryBudget() / MiB, m_log_evictions,
 	     m_log_evicted_bytes / MiB, m_log_downloads, m_buffer_cache.TotalUsedMemory() / MiB,
 	     m_buffer_cache.MeshRingCapacity() / MiB, stats.total.statistics.blockBytes / MiB,
@@ -2293,7 +2302,12 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	     images[Storage], bytes[Storage] / MiB, images[VideoOut], bytes[VideoOut] / MiB,
 	     images[Sampled], bytes[Sampled] / MiB, guest_bytes / MiB,
 	     (allocated > image_bytes ? allocated - image_bytes : 0) / MiB, m_surface_metas.size(),
-	     m_trigger_gc_memory / MiB, m_pressure_gc_memory / MiB, m_critical_gc_memory / MiB);
+	     m_trigger_gc_memory / MiB, m_pressure_gc_memory / MiB, m_critical_gc_memory / MiB,
+	     gpu_written_bytes / MiB, m_evict_written ? 1u : 0u,
+	     host.available.value_or(0) / MiB, host.resident.value_or(0) / MiB,
+	     host.anonymous.value_or(0) / MiB, host.swap.value_or(0) / MiB,
+	     (host.available ? 1u : 0u) | (host.resident ? 2u : 0u) |
+	         (host.anonymous ? 4u : 0u) | (host.swap ? 8u : 0u)));
 	m_log_evictions     = 0;
 	m_log_evicted_bytes = 0;
 	m_log_downloads     = 0;

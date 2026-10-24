@@ -162,6 +162,7 @@ static void RedirectStdioToLogcat(int argc, char* argv[]) {
 	std::thread([read_fd = fds[0], disk_log] { DrainPipeToLogcat(read_fd, disk_log); }).detach();
 	if (disk_log != nullptr) {
 		::printf("[KytyDiagnostic] Native logging enabled: logs/session.log\n");
+		::printf("[KytyDiagnostic] Core: %s\n", GetBuildString().c_str());
 		::fflush(stdout);
 	}
 }

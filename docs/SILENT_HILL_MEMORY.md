@@ -1,0 +1,49 @@
+# Silent Hill: The Short Message — Android memory investigation
+
+Base: `c40d34c360cece78a672adf64aa1d95f774039ad` (includes the Android host-lane Astro Bot fix).
+Input: `KytyPS5-Plus-diagnostics-20261024-134200.zip`, PPSA10112.
+
+## Evidence and corrections
+
+- The user confirms menu, intro and 3D gameplay, followed by RAM growing until the app closes.
+- Latest launch: 13:31:25; latest process exit: 13:34:27, reason 2 / signal 9. Neither exit identifies the killer. This supports investigating memory exhaustion; it does not prove lmkd involvement.
+- Session log ends at VS 203 / PS 281 / CS 115 / GS 14. No device-loss or allocation-failure message appears. These counts do not measure memory consumption.
+- The older 12:04 tombstone belongs to an OdxAsyncLoader SIGSEGV. Do not use it as the current game's crash stack.
+- **The budget implementation is already in this core's sources**, introduced by `1a06576f4587eab01f450371cdc7137bb94f5572`. Android defaults are auto budget, 64 MiB VMA blocks and GPU-written-image eviction disabled. It is incorrect to present this as a missing PC feature to port.
+- `ConfigOptions::printf_direction` defaults to Silent. `LOGF` suppresses budget startup and periodic memory messages. Missing messages do not establish that the mechanism is absent or disabled. The Android stdout capture only captures messages actually emitted.
+- A [PC report for the same title](https://github.com/KytyPS5/KytyPS5/issues/547#issuecomment-6097176024) also reaches gameplay then exhausts VRAM and system RAM. Its hardware and renderer differ; its measurements are not Android measurements.
+
+## Existing integration and limits
+
+`GraphicContext::CreateAllocator -> InitMemoryBudget` configures VMA and budget. At a suspend/frame boundary, `RenderContext::RunGarbageCollector` invokes texture GC, then buffer GC. Texture GC refreshes the shared budget first. Image retirement is deferred on the GPU timeline. The allocation-retry path protects its source image and performs eviction only after allocation failure.
+
+The current collector is a target for reclaimable caches, **not a hard limit on all process memory**. Guest RAM, FEX/JIT allocations, shader/driver memory and live renderer buffers can exceed it. Per-frame collection may also be late during an allocation-heavy interval before another frame boundary. Do not simply invoke collection inside every allocation: its candidate selection would need to protect the caller's source image and respect renderer locks and lifetime ordering.
+
+GPU-written images are deliberately retained by default. The upstream commit records a stall when an experiment evicted 55 written images; downloading an image also touches guest RAM. On a unified-memory device this can move memory pressure rather than remove it. Do not enable `--gpu-evict-written 1` globally without measuring total pressure and stalls.
+
+The BDA table already has a sized-table path, subject to device safety features. The shader compiler releases the local SPIR-V result after creating a module. Do not assume AnyPS5's retained-SPIR-V problem or the old dense-BDA allocation is the culprit here without measuring those paths.
+
+## Prepared implementation
+
+1. Refresh the budget at most once per second even without `VK_EXT_memory_budget`. For unified-memory devices, use the smaller of driver headroom and `/proc/meminfo` MemAvailable. Unknown samples are distinct from zero; an explicitly disabled budget and discrete-GPU policy remain intact. Existing reserve, floors and eviction safety checks are preserved.
+2. Emit budget startup and material budget changes despite Silent logging. Add native build identification to Android session startup.
+3. Retain the existing ten-second memory summary cadence. Include process RSS, anonymous RSS, swap, system available RAM, VMA block/allocation bytes, texture categories, GPU-written image bytes, buffer bytes and evictions. A bitmask identifies missing host readings. **Do not add RSS and Vulkan usage together:** UMA accounting can overlap.
+4. Keep written-image readback opt-in. No changes to shader semantics, guest-visible memory capacity or resolution are required for these first changes.
+
+This is prepared on an isolated investigation branch. No APK is claimed fixed or device-validated.
+
+## Validation and next decision
+
+`GpuMemoryBudgetTests` covers the existing policy plus CPU pressure with optimistic driver data, missing extension, zero versus unknown readings, explicit disable, floors, driver pressure, proc parsing, invalid units and overflow. GCC C++20 with `-Wall -Wextra -Werror` passes. AddressSanitizer and UndefinedBehaviorSanitizer pass with leak detection disabled because this execution environment prevents LeakSanitizer from enumerating threads. CI includes this target alongside existing native regressions. Full Android/native compilation and gameplay validation are still required; neither was run for this investigation.
+
+The next APK must include the rebuilt native code (the audited-native reuse script rejects changes under `src/`, so an Android UI-only repack is insufficient). Compare the same gameplay route and duration:
+
+| Observation | Implementation decision |
+| --- | --- |
+| Image allocation growth with little eviction | Inspect retained GPU-written/active images. Test bounded writeback separately; do not discard authoritative data. |
+| VMA block bytes remain high after live allocation drops | Investigate fragmentation/dedicated allocations and deferred frees; do not shrink blocks blindly. |
+| Vulkan allocations stay stable while anonymous RSS grows | Investigate guest/FEX/compiler allocations. Renderer eviction alone cannot fix it. |
+| Evictions occur, guest RAM rises and total pressure persists | Reject writeback-only cleanup as a solution. Investigate asset demand or guest-resident memory instead. |
+| Pressure grows before frame-boundary collection | Add an allocation-pressure checkpoint with source-image protection and safe lock/timeline ordering, then validate transitions. |
+
+Acceptance is sustained gameplay beyond the previous failure point with bounded memory, no GPU loss, and no new corruption or long readback stalls. A later crash alone is not proof of a fix.

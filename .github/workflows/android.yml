@@ -205,10 +205,10 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DKYTY_BUILD_LAUNCHER=OFF \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-      - name: Build audio and metadata regressions
-        run: cmake --build _Build/regressions --target shader_vertex_metadata_tests audio_out2_port_tests --parallel 2
-      - name: Test audio and metadata
-        run: ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_vertex_metadata|audio_out2_port)$'
+      - name: Build audio, metadata and memory regressions
+        run: cmake --build _Build/regressions --target shader_vertex_metadata_tests audio_out2_port_tests gpu_memory_budget_tests --parallel 2
+      - name: Test audio, metadata and memory
+        run: ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_vertex_metadata|audio_out2_port|gpu_memory_budget)$'
       - name: Build shader regressions
         run: cmake --build _Build/regressions --target shader_cfg_tests shader_recompiler_compute_tests --parallel 2
       - name: Run shader regressions

@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cinttypes>
 #include <fstream>
+#include <optional>
 #include <string>
 
 namespace Libs::Graphics {
@@ -64,7 +65,7 @@ HeapTotals SumHeaps(const GraphicContext& ctx) {
 }
 
 // MemAvailable from /proc/meminfo (Linux, Android); 0 elsewhere or when unreadable.
-uint64_t ReadMemAvailable() {
+std::optional<uint64_t> ReadMemAvailable() {
 	std::ifstream meminfo("/proc/meminfo");
 	std::string   key;
 	uint64_t      kib = 0;
@@ -74,7 +75,7 @@ uint64_t ReadMemAvailable() {
 			return kib * 1024;
 		}
 	}
-	return 0;
+	return std::nullopt;
 }
 
 int64_t NowNs() {
@@ -119,12 +120,13 @@ bool GraphicContext::CreateAllocator() {
 void GraphicContext::InitMemoryBudget() {
 	const auto option = Config::GetGpuMemoryBudgetMb();
 	if (option == 0 || allocator == nullptr) {
-		LOGF("GPU memory budget: off (legacy heap-size thresholds), vma block=%u MiB\n",
-		     Config::GetVmaBlockSizeMb());
+		Log::WriteToConsoleAndLog(fmt::sprintf(
+		    "GPU memory budget: off (legacy heap-size thresholds), vma block=%u MiB\n",
+		    Config::GetVmaBlockSizeMb()));
 		return;
 	}
 	const auto totals    = SumHeaps(*this);
-	auto       available = ReadMemAvailable();
+	auto       available = ReadMemAvailable().value_or(0);
 	if (available == 0 && memory_budget_ext_enabled && totals.budget > totals.usage) {
 		// Drivers report usage + 90 % of what the system can spare (Mesa).
 		available = (totals.budget - totals.usage) / 9 * 10;
@@ -133,17 +135,18 @@ void GraphicContext::InitMemoryBudget() {
 	                                      : GpuBudget::AutoBudget(available);
 	memory_budget_effective  = memory_budget_configured;
 	const auto thresholds    = GpuBudget::ForBudget(memory_budget_configured);
-	LOGF("GPU memory budget: %s %" PRIu64 " MiB (MemAvailable %" PRIu64 " MiB, driver usage %" PRIu64
+	Log::WriteToConsoleAndLog(fmt::sprintf(
+	     "GPU memory budget: %s %" PRIu64 " MiB (MemAvailable %" PRIu64 " MiB, driver usage %" PRIu64
 	     " budget %" PRIu64 " MiB) -> gc trigger/pressure/critical %" PRIu64 "/%" PRIu64 "/%" PRIu64
 	     " MiB, vma block=%u MiB\n",
 	     option > 0 ? "fixed" : "auto", memory_budget_configured / GpuBudget::MiB,
 	     available / GpuBudget::MiB, totals.usage / GpuBudget::MiB, totals.budget / GpuBudget::MiB,
 	     thresholds.trigger / GpuBudget::MiB, thresholds.pressure / GpuBudget::MiB,
-	     thresholds.critical / GpuBudget::MiB, Config::GetVmaBlockSizeMb());
+	     thresholds.critical / GpuBudget::MiB, Config::GetVmaBlockSizeMb()));
 }
 
 uint64_t GraphicContext::UpdateMemoryBudget() {
-	if (!MemoryBudgetEnabled() || !memory_budget_ext_enabled) {
+	if (!MemoryBudgetEnabled()) {
 		return memory_budget_effective;
 	}
 	constexpr int64_t UpdateIntervalNs = 1'000'000'000;
@@ -156,18 +159,24 @@ uint64_t GraphicContext::UpdateMemoryBudget() {
 	vmaSetCurrentFrameIndex(allocator, static_cast<uint32_t>(now / UpdateIntervalNs));
 	const auto totals   = SumHeaps(*this);
 	const auto previous = memory_budget_effective;
+	// Only unified-memory devices share this headroom with the CPU. Keep discrete-GPU policy.
+	const auto available = physical_device_properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu
+	                           ? std::nullopt : ReadMemAvailable();
 	memory_budget_effective =
-	    GpuBudget::Effective(memory_budget_configured, totals.usage, totals.budget);
+	    GpuBudget::Effective(memory_budget_configured, totals.usage,
+	                         memory_budget_ext_enabled ? totals.budget : 0, available);
 	// Log real moves only: the headroom jitters by a few MiB every second.
 	constexpr uint64_t LogStep = 128 * GpuBudget::MiB;
 	const auto         moved   = memory_budget_effective > previous
 	                                 ? memory_budget_effective - previous
 	                                 : previous - memory_budget_effective;
 	if (moved >= LogStep || (moved != 0 && memory_budget_effective == memory_budget_configured)) {
-		LOGF("GPU memory budget: %" PRIu64 " -> %" PRIu64 " MiB (driver usage %" PRIu64
-		     " budget %" PRIu64 " MiB)\n",
+		Log::WriteToConsoleAndLog(fmt::sprintf(
+		     "GPU memory budget: %" PRIu64 " -> %" PRIu64 " MiB (driver usage %" PRIu64
+		     " budget %" PRIu64 " MiB, MemAvailable %" PRIu64 " MiB, system_sample=%u)\n",
 		     previous / GpuBudget::MiB, memory_budget_effective / GpuBudget::MiB,
-		     totals.usage / GpuBudget::MiB, totals.budget / GpuBudget::MiB);
+		     totals.usage / GpuBudget::MiB, totals.budget / GpuBudget::MiB,
+		     available.value_or(0) / GpuBudget::MiB, available.has_value() ? 1u : 0u));
 	}
 	return memory_budget_effective;
 }

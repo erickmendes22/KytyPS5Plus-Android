@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 
 // --gpu-memory-budget: one device-memory budget for unified-memory GPUs (Android), from which the
 // texture and buffer cache collectors take their thresholds. The legacy thresholds derive from the
@@ -48,11 +49,18 @@ struct Thresholds {
 // configured: the budget chosen at start. usage/driver_budget: VK_EXT_memory_budget heap usage and
 // budget (budget = usage + what the system could still give). Returns the budget to use now.
 [[nodiscard]] constexpr uint64_t Effective(uint64_t configured, uint64_t usage,
-                                           uint64_t driver_budget) {
-	if (driver_budget == 0 || configured == 0) {
+                                           uint64_t driver_budget,
+                                           std::optional<uint64_t> system_available = std::nullopt) {
+	if (configured == 0 || (driver_budget == 0 && !system_available)) {
 		return configured;
 	}
-	const auto headroom = driver_budget > usage ? driver_budget - usage : 0;
+	// Unified-memory GPUs compete with guest/JIT allocations too. Driver reporting can be
+	// unavailable or lag behind CPU-side growth, so use the smaller observed headroom.
+	auto headroom = driver_budget == 0 ? UINT64_MAX
+	                : driver_budget > usage ? driver_budget - usage : 0;
+	if (system_available) {
+		headroom = std::min(headroom, *system_available);
+	}
 	if (headroom >= kLowWater) {
 		return configured;
 	}
