@@ -13,6 +13,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.widget.TextView
+import android.widget.LinearLayout
+import android.view.Gravity
 import java.io.File
 
 /**
@@ -28,23 +30,53 @@ class PerformanceHud(context: Context) {
     private var background: Handler? = null
 
     @Volatile
+    private var mode: HudMode = HudMode.COMPACT
+    private var previousCpu: Pair<Long, Long>? = null
+
+    @Volatile
     private var frames: FrameStats? = null
 
     @Volatile
     private var framesAtMs = 0L
 
-    val view: TextView = TextView(context).apply {
+    private val title = TextView(context).apply {
+        text = "●  KYTY  /  LIVE"
+        textSize = 9f
+        letterSpacing = 0.13f
+        setTextColor(Color.rgb(113, 219, 255))
+        setTypeface(typeface, Typeface.BOLD)
+    }
+    private val measurements = TextView(context).apply {
         typeface = Typeface.MONOSPACE
-        textSize = 12f
+        textSize = 11f
         setTextColor(Color.WHITE)
-        setShadowLayer(3f, 0f, 0f, Color.BLACK)
-        val pad = (6 * resources.displayMetrics.density).toInt()
-        setPadding(pad, pad / 2, pad, pad / 2)
+        includeFontPadding = false
+        setLineSpacing(1f * resources.displayMetrics.density, 1f)
+        text = HudFormatter.lines(HudSample(), mode).joinToString("\n")
+    }
+    val view: LinearLayout = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.START
+        val d = resources.displayMetrics.density
+        val horizontal = (10 * d).toInt()
+        val vertical = (7 * d).toInt()
+        setPadding(horizontal, vertical, horizontal, vertical)
         background = GradientDrawable().apply {
-            setColor(Color.argb(140, 0, 0, 0))
-            cornerRadius = 8f * resources.displayMetrics.density
+            setColor(Color.argb(220, 12, 27, 48))
+            cornerRadius = 11f * d
+            setStroke((1 * d).coerceAtLeast(1f).toInt(), Color.argb(205, 54, 160, 224))
         }
-        text = HudFormatter.lines(HudSample()).joinToString("\n")
+        addView(title)
+        addView(measurements)
+    }
+
+    /** Changes the visual density without restarting the GPU or the emulator. */
+    fun setMode(next: HudMode) {
+        mode = next
+        main.post {
+            title.visibility = if (next == HudMode.MINIMAL) android.view.View.GONE else android.view.View.VISIBLE
+            measurements.textSize = if (next == HudMode.MINIMAL) 17f else 11f
+        }
     }
 
     val isRunning: Boolean get() = thread != null
@@ -64,8 +96,9 @@ class PerformanceHud(context: Context) {
             handler.post { Log.i(TAG, "HUD sensors: ${sensors.describe()}") }
             handler.post(object : Runnable {
                 override fun run() {
-                    val lines = HudFormatter.lines(sample()).joinToString("\n")
-                    main.post { view.text = lines }
+                    val activeMode = mode
+                    val lines = HudFormatter.lines(sample(activeMode), activeMode).joinToString("\n")
+                    main.post { if (mode == activeMode) measurements.text = lines }
                     handler.postDelayed(this, INTERVAL_MS)
                 }
             })
@@ -78,24 +111,43 @@ class PerformanceHud(context: Context) {
         background = null
     }
 
-    private fun sample(): HudSample {
-        val battery = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+    private fun sample(activeMode: HudMode): HudSample {
+        val frame = frames.takeIf { SystemClock.elapsedRealtime() - framesAtMs < STALE_FPS_MS }
+        if (activeMode == HudMode.MINIMAL) return HudSample(frames = frame)
+        val battery = if (activeMode == HudMode.FULL)
+            appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) else null
         val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
         val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
         val temp = battery?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         val status = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
         return HudSample(
             // The title stops updating while the emulator is paused or stalled: show "FPS --" then.
-            frames = frames.takeIf { SystemClock.elapsedRealtime() - framesAtMs < STALE_FPS_MS },
+            frames = frame,
             cpuTempC = sensors.cpuTempC(),
             gpuTempC = sensors.gpuTempC(),
             gpuLoadPercent = sensors.gpuLoadPercent(),
+            cpuLoadPercent = cpuLoadPercent(),
             memory = RealSensorFiles.read(PROC_MEMINFO)?.let(MemInfo::parse),
             appRssMiB = RealSensorFiles.read(PROC_STATUS)?.let(SysfsSensors::parseVmRssMiB),
             batteryPercent = if (level >= 0 && scale > 0) level * 100 / scale else null,
             batteryTempC = if (temp != Int.MIN_VALUE) temp / 10f else null,
             batteryCharging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL,
         )
+    }
+
+    /** Percentage of non-idle CPU time across all cores since the previous refresh. */
+    private fun cpuLoadPercent(): Int? {
+        val line = RealSensorFiles.read("/proc/stat")?.lineSequence()?.firstOrNull() ?: return null
+        val values = line.split(Regex("\\s+")).drop(1).mapNotNull(String::toLongOrNull)
+        if (values.size < 4) return null
+        val total = values.sum()
+        val idle = values[3] + (values.getOrNull(4) ?: 0L)
+        val previous = previousCpu
+        previousCpu = total to idle
+        if (previous == null) return null
+        val delta = total - previous.first
+        return if (delta > 0L) (((delta - (idle - previous.second)) * 100) / delta).toInt().coerceIn(0, 100)
+            else null
     }
 
     private companion object {
