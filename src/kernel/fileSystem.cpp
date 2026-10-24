@@ -10,6 +10,7 @@
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "kernel/addressFold.h"
 #include "kernel/caseInsensitivePath.h"
 #include "kernel/memory.h"
 #include "libs/errno.h"
@@ -110,6 +111,38 @@ private:
 
 static MountPoints*     g_mount_points = nullptr;
 static FileDescriptors* g_files        = nullptr;
+
+// Bounded, file-specific startup evidence. Do not turn on per-frame HLE logging.
+static bool IsGranTurismoIndex(std::string_view path) {
+	constexpr std::string_view suffix = "/contents/gt.idx";
+	if (path.size() < suffix.size()) return false;
+	path.remove_prefix(path.size() - suffix.size());
+	for (size_t i = 0; i < suffix.size(); ++i) {
+		auto c = path[i];
+		if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+		if (c != suffix[i]) return false;
+	}
+	return true;
+}
+
+static void LogGranTurismoIndexRead(const File& file, const char* operation, uint64_t offset,
+                                    size_t requested, uint32_t actual, const void* buffer) {
+	if (!IsGranTurismoIndex(file.name)) return;
+	static std::atomic_uint32_t count {0};
+	if (count.fetch_add(1, std::memory_order_relaxed) >= 12) return;
+	std::string header;
+	if (offset == 0 && actual != 0 && buffer != nullptr) {
+		const auto* bytes = Kernel::AddressFold::FoldPointer(static_cast<const uint8_t*>(buffer));
+		constexpr char digits[] = "0123456789abcdef";
+		for (size_t i = 0; i < std::min<size_t>(actual, 72); ++i) {
+			header.push_back(digits[bytes[i] >> 4]);
+			header.push_back(digits[bytes[i] & 15]);
+		}
+	}
+	Log::WriteToConsoleAndLog(fmt::sprintf(
+	    "MFGT index I/O: %s offset=%" PRIu64 " requested=%" PRIu64 " actual=%u header=%s\n",
+	    operation, offset, static_cast<uint64_t>(requested), actual, header.c_str()));
+}
 
 static bool IsRandomDevice(const std::string& path) {
 	return path == "/dev/random" || path == "/dev/urandom";
@@ -392,7 +425,7 @@ bool IsOpenDescriptor(int d) {
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
+static int KYTY_SYSV_ABI KernelOpenImpl(const char* path, int flags, uint16_t mode) {
 	PRINT_NAME();
 
 	if (path == nullptr) {
@@ -543,6 +576,22 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	return descriptor;
 }
 
+int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
+	const auto result = KernelOpenImpl(path, flags, mode);
+	if (path != nullptr && IsGranTurismoIndex(path)) {
+		static std::atomic_uint32_t count {0};
+		if (count.fetch_add(1, std::memory_order_relaxed) < 4) {
+			const auto resolved = g_mount_points->ResolvePath(path);
+			const auto info     = Common::File::GetInfo(resolved);
+			Log::WriteToConsoleAndLog(fmt::sprintf(
+			    "MFGT index I/O: open path=%s result=%d resolved=%s exists=%u size=%" PRIu64 "\n",
+			    path, result, Common::PathToString(resolved).c_str(), info ? 1u : 0u,
+			    info ? static_cast<uint64_t>(info->size) : 0));
+		}
+	}
+	return result;
+}
+
 int KYTY_SYSV_ABI KernelClose(int d) {
 	PRINT_NAME();
 
@@ -651,6 +700,7 @@ int64_t KYTY_SYSV_ABI KernelRead(int d, void* buf, size_t nbytes) {
 	                         std::min<uint64_t>(nbytes, remaining));
 	uint32_t bytes_read = 0;
 	file->f.Read(buf, static_cast<uint32_t>(nbytes), &bytes_read);
+	LogGranTurismoIndexRead(*file, "read", pos, nbytes, bytes_read, buf);
 
 	file->mutex.Unlock();
 
@@ -777,6 +827,7 @@ int64_t KYTY_SYSV_ABI KernelPread(int d, void* buf, size_t nbytes, int64_t offse
 	uint32_t bytes_read = 0;
 	file->f.Seek(offset);
 	file->f.Read(buf, static_cast<uint32_t>(nbytes), &bytes_read);
+	LogGranTurismoIndexRead(*file, "pread", static_cast<uint64_t>(offset), nbytes, bytes_read, buf);
 	file->f.Seek(pos);
 
 	file->mutex.Unlock();
@@ -1195,6 +1246,13 @@ int KYTY_SYSV_ABI KernelFstat(int d, FileStat* sb) {
 	stat.st_ctim     = stat.st_atim;
 	stat.st_birthtim = stat.st_mtim;
 	*sb              = stat;
+	if (IsGranTurismoIndex(file->name)) {
+		static std::atomic_uint32_t count {0};
+		if (count.fetch_add(1, std::memory_order_relaxed) < 4)
+			Log::WriteToConsoleAndLog(fmt::sprintf("MFGT index I/O: fstat fd=%d size=%" PRId64
+			                                       " block_size=%u\n",
+			                                       d, stat.st_size, stat.st_blksize));
+	}
 
 	return OK;
 }
