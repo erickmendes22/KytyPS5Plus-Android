@@ -7725,16 +7725,19 @@ void TestPixelAncillaryLayerInput() {
     CheckSpirvBinaryValidates(wqm_result.spirv);
   }
 
-  uint32_t dpp[] = {
-      EncodeVop3Word0(0x148, 6), EncodeVop3Word1(5 + 256, 128 + 16, 128 + 11),
-      EncodeVop1(0x01, 5, 250), EncodeVop1Dpp(6) | (1u << 19u), // Bound-zero DPP overwrite.
-      EncodeExp0(0x00, 0x1), EncodeExp1(5, 0, 0, 0), EncodeSopp(0x01),
+  const uint32_t guarded_dpp[] = {
+      EncodeVop1(0x01, 12, 255), 0x3f800000u,
+      EncodeVop1(0x01, 13, 255), 0x40000000u,
+      EncodeVop1(0x01, 12, 250), EncodeVop1Dpp(13) | (1u << 19u),
+      EncodeExp0(0x00, 0x1), EncodeExp1(12, 0, 0, 0), EncodeSopp(0x01),
   };
-  auto dpp_result = RecompileForTest(dpp, options);
-  Check(ProgramHasInput(dpp_result.program, StageInputKind::Layer) &&
-            !ProgramHasInput(dpp_result.program, StageInputKind::PackedAncillary),
-        "DPP write retained the old ancillary register value");
-  CheckSpirvBinaryValidates(dpp_result.spirv);
+  const auto guarded = RecompileForTest(guarded_dpp, options);
+  Check(std::ranges::any_of(guarded.program.blocks, [](const auto* block) {
+          return std::ranges::any_of(*block, [](const auto& inst) {
+            return inst.GetOpcode() == ShaderRecompiler::IR::ValueOpcode::DppUpdateU32;
+          });
+        }), "full-mask pixel DPP bypassed the missing-host-lane protection");
+  CheckSpirvBinaryValidates(guarded.spirv);
 
   const uint32_t loop[] = {
       EncodeSop1(0x04, 8, 126),  // Save the original EXEC mask.
@@ -7789,6 +7792,13 @@ void TestPixelAncillaryLayerInput() {
   shader[5] = EncodeExp1(6, 7, 5, 0);
   ExpectFatal([&] { (void)RecompileForTest(shader, options); },
               "direct raw ancillary export was silently replaced after field lowering");
+  uint32_t dpp[] = {
+      EncodeVop3Word0(0x148, 6), EncodeVop3Word1(5 + 256, 128 + 16, 128 + 11),
+      EncodeVop1(0x01, 5, 250), EncodeVop1Dpp(6) | (1u << 19u), // Bound-zero DPP overwrite.
+      EncodeExp0(0x00, 0x1), EncodeExp1(5, 0, 0, 0), EncodeSopp(0x01),
+  };
+  ExpectFatal([&] { (void)RecompileForTest(dpp, options); },
+              "pixel DPP silently discarded the retained old ancillary operand");
   dpp[3] = EncodeVop1Dpp(6); // Without BOUND_CTRL, lanes with inactive sources keep the value.
   ExpectFatal([&] { (void)RecompileForTest(dpp, options); },
               "DPP write without BOUND_CTRL silently replaced the ancillary value");
@@ -17305,6 +17315,21 @@ void TestSpirvRepeatedEmission() {
         "collection missed the subgroup requirement of the added IR");
   Check(Spirv::EmitProgram(compiled.program, options.input_info) == binary,
         "repeated emission reused IDs from the previous module");
+  const auto saved_compute_wave = compute.wave_size;
+  for (const uint32_t guest_wave : {32u, 64u}) {
+    compiled.program.wave_size = guest_wave;
+    compute.wave_size = guest_wave;
+    const auto guarded = Spirv::EmitProgram(compiled.program, options.input_info);
+    CheckSpirvBinaryValidates(guarded);
+    const auto text = DisassembleSpirvBinary(guarded);
+    Check(text.find("OpGroupNonUniformBallotFindLSB") != std::string::npos &&
+              text.find("OpAll") != std::string::npos &&
+              text.find("OpCompositeInsert") != std::string::npos,
+          "native first-lane must preserve all host ballot words and guard empty EXEC");
+  }
+  compiled.program.wave_size = 64;
+  compute.wave_size = saved_compute_wave;
+
 
   compute.host_subgroup_size = 32;
   const auto split = Spirv::EmitProgram(compiled.program, options.input_info);

@@ -551,6 +551,24 @@ uint32_t ValueEmitContext::Ballot(IR::Value predicate) {
 }
 
 uint32_t ValueEmitContext::FirstLane(uint32_t ballot) {
+	if (other_half == nullptr && !state.subgroup_isolated) {
+		// Android can use a host subgroup wider than the guest wave. Unsliced pixel
+		// ballots still contain physical lane IDs: do not truncate them to wave_size.
+		// Inject lane zero only for an empty ballot, keeping FindLSB defined for EXEC=0.
+		const auto empty = Unary(state, spv::OpAll, TypeBool(state),
+		                         Binary(state, spv::OpIEqual, TypeBoolVector(state, 4), ballot,
+		                                ConstantU32CompositeZero(state, 4)));
+		const auto low = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), low, ballot, 0);
+		const auto safe_low = Select(state, TypeU32(state), empty, ConstantU32(state, 1), low);
+		const auto safe_ballot = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeInsert, TypeU32Vector(state, 4), safe_ballot,
+		                          safe_low, ballot, 0);
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpGroupNonUniformBallotFindLSB, TypeU32(state), result,
+		                          ConstantU32(state, spv::ScopeSubgroup), safe_ballot);
+		return result;
+	}
 	// An empty ballot (EXEC zero) gives lane 0, which V_READFIRSTLANE reads on hardware. FindILsb
 	// returns -1 for zero, unlike BallotFindLSB, whose result is then undefined.
 	const auto first = [&](uint32_t word) {

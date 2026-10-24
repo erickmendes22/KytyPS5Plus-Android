@@ -43,3 +43,24 @@ These are correctness improvements and reductions in CPU/shader work, not measur
 The workflow rebuilds the ARM64/FEX native core for these source changes; old native-core reuse is rejected by its source guard.
 Native host tests cover shader CFG/metadata, AudioOut2 concurrency and all shader compilation cases in normal and fast-path modes. Host tests do not establish game or driver correctness on a phone.
 Mainline Turnip V32, package identity, game settings and the no-rt preset are retained.
+
+## Astro Bot device regression follow-up
+
+Device reports from the `1f5c2de` core show both OdxAsyncLoader faults and a separate
+`VK_ERROR_DEVICE_LOST` during rendering. The 10:11 report includes a copy of the old
+10:01 native tombstone; that tombstone is not evidence of a second loader fault in the
+GPU-loss session. Both no-rt patches applied successfully and Mainline V32 was active.
+
+Two mobile-specific shader contracts were lost in the first batch and are corrected:
+
+- Native first-lane selection must inspect all four host ballot words, even for a guest
+  wave32 shader; subgroup-isolated and split-wave paths retain their own handling. An
+  empty ballot receives bit zero before FindLSB, preserving the upstream EXEC=0 fix.
+- Pixel DPP writes must retain DppUpdateU32 so the Android backend can guard absent host
+  source lanes. Full guest masks and BOUND_CTRL do not establish host-lane presence.
+  The upstream ancillary optimization remains restricted to other shader stages;
+  unsupported retained raw ancillary operands are rejected rather than silently dropped.
+
+These fixes address verified code-path incompatibilities. The device logs do not yet
+prove they are the sole cause of the Astro Bot regression. A fresh native build and
+shader regression tests are required, followed by device confirmation.
