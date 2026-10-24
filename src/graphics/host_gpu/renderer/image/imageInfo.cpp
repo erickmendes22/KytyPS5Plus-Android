@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 
 #include "common/alignment.h"
+#include "graphics/host_gpu/gpuMemoryBudget.h"
 
 namespace Libs::Graphics {
 namespace {
@@ -74,6 +75,90 @@ vk::Extent3D ImageInfo::MipExtent(uint32_t level) const {
 	EXIT_IF(level >= resources.levels || level >= mip_layout.size());
 	return {std::max(extent.width >> level, 1u), std::max(extent.height >> level, 1u),
 	        IsVolume() ? std::max(extent.depth >> level, 1u) : resources.layers};
+}
+
+bool ImageInfo::ReadbackChunk(uint32_t level, uint32_t layer, uint32_t row,
+                              uint64_t capacity, ImageInfo& local,
+                              vk::BufferImageCopy& copy, uint32_t& rows) const {
+    rows = 0;
+    if (IsVolume() || IsDepth() || samples != 1 || level >= resources.levels ||
+        level >= mip_layout.size() || layer >= resources.layers || !resources.layers ||
+        !tiling.texel_width || !tiling.texel_height || !bytes_per_block || !data.size)
+        return false;
+    const auto& mip = mip_layout[level];
+    const auto active = MipExtent(level);
+    const uint64_t width = (uint64_t{active.width} + tiling.texel_width - 1) / tiling.texel_width;
+    const uint64_t height = (uint64_t{active.height} + tiling.texel_height - 1) / tiling.texel_height;
+    const uint64_t linear_row = uint64_t{mip.linear_pitch} * bytes_per_block;
+    if (row >= height || width > mip.linear_pitch || !linear_row || height > UINT32_MAX ||
+        mip.size % resources.layers) return false;
+    const uint64_t plane = mip.size / resources.layers;
+    const uint64_t stride = IsTiled() ? tiled_slice_stride : linear_slice_stride;
+    if (!stride || layer > UINT64_MAX / stride) return false;
+    uint64_t offset = uint64_t{layer} * stride;
+    if (mip.offset > UINT64_MAX - offset) return false;
+    offset += mip.offset;
+    uint64_t size = 0;
+    const bool tail = IsTiled() && level >= first_tail_level;
+    if (tail) {
+        if (row || plane > capacity || height > capacity / linear_row) return false;
+        rows = static_cast<uint32_t>(height);
+        size = plane;
+    } else {
+        uint32_t alignment = 1;
+        uint64_t guest_row = linear_row;
+        if (IsTiled()) {
+            const auto& block = tiling.block;
+            if (block.block_depth != 1 || !block.block_width || !block.block_height ||
+                !block.block_size || block.block_size % block.block_height ||
+                row % block.block_height) return false;
+            const uint64_t columns = (uint64_t{mip.pitch} + block.block_width - 1) / block.block_width;
+            alignment = block.block_height;
+            guest_row = columns * (block.block_size / block.block_height);
+        }
+        rows = GpuBudget::ReadbackRows(static_cast<uint32_t>(height) - row, alignment,
+                                      guest_row, linear_row, capacity);
+        if (!rows || (guest_row && row > UINT64_MAX / guest_row)) return false;
+        const uint64_t padded = Common::AlignUp<uint64_t>(rows, alignment);
+        if (guest_row && padded > UINT64_MAX / guest_row) return false;
+        const uint64_t row_offset = uint64_t{row} * guest_row;
+        size = padded * guest_row;
+        if (row_offset > plane || size > plane - row_offset || offset > UINT64_MAX - row_offset)
+            return false;
+        offset += row_offset;
+    }
+    if (!size || size % 4 || size > capacity || offset > data.size || size > data.size - offset ||
+        data.address > UINT64_MAX - offset || uint64_t{row} * tiling.texel_height > INT32_MAX ||
+        uint64_t{mip.linear_pitch} * tiling.texel_width > UINT32_MAX ||
+        mip.surface_z > UINT32_MAX - layer) return false;
+    const auto pixel_y = row * tiling.texel_height;
+    const auto pixel_height = static_cast<uint32_t>(std::min<uint64_t>(
+        uint64_t{rows} * tiling.texel_height, active.height - pixel_y));
+    local = *this;
+    local.data = {data.address + offset, size};
+    local.extent = vk::Extent3D{active.width, pixel_height, 1};
+    local.resources = {1, 1};
+    local.pitch = mip.linear_pitch * tiling.texel_width;
+    local.first_tail_level = tail ? 0 : 16;
+    local.linear_slice_stride = IsTiled() ? 0 : size;
+    local.tiled_slice_stride = IsTiled() ? size : 0;
+    local.mip_layout = {};
+    local.mip_layout[0] = mip;
+    auto& part = local.mip_layout[0];
+    part.offset = part.linear_offset = 0;
+    part.size = size;
+    // Keep original XOR phase even though block indices are local to the window.
+    part.tail_y = tail ? mip.tail_y : row;
+    part.surface_z = mip.surface_z + layer;
+    part.height = tail ? mip.height : IsTiled()
+        ? static_cast<uint32_t>(Common::AlignUp<uint64_t>(rows, tiling.block.block_height)) : rows;
+    part.linear_size = uint64_t{rows} * linear_row;
+    copy = vk::BufferImageCopy{};
+    copy.bufferRowLength = mip.linear_pitch * tiling.texel_width;
+    copy.imageSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, level, layer, 1};
+    copy.imageOffset.y = static_cast<int32_t>(pixel_y);
+    copy.imageExtent = vk::Extent3D{active.width, pixel_height, 1};
+    return true;
 }
 
 void ImageInfo::UpdateSize() {
@@ -350,7 +435,7 @@ std::vector<vk::BufferImageCopy> ImageInfo::BufferCopies(uint64_t buffer_offset,
 		                         : !IsTiled() ? mip.height * tiling.texel_height
 		                                      : Common::AlignUp(active.height, tiling.texel_height);
 		copy.imageSubresource  = {aspect, level, 0, 1};
-		copy.imageExtent       = {active.width, active.height, 1};
+		copy.imageExtent       = vk::Extent3D{active.width, active.height, 1};
 		if (image_heights[level] == 0) {
 			for (uint32_t slice = 0; slice < active.depth; ++slice) {
 				copy.bufferOffset                    = Add(Add(buffer_offset, mip.linear_offset),

@@ -187,6 +187,8 @@ private:
 	void               InvalidateCpuAliases(uint64_t address, uint64_t size,
 	                                        RefreshCause::Source source = RefreshCause::Source::Other);
 	[[nodiscard]] bool DownloadImageMemory(ImageId id, bool allow_wait = true);
+    [[nodiscard]] bool CanDownloadInChunks(const Image& image, uint64_t capacity) const;
+    [[nodiscard]] bool DownloadImageMemoryChunk(ImageId id, uint64_t capacity);
 
 	GraphicContext&                                   m_graphics;
 	CommandScheduler&                                 m_scheduler;
@@ -212,7 +214,13 @@ private:
 	bool             m_evict_written          = false;
 	uint64_t                                          m_gc_written_cold_bytes  = 0;
 	uint64_t                                          m_gc_written_large_bytes = 0;
-	// Evictions since the last "GPU memory:" line.
+	struct WrittenWindow {
+        ImageId image {};
+        uint64_t version = 0;
+        uint32_t level = 0, layer = 0, row = 0;
+    } m_written_window;
+    uint64_t m_log_writeback_chunks = 0, m_log_writeback_chunk_bytes = 0;
+    // Evictions since the last "GPU memory:" line.
 	uint64_t         m_log_evictions          = 0;
 	uint64_t         m_log_evicted_bytes      = 0;
 	uint64_t         m_log_downloads          = 0;

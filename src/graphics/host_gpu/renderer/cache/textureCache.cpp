@@ -286,6 +286,7 @@ void TextureCache::RegisterImage(ImageId id) {
 }
 
 void TextureCache::UnregisterImage(ImageId id) {
+    if (m_written_window.image == id) m_written_window = {};
 	auto& image = m_slot_images[id];
 	if (!image.registered) {
 		return;
@@ -353,6 +354,8 @@ void TextureCache::FreeImage(ImageId id) {
 }
 
 void TextureCache::TouchImage(Image& image) {
+    if (m_written_window.image && m_slot_images.try_get(m_written_window.image) == &image)
+        m_written_window = {};
 	if (image.registered) {
 		m_lru_cache.Touch(image.lru_id, m_gc_tick);
 	}
@@ -2108,6 +2111,103 @@ bool TextureCache::DownloadImageMemory(ImageId id, bool allow_wait) {
 	return true;
 }
 
+bool TextureCache::CanDownloadInChunks(const Image& image, uint64_t capacity) const {
+    if (image.scaled || image.info.IsVolume() || image.info.IsDepth() || !CanDownload(image))
+        return false;
+    for (uint32_t level = 0; level < image.info.resources.levels; ++level) {
+        ImageInfo window;
+        vk::BufferImageCopy copy;
+        uint32_t rows = 0;
+        if (!image.info.ReadbackChunk(level, image.info.resources.layers - 1, 0,
+                                     capacity, window, copy, rows)) return false;
+        const auto height = (uint64_t{image.info.MipExtent(level).height} +
+                             image.info.tiling.texel_height - 1) / image.info.tiling.texel_height;
+        if (rows < height) {
+            const auto alignment = image.info.IsTiled() ? image.info.tiling.block.block_height : 1u;
+            const auto last = static_cast<uint32_t>((height - 1) / alignment * alignment);
+            if (!image.info.ReadbackChunk(level, image.info.resources.layers - 1, last,
+                                         capacity, window, copy, rows)) return false;
+        }
+    }
+    return true;
+}
+
+// One window per pass. Keep ownership until all windows reach guest backing memory.
+// A later CPU/buffer/GPU write or native image use restarts the cursor.
+bool TextureCache::DownloadImageMemoryChunk(ImageId id, uint64_t capacity) {
+    auto& image = m_slot_images[id];
+    if (m_written_window.image != id || m_written_window.version != image.ContentVersion())
+        m_written_window = {id, image.ContentVersion(), 0, 0, 0};
+    auto& cursor = m_written_window;
+    ImageInfo window;
+    vk::BufferImageCopy copy;
+    uint32_t rows = 0;
+    if (!image.info.ReadbackChunk(cursor.level, cursor.layer, cursor.row, capacity,
+                                 window, copy, rows)) {
+        cursor = {};
+        return false;
+    }
+    auto& download = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
+    auto [mapped, offset] = download.Map(window.data.size,
+        std::max<uint64_t>(image.info.bytes_per_block, 4), false);
+    if (!mapped) return false;
+    download.Commit();
+    if (!LibKernel::Memory::TryReadBacking(window.data.address, mapped, window.data.size)) return false;
+    download.Flush(offset, window.data.size);
+    const std::array regions {copy};
+    if (window.IsTiled()) {
+        m_tiler.TileImage(image, regions, download.Handle(), offset, window.data.size, 1, &window);
+    } else if (window.GetColorTransform() != ColorTransform::None) {
+        auto linear = m_tiler.GetScratchBuffer(window.data.size);
+        image.Download(regions, linear.buffer, 0, linear.size);
+        m_tiler.TransformColor(linear, {download.Handle(), offset, window.data.size},
+                               window.GetColorTransform(), false);
+    } else {
+        copy.bufferOffset = offset;
+        const std::array direct {copy};
+        image.Download(direct, download.Handle(), offset, window.data.size);
+    }
+    Common::PerfStats::Count(Common::PerfStats::Counter::ImageDownloadBytes, window.data.size);
+    vk::BufferMemoryBarrier barrier {};
+    barrier.srcAccessMask = vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eTransferWrite |
+                            vk::AccessFlagBits::eShaderWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eHostRead;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = download.Handle();
+    barrier.offset = offset;
+    barrier.size = window.data.size;
+    m_scheduler.EndRendering(PassEnd::ImageCopy);
+    m_scheduler.Current().Handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+        vk::PipelineStageFlagBits::eHost, {}, 0, nullptr, 1, &barrier, 0, nullptr);
+    m_scheduler.DeferPriorityOperation([&download, range = window.data, mapped, offset] {
+        download.Invalidate(offset, range.size);
+        LibKernel::Memory::WriteBacking(range.address, mapped, range.size);
+        WalkFan::NoteBackingWrite(Kernel::AddressFold::Fold(range.address), range.size);
+    });
+    const auto completion_tick = m_scheduler.CurrentTick();
+    {
+        const Common::PerfStats::ScopedWaitSite wait_site(Common::PerfStats::Wait::SemGc);
+        m_scheduler.Wait(completion_tick);
+        m_scheduler.WaitPriorityOperations(completion_tick);
+    }
+    ++m_log_writeback_chunks;
+    m_log_writeback_chunk_bytes += window.data.size;
+    cursor.row += rows;
+    const auto height = (uint64_t{image.info.MipExtent(cursor.level).height} +
+                         image.info.tiling.texel_height - 1) / image.info.tiling.texel_height;
+    if (cursor.row >= height) {
+        cursor.row = 0;
+        if (++cursor.layer == image.info.resources.layers) {
+            cursor.layer = 0;
+            ++cursor.level;
+        }
+    }
+    if (cursor.level != image.info.resources.levels) return false;
+    cursor = {};
+    return true;
+}
+
 void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
                                            RefreshCause::Source source) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
@@ -2295,7 +2395,8 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	    " MiB | metas=%zu | gc trigger/pressure/critical=%" PRIu64 "/%" PRIu64 "/%" PRIu64
 	    " MiB | gpu_written_images=%" PRIu64 " MiB evict_written=%u | host_available=%" PRIu64
 	    " rss=%" PRIu64 " anon=%" PRIu64 " swap=%" PRIu64
-	    " MiB host_fields=%u | cold_written=%" PRIu64 " MiB oversize_written=%" PRIu64 " MiB\n",
+	    " MiB host_fields=%u | cold_written=%" PRIu64 " MiB oversize_written=%" PRIu64
+        " MiB | writeback_chunks=%" PRIu64 " chunk_bytes=%" PRIu64 " MiB\n",
 	    device_usage / MiB, used_memory / MiB, m_graphics.MemoryBudget() / MiB, m_log_evictions,
 	    m_log_evicted_bytes / MiB, m_log_downloads, m_buffer_cache.TotalUsedMemory() / MiB,
 	    m_buffer_cache.MeshRingCapacity() / MiB, stats.total.statistics.blockBytes / MiB,
@@ -2309,10 +2410,12 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	    host.swap.value_or(0) / MiB,
 	    (host.available ? 1u : 0u) | (host.resident ? 2u : 0u) | (host.anonymous ? 4u : 0u) |
 	        (host.swap ? 8u : 0u),
-	    m_gc_written_cold_bytes / MiB, m_gc_written_large_bytes / MiB));
+	    m_gc_written_cold_bytes / MiB, m_gc_written_large_bytes / MiB,
+        m_log_writeback_chunks, m_log_writeback_chunk_bytes / MiB));
 	m_log_evictions     = 0;
 	m_log_evicted_bytes = 0;
 	m_log_downloads     = 0;
+    m_log_writeback_chunks = m_log_writeback_chunk_bytes = 0;
 }
 
 void TextureCache::RunGarbageCollector() {
