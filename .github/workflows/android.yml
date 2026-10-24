@@ -128,10 +128,27 @@ jobs:
           fi
 
       - name: Preserve fallback signing identity
+        id: fallback_signing_cache
         uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
           key: kytyps5-plus-signing-v1
+
+      - name: Select the cached fallback signing key explicitly
+        if: env.KYTY_KEYSTORE_FILE == ''
+        run: |
+          fallback="$HOME/.android/debug.keystore"
+          if [ ! -f "$fallback" ]; then
+            if [ "${{ steps.fallback_signing_cache.outputs.cache-hit }}" = "true" ]; then
+              echo "Cached signing key is missing; refusing to silently change identity"
+              exit 1
+            fi
+            mkdir -p "$HOME/.android"
+            keytool -genkeypair -keystore "$fallback" -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          keytool -list -keystore "$fallback" -storepass android -alias androiddebugkey
+          echo "KYTY_KEYSTORE_FILE=$fallback" >> "$GITHUB_ENV"
+          echo "KYTY_USE_FALLBACK_SIGNING=1" >> "$GITHUB_ENV"
 
       - name: Unit tests and APK
         working-directory: android
@@ -140,6 +157,9 @@ jobs:
           KYTY_KEY_ALIAS: ${{ secrets.KYTY_KEY_ALIAS }}
           KYTY_KEY_PASSWORD: ${{ secrets.KYTY_KEY_PASSWORD }}
         run: |
+          if [ "${KYTY_USE_FALLBACK_SIGNING:-0}" = "1" ]; then
+            export KYTY_KEYSTORE_PASSWORD=android KYTY_KEY_ALIAS=androiddebugkey KYTY_KEY_PASSWORD=android
+          fi
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
           ./gradlew --no-daemon testDebugUnitTest assembleRelease \
             -PkytyNativeDir="$RUNNER_TEMP/native" \
@@ -193,6 +213,7 @@ jobs:
         run: cmake --build _Build/regressions --target shader_cfg_tests shader_recompiler_compute_tests --parallel 2
       - name: Run shader regressions
         run: |
+          ulimit -c 0
           ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^shader_cfg$'
           timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only
           timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only-fast-paths

@@ -25554,12 +25554,14 @@ TestCase Vop2SdwaMinU32PreservesWordDestination() {
 
   std::vector<u32> code;
   AppendVMovLiteral(&code, 10, 0xa1b2c3d4u);
-  AppendVMovU32(&code, 12, 7);
+  AppendVMovU32(&code, 30, 16);
+  AppendBufferLoadDword(&code, 12, 30);
   code.push_back(0x261418f9u);
   code.push_back(0x0686149fu);
   AppendStoreVgpr(&code, 10, 0);
   AppendVMovLiteral(&code, 10, 0xa1b2c3d4u);
-  AppendVMovU32(&code, 12, 64);
+  AppendVMovU32(&code, 30, 20);
+  AppendBufferLoadDword(&code, 12, 30);
   code.push_back(0x261418f9u);
   code.push_back(0x0686149fu);
   AppendStoreVgpr(&code, 10, 1);
@@ -25568,8 +25570,11 @@ TestCase Vop2SdwaMinU32PreservesWordDestination() {
   TestCase test;
   test.name = "Vop2SdwaMinU32PreservesWordDestination";
   test.code = code;
-  test.expected = {0xa1b20007u, 0xa1b2001fu};
-  test.opcodes = {O::V_MOV_B32, O::V_MIN_U32, O::BUFFER_STORE_DWORD,
+  // Dynamic operands keep this a backend min/preserve test after constant folding.
+  // Inputs are disjoint from outputs so parallel shader invocations cannot overwrite them.
+  test.initial = {0, 0, 0, 0, 7, 64};
+  test.expected = {0xa1b20007u, 0xa1b2001fu, 0, 0, 7, 64};
+  test.opcodes = {O::V_MOV_B32, O::BUFFER_LOAD_DWORD, O::V_MIN_U32, O::BUFFER_STORE_DWORD,
                   O::S_ENDPGM};
   test.required_spirv = {" UMin ", "OpSelect"};
   return test;
