@@ -9,6 +9,17 @@ import org.junit.Test
 class LaunchArgsTest {
 
     @Test
+    fun hudStyleResolvesGlobalAndPerGame() {
+        val global = LaunchOptions.resolve(Resolution.HD_720, globalHud = true,
+            globalTouch = true, game = GameSettings.DEFAULT, globalHudMode = com.kytyps5.android.hud.HudMode.MINIMAL)
+        assertEquals(com.kytyps5.android.hud.HudMode.MINIMAL, global.hudMode)
+        val own = LaunchOptions.resolve(Resolution.HD_720, globalHud = true,
+            globalTouch = true, game = GameSettings(hudMode = com.kytyps5.android.hud.HudMode.FULL),
+            globalHudMode = com.kytyps5.android.hud.HudMode.COMPACT)
+        assertEquals(com.kytyps5.android.hud.HudMode.FULL, own.hudMode)
+    }
+
+    @Test
     fun forGameBuildsEmulatorFlagsInOrder() {
         val args = LaunchArgs.forGame("/sdcard/KytyPS5/games/CUSA1", Resolution.FULL_HD_1080)
         assertArrayEquals(
