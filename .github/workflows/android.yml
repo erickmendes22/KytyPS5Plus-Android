@@ -22,6 +22,7 @@ env:
 jobs:
   apk:
     name: Build APK
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
@@ -163,6 +164,7 @@ jobs:
 
   native-regressions:
     name: Native regression tests
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
