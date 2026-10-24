@@ -2,8 +2,9 @@
   "schemaVersion": 2,
   "id": "nonrt",
   "name": "Compatibility mode — non-RT lighting (PPSA21564)",
-  "description": "Experimental boot compatibility for Astro Bot PPSA21564, game v01.007.000. Selects the existing non-tiled deferred renderer and skips unsupported GI/RT probes. Both original instruction signatures were verified against the supplied eboot.bin. Enable before launch; no original game files are changed. Some lighting will be absent and stability is not guaranteed.",
+  "description": "Experimental boot compatibility for Astro Bot PPSA21564, game v01.007.000. Selects the existing non-tiled deferred renderer and skips unsupported GI/RT probes. Both original instruction signatures were verified against the supplied eboot.bin. Enables the existing PlayGo fallback when the dump lacks chunk metadata. Enable before launch; no original game files are changed. Some lighting will be absent and stability is not guaranteed.",
   "launch": {
-    "gamePatch": "astro_nonrt.json"
+    "gamePatch": "astro_nonrt.json",
+    "playgoHack": true
   }
 }
