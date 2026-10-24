@@ -1609,11 +1609,11 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 	} else if (mesh_active) {
 		auto& mesh              = vertex_info[0].mesh;
 		mesh.host_subgroup_size = m_graphics.subgroup_size;
-		const auto& limits      = m_graphics.mesh_shader_properties;
 		const auto  logical_threads =
 		    mesh.threads_num[0] * mesh.threads_num[1] * mesh.threads_num[2];
-		const auto host_threads = ((logical_threads + mesh.wave_size - 1u) / mesh.wave_size) *
-		                          std::min(mesh.host_subgroup_size, mesh.wave_size);
+		const auto wave_size = std::max(mesh.wave_size, 1u);
+		const auto host_threads = ((logical_threads + wave_size - 1u) / wave_size) *
+		                          std::min(mesh.host_subgroup_size, wave_size);
 		if (MeshExceedsNativeHostLimits(m_graphics, mesh)) {
 			EXIT("mesh shader exceeds host limits: threads=%u vertices=%u primitives=%u LDS=%u\n",
 			     host_threads, mesh.max_vertices, mesh.max_primitives, mesh.lds_size_dwords);
