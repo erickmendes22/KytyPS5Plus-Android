@@ -15,6 +15,7 @@ object PresetLaunchArgs {
     const val FLAG_ENV = "--env"
     const val FLAG_RENDER_SCALE = "--render-scale"
     const val FLAG_GAME_PATCH = "--game-patch"
+    const val FLAG_PLAYGO_HACK = "--playgo-hack"
 
     /** One applied preset's options, with its game patch already placed at [gamePatchPath]. */
     data class Resolved(
@@ -32,6 +33,7 @@ object PresetLaunchArgs {
         val env = linkedMapOf<String, String>()
         var renderScale: Pair<String, Float>? = null
         var gamePatch: Pair<String, String>? = null
+        var playgoHack = false
         val conflicts = mutableListOf<String>()
         val owners = mutableMapOf<String, String>()
         presets.forEach { preset ->
@@ -44,6 +46,7 @@ object PresetLaunchArgs {
                     conflicts += "${preset.presetId}: $key already set by $owner"
                 }
             }
+            if (preset.launch.playgoHack) playgoHack = true
             preset.launch.renderScale?.let { scale ->
                 val current = renderScale
                 if (current == null) renderScale = preset.presetId to scale
@@ -57,7 +60,8 @@ object PresetLaunchArgs {
         }
         val args = env.flatMap { (key, value) -> listOf(FLAG_ENV, "$key=$value") } +
             renderScale?.let { listOf(FLAG_RENDER_SCALE, it.second.toString()) }.orEmpty() +
-            gamePatch?.let { listOf(FLAG_GAME_PATCH, it.second) }.orEmpty()
+            gamePatch?.let { listOf(FLAG_GAME_PATCH, it.second) }.orEmpty() +
+            if (playgoHack) listOf(FLAG_PLAYGO_HACK) else emptyList()
         return Plan(args, conflicts)
     }
 
@@ -75,6 +79,7 @@ object PresetLaunchArgs {
             kept += base[index]
             index++
         }
-        return (kept + plan.args).toTypedArray()
+        // A bare switch must appear once even when supplied by the base command line.
+        return (kept.filter { it != FLAG_PLAYGO_HACK } + plan.args).toTypedArray()
     }
 }
