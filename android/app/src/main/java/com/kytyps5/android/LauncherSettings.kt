@@ -2,6 +2,7 @@ package com.kytyps5.android
 
 import android.content.Context
 import com.kytyps5.android.library.GameSettings
+import com.kytyps5.android.hud.HudMode
 
 /** Launcher preferences persisted in SharedPreferences. Reads fall back to defaults on any failure. */
 class LauncherSettings(context: Context) {
@@ -46,6 +47,13 @@ class LauncherSettings(context: Context) {
         get() = prefs.getBoolean(KEY_HUD, false)
         set(value) {
             prefs.edit().putBoolean(KEY_HUD, value).apply()
+        }
+
+    /** HUD presentation density; compact is the default when the HUD is enabled. */
+    var hudMode: HudMode
+        get() = HudMode.fromStorage(prefs.getString(KEY_HUD_MODE, null))
+        set(value) {
+            prefs.edit().putString(KEY_HUD_MODE, value.storageValue).apply()
         }
 
     /** Show the on-screen controller in game unless a game overrides it (hidden while a gamepad is attached). */
@@ -101,6 +109,7 @@ class LauncherSettings(context: Context) {
         private const val KEY_GPU_DRIVER_GAME_PREFIX = "gpu_driver_game:"
         private const val KEY_BUNDLED_DRIVER_VERSION = "bundled_driver_version"
         private const val KEY_HUD = "hud_enabled"
+        private const val KEY_HUD_MODE = "hud_mode"
         private const val KEY_TOUCH_CONTROLS = "touch_controls_enabled"
         private const val KEY_GPU_TURBO = "gpu_turbo"
         private const val KEY_GAME_SETTINGS_PREFIX = "game_settings:"
