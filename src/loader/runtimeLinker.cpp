@@ -27,7 +27,9 @@
 #include "loader/guestHostFunction.h"
 #include "loader/guestInstructionPatcher.h"
 #include "loader/jit.h"
+#include "loader/mfgtArenaFix.h"
 #include "loader/symbolDatabase.h"
+#include "loader/systemContent.h"
 #include "loader/x64InstructionEmulator.h"
 
 #include <algorithm>
@@ -2003,6 +2005,23 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 			     magic_enum::enum_name(mode));
 
 			program->elf->LoadSegment(segment_addr, phdr[i].p_offset, segment_file_size);
+
+#if KYTY_HOST_ARM64
+			// Before instruction/TLS rewriting and memory protection: fingerprint the
+			// exact original executable bytes, never a relocated or already-patched image.
+			if (!is_shared && is_next_gen && phdr[i].p_type == PT_LOAD &&
+			    Common::VirtualMemory::IsExecute(mode) && phdr[i].p_vaddr == 0) {
+				std::string title_id;
+				SystemContentParamSfoGetString("TITLE_ID", &title_id);
+				const auto result = MfgtArenaFix::Apply(title_id, true, ehdr->e_entry, phdr[i].p_vaddr,
+				    {reinterpret_cast<uint8_t*>(segment_addr), static_cast<size_t>(segment_file_size)});
+				if (result == MfgtArenaFix::Result::Applied) {
+					Log::WriteToConsoleAndLog("MFGT arena compatibility: relocated all 3 arenas and 24 classifiers (verified PPSA24156 executable)\n");
+				} else if (result == MfgtArenaFix::Result::UnsupportedBuild) {
+					Log::WriteToConsoleAndLog("MFGT arena compatibility: executable fingerprint differs; no bytes changed\n");
+				}
+			}
+#endif
 
 			bool skip_protect = (phdr[i].p_type == PT_LOAD && is_next_gen &&
 			                     mode == Common::VirtualMemory::Mode::NoAccess);
