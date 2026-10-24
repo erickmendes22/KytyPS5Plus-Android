@@ -2,12 +2,25 @@ package com.kytyps5.android.hud
 
 import java.util.Locale
 
+/** Layout density of the in-game performance panel. Persisted as a stable string. */
+enum class HudMode(val label: String, val storageValue: String) {
+    FULL("Full", "full"),
+    COMPACT("Compact", "compact"),
+    MINIMAL("Minimal", "minimal");
+
+    companion object {
+        fun fromStorage(value: String?): HudMode =
+            entries.firstOrNull { it.storageValue == value } ?: COMPACT
+    }
+}
+
 /** One HUD refresh; null fields are unknown on this device and are left out. */
 data class HudSample(
     val frames: FrameStats? = null,
     val cpuTempC: Float? = null,
     val gpuTempC: Float? = null,
     val gpuLoadPercent: Int? = null,
+    val cpuLoadPercent: Int? = null,
     val memory: MemInfo? = null,
     val appRssMiB: Int? = null,
     val batteryPercent: Int? = null,
@@ -18,12 +31,28 @@ data class HudSample(
 /** Formats a [HudSample] into compact lines (GameNative/Winlator-style HUD, own implementation). */
 object HudFormatter {
 
-    fun lines(sample: HudSample): List<String> = listOfNotNull(
+    fun lines(sample: HudSample, mode: HudMode = HudMode.FULL): List<String> = when (mode) {
+        HudMode.MINIMAL -> listOf(fps(sample))
+        HudMode.COMPACT -> listOf(
+            fps(sample),
+            "GPU  " + (sample.gpuLoadPercent?.let { "$it%" } ?: "--"),
+            "CPU  " + (sample.cpuLoadPercent?.let { "$it%" } ?: sample.cpuTempC?.let { deg(it) } ?: "--"),
+            "RAM  " + (sample.memory?.let { "${gib(it.usedKb)}/${gib(it.totalKb)} GB" }
+                ?: sample.appRssMiB?.let { "$it MB" } ?: "--"),
+        )
+        HudMode.FULL -> fullLines(sample)
+    }
+
+    private fun fps(sample: HudSample): String =
+        sample.frames?.let { String.format(Locale.US, "FPS  %.0f", it.fps) } ?: "FPS  --"
+
+    private fun fullLines(sample: HudSample): List<String> = listOfNotNull(
         sample.frames?.let { f ->
             val ms = f.frameTimeMs?.let { String.format(Locale.US, " %.1f ms", it) } ?: ""
             String.format(Locale.US, "FPS %.0f%s", f.fps, ms)
         } ?: "FPS --",
-        temps(sample),
+        sample.cpuLoadPercent?.let { "CPU $it%" + (sample.cpuTempC?.let { t -> " ${deg(t)}" } ?: "") }
+            ?: temps(sample),
         sample.gpuLoadPercent?.let { "GPU $it%" + (sample.gpuTempC?.let { t -> " ${deg(t)}" } ?: "") }
             ?: sample.gpuTempC?.let { "GPU ${deg(it)}" },
         ram(sample),
