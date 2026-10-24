@@ -605,6 +605,7 @@ class MainActivity : Activity() {
         )
         val args = LaunchArgs.forGame(
             game.path, options.resolution, drivers.driverDirFor(game.path), options.renderScale, options.gpuTurbo,
+            titleId = game.titleId,
         )
         startActivity(
             Intent(this, GameActivity::class.java)

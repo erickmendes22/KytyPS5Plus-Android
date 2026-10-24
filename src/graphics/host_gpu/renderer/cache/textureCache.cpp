@@ -2064,7 +2064,7 @@ bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uin
 	return true;
 }
 
-bool TextureCache::DownloadImageMemory(ImageId id) {
+bool TextureCache::DownloadImageMemory(ImageId id, bool allow_wait) {
 	auto& image = m_slot_images[id];
 	if (image.depth_id) {
 		return false;
@@ -2075,8 +2075,9 @@ bool TextureCache::DownloadImageMemory(ImageId id) {
 	const auto range    = image.info.data;
 	auto&      download = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
 	auto [mapped, offset] =
-	    download.Map(range.size, std::max<uint64_t>(image.info.bytes_per_block, 4));
+	    download.Map(range.size, std::max<uint64_t>(image.info.bytes_per_block, 4), allow_wait);
 	if (mapped == nullptr) {
+		if (!allow_wait) return false;
 		EXIT("TextureCache: failed to map reusable download buffer\n");
 	}
 	download.Commit();
@@ -2285,29 +2286,30 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	// Bounded diagnostic also survives the default Silent printf setting. Do not enable
 	// per-call logging merely to see memory pressure; UMA RSS and device usage can overlap.
 	Log::WriteToConsoleAndLog(fmt::sprintf(
-	     "GPU memory: device_usage=%" PRIu64 " gc_used=%" PRIu64 " budget=%" PRIu64
-	     " MiB | evicted %" PRIu64 " images %" PRIu64 " MiB (%" PRIu64 " downloaded) | buffers=%" PRIu64
-	     " MiB mesh_ring=%" PRIu64 " MiB | vma_blocks=%" PRIu64 " vma_allocs=%" PRIu64
-	     " MiB | images=%" PRIu64 " MiB (rt %u:%" PRIu64 " depth %u:%" PRIu64 " storage %u:%" PRIu64
-	     " videoout %u:%" PRIu64 " sampled %u:%" PRIu64 ") guest_accounted=%" PRIu64
-	     " | non_image=%" PRIu64 " MiB | metas=%zu | gc trigger/pressure/critical=%" PRIu64
-	     "/%" PRIu64 "/%" PRIu64 " MiB | gpu_written_images=%" PRIu64
-	     " MiB evict_written=%u | host_available=%" PRIu64 " rss=%" PRIu64
-	     " anon=%" PRIu64 " swap=%" PRIu64 " MiB host_fields=%u\n",
-	     device_usage / MiB, used_memory / MiB, m_graphics.MemoryBudget() / MiB, m_log_evictions,
-	     m_log_evicted_bytes / MiB, m_log_downloads, m_buffer_cache.TotalUsedMemory() / MiB,
-	     m_buffer_cache.MeshRingCapacity() / MiB, stats.total.statistics.blockBytes / MiB,
-	     allocated / MiB,
-	     image_bytes / MiB, images[Target], bytes[Target] / MiB, images[Depth], bytes[Depth] / MiB,
-	     images[Storage], bytes[Storage] / MiB, images[VideoOut], bytes[VideoOut] / MiB,
-	     images[Sampled], bytes[Sampled] / MiB, guest_bytes / MiB,
-	     (allocated > image_bytes ? allocated - image_bytes : 0) / MiB, m_surface_metas.size(),
-	     m_trigger_gc_memory / MiB, m_pressure_gc_memory / MiB, m_critical_gc_memory / MiB,
-	     gpu_written_bytes / MiB, m_evict_written ? 1u : 0u,
-	     host.available.value_or(0) / MiB, host.resident.value_or(0) / MiB,
-	     host.anonymous.value_or(0) / MiB, host.swap.value_or(0) / MiB,
-	     (host.available ? 1u : 0u) | (host.resident ? 2u : 0u) |
-	         (host.anonymous ? 4u : 0u) | (host.swap ? 8u : 0u)));
+	    "GPU memory: device_usage=%" PRIu64 " gc_used=%" PRIu64 " budget=%" PRIu64
+	    " MiB | evicted %" PRIu64 " images %" PRIu64 " MiB (%" PRIu64
+	    " downloaded) | buffers=%" PRIu64 " MiB mesh_ring=%" PRIu64 " MiB | vma_blocks=%" PRIu64
+	    " vma_allocs=%" PRIu64 " MiB | images=%" PRIu64 " MiB (rt %u:%" PRIu64 " depth %u:%" PRIu64
+	    " storage %u:%" PRIu64 " videoout %u:%" PRIu64 " sampled %u:%" PRIu64
+	    ") guest_accounted=%" PRIu64 " | non_image=%" PRIu64
+	    " MiB | metas=%zu | gc trigger/pressure/critical=%" PRIu64 "/%" PRIu64 "/%" PRIu64
+	    " MiB | gpu_written_images=%" PRIu64 " MiB evict_written=%u | host_available=%" PRIu64
+	    " rss=%" PRIu64 " anon=%" PRIu64 " swap=%" PRIu64
+	    " MiB host_fields=%u | cold_written=%" PRIu64 " MiB oversize_written=%" PRIu64 " MiB\n",
+	    device_usage / MiB, used_memory / MiB, m_graphics.MemoryBudget() / MiB, m_log_evictions,
+	    m_log_evicted_bytes / MiB, m_log_downloads, m_buffer_cache.TotalUsedMemory() / MiB,
+	    m_buffer_cache.MeshRingCapacity() / MiB, stats.total.statistics.blockBytes / MiB,
+	    allocated / MiB, image_bytes / MiB, images[Target], bytes[Target] / MiB, images[Depth],
+	    bytes[Depth] / MiB, images[Storage], bytes[Storage] / MiB, images[VideoOut],
+	    bytes[VideoOut] / MiB, images[Sampled], bytes[Sampled] / MiB, guest_bytes / MiB,
+	    (allocated > image_bytes ? allocated - image_bytes : 0) / MiB, m_surface_metas.size(),
+	    m_trigger_gc_memory / MiB, m_pressure_gc_memory / MiB, m_critical_gc_memory / MiB,
+	    gpu_written_bytes / MiB, m_evict_written ? 1u : 0u, host.available.value_or(0) / MiB,
+	    host.resident.value_or(0) / MiB, host.anonymous.value_or(0) / MiB,
+	    host.swap.value_or(0) / MiB,
+	    (host.available ? 1u : 0u) | (host.resident ? 2u : 0u) | (host.anonymous ? 4u : 0u) |
+	        (host.swap ? 8u : 0u),
+	    m_gc_written_cold_bytes / MiB, m_gc_written_large_bytes / MiB));
 	m_log_evictions     = 0;
 	m_log_evicted_bytes = 0;
 	m_log_downloads     = 0;

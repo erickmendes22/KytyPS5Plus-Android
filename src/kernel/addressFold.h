@@ -14,7 +14,8 @@
 //
 // Folding maps guest address A to host address A & (2^39 - 1) for guest addresses in
 // [2^39, 2^40) ("the fold domain") and leaves every other address unchanged. It is enabled only
-// once the kernel grants a reservation that reaches into the fold domain (FoldPlan below); from
+// once the kernel grants a reservation that reaches into the fold domain (FoldPlan below), or
+// successfully publishes a direct mapping in that domain; from
 // then on:
 //   - FEXCore folds the address of every guest memory access (FEX patch fex-addressfold.patch),
 //   - the kernel memory calls map, protect and release the folded host address while the guest
@@ -111,9 +112,9 @@ inline constexpr uint64_t kAliasSize = 32ull << 30u;
 	                Common::AddressLayout::kHostUserEnd, kAliasSize, plan);
 }
 
-// Runtime switch, off until the first folded reservation (see memory.cpp). IsEnabled is cheap
-// enough for hot paths; Fold itself does not depend on it, since it is the identity for every
-// address the guest can use while folding is off.
+// Runtime switch, off until the first folded reservation or direct mapping (see memory.cpp).
+// IsEnabled is cheap enough for hot paths; Fold itself does not depend on it, since it is the
+// identity for every address the guest can use while folding is off.
 bool IsEnabled() noexcept;
 void SetEnabled() noexcept;
 

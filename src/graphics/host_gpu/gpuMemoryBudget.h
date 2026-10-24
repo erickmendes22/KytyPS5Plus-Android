@@ -33,6 +33,16 @@ struct Thresholds {
 	uint64_t critical = 0; // evict aggressively
 };
 
+// A GC pass may write back at most one cold GPU-written image. Under critical pressure
+// allow a larger image only if it fits the already allocated reusable staging buffer.
+[[nodiscard]] constexpr uint64_t WrittenDownloadLimit(bool critical, uint64_t capacity) {
+	return std::min(capacity, (critical ? 64u : 32u) * MiB);
+}
+
+[[nodiscard]] constexpr uint64_t WrittenIdleFrames(bool critical) {
+	return critical ? 8 : 32;
+}
+
 [[nodiscard]] constexpr Thresholds ForBudget(uint64_t budget) {
 	return {budget / 100 * 55, budget / 100 * 80, budget / 100 * 92};
 }

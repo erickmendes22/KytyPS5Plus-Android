@@ -57,6 +57,7 @@ object LaunchArgs {
 
     /** Max Adreno GPU clock (device-global; the emulator resets it on exit and in the background). */
     const val FLAG_GPU_TURBO = "--gpu-turbo"
+    const val FLAG_GPU_EVICT_WRITTEN = "--gpu-evict-written"
 
     /** Launcher-only extras read by GameActivity (not emulator flags). */
     const val EXTRA_GAME_PATH = "com.kytyps5.android.extra.GAME_PATH"
@@ -78,6 +79,7 @@ object LaunchArgs {
         gpuDriverDir: String? = null,
         renderScale: RenderScale = RenderScale.NATIVE,
         gpuTurbo: Boolean = false,
+        titleId: String? = null,
     ): Array<String> =
         arrayOf(
             FLAG_GAME, gamePath,
@@ -85,7 +87,10 @@ object LaunchArgs {
             FLAG_SCREEN_HEIGHT, resolution.height.toString(),
         ) + (gpuDriverDir?.let { arrayOf(FLAG_GPU_DRIVER, it) } ?: emptyArray()) +
             (if (renderScale == RenderScale.NATIVE) emptyArray() else arrayOf(FLAG_RENDER_SCALE, renderScale.factor)) +
-            (if (gpuTurbo) arrayOf(FLAG_GPU_TURBO) else emptyArray())
+            (if (gpuTurbo) arrayOf(FLAG_GPU_TURBO) else emptyArray()) +
+            // Confirmed renderer-memory growth on this title. Preserve other games' policy.
+            (if (titleId.equals("PPSA10112", ignoreCase = true))
+                arrayOf(FLAG_GPU_EVICT_WRITTEN, "1") else emptyArray())
 }
 
 /** Which GPU driver a launch uses: a per-game override wins over the global choice. */

@@ -47,3 +47,33 @@ The next APK must include the rebuilt native code (the audited-native reuse scri
 | Pressure grows before frame-boundary collection | Add an allocation-pressure checkpoint with source-image protection and safe lock/timeline ordering, then validate transitions. |
 
 Acceptance is sustained gameplay beyond the previous failure point with bounded memory, no GPU loss, and no new corruption or long readback stalls. A later crash alone is not proof of a fix.
+
+## Device follow-up and bounded written-image eviction
+
+The 15:41:15 diagnostic confirms native core 804bc1f4. The budget is active (4031 MiB),
+but driver usage reaches 6659 MiB and MemAvailable falls to 102 MiB. The last sample has
+5046 MiB of images, 3434 MiB GPU-written, and `evict_written=0`. The earlier session has
+the same pattern with a 3584 MiB budget. This identifies a large retained image set, not
+which individual images are cold. An ANR is also recorded; no GPU-loss message is present.
+
+The follow-up enables `--gpu-evict-written 1` only when the Android launch has confirmed
+PPSA10112 title metadata. Astro Bot and unknown titles retain their existing defaults.
+It changes written-image GC to one cold image per pass, chosen for useful reclaimed size:
+
+- 32 idle frames under pressure; 8 under critical pressure. Current/recent frames, bound
+  images, render targets currently bound, presentation images, depth and stencil owners
+  are excluded. GPU-only contents are copied before retirement.
+- Copy limit 32 MiB normally, up to 64 MiB critically, always clamped to the capacity of
+  the already allocated download buffer. No extra staging allocation and no unbounded
+  oversized image allocation. Larger cold images are counted but retained.
+- Staging reservation uses `allow_wait=false`; a busy reservation is skipped. Once a copy
+  is recorded, its GPU tick and priority memory publication must finish **before** image
+  untracking/retirement. This retains correctness; the completion wait can still stall.
+  Limiting copy volume and image count does not guarantee a maximum wait duration.
+- Ten-second diagnostics include cold written bytes and bytes skipped for size, so a lack
+  of eligible old images is distinguishable from a working set that cannot fit.
+
+Portable budget/size-limit tests pass, including sanitizers (LeakSanitizer disabled for
+the environment restriction described above). Full native/Android CI and gameplay remain
+required for these follow-up changes. This is an experimental cleanup, not a claim that
+the device crash or ANR is fixed.

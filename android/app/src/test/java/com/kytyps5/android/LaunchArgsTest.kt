@@ -9,6 +9,17 @@ import org.junit.Test
 class LaunchArgsTest {
 
     @Test
+    fun writtenImageCleanupIsScopedToConfirmedTitleMetadata() {
+        val silentHill = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = "PPSA10112")
+        val index = silentHill.indexOf(LaunchArgs.FLAG_GPU_EVICT_WRITTEN)
+        assertEquals("1", silentHill[index + 1])
+        val astro = LaunchArgs.forGame("/games/astro", Resolution.HD_720, titleId = "PPSA21564")
+        assertEquals(-1, astro.indexOf(LaunchArgs.FLAG_GPU_EVICT_WRITTEN))
+        val unknown = LaunchArgs.forGame("/games/PPSA10112", Resolution.HD_720)
+        assertEquals(-1, unknown.indexOf(LaunchArgs.FLAG_GPU_EVICT_WRITTEN))
+    }
+
+    @Test
     fun hudStyleResolvesGlobalAndPerGame() {
         val global = LaunchOptions.resolve(Resolution.HD_720, globalHud = true,
             globalTouch = true, game = GameSettings.DEFAULT, globalHudMode = com.kytyps5.android.hud.HudMode.MINIMAL)

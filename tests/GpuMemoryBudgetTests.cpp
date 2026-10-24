@@ -92,6 +92,23 @@ void TestProcessMemoryReadings() {
 	Check(!Common::ParseProcMemoryKiB("VmRSS: 10 kB extra", "VmRSS:"), "trailing text rejected");
 }
 
+void TestWrittenDownloadLimits() {
+  Check(WrittenDownloadLimit(false, 64 * MiB) == 32 * MiB,
+        "normal pressure copies at most 32 MiB");
+  Check(WrittenDownloadLimit(true, 64 * MiB) == 64 * MiB,
+        "critical pass can handle a 64 MiB image");
+  Check(WrittenDownloadLimit(true, 16 * MiB) == 16 * MiB,
+        "copy must fit actual staging capacity");
+  Check(WrittenDownloadLimit(true, 0) == 0,
+        "missing capacity cannot accept a copy");
+  Check(WrittenDownloadLimit(true, UINT64_MAX) == 64 * MiB,
+        "large buffers never unbound a pass");
+  Check(WrittenIdleFrames(true) > 1 &&
+            WrittenIdleFrames(false) > WrittenIdleFrames(true),
+        "current/recent frames stay protected and normal pressure retains "
+        "images longer");
+}
+
 } // namespace
 
 int main() {
@@ -100,6 +117,7 @@ int main() {
 	TestEffective();
 	TestUnifiedSystemPressure();
 	TestProcessMemoryReadings();
-	std::printf("GpuMemoryBudgetTests: ok\n");
-	return 0;
+        TestWrittenDownloadLimits();
+        std::printf("GpuMemoryBudgetTests: ok\n");
+        return 0;
 }

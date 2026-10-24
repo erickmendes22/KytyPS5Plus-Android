@@ -39,7 +39,9 @@ void TestFoldMovesTheDomain() {
 	static_assert(Fold(kFoldSize) == 0);
 	static_assert(Fold(0x8fc0000000ull) == 0x0fc0000000ull);
 	static_assert(Fold(0x97ffffc000ull) == 0x17ffffc000ull);
-	int  local = 0;
+        // My First Gran Turismo's fixed 16 KiB counter page.
+        static_assert(Fold(0xe3ffffc000ull) == 0x63ffffc000ull);
+        int  local = 0;
 	auto host  = reinterpret_cast<uint64_t>(&local);
 	Check(FoldPointer(&local) == &local, "host pointers are unchanged");
 	Check(Fold(host) == host, "host addresses are unchanged");
@@ -49,7 +51,10 @@ void TestFoldSpan() {
 	uint64_t host = 0;
 	Check(FoldSpan(0x8fc0000000ull, 32ull << 20u, &host) && host == 0x0fc0000000ull, "span in domain");
 	Check(FoldSpan(0x200000000ull, kGiB, &host) && host == 0x200000000ull, "span below");
-	Check(!FoldSpan(kFoldSize - 0x4000, 0x8000, &host), "span straddling 2^39");
+        Check(FoldSpan(0xe3ffffc000ull, 0x4000, &host) &&
+                  host == 0x63ffffc000ull,
+              "My First Gran Turismo fixed mapping fits the host AMM window");
+        Check(!FoldSpan(kFoldSize - 0x4000, 0x8000, &host), "span straddling 2^39");
 	Check(!FoldSpan(kDomainEnd - 0x4000, 0x8000, &host), "span straddling 2^40");
 	Check(!FoldSpan(0x1000, 0, &host), "empty span");
 	Check(!FoldSpan(UINT64_MAX - 10, 0x100, &host), "wrapping span");

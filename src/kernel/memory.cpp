@@ -3525,6 +3525,17 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 		return KERNEL_ERROR_EBUSY;
 	}
 
+#if KYTY_HOST_ARM64
+	// A fixed high mapping need not pass through FindFoldedReservation. My First Gran Turismo
+	// maps 16 KiB at 0xe3ffffc000 directly: its backing is already at 0x63ffffc000, but guest
+	// accesses still use the high address unless the translator is switched on here as well.
+	// Only successful, published mappings may change translator policy.
+	if (Kernel::AddressFold::InDomain(out_addr) && !Kernel::AddressFold::IsEnabled()) {
+		Kernel::AddressFold::SetEnabled();
+		Cpu::GuestCpu::EnableAddressFold(Kernel::AddressFold::kFoldMask);
+	}
+#endif
+
 	MapGpuRange(out_addr, len);
 
 	if (g_alloc_callback != nullptr) {

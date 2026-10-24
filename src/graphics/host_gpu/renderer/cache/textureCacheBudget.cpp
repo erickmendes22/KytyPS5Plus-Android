@@ -1,11 +1,12 @@
 // --gpu-memory-budget: the texture cache collector when it keeps to one device-memory budget
 // (gpuMemoryBudget.h) instead of the legacy heap-size thresholds.
 
-#include "common/emulatorConfig.h"
 #include "common/perfWaits.h"
 #include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/commandScheduler.h"
 
 #include <algorithm>
 #include <vector>
@@ -20,12 +21,6 @@ namespace {
 constexpr uint64_t kAgeNormal    = 16;
 constexpr uint64_t kAgePressured = 12;
 constexpr uint64_t kAgeCritical  = 6;
-// --gpu-evict-written: GPU-written images (render targets, storage images) are downloaded to guest
-// memory before they go: only under pressure, only when long unused, and within one download
-// buffer slice per tick.
-constexpr uint64_t kDownloadAgePressured = 120;
-constexpr uint64_t kDownloadAgeCritical  = 60;
-constexpr uint64_t kDownloadBudget       = 32 * GpuBudget::MiB;
 
 } // namespace
 
@@ -49,6 +44,8 @@ void TextureCache::NoteEviction(const Image& image, bool downloaded) {
 }
 
 void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
+	m_gc_written_cold_bytes  = 0;
+	m_gc_written_large_bytes = 0;
 	const bool critical  = used_memory >= m_critical_gc_memory;
 	const bool pressured = critical || used_memory >= m_pressure_gc_memory;
 	const auto age       = std::min(critical ? kAgeCritical : pressured ? kAgePressured : kAgeNormal,
@@ -76,25 +73,6 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 		return plain.size() == limit;
 	});
 
-	// Long-unused GPU-written images, tiled render targets included (the legacy collector never
-	// evicts those): typically targets of an earlier scene.
-	std::vector<ImageId> written;
-	if (pressured && m_evict_written) {
-		const auto download_age =
-		    std::min(critical ? kDownloadAgeCritical : kDownloadAgePressured, tick);
-		uint64_t download_bytes = 0;
-		m_lru_cache.ForEachItemBelow(tick - download_age, [&](ImageId id) {
-			const auto* image = evictable(id);
-			if (image == nullptr || !image->SafeToDownload() || !CanDownload(*image) ||
-			    download_bytes + image->info.data.size > kDownloadBudget) {
-				return false;
-			}
-			download_bytes += image->info.data.size;
-			written.push_back(id);
-			return written.size() == limit / 2;
-		});
-	}
-
 	uint64_t freed = 0;
 	for (const auto id: plain) {
 		auto* image = m_slot_images.try_get(id);
@@ -108,14 +86,45 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 			return;
 		}
 	}
-	for (const auto id: written) {
-		auto* image = m_slot_images.try_get(id);
-		if (image == nullptr || !image->registered || !DownloadImageMemory(id)) {
-			continue;
+	// Keep authoritative GPU data tracked until its writeback has actually completed.
+	// In particular, FreeImage must not untrack it while the priority callback still owns
+	// the only up-to-date bytes. One image per pass bounds copy volume and GPU waits.
+	if (!pressured || !m_evict_written || !m_scheduler.Active()) return;
+	const auto idle = GpuBudget::WrittenIdleFrames(critical);
+	if (tick < idle) return;
+	const auto& staging     = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
+	const auto  limit_bytes = GpuBudget::WrittenDownloadLimit(critical, staging.Size());
+	ImageId     candidate {};
+	uint64_t    candidate_bytes = 0;
+	m_lru_cache.ForEachItemBelow(tick - idle, [&](ImageId id) {
+		const auto* image = evictable(id);
+		if (image == nullptr || !image->SafeToDownload() || image->usage.video_out ||
+		    image->info.IsDepth() || !image->stencil_ids.empty() || !CanDownload(*image))
+			return;
+		const auto size = image->info.data.size;
+		if (size == 0) return;
+		m_gc_written_cold_bytes += image->AccountedSize();
+		if (size > limit_bytes) {
+			m_gc_written_large_bytes += image->AccountedSize();
+			return;
 		}
-		NoteEviction(*image, true);
-		FreeImage(id);
+		// Reclaim a useful amount rather than spending the pass on a tiny old image.
+		if (image->AccountedSize() > candidate_bytes) {
+			candidate       = id;
+			candidate_bytes = image->AccountedSize();
+		}
+	});
+	if (!candidate || !DownloadImageMemory(candidate, false)) return;
+	const auto completion_tick = m_scheduler.CurrentTick();
+	{
+		const Common::PerfStats::ScopedWaitSite wait_site(Common::PerfStats::Wait::SemGc);
+		m_scheduler.Wait(completion_tick);
+		m_scheduler.WaitPriorityOperations(completion_tick);
 	}
+	auto* image = m_slot_images.try_get(candidate);
+	if (image == nullptr || !image->registered) return;
+	NoteEviction(*image, true);
+	FreeImage(candidate);
 }
 
 } // namespace Libs::Graphics

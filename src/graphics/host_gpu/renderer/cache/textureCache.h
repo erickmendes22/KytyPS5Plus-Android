@@ -186,7 +186,7 @@ private:
 
 	void               InvalidateCpuAliases(uint64_t address, uint64_t size,
 	                                        RefreshCause::Source source = RefreshCause::Source::Other);
-	[[nodiscard]] bool DownloadImageMemory(ImageId id);
+	[[nodiscard]] bool DownloadImageMemory(ImageId id, bool allow_wait = true);
 
 	GraphicContext&                                   m_graphics;
 	CommandScheduler&                                 m_scheduler;
@@ -210,6 +210,8 @@ private:
 	uint64_t         m_gc_tick                = 0;
 	bool             m_budget_mode            = false;
 	bool             m_evict_written          = false;
+	uint64_t                                          m_gc_written_cold_bytes  = 0;
+	uint64_t                                          m_gc_written_large_bytes = 0;
 	// Evictions since the last "GPU memory:" line.
 	uint64_t         m_log_evictions          = 0;
 	uint64_t         m_log_evicted_bytes      = 0;

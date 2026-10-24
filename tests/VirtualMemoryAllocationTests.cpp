@@ -1705,6 +1705,47 @@ void TestDirectPartialProtectUnmapPreservesNeighbors() {
 	std::printf("[host]    %-48s ok\n", test);
 }
 
+#if KYTY_HOST_ARM64
+void TestFixedHighDirectMappingEnablesFold() {
+  using namespace Libs::LibKernel::Memory;
+  namespace Fold = Kernel::AddressFold;
+  const char *test = "FixedHighDirectMappingEnablesFold";
+  constexpr uint64_t guest = 0xe3ffffc000ull;
+  constexpr uint64_t page = SceKernelPageSize;
+  Check(test, !Fold::IsEnabled(), "test must precede any folded reservation");
+  void *rejected = reinterpret_cast<void *>(guest);
+  CheckFailed(test,
+              KernelMapDirectMemory(&rejected, page, SceKernelProtCpuRw,
+                                    SceKernelMapFixed | SceKernelMapNoOverwrite,
+                                    -1, page),
+              "invalid direct mapping");
+  Check(test, !Fold::IsEnabled(), "failed mapping must not enable folding");
+  int64_t physical = 0;
+  CheckOk(test,
+          KernelAllocateDirectMemory(0, KernelGetDirectMemorySize(), page, page,
+                                     SceKernelMtypeC, &physical),
+          "allocate fixed-high backing");
+  void *address = reinterpret_cast<void *>(guest);
+  CheckOk(test,
+          KernelMapDirectMemory(&address, page, SceKernelProtCpuRw,
+                                SceKernelMapFixed | SceKernelMapNoOverwrite,
+                                physical, page),
+          "map fixed high page without reserving a large virtual range");
+  Check(test, reinterpret_cast<uint64_t>(address) == guest,
+        "guest address must stay unfolded");
+  Check(test, Fold::IsEnabled(),
+        "fixed mapping must activate translator folding");
+  auto *host = reinterpret_cast<volatile uint64_t *>(Fold::Fold(guest));
+  *host = 0x4d464754464f4c44ull;
+  Check(test, *host == 0x4d464754464f4c44ull,
+        "folded backing must remain writable");
+  CheckOk(test, KernelMunmap(guest, page), "unmap fixed-high page");
+  CheckOk(test, KernelReleaseDirectMemory(physical, page),
+          "release fixed-high backing");
+  std::printf("[host]    %-48s ok\n", test);
+}
+#endif
+
 // Unreal Engine 5 reserves 512 GiB at 0x1000000000 (flags 0, 2 MiB alignment). On ARM64 the host
 // user window is smaller than that, so the reservation is granted as bookkeeping: the backed low
 // part can be committed, the unbacked top cannot, and the whole range can still be released.
@@ -5007,7 +5048,10 @@ void TestTlsStubsPreserveFlags() {
 
 int main(int argc, char** argv) {
 	InitSubsystems();
-	if (argc == 2 && std::strcmp(argv[1], "--virtual-ranges-only") == 0) {
+#if KYTY_HOST_ARM64
+        RunTest(TestFixedHighDirectMappingEnablesFold);
+#endif
+        if (argc == 2 && std::strcmp(argv[1], "--virtual-ranges-only") == 0) {
 		RunTest(TestFlexibleNoCoalescePreservesBoundaries);
 		RunTest(TestFlexibleRangeEditsCoalesce);
 		RunTest(TestPageTableStatsTrackRangeEdits);
