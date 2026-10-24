@@ -150,6 +150,18 @@ bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) 
 	       Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes());
 }
 
+// Port of KytyPS5 upstream PR #1365 (PPSA21564): ordinary SRT scalar reads must
+// not memcpy raw guest pointers. The walk explores branches the GPU may skip, so
+// a null/unmapped resource table is a legitimate input; return zero descriptors.
+// Using the guest backing avoids host SIGSEGV on GPU-protected/unmapped pages
+// without synchronizing unrelated GPU writes.
+bool ReadShaderScalarMemory(void*, uint64_t address, std::span<uint32_t> values) {
+	if (!Libs::LibKernel::Memory::TryReadBacking(address, values.data(), values.size_bytes())) {
+		std::ranges::fill(values, 0u);
+	}
+	return true;
+}
+
 // Branch conditions of the SRT walk (SrtRuntime::read_branch_memory): never waits for the GPU.
 bool ReadShaderGuestMemoryNoSync(void*, uint64_t address, std::span<uint32_t> values) {
 	return !values.empty() && Libs::LibKernel::Memory::TryReadCleanBufferBacking(
@@ -684,6 +696,7 @@ struct PipelineCache::ProgramCache {
 		ShaderRecompiler::IR::SrtRuntime             runtime {
 		    .user_data                  = user_data,
 		    .shader_base                = params.Base(),
+		    .read_memory                = ReadShaderScalarMemory,
 		    .read_specialization_memory = ReadShaderGuestMemory,
 		    .mapped                     = Libs::LibKernel::Memory::IsMappedRange,
 		    .read_branch_memory         = ReadShaderGuestMemoryNoSync,
