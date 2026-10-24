@@ -104,6 +104,7 @@ class DefaultGpuDriverSetup(
     fun apply(): String? {
         if (settings.bundledDriverVersion >= bundle.version) return null
         val model = AdrenoGpu.detectModel()
+        if (bundle.supports(model)) installMainlineV32Fallback()
         val decision = DefaultDriverPolicy.decide(model, bundle, settings.bundledDriverVersion, settings.gpuDriverId)
         if (decision == DefaultDriverPolicy.Decision.NOTHING) {
             settings.bundledDriverVersion = bundle.version
@@ -121,6 +122,19 @@ class DefaultGpuDriverSetup(
         if (decision != DefaultDriverPolicy.Decision.INSTALL_AND_SELECT) return null
         settings.gpuDriverId = driver.id
         return "Adreno $model detected: using ${driver.label} by default (change it under GPU driver)."
+    }
+
+    /** Keep the last known-working Turnip available, without overriding the global selection. */
+    private fun installMainlineV32Fallback() {
+        if (store.list().any { DefaultDriverPolicy.isPreviousBundledTurnip(it.id) }) return
+        try {
+            val installed = context.assets.open("gpu_drivers/mainline-turnip-v32.zip").use(store::import)
+            if (installed is DriverImportResult.Failure) {
+                Log.w(TAG, "Mainline V32 fallback could not be installed: ${installed.message}")
+            }
+        } catch (e: IOException) {
+            Log.w(TAG, "Mainline V32 fallback is not included in this APK: ${e.message}")
+        }
     }
 
     private fun importBundle(): DriverImportResult = try {
