@@ -768,6 +768,8 @@ void TestSaveWritev() {
         "append writes retain the original contents and ordered segments");
   Check(FileSystem::KernelClose(append) == OK && FileSystem::KernelClose(fd) == OK,
         "close vectored write fixtures");
+}
+
 void TestFsyncVisibility() {
   constexpr char Path[] = "/savedata0/fsync-save.dat";
   constexpr char Payload[] = "synced progress";
