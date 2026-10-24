@@ -5,6 +5,8 @@ import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Typeface
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -27,6 +29,7 @@ import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.TextView
+import com.kytyps5.android.hud.HudMode
 import com.kytyps5.android.input.OverlayProfileStore
 import com.kytyps5.android.library.CoverLoader
 import com.kytyps5.android.library.GameGridAdapter
@@ -56,6 +59,7 @@ class MainActivity : Activity() {
     private lateinit var covers: CoverLoader
     private lateinit var grid: GameGridAdapter
     private lateinit var gameSettings: GameSettingsDialog
+    private var activeGpuLabel: TextView? = null
 
     private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()
 
@@ -91,6 +95,7 @@ class MainActivity : Activity() {
             val changed = setup.apply() ?: return@execute
             mainHandler.post {
                 drivers.refresh()
+                activeGpuLabel?.text = selectedDriverLabel()
                 showMessage(changed)
             }
         }
@@ -113,164 +118,299 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    /** The game library and device options are separate pages so neither can hide the other. */
+
+    /** Native Android recreation of the approved landscape HTML prototype. */
     private fun buildUi(): View {
-        nativeStatus = label(
-            if (NativeLibrary.isInstalled(this)) {
-                "Emulator library: installed"
-            } else {
-                "Emulator library: missing (${NativeLibrary.FILE_NAME} is not in this build)"
-            },
-        )
-        storageStatus = label("")
-        grantButton = Button(this).apply {
-            text = "Grant all-files access"
-            setOnClickListener { openAllFilesAccessSettings() }
+        window.statusBarColor = Color.rgb(10, 21, 37)
+        window.navigationBarColor = Color.rgb(10, 21, 37)
+        nativeStatus = label(if (NativeLibrary.isInstalled(this)) "● Core ativo" else
+            "Core ausente: " + NativeLibrary.FILE_NAME, sizeSp = 12f)
+        storageStatus = label("", sizeSp = 12f)
+        grantButton = dashboardButton("Permitir acesso aos arquivos", true) { openAllFilesAccessSettings() }
+        folderPath = label(settings.gamesRoot, sizeSp = 11f, secondary = true).apply {
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         }
-        folderPath = label(settings.gamesRoot, sizeSp = 14f)
         resolutionGroup = buildResolutionGroup()
         renderScaleGroup = buildRenderScaleGroup()
-        scanStatus = label("Games: waiting for first scan", sizeSp = 15f, bold = true)
-        message = label("", secondary = true)
+        message = label("", sizeSp = 11f, secondary = true)
+        scanStatus = label("Verificando jogos...", sizeSp = 11f, secondary = true)
 
-        val gamesPage = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(label("Games folder", bold = true))
-            // Keeping the path on its own line avoids squeezing it between two buttons.
-            addView(folderPath)
-            addView(
-                LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    addView(Button(context).apply {
-                        text = "Choose folder"
-                        setOnClickListener { openFolderPicker() }
-                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                    addView(Button(context).apply {
-                        text = "Rescan"
-                        setOnClickListener { onScanRequested() }
-                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                },
-            )
-            addView(
-                LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    addView(Button(context).apply {
-                        text = "Choose eboot / ELF"
-                        setOnClickListener { openGameFilePicker() }
-                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                    addView(Button(context).apply {
-                        text = "Enter path"
-                        setOnClickListener { openManualGamePath() }
-                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                },
-            )
-            addView(scanStatus)
-            addView(Button(context).apply {
-                text = "Export Logs (ZIP)"
-                setOnClickListener { openLogExport() }
+        val topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(14.dp, 5.dp, 14.dp, 5.dp)
+            setBackgroundColor(Color.rgb(12, 25, 44))
+            addView(label("✦", sizeSp = 25f, bold = true).apply {
+                setTextColor(Color.rgb(64, 188, 255))
             })
-            val gameGrid = GridView(context).apply {
-                adapter = grid
-                numColumns = GridView.AUTO_FIT
-                columnWidth = (COVER_DP + 12).dp
-                stretchMode = GridView.STRETCH_SPACING_UNIFORM
-                verticalSpacing = 4.dp
-            }
-            val emptyState = label(
-                "No games are displayed. The scan status above shows whether " +
-                    "the directory is empty, inaccessible or still scanning.",
-                secondary = true,
-            ).apply {
-                gravity = Gravity.CENTER
-            }
-            addView(
-                FrameLayout(context).apply {
-                    addView(
-                        gameGrid,
-                        FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                        ),
-                    )
-                    addView(
-                        emptyState,
-                        FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            Gravity.CENTER,
-                        ),
-                    )
-                    gameGrid.emptyView = emptyState
-                },
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
-            )
-        }
-
-        val settingsPage = ScrollView(this).apply {
-            visibility = View.GONE
-            isFillViewport = false
-        }
-        settingsPage.addView(
-            LinearLayout(this).apply {
+            addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
-                addView(label("Video", sizeSp = 18f, bold = true))
-                addView(label("Output resolution", bold = true))
-                addView(resolutionGroup)
-                addView(label("Internal render scale", bold = true))
-                addView(renderScaleGroup)
-                addView(label("Performance and controls", sizeSp = 18f, bold = true))
-                addView(toggle("Performance HUD", settings.hudEnabled) { settings.hudEnabled = it })
-                addView(toggle("Touch controls", settings.touchControlsEnabled) { settings.touchControlsEnabled = it })
-                addView(toggle(GameSettingsDialog.GPU_TURBO_LABEL, settings.gpuTurbo) { settings.gpuTurbo = it })
-                addView(label("GPU driver", sizeSp = 18f, bold = true))
-                addView(drivers.build(onChanged = {}))
-                addView(label("Options are saved automatically. Game-specific options " +
-                    "remain available from the game's settings button.", secondary = true))
-            },
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-
-        val gamesTab = Button(this).apply { text = "Games" }
-        val settingsTab = Button(this).apply { text = "Settings" }
-        fun showPage(games: Boolean) {
-            gamesPage.visibility = if (games) View.VISIBLE else View.GONE
-            settingsPage.visibility = if (games) View.GONE else View.VISIBLE
-            gamesTab.isEnabled = !games
-            settingsTab.isEnabled = games
-        }
-        gamesTab.setOnClickListener { showPage(true) }
-        settingsTab.setOnClickListener { showPage(false) }
-
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(16.dp, 16.dp, 16.dp, 16.dp)
-            addView(label("KytyPS5+", sizeSp = 22f, bold = true))
+                setPadding(8.dp, 0, 0, 0)
+                addView(label("KytyPS5+", sizeSp = 17f, bold = true).apply {
+                    setTextColor(Color.WHITE)
+                })
+                addView(label("DAEDALUS STYLE", sizeSp = 9f, bold = true, secondary = true))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
             addView(nativeStatus)
+        }
+
+        val leftNav = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(12, 25, 44))
+            setPadding(7.dp, 16.dp, 7.dp, 10.dp)
+        }
+        val libraryNav = dashboardButton("▦  Biblioteca") {}
+        val settingsNav = dashboardButton("⚙  Configurações") {}
+        leftNav.addView(libraryNav)
+        leftNav.addView(settingsNav)
+        leftNav.addView(android.widget.Space(this), LinearLayout.LayoutParams(1.dp, 0, 1f))
+        leftNav.addView(label("KytyPS5+ • ARM64", sizeSp = 9f, secondary = true))
+
+        val gameGrid = GridView(this).apply {
+            adapter = grid
+            numColumns = 1
+            stretchMode = GridView.STRETCH_COLUMN_WIDTH
+            verticalSpacing = 9.dp
+            horizontalSpacing = 0
+            selector = android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
+        }
+        val emptyState = label("Nenhum jogo encontrado. Selecione a pasta ou abra um eboot.bin.",
+            secondary = true).apply {
+            gravity = Gravity.CENTER
+        }
+        val libraryLeft = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(label("Meus jogos", sizeSp = 14f, bold = true))
+            addView(FrameLayout(context).apply {
+                addView(gameGrid, FrameLayout.LayoutParams(-1, -1))
+                addView(emptyState, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
+                gameGrid.emptyView = emptyState
+            }, LinearLayout.LayoutParams(-1, 0, 1f))
+        }
+
+        activeGpuLabel = label(selectedDriverLabel(), sizeSp = 12f, bold = true)
+        val driverCard = dashboardPanel("DRIVER VULKAN PADRÃO",
+            "Driver selecionado para novos jogos. Alterações individuais têm prioridade.",
+            activeGpuLabel!!)
+        driverCard.setOnClickListener { settingsNav.performClick() }
+        val moreActions = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(dashboardButton("Escolher pasta de jogos") { openFolderPicker() })
+            addView(dashboardButton("Abrir eboot / ELF") { openGameFilePicker() })
+            addView(dashboardButton("Digitar caminho") { openManualGamePath() })
+            addView(dashboardButton("Exportar logs ZIP") { openLogExport() })
+            addView(folderPath)
             addView(storageStatus)
             addView(grantButton)
-            addView(
-                LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    addView(gamesTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                    addView(settingsTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                },
-            )
-            // Keep general messages readable without overwriting game scan results.
-            addView(message)
-            addView(gamesPage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-            addView(settingsPage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
-        showPage(true)
-        content.setOnApplyWindowInsetsListener { view, insets ->
-            val bars = insets.getInsets(WindowInsets.Type.systemBars())
-            view.setPadding(16.dp + bars.left, 16.dp + bars.top, 16.dp + bars.right, 16.dp + bars.bottom)
-            insets
+        val more = dashboardButton("Mais opções da biblioteca  ▾") {}
+        more.setOnClickListener {
+            val show = moreActions.visibility != View.VISIBLE
+            moreActions.visibility = if (show) View.VISIBLE else View.GONE
+            more.text = if (show) "Ocultar opções  ▴" else "Mais opções da biblioteca  ▾"
         }
-        return content
+        val rightSide = ScrollView(this).apply {
+            isFillViewport = false
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(driverCard)
+                addView(dashboardButton("⊕   Adicionar jogo") { openGameFilePicker() })
+                addView(dashboardButton("↻   Atualizar biblioteca") { onScanRequested() })
+                addView(more)
+                addView(moreActions)
+                addView(scanStatus)
+                addView(message)
+            })
+        }
+        val libraryRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(libraryLeft, LinearLayout.LayoutParams(0, -1, 1.75f).apply { marginEnd = 12.dp })
+            addView(rightSide, LinearLayout.LayoutParams(0, -1, 1f))
+        }
+        val libraryPage = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(12.dp, 10.dp, 12.dp, 8.dp)
+            addView(label("BEM-VINDO AO KYTY", sizeSp = 10f, bold = true).apply {
+                setTextColor(Color.rgb(85, 208, 255))
+            })
+            addView(label("Sua biblioteca.", sizeSp = 24f, bold = true))
+            addView(label("Seus jogos PS5 em um só lugar, prontos para iniciar.",
+                sizeSp = 11f, secondary = true))
+            addView(libraryRow, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = 8.dp })
+        }
+
+        val generalPage = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(dashboardPanel("BIBLIOTECA E ARMAZENAMENTO", "Pasta dos jogos e permissões de acesso.",
+                label("Pasta atual:", bold = true),
+                label(settings.gamesRoot, sizeSp = 12f, secondary = true),
+                dashboardButton("Escolher pasta") { openFolderPicker() },
+                dashboardButton("Exportar diagnósticos") { openLogExport() },
+            ))
+            addView(dashboardPanel("DESEMPENHO", "Ajustes rápidos do sistema.",
+                toggle(GameSettingsDialog.GPU_TURBO_LABEL, settings.gpuTurbo) { settings.gpuTurbo = it },
+            ))
+        }
+
+        val videoPage = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(dashboardPanel("VÍDEO", "Resolução de saída e escala de renderização.",
+                label("Resolução de saída", bold = true), resolutionGroup,
+                label("Escala interna", bold = true), renderScaleGroup,
+            ))
+        }
+
+        val gpuPanel = drivers.build(onChanged = { activeGpuLabel?.text = selectedDriverLabel() })
+        val gpuPage = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(dashboardPanel("TURNIP / VULKAN", "Escolha o driver global ou importe um Turnip ZIP.",
+                label("Turnip Gen8 V38 Patched e Mainline V32 estão disponíveis quando incluídos no APK.",
+                    sizeSp = 12f, secondary = true),
+                gpuPanel,
+            ))
+            addView(dashboardPanel("POR JOGO", "Toque na engrenagem da capa para escolher um driver só para aquele título."))
+        }
+
+        val modeGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
+            HudMode.entries.forEach { hudMode ->
+                addView(RadioButton(context).apply {
+                    id = View.generateViewId()
+                    text = when (hudMode) {
+                        HudMode.FULL -> "Completa  ·  FPS, frame time, GPU, CPU, RAM, swap, bateria"
+                        HudMode.COMPACT -> "Compacta  ·  FPS, GPU, CPU, RAM"
+                        HudMode.MINIMAL -> "Mínima  ·  apenas FPS"
+                    }
+                    tag = hudMode
+                    textSize = 12f
+                    setTextColor(Color.WHITE)
+                    isChecked = hudMode == settings.hudMode
+                })
+            }
+            setOnCheckedChangeListener { _, id ->
+                (findViewById<View>(id)?.tag as? HudMode)?.let { settings.hudMode = it }
+            }
+        }
+        val controlsPage = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(dashboardPanel("HUD DE DESEMPENHO", "Painel azul translúcido, com três níveis de detalhes.",
+                toggle("Exibir HUD no jogo", settings.hudEnabled) { settings.hudEnabled = it },
+                modeGroup,
+            ))
+            addView(dashboardPanel("CONTROLES", "Controles virtuais e configurações durante o jogo.",
+                toggle("Controles na tela", settings.touchControlsEnabled) { settings.touchControlsEnabled = it },
+                label("O menu ⋯ durante o jogo permite alterar a HUD e sair com segurança.",
+                    sizeSp = 12f, secondary = true),
+            ))
+        }
+
+        val settingsSections = listOf(generalPage, videoPage, gpuPage, controlsPage)
+        val settingsTabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val settingsPage = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(12.dp, 7.dp, 12.dp, 7.dp)
+            addView(label("AJUSTES DO EMULADOR", sizeSp = 10f, bold = true).apply {
+                setTextColor(Color.rgb(85, 208, 255))
+            })
+            addView(label("Configurações.", sizeSp = 23f, bold = true))
+            addView(label("Organização por categoria, sem menus sobrecarregados.",
+                sizeSp = 11f, secondary = true))
+            addView(settingsTabs)
+            addView(ScrollView(context).apply {
+                addView(FrameLayout(context).apply {
+                    settingsSections.forEach { section ->
+                        addView(section, FrameLayout.LayoutParams(-1, -2))
+                    }
+                })
+            }, LinearLayout.LayoutParams(-1, 0, 1f))
+            visibility = View.GONE
+        }
+        val tabNames = listOf("Geral", "Vídeo", "GPU / Turnip", "Controles")
+        val tabButtons = tabNames.mapIndexed { index, name ->
+            dashboardButton(name) {}
+        }
+        fun selectSettings(index: Int) {
+            settingsSections.forEachIndexed { position, section ->
+                section.visibility = if (index == position) View.VISIBLE else View.GONE
+            }
+            tabButtons.forEachIndexed { position, button ->
+                decorateButton(button, index == position)
+            }
+        }
+        tabButtons.forEachIndexed { idx, button ->
+            settingsTabs.addView(button, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = 5.dp })
+            button.setOnClickListener { selectSettings(idx) }
+        }
+        selectSettings(0)
+
+        val pages = FrameLayout(this).apply {
+            addView(libraryPage, FrameLayout.LayoutParams(-1, -1))
+            addView(settingsPage, FrameLayout.LayoutParams(-1, -1))
+        }
+        fun selectMain(library: Boolean) {
+            libraryPage.visibility = if (library) View.VISIBLE else View.GONE
+            settingsPage.visibility = if (library) View.GONE else View.VISIBLE
+            decorateButton(libraryNav, library)
+            decorateButton(settingsNav, !library)
+        }
+        libraryNav.setOnClickListener { selectMain(true) }
+        settingsNav.setOnClickListener { selectMain(false); selectSettings(2) }
+        selectMain(true)
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(9, 18, 33))
+            addView(topBar, LinearLayout.LayoutParams(-1, -2))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(leftNav, LinearLayout.LayoutParams(137.dp, -1))
+                addView(pages, LinearLayout.LayoutParams(0, -1, 1f))
+            }, LinearLayout.LayoutParams(-1, 0, 1f))
+        }
     }
+
+    private fun selectedDriverLabel(): String =
+        drivers.store.find(settings.gpuDriverId)?.label ?: "Vulkan do sistema"
+
+    private fun dashboardPanel(title: String, subtitle: String, vararg items: View): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(13.dp, 10.dp, 13.dp, 12.dp)
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(20, 34, 55))
+                cornerRadius = 14.dp.toFloat()
+                setStroke(1.dp, Color.rgb(41, 67, 95))
+            }
+            addView(label(title, 14f, bold = true).apply {
+                setTextColor(Color.rgb(115, 210, 250))
+            })
+            addView(label(subtitle, 11f, secondary = true))
+            items.forEach { addView(it) }
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 10.dp }
+        }
+
+    private fun decorateButton(button: Button, selected: Boolean) {
+        button.isAllCaps = false
+        button.setTextColor(if (selected) Color.rgb(120, 219, 255) else Color.rgb(194, 211, 232))
+        button.background = GradientDrawable().apply {
+            cornerRadius = 12.dp.toFloat()
+            setColor(if (selected) Color.rgb(24, 67, 106) else Color.rgb(20, 38, 60))
+            setStroke(1.dp, if (selected) Color.rgb(53, 133, 188) else Color.rgb(38, 66, 92))
+        }
+    }
+
+    private fun dashboardButton(title: String, highlight: Boolean = false, action: () -> Unit): Button =
+        Button(this).apply {
+            text = title
+            textSize = 12f
+            minHeight = 42.dp
+            minimumHeight = 42.dp
+            setPadding(8.dp, 0, 8.dp, 0)
+            decorateButton(this, highlight)
+            setOnClickListener { action() }
+        }
 
     private fun buildResolutionGroup(): RadioGroup {
         val group = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
@@ -529,6 +669,7 @@ class MainActivity : Activity() {
             game = settings.gameSettings(game.path),
             globalRenderScale = settings.renderScale,
             globalGpuTurbo = settings.gpuTurbo,
+            globalHudMode = settings.hudMode,
         )
         val args = LaunchArgs.forGame(
             game.path, options.resolution, drivers.driverDirFor(game.path), options.renderScale, options.gpuTurbo,
@@ -539,6 +680,7 @@ class MainActivity : Activity() {
                 .putExtra(LaunchArgs.EXTRA_GAME_PATH, game.path)
                 .putExtra(LaunchArgs.EXTRA_ENV, options.env.map { it.toString() }.toTypedArray())
                 .putExtra(LaunchArgs.EXTRA_HUD, options.hud)
+                .putExtra(LaunchArgs.EXTRA_HUD_MODE, options.hudMode.storageValue)
                 .putExtra(LaunchArgs.EXTRA_TOUCH_CONTROLS, options.touchControls),
         )
     }
@@ -593,6 +735,7 @@ class MainActivity : Activity() {
         textSize = sizeSp
         if (bold) setTypeface(typeface, Typeface.BOLD)
         if (secondary) alpha = 0.7f
+        setTextColor(if (secondary) Color.rgb(151, 171, 198) else Color.rgb(237, 245, 255))
         setPadding(0, 4.dp, 0, 4.dp)
     }
 }
