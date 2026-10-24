@@ -210,7 +210,7 @@ class GameOverlays(
             isFillViewport = true
             addView(sheet, ViewGroup.LayoutParams(-1, -2))
         }
-        dialog = AlertDialog.Builder(activity).setView(scroll, 0, 0, 0, 0).create()
+        dialog = AlertDialog.Builder(activity).setView(scroll).create()
         menuDialog = dialog
         dialog.setOnDismissListener { menuDialog = null; controller.releaseAll() }
         dialog.show()

@@ -14,6 +14,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   NDK_VERSION: 28.2.13676358
@@ -30,12 +31,19 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Reuse audited native core for Android-only changes
+        id: native
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 android/ci/reuse_native.py
+
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost
           df -h /
 
       - name: Host tools
+        if: steps.native.outputs.reused != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build glslang-tools ccache
@@ -47,11 +55,13 @@ jobs:
           java-version: '21'
 
       - name: Android NDK
+        if: steps.native.outputs.reused != 'true'
         run: |
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${NDK_VERSION}" > /dev/null
           echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: ccache
+        if: steps.native.outputs.reused != 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -59,6 +69,7 @@ jobs:
           restore-keys: ccache-android-
 
       - name: FFmpeg cache
+        if: steps.native.outputs.reused != 'true'
         id: ffmpeg
         uses: actions/cache@v4
         with:
@@ -66,12 +77,13 @@ jobs:
           key: ffmpeg-android-${{ hashFiles('scripts/android/build-ffmpeg-android.sh') }}-${{ env.NDK_VERSION }}
 
       - name: FFmpeg for Android
-        if: steps.ffmpeg.outputs.cache-hit != 'true'
+        if: steps.native.outputs.reused != 'true' && steps.ffmpeg.outputs.cache-hit != 'true'
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK }}
         run: bash scripts/android/build-ffmpeg-android.sh "$PWD/_Build/ffmpeg-android"
 
       - name: Configure
+        if: steps.native.outputs.reused != 'true'
         run: |
           cmake -S . -B _Build/android -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
@@ -82,12 +94,14 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build native libraries
+        if: steps.native.outputs.reused != 'true'
         run: |
           ccache --max-size=3G
           ninja -C _Build/android kyty_emulator
           ccache --show-stats
 
       - name: Stage native libraries
+        if: steps.native.outputs.reused != 'true'
         run: |
           ST=$RUNNER_TEMP/native
           mkdir -p $ST/3rdparty/SDL3 $ST/3rdparty/libadrenotools/src/hook
