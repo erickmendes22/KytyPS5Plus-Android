@@ -92,11 +92,11 @@ class MainActivity : Activity() {
     private fun applyDefaultGpuDriver() {
         val setup = DefaultGpuDriverSetup(this, settings, drivers.store)
         worker.execute {
-            val changed = setup.apply() ?: return@execute
+            val changed = setup.apply()
             mainHandler.post {
                 drivers.refresh()
                 activeGpuLabel?.text = selectedDriverLabel()
-                showMessage(changed)
+                if (changed != null) showMessage(changed)
             }
         }
     }
