@@ -2444,7 +2444,7 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 			Log::WriteToConsoleAndLog(fmt::sprintf(
 			    "GPU written residency: old=%" PRIu64 " bound=%" PRIu64
 			    " linked=%" PRIu64 " special=%" PRIu64 " unsupported=%" PRIu64
-			    " eligible=%" PRIu64 " MiB (guest-accounted; idle=%" PRIu64 " frames)\\n",
+			    " eligible=%" PRIu64 " MiB (guest-accounted; idle=%" PRIu64 " frames)\n",
 			    old_written / MiB, bound / MiB, linked / MiB, special / MiB,
 			    unsupported / MiB, eligible / MiB, idle));
 		}
