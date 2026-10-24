@@ -164,7 +164,7 @@ class MainActivity : Activity() {
         val settingsNav = dashboardButton("⚙  Configurações") {}
         leftNav.addView(libraryNav)
         leftNav.addView(settingsNav)
-        leftNav.addView(android.widget.Space(context), LinearLayout.LayoutParams(1.dp, 0, 1f))
+        leftNav.addView(android.widget.Space(this@MainActivity), LinearLayout.LayoutParams(1.dp, 0, 1f))
         leftNav.addView(label("KytyPS5+ • ARM64", sizeSp = 9f, secondary = true))
 
         val gameGrid = GridView(this).apply {
