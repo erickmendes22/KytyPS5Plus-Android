@@ -1507,6 +1507,26 @@ static void LogMeshPathChoice(uint64_t mesh_hash, uint64_t pixel_hash, bool emul
 	}
 }
 
+// Some Turnip Gen8 driver builds expose VK_EXT_mesh_shader but advertise output
+// limits below the requirements of PS5 mesh workgroups (e.g. Astro Bot asks for
+// 216 vertices and 210 primitives). Use the existing compute emulation in auto
+// mode instead of aborting the emulator. Never spoof/raise Vulkan device limits.
+static bool MeshExceedsNativeHostLimits(const GraphicContext& graphics,
+                                        const ShaderMeshInputInfo& mesh) {
+	const auto& limits = graphics.mesh_shader_properties;
+	const auto  logical_threads =
+	    mesh.threads_num[0] * mesh.threads_num[1] * mesh.threads_num[2];
+	const auto  wave_size = std::max(mesh.wave_size, 1u);
+	const auto  host_threads = ((logical_threads + wave_size - 1u) / wave_size) *
+	                           std::min(graphics.subgroup_size, wave_size);
+	return host_threads > limits.maxMeshWorkGroupInvocations ||
+	       host_threads > limits.maxMeshWorkGroupSize[0] ||
+	       mesh.max_vertices > limits.maxMeshOutputVertices ||
+	       mesh.max_primitives > limits.maxMeshOutputPrimitives ||
+	       static_cast<uint64_t>(mesh.lds_size_dwords) * sizeof(uint32_t) >
+	           limits.maxMeshSharedMemorySize;
+}
+
 // Mesh emulation runs the mesh workgroup as a compute workgroup, so it is bound by the compute
 // limits instead of the mesh ones. The host subgroup size follows the compute stage.
 static void CheckMeshEmulationLimits(const GraphicContext& graphics, ShaderMeshInputInfo& mesh) {
@@ -1544,9 +1564,27 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		// --gpu-indirect is translated for the plain vertex stage and for emulated mesh stages
 		// (not fast launch); the caller falls back to CPU-read arguments for the others.
 		const auto& stage_info = vertex_info[0];
+		const bool auto_mesh_fallback =
+		    stage_info.logical_stage == ShaderType::Mesh && m_graphics.mesh_shader_enabled &&
+		    GetMeshPathPolicy() == MeshPathPolicy::Auto &&
+		    MeshExceedsNativeHostLimits(m_graphics, stage_info.mesh);
 		vertex_info[0].mesh.emulated =
 		    stage_info.logical_stage == ShaderType::Mesh &&
-		    (!m_graphics.mesh_shader_enabled || GetMeshPathPolicy() == MeshPathPolicy::Emulated);
+		    (!m_graphics.mesh_shader_enabled || GetMeshPathPolicy() == MeshPathPolicy::Emulated ||
+		     auto_mesh_fallback);
+		if (auto_mesh_fallback) {
+			static std::atomic_uint32_t reported {0};
+			if (reported.fetch_add(1, std::memory_order_relaxed) < 24) {
+				const auto& mesh = stage_info.mesh;
+				const auto& host = m_graphics.mesh_shader_properties;
+				PipelineCacheLog(
+				    "Mesh native limits insufficient: requested vertices={} primitives={} LDS={} dwords"
+				    " (host max vertices={} primitives={} shared={} bytes); using compute emulation",
+				    mesh.max_vertices, mesh.max_primitives, mesh.lds_size_dwords,
+				    host.maxMeshOutputVertices, host.maxMeshOutputPrimitives,
+				    host.maxMeshSharedMemorySize);
+			}
+		}
 		if (stage_info.logical_stage == ShaderType::Vertex ||
 		    (stage_info.logical_stage == ShaderType::Mesh && stage_info.mesh.emulated &&
 		     !stage_info.mesh.fast_launch)) {
@@ -1576,11 +1614,7 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		    mesh.threads_num[0] * mesh.threads_num[1] * mesh.threads_num[2];
 		const auto host_threads = ((logical_threads + mesh.wave_size - 1u) / mesh.wave_size) *
 		                          std::min(mesh.host_subgroup_size, mesh.wave_size);
-		if (host_threads > limits.maxMeshWorkGroupInvocations ||
-		    host_threads > limits.maxMeshWorkGroupSize[0] ||
-		    mesh.max_vertices > limits.maxMeshOutputVertices ||
-		    mesh.max_primitives > limits.maxMeshOutputPrimitives ||
-		    mesh.lds_size_dwords * sizeof(uint32_t) > limits.maxMeshSharedMemorySize) {
+		if (MeshExceedsNativeHostLimits(m_graphics, mesh)) {
 			EXIT("mesh shader exceeds host limits: threads=%u vertices=%u primitives=%u LDS=%u\n",
 			     host_threads, mesh.max_vertices, mesh.max_primitives, mesh.lds_size_dwords);
 		}
