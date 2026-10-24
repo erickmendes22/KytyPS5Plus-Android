@@ -77,9 +77,9 @@ data class BundledDriverPackage(val fileName: String, val url: String, val sha25
 
 val bundledDriverPackages = listOf(
     BundledDriverPackage(
-        fileName = "mainline-turnip-v32.zip",
-        url = "https://github.com/whitebelyash/AdrenoToolsDrivers/releases/download/tu_v32/mainline-turnip-V32.zip",
-        sha256 = "a40b086926916e3960c832fce3014c26ec946b956c46681a726d927e2700ad10",
+        fileName = "turnip-gen8-v38-patched.zip",
+        url = "https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases/download/v27.0.0-R1/Turnip_Gen8_V38_Patched.zip",
+        sha256 = "2bbb279a3da7680503a54a51a3051c7a4302c8fb2a089f8b183b4b5d6ba9ac17",
     ),
 )
 val bundleDrivers: Boolean = providers.gradleProperty("kytyBundleDrivers").getOrElse("true").toBoolean()
