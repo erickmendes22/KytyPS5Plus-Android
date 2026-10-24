@@ -71,6 +71,24 @@ class PresetLaunchManifestTest {
     }
 
     @Test
+    fun validatesPlayGoCompatibilityOption() {
+        assertEquals(
+            true,
+            ok(manifest("""{"gamePatch":"astro_nonrt.json","playgoHack":true}""")).launch.playgoHack,
+        )
+        assertEquals(
+            false,
+            ok(manifest("""{"gamePatch":"astro_nonrt.json","playgoHack":false}""")).launch.playgoHack,
+        )
+        for (invalidValue in listOf("null", "\"true\"", "1", "{}", "[]")) {
+            assertEquals(
+                "playgoHack must be true or false",
+                invalid(manifest("""{"gamePatch":"astro_nonrt.json","playgoHack":$invalidValue}""")),
+            )
+        }
+    }
+
+    @Test
     fun aLaunchOnlyPresetMayNameItsTargetButNotAnUnknownOne() {
         assertEquals(PresetTarget.DOWNLOAD_DATA, ok(manifest("""{"renderScale":0.5}""", target = "download_data")).target)
         assertEquals("unknown target \"app0\"", invalid(manifest("""{"renderScale":0.5}""", target = "app0")))
