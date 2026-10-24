@@ -108,6 +108,28 @@ class HudTest {
     }
 
     @Test
+    fun hudModesExposeOnlyRequestedMetrics() {
+        val sample = HudSample(
+            frames = FrameStats(100, 60.0),
+            gpuLoadPercent = 84,
+            cpuLoadPercent = 35,
+            memory = MemInfo(totalKb = 12L shl 20, availableKb = 6L shl 20,
+                swapTotalKb = 4L shl 20, swapFreeKb = 3L shl 20),
+            batteryPercent = 45,
+        )
+        assertEquals(listOf("FPS  60"), HudFormatter.lines(sample, HudMode.MINIMAL))
+        assertEquals(
+            listOf("FPS  60", "GPU  84%", "CPU  35%", "RAM  6.0/12.0 GB"),
+            HudFormatter.lines(sample, HudMode.COMPACT),
+        )
+        assertEquals(listOf("FPS  --", "GPU  --", "CPU  --", "RAM  --"),
+            HudFormatter.lines(HudSample(), HudMode.COMPACT))
+        assertEquals(HudMode.COMPACT, HudMode.fromStorage(null))
+        assertEquals(HudMode.FULL, HudMode.fromStorage("full"))
+        assertEquals(HudMode.MINIMAL, HudMode.fromStorage("minimal"))
+    }
+
+    @Test
     fun formatterOmitsUnknownLines() {
         assertEquals(listOf("FPS --"), HudFormatter.lines(HudSample()))
         val full = HudFormatter.lines(
