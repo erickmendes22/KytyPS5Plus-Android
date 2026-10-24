@@ -80,6 +80,7 @@ object PresetLaunchArgs {
             index++
         }
         // A bare switch must appear once even when supplied by the base command line.
-        return (kept.filter { it != FLAG_PLAYGO_HACK } + plan.args).toTypedArray()
+        return (if (FLAG_PLAYGO_HACK in plan.args) kept.filter { it != FLAG_PLAYGO_HACK } else kept)
+            .plus(plan.args).toTypedArray()
     }
 }
