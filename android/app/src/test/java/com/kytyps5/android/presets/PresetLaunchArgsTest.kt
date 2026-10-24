@@ -94,6 +94,26 @@ class PresetLaunchArgsTest {
     }
 
     @Test
+    fun nonRtCompatibilityEnablesExistingPlayGoFallbackOnce() {
+        val plan = PresetLaunchArgs.plan(listOf(
+            resolved("nonrt", PresetLaunch(gamePatch = "astro_nonrt.json", playgoHack = true), "/data/nonrt.json"),
+        ))
+        assertEquals(listOf("--game-patch", "/data/nonrt.json", "--playgo-hack"), plan.args)
+        assertArrayEquals(
+            arrayOf("--game", "/astro", "--game-patch", "/data/nonrt.json", "--playgo-hack"),
+            PresetLaunchArgs.apply(arrayOf("--game", "/astro", "--playgo-hack"), plan),
+        )
+    }
+
+    @Test
+    fun unrelatedPresetsDoNotEnablePlayGoFallback() {
+        val plan = PresetLaunchArgs.plan(listOf(
+            resolved("perf", PresetLaunch(renderScale = 0.75f)),
+        ))
+        assertEquals(listOf("--render-scale", "0.75"), plan.args)
+    }
+
+    @Test
     fun envOnlyPresetsKeepTheUsersScale() {
         val plan = PresetLaunchArgs.plan(listOf(resolved("rt", PresetLaunch(env = mapOf("KYTY_RT_HALF" to "1")))))
         val merged = PresetLaunchArgs.apply(arrayOf("--game", "/g", "--render-scale", "0.5"), plan)
