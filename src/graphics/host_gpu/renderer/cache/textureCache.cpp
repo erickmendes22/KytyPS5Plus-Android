@@ -14,6 +14,7 @@
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/gpuFatal.h"
+#include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
@@ -2420,6 +2421,34 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	        (host.swap ? 8u : 0u),
 	    m_gc_written_cold_bytes / MiB, m_gc_written_large_bytes / MiB, m_log_writeback_chunks,
 	    m_log_writeback_chunk_bytes / MiB));
+	// At most once per ten seconds: identify why the surviving GPU-written images
+	// cannot be reclaimed. Count guest-accounted bytes, separate from VMA usage.
+	// This only runs for the title-scoped opt-in, and never changes image lifetime.
+	if (m_budget_mode && m_evict_written && m_scheduler.Active()) {
+		const uint64_t idle = GpuBudget::WrittenIdleFrames(used_memory >= m_critical_gc_memory);
+		if (m_gc_tick >= idle) {
+			uint64_t old_written = 0, bound = 0, linked = 0, special = 0, unsupported = 0;
+			uint64_t eligible = 0;
+			m_lru_cache.ForEachItemBelow(m_gc_tick - idle, [&](ImageId id) {
+				const auto* image = m_slot_images.try_get(id);
+				if (image == nullptr || !image->registered || !image->SafeToDownload()) return;
+				const uint64_t bytes = image->AccountedSize();
+				old_written += bytes;
+				if (image->depth_id) linked += bytes;
+				else if (image->binding.is_bound || image->binding.is_target) bound += bytes;
+				else if (image->usage.video_out || image->info.IsDepth() ||
+				         !image->stencil_ids.empty()) special += bytes;
+				else if (!CanDownload(*image)) unsupported += bytes;
+				else eligible += bytes;
+			});
+			Log::WriteToConsoleAndLog(fmt::sprintf(
+			    "GPU written residency: old=%" PRIu64 " bound=%" PRIu64
+			    " linked=%" PRIu64 " special=%" PRIu64 " unsupported=%" PRIu64
+			    " eligible=%" PRIu64 " MiB (guest-accounted; idle=%" PRIu64 " frames)\\n",
+			    old_written / MiB, bound / MiB, linked / MiB, special / MiB,
+			    unsupported / MiB, eligible / MiB, idle));
+		}
+	}
 	m_log_evictions     = 0;
 	m_log_evicted_bytes = 0;
 	m_log_downloads     = 0;
