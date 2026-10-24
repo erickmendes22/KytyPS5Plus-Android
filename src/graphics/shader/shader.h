@@ -16,17 +16,6 @@
 
 namespace Libs::Graphics {
 
-namespace ShaderError {
-
-[[nodiscard]] inline bool Fail(std::string* error, std::string_view message) {
-	if (error != nullptr) {
-		error->assign(message.data(), message.size());
-	}
-	return false;
-}
-
-} // namespace ShaderError
-
 namespace HW {
 struct VertexShaderInfo;
 struct PixelShaderInfo;

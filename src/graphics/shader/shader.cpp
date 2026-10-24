@@ -45,9 +45,15 @@
 
 namespace Libs::Graphics {
 
+// A mapped shader and its vertex metadata, parsed once when it is mapped.
+struct ShaderMapData: ShaderMappedData {
+	ShaderVertexMetadata vertex;
+	const char*          vertex_error = nullptr;
+};
+
 struct ShaderMapEntry {
-	ShaderMappedData data;
-	uint64_t hash;
+	ShaderMapData data;
+	uint64_t      hash;
 };
 
 static std::unique_ptr<std::unordered_map<uint64_t, ShaderMapEntry>> g_shader_map;
@@ -69,8 +75,11 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 		     addr, data.code_size_bytes);
 	}
 	const auto hash = XXH3_64bits(reinterpret_cast<const void*>(addr), data.code_size_bytes);
+	ShaderMapData mapped {data};
+	mapped.vertex_error =
+	    ShaderReadVertexMetadata(data, HW::UserSgprInfo::SGPRS_MAX, mapped.vertex);
 	std::scoped_lock lock(g_shader_map_mutex);
-	(*g_shader_map)[addr] = {data, hash};
+	(*g_shader_map)[addr] = {mapped, hash};
 }
 
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
@@ -292,8 +301,8 @@ static uint32_t ShaderCalcPsSystemInputBase(const HW::ShaderRegisters& regs) {
 
 static bool ShaderGetStaticVertexInputInfo(uint64_t shader_addr, const HW::UserSgprInfo& user_sgpr,
                                            uint32_t user_sgpr_num, const HW::ShaderRegisters& sh,
-                                           const ShaderMappedData& data,
-                                           ShaderVertexInputInfo&  info) {
+                                           const ShaderMapData&   data,
+                                           ShaderVertexInputInfo& info) {
 	KYTY_PROFILER_FUNCTION();
 
 	info = {};
@@ -308,13 +317,12 @@ static bool ShaderGetStaticVertexInputInfo(uint64_t shader_addr, const HW::UserS
 		     " user_sgpr_num=%u\n",
 		     shader_addr, user_sgpr_num);
 	}
-	ShaderVertexMetadata metadata;
-	std::string          metadata_error;
-	if (!ShaderReadVertexMetadata(data, HW::UserSgprInfo::SGPRS_MAX, metadata, &metadata_error)) {
+	if (data.vertex_error != nullptr) {
 		LOGF("ShaderGetVertexInputInfo(): invalid AGC metadata shader=0x%016" PRIx64 ": %s\n",
-		     shader_addr, metadata_error.c_str());
+		     shader_addr, data.vertex_error);
 		return false;
 	}
+	const auto& metadata = data.vertex;
 
 	if (metadata.vertex_attrib_reg >= 0) {
 		info.fetch_external   = false;

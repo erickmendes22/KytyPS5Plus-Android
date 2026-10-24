@@ -6919,6 +6919,51 @@ public:
               "source/destination states or clamp unequal array/volume "
               "slices");
 
+      auto wide_volume_info = native_volume_info;
+      wide_volume_info.extent = {85, 5, 5};
+      wide_volume_info.pitch = 85;
+      auto narrow_volume_info = wide_volume_info;
+      narrow_volume_info.extent.width = 20;
+      narrow_volume_info.pitch = 20;
+      Libs::Graphics::Image wide_volume(m_runtime_context, scheduler,
+                                        wide_volume_info);
+      Libs::Graphics::Image narrow_volume(m_runtime_context, scheduler,
+                                          narrow_volume_info);
+      std::vector<uint32_t> volume_source_words(85 * 5 * 5);
+      for (uint32_t i = 0; i < volume_source_words.size(); ++i)
+        volume_source_words[i] = i + 1;
+      auto volume_upload = CreateHostBuffer(
+          name, volume_source_words.size() * sizeof(uint32_t),
+          vk::BufferUsageFlagBits::eTransferSrc, volume_source_words);
+      auto shrinking_readback =
+          CreateHostBuffer(name, 20 * 5 * 5 * sizeof(uint32_t),
+                           vk::BufferUsageFlagBits::eTransferDst, {});
+      vk::BufferImageCopy volume_region{};
+      volume_region.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0,
+                                        1};
+      volume_region.imageExtent = wide_volume_info.extent;
+      wide_volume.Upload(std::span{&volume_region, 1}, volume_upload.buffer, 0,
+                         volume_upload.size);
+      narrow_volume.CopyImage(wide_volume);
+      volume_region.imageExtent = narrow_volume_info.extent;
+      narrow_volume.Download(std::span{&volume_region, 1},
+                             shrinking_readback.buffer, 0,
+                             shrinking_readback.size);
+      HostReadBarrier(shrinking_readback.buffer, shrinking_readback.size,
+                      vk::PipelineStageFlagBits::eTransfer,
+                      vk::AccessFlagBits::eTransferWrite);
+      scheduler.Finish();
+      const auto volume_copied_words =
+          ReadBuffer(name, shrinking_readback, 20 * 5 * 5);
+      for (uint32_t row = 0; row < 5 * 5; ++row)
+        Require(name, "shrinking volume copy contents",
+                std::equal(volume_copied_words.begin() + row * 20,
+                           volume_copied_words.begin() + (row + 1) * 20,
+                           volume_source_words.begin() + row * 85),
+                "85x5x5 to 20x5x5 copy lost a row or depth slice");
+      DestroyBuffer(&shrinking_readback);
+      DestroyBuffer(&volume_upload);
+
       ImageInfo resolve_source_info{};
       resolve_source_info.pixel_format = vk::Format::eR8G8B8A8Unorm;
       resolve_source_info.guest_format = Prospero::BufferFormat::k8_8_8_8UNorm;
@@ -11051,6 +11096,102 @@ public:
     context.ShutdownGpu();
     Require(name, "release", LibKernel::Memory::KernelCheckedReleaseDirectMemory(physical, size) == 0,
             "call fixture release failed");
+    std::printf("[gpu]     %-32s ok\n", name);
+  }
+
+  void CheckZeroStrideBufferBinding() {
+    constexpr const char *name = "ZeroStrideBufferBinding";
+    constexpr uintptr_t base = 0x0000000204c00000ull;
+    constexpr uint64_t size = 0x10000;
+    constexpr auto output = base + 0x2000;
+    constexpr u32 value = 0x80000578u;
+    std::array<std::vector<u32>, 2> codes;
+    for (u32 scalar = 0; scalar < codes.size(); ++scalar) {
+      auto &code = codes[scalar];
+      if (scalar) {
+        code = {EncodeSmem0(0x08, 16), EncodeSmem1(0, 125),
+                EncodeSopp(0x0c, 0), EncodeVop1(0x01, 1, 16)};
+      } else {
+        code = {EncodeMubuf0(0x00, 0, false, false),
+                EncodeMubuf1(1, 0, 0), EncodeSopp(0x0c, 0)};
+      }
+      code.insert(code.end(), {EncodeVop2(0x1a, 2, InlineU32(2), 0),
+                              EncodeMubuf0(0x1c), EncodeMubuf1(1, 1, 2)});
+      AppendEnd(&code);
+      ShaderMapUserData(reinterpret_cast<uint64_t>(code.data()),
+          {.type = Prospero::ShaderBinaryType::kCs,
+           .code_size_bytes = static_cast<u32>(code.size() * sizeof(u32))});
+    }
+    EnsureRuntimeContext();
+    int64_t physical = -1;
+    Require(name, "allocate", LibKernel::Memory::KernelAllocateDirectMemory(
+        0, LibKernel::Memory::KernelGetDirectMemorySize(), size, size, 0, &physical) == 0,
+        "buffer binding allocation failed");
+    void *mapped = reinterpret_cast<void *>(base);
+    Require(name, "map", LibKernel::Memory::KernelMapDirectMemory(
+        &mapped, size, 0x3, 0x10, physical, size) == 0 &&
+            mapped == reinterpret_cast<void *>(base), "buffer binding mapping failed");
+    for (const auto prefix : {0u, 8u})
+      Require(name, "input backing", LibKernel::Memory::TryWriteBacking(
+          base + 0x1000 + prefix, &value, sizeof(value)), "input DWORD could not be written");
+    RenderContext context(m_runtime_context);
+    context.InitializeGpu(nullptr);
+    LibKernel::Memory::InstallGpuResources(&context);
+    context.GetGpu().SendCommandSync([&] {
+      CommandProcessor processor(context, 0);
+      processor.BufferInit();
+      context.MapMemory(base, size);
+      auto &cache = context.GetBufferCache();
+      auto &shaders = processor.GetShCtx();
+      struct Case { u32 mode, records; bool scalar; u32 expected; };
+      constexpr Case cases[]{{2, 1, false, value}, {2, 0, false, 0},
+                              {3, 1, false, 0}, {3, 4, false, value},
+                              {2, 1, true, 0}, {2, 4, true, value}};
+      for (const auto wave : {32u, 64u}) {
+        for (const auto prefix : {0u, 8u}) {
+          const auto address = base + 0x1000 + prefix;
+          for (const auto test : cases) {
+            cache.FillBuffer(output, wave * sizeof(u32), 0xa5a5a5a5u, false);
+            shaders.SetCsShader({
+                .data_addr = reinterpret_cast<uint64_t>(codes[test.scalar].data()),
+                .num_thread_x = wave, .num_thread_y = 1, .num_thread_z = 1,
+                .wave_size = static_cast<uint8_t>(wave), .user_sgpr = 8});
+            ShaderBufferResource input{}, out{};
+            input.UpdateAddress48(address);
+            input.fields[2] = test.records;
+            input.fields[3] = DstSel(4, 5, 6, 7) |
+                (static_cast<u32>(Prospero::BufferFormat::k32UInt) << 12u) |
+                (test.mode << 28u);
+            out.UpdateAddress48(output);
+            out.fields[2] = wave * sizeof(u32);
+            out.fields[3] = DstSel(4, 5, 6, 7) |
+                (static_cast<u32>(Prospero::BufferFormat::k32UInt) << 12u) | (3u << 28u);
+            for (u32 i = 0; i < 4; ++i) {
+              shaders.SetCsUserSgpr(i, input.fields[i], HW::UserSgprType::Unknown);
+              shaders.SetCsUserSgpr(i + 4, out.fields[i], HW::UserSgprType::Unknown);
+            }
+            processor.DispatchDirect(1, 1, 1, wave == 32 ? 0x8041u : 0x41u);
+            cache.ReadMemory(output, wave * sizeof(u32));
+            std::array<u32, 64> actual{};
+            Require(name, "readback", LibKernel::Memory::TryReadBacking(
+                output, actual.data(), wave * sizeof(u32)), "buffer output was unreadable");
+            Require(name, "vector and scalar range rules",
+                std::all_of(actual.begin(), actual.begin() + wave,
+                            [&](u32 word) { return word == test.expected; }),
+                "wave=" + std::to_string(wave) + " prefix=" + std::to_string(prefix) +
+                    " mode=" + std::to_string(test.mode) +
+                    " records=" + std::to_string(test.records) +
+                    " scalar=" + std::to_string(test.scalar));
+          }
+        }
+      }
+      context.UnmapMemory(base, size);
+      context.GetCommandScheduler().Finish();
+    });
+    LibKernel::Memory::InstallGpuResources(nullptr);
+    context.ShutdownGpu();
+    Require(name, "release", LibKernel::Memory::KernelCheckedReleaseDirectMemory(
+        physical, size) == 0, "buffer binding release failed");
     std::printf("[gpu]     %-32s ok\n", name);
   }
 
@@ -23126,6 +23267,38 @@ TestCase ScalarZeroBitOps() {
   return test;
 }
 
+// V_READFIRSTLANE reads the first EXEC lane, or lane 0 when EXEC is zero; v1 = 100 + lane.
+TestCase VectorReadFirstLaneExecMasks(u32 wave_size) {
+  using O = ShaderOpcode;
+  TestCase test;
+  test.name = wave_size == 32 ? "VectorReadFirstLaneExecMasksWave32"
+                              : "VectorReadFirstLaneExecMasksWave64";
+  auto &code = test.code;
+  AppendVMovU32(&code, 1, 100);
+  code.push_back(EncodeVop2(0x25, 1, Vgpr(0), 1));
+  code.push_back(EncodeSop1(0x04, 10, 126)); // s_mov_b64 s[10:11], exec
+  const uint64_t masks[] = {0, 1ull << 5, 0x80000000ull, 1ull << 32, 1ull << 63, 0xffff000000000000ull};
+  for (const uint64_t mask : masks) {
+    if (wave_size == 32 && mask > UINT32_MAX) continue;
+    AppendSMovLiteral(&code, 126, u32(mask));
+    if (wave_size == 64) AppendSMovLiteral(&code, 127, u32(mask >> 32));
+    code.push_back(EncodeVop1(0x02, 20, Vgpr(1)));
+    code.push_back(EncodeSop1(0x04, 126, 10));
+    AppendStoreSgpr(&code, 20, u32(test.expected.size()));
+    test.expected.push_back(100 + (mask == 0 ? 0 : std::countr_zero(mask)));
+  }
+  AppendEnd(&code);
+  test.initial.resize(test.expected.size());
+  test.opcodes = {O::V_MOV_B32, O::V_ADD_NC_U32, O::S_MOV_B32, O::S_MOV_B64,
+                  O::V_READFIRSTLANE_B32, O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  test.compute_info.wave_size = wave_size;
+  test.compute_info.threads_num[0] = wave_size;
+  test.compute_info.threads_num[1] = test.compute_info.threads_num[2] = 1;
+  test.compute_info.thread_ids_num = 1;
+  test.has_compute_info = true;
+  return test;
+}
+
 TestCase ScalarSextMasks(u32 bits, u32 wave_size) {
   using O = ShaderOpcode;
   TestCase test;
@@ -25229,10 +25402,8 @@ TestCase Vop3CvtPkI16I32Captured() {
   test.opcodes = {O::BUFFER_LOAD_DWORD, O::V_MOV_B32, O::V_CVT_PK_I16_I32,
                   O::BUFFER_STORE_DWORD, O::S_ENDPGM};
   test.decoded_counts = {{"0x00000014: V_CVT_PK_I16_I32 v5, v7, v16\n", 1}};
-  test.ir_counts = {{" = BitwiseAnd32 ", 2},
-                    {" = ShiftLeftLogical32 ", 1},
-                    {" = BitwiseOr32 ", 1}};
-  test.required_spirv = {"OpBitwiseAnd", "OpShiftLeftLogical", "OpBitwiseOr"};
+  test.ir_counts = {{" = BitFieldInsert ", 1}};
+  test.required_spirv = {"OpBitFieldInsert"};
   return test;
 }
 
@@ -43191,6 +43362,8 @@ std::vector<TestCase> MakeCases() {
   cases.push_back(VectorDppRowShare(64));
   cases.push_back(VectorDppMirrorAndRotate(32));
   cases.push_back(VectorDppMirrorAndRotate(64));
+  cases.push_back(VectorReadFirstLaneExecMasks(32));
+  cases.push_back(VectorReadFirstLaneExecMasks(64));
   cases.push_back(ComputeWave64Minimum(false));
   cases.push_back(ComputeWave64Minimum(true));
   AddCase(VectorDppBankMaskPreservesDestination);
@@ -44832,6 +45005,26 @@ void CheckImageTransitionState(RenderContext &renderer) {
               ImageTestAccess::CopyExtent(1, 1, 4, 1) == 1 &&
               ImageTestAccess::CopyExtent(200, 455, 1, 4) == 113,
           "compressed image copy extent splits a block inside an image");
+
+  // RADV rejects 3D 128-bit BC images with block-texel views plus extended usage.
+  auto volume_info = MakeInfo(vk::Format::eBc7UnormBlock, 1, 1);
+  volume_info.guest_format = Prospero::BufferFormat::kBc7UNorm;
+  volume_info.type = Prospero::ImageType::kColor3D;
+  volume_info.extent.depth = 4;
+  volume_info.bytes_per_block = 16;
+  for (const bool supported : {false, context.supports_block_texel_view}) {
+    context.supports_block_texel_view = supported;
+    Image volume(context, scheduler, volume_info);
+    const auto flags = volume.backing.flags;
+    Require(name, "block volume create flags",
+            (flags & vk::ImageCreateFlagBits::e2DArrayCompatible) &&
+                static_cast<bool>(flags & vk::ImageCreateFlagBits::eBlockTexelViewCompatible) ==
+                    supported &&
+                static_cast<bool>(flags & vk::ImageCreateFlagBits::eExtendedUsage) ==
+                    static_cast<bool>(volume.backing.usage &
+                                      vk::ImageUsageFlagBits::eStorage),
+            "block volume requested extended usage without storage");
+  }
 
   Image image(context, scheduler, MakeInfo(vk::Format::eR8Unorm, 2, 3));
   auto barriers =
@@ -49272,6 +49465,8 @@ int main(int argc, char **argv) {
     RunCase(&vulkan, VectorDppRowShare(64));
     RunCase(&vulkan, VectorDppMirrorAndRotate(32));
     RunCase(&vulkan, VectorDppMirrorAndRotate(64));
+    RunCase(&vulkan, VectorReadFirstLaneExecMasks(32));
+    RunCase(&vulkan, VectorReadFirstLaneExecMasks(64));
     RunCase(&vulkan, VectorDppBankMaskPreservesDestination());
     RunCase(&vulkan, VectorDppBoundsControlZeroPreservesDestination());
     return 0;

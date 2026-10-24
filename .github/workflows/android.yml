@@ -160,3 +160,42 @@ jobs:
           name: KytyPS5-Plus-${{ steps.version.outputs.name }}
           path: KytyPS5-Plus-*.apk
 
+
+  native-regressions:
+    name: Native regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes clang lld ninja-build glslang-tools ccache libasound2-dev libdbus-1-dev libgl1-mesa-dev libpulse-dev libudev-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev libxkbcommon-dev libxrandr-dev libxss-dev libxtst-dev pkg-config wayland-protocols
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-native-tests-${{ github.sha }}
+          restore-keys: ccache-native-tests-
+      - name: Configure host regression tests
+        run: |
+          ccache --max-size=2G
+          cmake -S . -B _Build/regressions -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DKYTY_BUILD_LAUNCHER=OFF \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build native regression tests
+        run: cmake --build _Build/regressions --target shader_cfg_tests shader_vertex_metadata_tests audio_out2_port_tests shader_recompiler_compute_tests --parallel 2
+      - name: Run CPU and shader regressions
+        run: |
+          ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_cfg|shader_vertex_metadata|audio_out2_port)$'
+          timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only
+          timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only-fast-paths
+      - name: Upload regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-regression-results
+          path: _Build/regressions/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore

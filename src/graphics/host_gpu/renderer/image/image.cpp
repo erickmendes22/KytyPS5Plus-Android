@@ -37,15 +37,17 @@ namespace {
 	}
 }
 
-[[nodiscard]] vk::ImageCreateFlags ImageCreateFlags(const GraphicContext& graphics,
-                                                   const ImageInfo& info) {
+[[nodiscard]] vk::ImageCreateFlags
+ImageCreateFlags(const GraphicContext& graphics, const ImageInfo& info, vk::ImageUsageFlags usage) {
 	vk::ImageCreateFlags flags {};
 	if (DepthAspectTransferFormat(info.pixel_format) == vk::Format::eUndefined) {
 		flags |= vk::ImageCreateFlagBits::eMutableFormat;
-		flags |= vk::ImageCreateFlagBits::eExtendedUsage;
 		if (info.IsBlock() && graphics.supports_block_texel_view) {
 			flags |= vk::ImageCreateFlagBits::eBlockTexelViewCompatible;
 		}
+	}
+	if (usage & vk::ImageUsageFlagBits::eStorage) {
+		flags |= vk::ImageCreateFlagBits::eExtendedUsage;
 	}
 	if (info.IsVolume()) {
 		flags |= vk::ImageCreateFlagBits::e2DArrayCompatible;
@@ -66,7 +68,7 @@ namespace {
 			const auto storage = usage | vk::ImageUsageFlagBits::eStorage;
 			if (graphics.GetImageFormatProperties(info.pixel_format, HostImageType(info.type),
 			                                      vk::ImageTiling::eOptimal, storage,
-			                                      ImageCreateFlags(graphics, info),
+			                                      ImageCreateFlags(graphics, info, storage),
 			                                      nullptr) == vk::Result::eSuccess) {
 				usage = storage;
 			} else {
@@ -803,7 +805,8 @@ Prospero::BufferFormat RenderTargetTransferFormat(uint32_t bytes_per_element) {
 
 bool Image::CreateBacking(vk::Extent3D extent, VulkanImage& out) {
 	vk::ImageCreateInfo create {};
-	create.flags         = ImageCreateFlags(m_graphics, info);
+	create.usage         = ImageUsageFlags(m_graphics, info);
+	create.flags         = ImageCreateFlags(m_graphics, info, create.usage);
 	create.imageType     = HostImageType(info.type);
 	create.extent        = extent;
 	create.mipLevels     = info.resources.levels;
@@ -811,7 +814,6 @@ bool Image::CreateBacking(vk::Extent3D extent, VulkanImage& out) {
 	create.format        = info.pixel_format;
 	create.tiling        = vk::ImageTiling::eOptimal;
 	create.initialLayout = vk::ImageLayout::eUndefined;
-	create.usage         = ImageUsageFlags(m_graphics, info);
 	create.samples       = vulkan_sample_count(info.samples);
 
 	// Name the view formats of a mutable image so drivers can keep it compressed (UBWC).

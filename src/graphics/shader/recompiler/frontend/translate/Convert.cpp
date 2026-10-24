@@ -165,16 +165,13 @@ void Translator::V_CVT_PK_U8_F32(const Decoder::Instruction& inst) {
 }
 
 void Translator::V_PACK_B32_F16(const Decoder::Instruction& inst) {
-	const auto low = Read16LaneBits(inst.src0, false);
-	const auto high =
-	    ir.ShiftLeftLogical(Read16LaneBits(inst.src1, false), IR::U32(IR::Value(16u)));
-	WriteOperand(DestinationOperand(inst), ir.BitwiseOr(low, high));
+	WriteOperand(DestinationOperand(inst),
+	             PackU16Lanes(Read16LaneBits(inst.src0, false), Read16LaneBits(inst.src1, false)));
 }
 
 IR::U32 Translator::PackU16Lanes(IR::U32 low, IR::U32 high) {
-	const auto mask = IR::U32(IR::Value(0xffffu));
-	return ir.BitwiseOr(ir.BitwiseAnd(low, mask),
-	                    ir.ShiftLeftLogical(ir.BitwiseAnd(high, mask), IR::U32(IR::Value(16u))));
+	return IR::U32(
+	    ir.Emit(IR::ValueOpcode::BitFieldInsert, {low, high, IR::Value(16u), IR::Value(16u)}));
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend
