@@ -106,6 +106,15 @@ class PresetLaunchArgsTest {
     }
 
     @Test
+    fun unrelatedPresetPreservesExplicitPlayGoFlag() {
+        val plan = PresetLaunchArgs.plan(listOf(resolved("perf", PresetLaunch(renderScale = 0.75f))))
+        assertArrayEquals(
+            arrayOf("--game", "/astro", "--playgo-hack", "--render-scale", "0.75"),
+            PresetLaunchArgs.apply(arrayOf("--game", "/astro", "--playgo-hack"), plan),
+        )
+    }
+
+    @Test
     fun unrelatedPresetsDoNotEnablePlayGoFallback() {
         val plan = PresetLaunchArgs.plan(listOf(
             resolved("perf", PresetLaunch(renderScale = 0.75f)),
