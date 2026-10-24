@@ -198,12 +198,12 @@ bool BringUpTranslator() {
 	// before any guest code runs; without it every host->guest callback returns to address 0.
 	auto* init_thread = syscalls->TM.CreateThread();
 	syscalls->TM.TrackThread(init_thread);
-	signals->RegisterTLSState(init_thread);
-	thunks->RegisterTLSState(init_thread);
+	// Registers both signal and thunk TLS once, including one alternate signal stack.
+	syscalls->RegisterTLSState(init_thread);
 	static auto vdso = FEX::VDSO::LoadVDSOThunks(init_thread->Thread, true, syscalls.get());
 	thunks->AppendThunkDefinitions(FEX::VDSO::GetVDSOThunkDefinitions(true));
 	signals->SetVDSOSymbols();
-	signals->UninstallTLSState(init_thread);
+	syscalls->UninstallTLSState(init_thread);
 	syscalls->TM.DestroyThread(init_thread);
 
 	g_runtime.ctx      = ctx.get();
@@ -314,9 +314,10 @@ bool AttachCurrentThread(uint64_t guest_stack_top) {
 	auto& rt = Fex::GetRuntime();
 	auto* state = rt.syscalls->TM.CreateThread();
 	rt.syscalls->TM.TrackThread(state);
-	rt.signals->RegisterTLSState(state);
+	// SyscallHandler already registers the signal delegator and thunk handler.
+	// Registering all three separately allocated and installed two signal stacks
+	// per guest thread, leaking the first and desynchronizing FEX thread state.
 	rt.syscalls->RegisterTLSState(state);
-	rt.thunks->RegisterTLSState(state);
 
 	state->ThreadInfo.PID = ::getpid();
 	state->ThreadInfo.TID = FHU::Syscalls::gettid();
@@ -334,7 +335,7 @@ void DetachCurrentThread() {
 		return;
 	}
 	auto& rt = Fex::GetRuntime();
-	rt.signals->UninstallTLSState(t_attached.state);
+	// Release the signal stack once, before destroying the FEX thread state.
 	rt.syscalls->UninstallTLSState(t_attached.state);
 	rt.syscalls->TM.DestroyThread(t_attached.state);
 	t_attached = {};
