@@ -51,7 +51,7 @@ class GpuDriverPanel(
             addView(
                 LinearLayout(activity).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    addView(button("Import ZIP") { openPicker() },
+                    addView(button("Import Turnip ZIP") { openPicker() },
                         LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                     addView(button("Remove") { chooseToRemove() },
                         LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -201,6 +201,14 @@ class GpuDriverPanel(
 
     private fun button(text: String, onClick: () -> Unit) = Button(activity).apply {
         this.text = text
+        isAllCaps = false
+        textSize = 12f
+        setTextColor(android.graphics.Color.WHITE)
+        background = android.graphics.drawable.GradientDrawable().apply {
+            cornerRadius = activity.resources.displayMetrics.density * 11f
+            setColor(android.graphics.Color.rgb(33, 93, 149))
+            setStroke(1, android.graphics.Color.rgb(57, 132, 189))
+        }
         setOnClickListener { onClick() }
     }
 
