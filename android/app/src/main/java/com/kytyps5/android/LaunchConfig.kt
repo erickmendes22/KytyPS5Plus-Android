@@ -2,6 +2,7 @@ package com.kytyps5.android
 
 import com.kytyps5.android.library.EnvVar
 import com.kytyps5.android.library.GameSettings
+import com.kytyps5.android.hud.HudMode
 
 /** Output resolution the emulator renders at. Values are passed as --screen-width / --screen-height. */
 enum class Resolution(
@@ -61,6 +62,7 @@ object LaunchArgs {
     const val EXTRA_GAME_PATH = "com.kytyps5.android.extra.GAME_PATH"
     const val EXTRA_ENV = "com.kytyps5.android.extra.ENV"
     const val EXTRA_HUD = "com.kytyps5.android.extra.HUD"
+    const val EXTRA_HUD_MODE = "com.kytyps5.android.extra.HUD_MODE"
     const val EXTRA_TOUCH_CONTROLS = "com.kytyps5.android.extra.TOUCH_CONTROLS"
 
     /** Directory of an imported Vulkan driver package; omitted for the system driver. */
@@ -103,6 +105,7 @@ data class LaunchOptions(
     val resolution: Resolution,
     val hud: Boolean,
     val touchControls: Boolean,
+    val hudMode: HudMode = HudMode.COMPACT,
     val env: List<EnvVar>,
     val renderScale: RenderScale = RenderScale.NATIVE,
     val gpuTurbo: Boolean = LauncherSettings.DEFAULT_GPU_TURBO,
@@ -115,10 +118,12 @@ data class LaunchOptions(
             game: GameSettings,
             globalRenderScale: RenderScale = RenderScale.NATIVE,
             globalGpuTurbo: Boolean = LauncherSettings.DEFAULT_GPU_TURBO,
+            globalHudMode: HudMode = HudMode.COMPACT,
         ) =
             LaunchOptions(
                 resolution = game.resolution ?: globalResolution,
                 hud = game.hud ?: globalHud,
+                hudMode = game.hudMode ?: globalHudMode,
                 touchControls = game.touchControls ?: globalTouch,
                 env = game.envVars,
                 renderScale = game.renderScale ?: globalRenderScale,
