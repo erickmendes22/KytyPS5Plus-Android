@@ -115,6 +115,8 @@ object Diagnostics {
                 }
             }
 
+            count += exportGtTessellationCapture(context, zip)
+
             if (files.isEmpty()) {
                 zip.putNextEntry(ZipEntry("HOW_TO_COLLECT.txt"))
                 zip.write(
@@ -127,6 +129,73 @@ object Diagnostics {
             }
         }
         return "Exported $count diagnostic file(s)"
+    }
+
+
+    /**
+     * Capture the last ENTERed PPSA24156 tessellation pipeline. Queued
+     * pipelines are excluded: only an ENTERed call reaches the Vulkan driver.
+     * Include its exact SPIR-V modules and fixed-function pipeline JSON.
+     */
+    private fun exportGtTessellationCapture(context: Context, zip: ZipOutputStream): Int {
+        val logFile = File(context.filesDir, "logs/session.log")
+        val dump = File(context.filesDir, "gt-pipeline-dumps")
+        if (!logFile.isFile || !dump.isDirectory) return 0
+        return try {
+            val records = logFile.readLines()
+            val entered = records.lastOrNull { it.startsWith("GT tess pipeline ENTER #") }
+                ?: return 0
+            val serial = Regex("""ENTER #(\d+)""").find(entered)
+                ?.groupValues?.getOrNull(1) ?: return 0
+            val begin = records.lastOrNull { it.startsWith("GT pipeline BEGIN #$serial ") }
+                ?: return 0
+            val hashRegion = begin.substringAfter(" hashes=", "").substringBefore(" topology=", "")
+            val hashes = Regex("""0x([a-fA-F0-9]{16})""").findAll(hashRegion)
+                .map { it.groupValues[1].lowercase(Locale.ROOT) }.toList()
+            if (hashes.size < 3) return 0
+
+            val files = mutableListOf<File>()
+            val prefix = "gfx_" + hashes.joinToString("_") + "_"
+            File(dump, "pipelines").listFiles()
+                ?.filter { it.isFile && it.extension == "json" && it.name.startsWith(prefix) }
+                ?.sortedByDescending { it.lastModified() }?.take(3)?.let(files::addAll)
+            val spvs = File(dump, "spv").listFiles().orEmpty()
+            for (hash in hashes) {
+                spvs.filter { it.isFile && it.extension == "spv" && it.name.contains("_${hash}_") }
+                    .sortedByDescending { it.lastModified() }.take(3).let(files::addAll)
+            }
+            File(dump, "device.json").takeIf { it.isFile }?.let(files::add)
+
+            var budget = 16L * 1024L * 1024L
+            var exported = 0
+            val note = buildString {
+                appendLine("PPSA24156 last entered tessellation pipeline #$serial")
+                appendLine(begin)
+                appendLine(entered)
+                appendLine("Shaders: ${hashes.joinToString(" ")}")
+                appendLine("Includes original shader SPIR-V and Vulkan pipeline JSON, if present.")
+            }
+            zip.putNextEntry(ZipEntry("gt-pipeline-capture/README.txt"))
+            zip.write(note.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+            exported++
+            for (file in files.distinctBy { it.absolutePath }.take(18)) {
+                if (file.length() <= 0 || file.length() > 4L * 1024L * 1024L ||
+                    file.length() > budget) continue
+                val folder = if (file.parentFile?.name == "spv") "spv"
+                    else if (file.parentFile?.name == "pipelines") "pipelines" else ""
+                val relative = if (folder.isEmpty()) file.name else "$folder/${file.name}"
+                zip.putNextEntry(ZipEntry("gt-pipeline-capture/$relative"))
+                file.inputStream().use { it.copyTo(zip) }
+                zip.closeEntry()
+                budget -= file.length()
+                exported++
+            }
+            exported
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not export Gran Turismo shader capture", e)
+            0
+        }
     }
 
     private fun copyAtMost(input: InputStream, output: ZipOutputStream, maxBytes: Long) {
