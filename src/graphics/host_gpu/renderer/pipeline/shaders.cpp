@@ -23,6 +23,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
+#include "loader/systemContent.h"
 
 #include <algorithm>
 #include <array>
@@ -33,6 +34,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 #include <fmt/format.h>
 
@@ -788,13 +790,64 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	                              : vk::DescriptorSetLayoutCreateFlags {},
 	     push_constants},
 	    std::span(guest_hashes).first(guest_hash_count));
+	// An incomplete set of native tessellation modules must never be passed to a
+	// Vulkan ICD: failed compilation can leave the second or third stage empty.
+	// Validate every stage, not just the first VS and the optional PS.
+	for (uint32_t i = 0; i < shader_stage_count; ++i) {
+		if (shader_stages[i].module == nullptr) {
+			EXIT("graphics pipeline missing shader module: stage=%u/%u stage_bits=%u\\n",
+			     i, shader_stage_count, static_cast<uint32_t>(shader_stages[i].stage));
+		}
+	}
+	// The PPSA24156 crash in Turnip V32 is inside vkCreateGraphicsPipelines,
+	// before the VkResult comes back. Record a *paired* per-pipeline breadcrumb
+	// so the crash report identifies exactly which native stages and attachment
+	// combination was in flight (there can be three shader workers).
+	std::string title_id;
+	const bool gt_pipeline = Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id) &&
+	                         title_id == "PPSA24156";
+	static std::atomic_uint64_t gt_pipeline_seq {0};
+	const auto gt_serial = gt_pipeline ? gt_pipeline_seq.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+	if (gt_pipeline) {
+		std::string stages;
+		for (uint32_t i = 0; i < shader_stage_count; ++i) {
+			stages += fmt::format(" [{}:{} module={}]", i,
+			    static_cast<uint32_t>(shader_stages[i].stage),
+			    reinterpret_cast<uintptr_t>(static_cast<VkShaderModule>(shader_stages[i].module)));
+		}
+		std::string colors;
+		for (uint32_t i = 0; i < rendering.color_count; ++i)
+			colors += fmt::format(" {}:{}", i, static_cast<uint32_t>(rendering.color_formats[i]));
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "GT pipeline BEGIN #{} VS=0x{:016x} PS=0x{:016x} hashes={} "
+		    "topology={} tess={} cp={} stages={} raster_samples={} "
+		    "color_count={} color_formats={} depth={} stencil={} cache={}\\n",
+		    gt_serial, vs_input_info.stage.program->shader_hash,
+		    ps_active ? ps_input_info->stage.program->shader_hash : 0ull,
+		    fmt::format("{}", guest_hash_count),
+		    static_cast<uint32_t>(static_params.topology), tessellation ? 1 : 0,
+		    tessellation_state.patchControlPoints, stages,
+		    static_params.samples, rendering.color_count, colors,
+		    static_cast<uint32_t>(rendering.depth_format),
+		    static_cast<uint32_t>(rendering.stencil_format),
+		    driver_cache != nullptr ? 1 : 0));
+	}
+	// Optional title-only A/B switch; the default retains the driver cache.
+	// If the crash is specific to cache reuse, the same APK can isolate it.
+	const bool gt_nocache = gt_pipeline && std::getenv("KYTY_GT_NO_PIPELINE_CACHE") != nullptr &&
+	    std::strcmp(std::getenv("KYTY_GT_NO_PIPELINE_CACHE"), "1") == 0;
 	{
-		// On a shader worker this is not a GPU-thread stall; it is reported as worker time.
 		const Common::PerfStats::ScopedStall timing(
 		    ShaderWorkerPool::OnWorkerThread() ? Common::PerfStats::StallKind::PipelineWorker
 		                                       : Common::PerfStats::StallKind::PipelineCompile);
-		result = graphics.device.createGraphicsPipelines(driver_cache, 1, &pipeline_info, nullptr,
-		                                                 &pipeline.pipeline);
+		result = graphics.device.createGraphicsPipelines(
+		    gt_nocache ? vk::PipelineCache {} : driver_cache, 1,
+		    &pipeline_info, nullptr, &pipeline.pipeline);
+	}
+	if (gt_pipeline) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "GT pipeline END #{} result={} cache_bypassed={}\\n",
+		    gt_serial, vk::to_string(result), gt_nocache ? 1 : 0));
 	}
 	ShaderDump::RecordResult(dump_record, result);
 	if (capture_stats && result == vk::Result::eSuccess) {
