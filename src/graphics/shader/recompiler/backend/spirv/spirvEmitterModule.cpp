@@ -1221,7 +1221,7 @@ void DefineModule(EmitterState& state) {
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeDenormPreserve, 16u);
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeRoundingModeRTE, 16u);
 	}
-	if (state.program.info.float64) {
+	if (state.program.info.float64 && !state.soft_float64) {
 		EXIT_NOT_IMPLEMENTED(state.program.stage == ShaderType::Compute &&
 		                     state.input_info.compute->float_mode != 0xc0);
 		// Use native rounding for MODE=0xc0, consistent with ordinary FP32 arithmetic.
