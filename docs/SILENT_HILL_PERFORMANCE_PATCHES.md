@@ -132,3 +132,20 @@ benefit of each option still require a device run. Zero dynamic-shadow quality d
 not remove baked lighting; SSAO/SSR switches do not establish that every alternative
 AO/reflection path in every scene is disabled. No lower-resolution textures, shader
 removals, guessed draw skips or arbitrary render-output changes are included.
+
+### Isolated execution of original x86 registration/setter code
+
+`docs/tools/probe_silent_hill_cvars.py` (Unicorn 2.1.4) independently executes
+the patched registration blocks and original integer/float/reference constructors
+from the exact SHA-256-checked SELF. In this bounded virtual machine the allocator,
+help/name/string formatting, parser and manager insertion are explicit stubs; it
+does not boot the game or emulate a GPU. The real constructor instructions seed
+both copies with zero for all eight effect controls, 50.0 for screen percentage,
+and zero for dynamic-resolution mode, retaining Console priority and original
+low flag bits. The original integer and float setters and priority predicate
+reject sources 0..8 without changing either copy. Source 9 reaches the real
+value store (a parsed value of 3 supplied by the parser stub), demonstrating the
+intentional equal-priority-console exception. For accepted writes the probe stops
+after the game-thread store; render-thread propagation of that accepted override
+is not being claimed. This complements byte-plan validation, not device rendering
+or full manager/INI-startup integration testing.
