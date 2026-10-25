@@ -495,7 +495,8 @@ void BuildStageStaticKey(const ShaderVertexInputInfo& info, std::vector<uint32_t
 	if (info.tess.input_control_points != 0) {
 		const auto& tess = info.tess;
 		key.insert(key.end(), {tess.output_control_points, tess.ls_stride, tess.hs_stride,
-		                       tess.domain, tess.partitioning, tess.output_topology});
+		                       tess.domain, tess.partitioning, tess.output_topology,
+		                       tess.patch_base, tess.patch_size});
 	}
 
 	for (int i = 0; i < info.resources_num; i++) {
@@ -733,8 +734,11 @@ PrepareTessellationPrograms(const HW::VertexShaderInfo& regs, const HW::Context&
 		std::scoped_lock lock(g_tess_layouts_mutex);
 		auto [entry, inserted] = g_tess_layouts.try_emplace(XXH3_64bits(key, sizeof(key)), tess);
 		if (inserted) {
-			ShaderRecompiler::AnalyzeTessellationPrograms(params[0].code, params[1].code,
-			                                              entry->second);
+			if (!ShaderRecompiler::AnalyzeTessellationPrograms(
+			        params[0].code, params[1].code, entry->second)) {
+				LOGF("Tessellation interface not reflected: LS 0x%016" PRIx64
+				     " HS 0x%016" PRIx64 "\n",local_hash,control_hash);
+			}
 		}
 		tess = entry->second;
 	}
