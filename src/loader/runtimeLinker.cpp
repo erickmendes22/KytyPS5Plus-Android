@@ -28,6 +28,7 @@
 #include "loader/guestInstructionPatcher.h"
 #include "loader/jit.h"
 #include "loader/mfgtArenaFix.h"
+#include "loader/mfgtIndexHeader.h"
 #include "loader/symbolDatabase.h"
 #include "loader/systemContent.h"
 #include "loader/x64InstructionEmulator.h"
@@ -161,6 +162,82 @@ static bool PatchGuestMemory64(uint64_t vaddr, uint64_t value) {
 	std::memcpy(ptr, &value, sizeof(value));
 	return changed;
 }
+
+#if KYTY_HOST_ARM64
+// Set only after the complete, pristine executable passes MfgtArenaFix's hash.
+static uint64_t             g_mfgt_verified_base = 0;
+static std::atomic_uint32_t g_mfgt_catalog_logs {0};
+
+static uint64_t MfgtWord(uint64_t owner, size_t offset) {
+	uint64_t value = 0;
+	std::memcpy(&value, reinterpret_cast<const void*>(Kernel::AddressFold::Fold(owner + offset)),
+	            sizeof(value));
+	return value;
+}
+
+static void MfgtIndexPreflight() {
+	constexpr auto path = "/app0/contents/gt.idx";
+	const auto     real = Libs::LibKernel::FileSystem::GetRealFilename(path);
+	const auto     info = Common::File::GetInfo(real);
+	Common::File   file;
+	std::array<uint8_t, MfgtIndexHeader::kPrefixSize> raw {};
+	uint32_t                                          read = 0;
+	const bool opened = info && info->is_file && file.Open(real, Common::File::Mode::Read);
+	if (opened) file.Read(raw.data(), static_cast<uint32_t>(raw.size()), &read);
+	const auto header = MfgtIndexHeader::Decode(std::span<const uint8_t>(raw).first(read));
+	Log::WriteToConsoleAndLog(
+	    fmt::format("MFGT index preflight: path={} exists={} file={} size={} opened={} read={} "
+		            "decoded_magic={:08x} decoded_version={:08x} header_compatible={}\n",
+		            path, info.has_value(), info && info->is_file, info ? info->size : 0, opened,
+		            read, header.magic, header.version, header.Compatible()));
+}
+
+// The original initializer is a two-integer SysV virtual function. Keep its
+// arguments and return register, and call it exactly once through the existing
+// host-to-guest callback bridge. No null bypass, fabricated catalog or retry.
+static KYTY_SYSV_ABI uint64_t MfgtCatalogInit(uint64_t owner, uint64_t flags) {
+	const auto index = g_mfgt_catalog_logs.fetch_add(1, std::memory_order_relaxed);
+	const bool log   = index < 8;
+	if (log) {
+		const auto  length   = MfgtWord(owner, 0x40);
+		const auto  capacity = MfgtWord(owner, 0x48);
+		const auto  path     = capacity >= 0x10 ? MfgtWord(owner, 0x30) : owner + 0x30;
+		std::string name;
+		if (length <= 255 && path != 0)
+			name.assign(reinterpret_cast<const char*>(Kernel::AddressFold::Fold(path)),
+			            static_cast<size_t>(length));
+		const auto backend = MfgtWord(owner, 0x10);
+		Log::WriteToConsoleAndLog(
+		    fmt::format("MFGT catalog init: begin owner={:x} flags={:x} path={} backend={:x} "
+			            "backend_vtable={:x} catalog={:x}\n",
+			            owner, flags, name, backend, backend ? MfgtWord(backend, 0) : 0,
+			            MfgtWord(owner, 0x58)));
+	}
+	using Init        = uint64_t(KYTY_SYSV_ABI*)(uint64_t, uint64_t);
+	const auto result = GuestHost::CallGuestFunction(
+	    reinterpret_cast<Init>(g_mfgt_verified_base + 0x3d4eb30), owner, flags);
+	if (log)
+		Log::WriteToConsoleAndLog(fmt::format("MFGT catalog init: end owner={:x} index_buffer={:x} "
+		                                      "catalog={:x} entries={:x} volumes={:x}\n",
+		                                      owner, MfgtWord(owner, 0x50), MfgtWord(owner, 0x58),
+		                                      MfgtWord(owner, 0x68), MfgtWord(owner, 0x78)));
+	return result;
+}
+
+static void InstallMfgtCatalogDiagnostic() {
+	if (g_mfgt_verified_base == 0) return;
+	MfgtIndexPreflight();
+	const auto slot = g_mfgt_verified_base + 0x554e398;
+	if (MfgtWord(slot, 0) != g_mfgt_verified_base + 0x3d4eb30) {
+		Log::WriteToConsoleAndLog("MFGT catalog diagnostic: vtable differs; no hook installed\n");
+		return;
+	}
+	const auto hook = GuestHost::AddressOf<&MfgtCatalogInit>("MFGT catalog initializer diagnostic");
+	if (PatchGuestMemory64(slot, hook))
+		Log::WriteToConsoleAndLog(
+		    "MFGT catalog diagnostic: verified initializer observed (8 calls maximum)\n");
+}
+#endif
 
 static uint64_t AllocateUnresolvedImportThunk(uint64_t record_id) {
 	constexpr uint64_t thunk_size = 34;
@@ -1499,6 +1576,9 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	const auto libc_path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/libc.prx");
 	auto* libc = Common::File::IsFileExisting(libc_path) ? LoadProgram(libc_path) : nullptr;
 	RelocateAll();
+#if KYTY_HOST_ARM64
+	InstallMfgtCatalogDiagnostic();
+#endif
 
 	if (!game_patch.empty()) {
 		if (!GamePatch::Apply(game_patch, m_programs.empty() ? nullptr : m_programs.front(),
@@ -1536,6 +1616,10 @@ void RuntimeLinker::Clear() {
 
 	Common::LockGuard lock(m_mutex);
 	GamePatch::Clear();
+#if KYTY_HOST_ARM64
+	g_mfgt_verified_base = 0;
+	g_mfgt_catalog_logs.store(0, std::memory_order_relaxed);
+#endif
 
 	for (auto* p: m_programs) {
 		DeleteProgram(p);
@@ -2018,6 +2102,7 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 				                        {reinterpret_cast<uint8_t*>(segment_addr),
 				                         static_cast<size_t>(segment_file_size)});
 				if (result == MfgtArenaFix::Result::Applied) {
+					g_mfgt_verified_base = program->base_vaddr;
 					Log::WriteToConsoleAndLog(
 					    "MFGT arena compatibility: relocated all 3 arenas and 24 classifiers "
 					    "(verified PPSA24156 executable)\n");

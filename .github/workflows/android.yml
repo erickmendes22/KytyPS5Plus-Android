@@ -208,7 +208,7 @@ jobs:
       - name: Build audio, metadata and memory regressions
         run: cmake --build _Build/regressions --target shader_vertex_metadata_tests audio_out2_port_tests gpu_memory_budget_tests image_readback_chunk_tests mfgt_arena_fix_tests kernel_file_system_tests address_fold_tests virtual_memory_allocation_tests --parallel 2
       - name: Test audio, metadata and memory
-        run: ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_vertex_metadata|audio_out2_port|gpu_memory_budget|image_readback_chunk|mfgt_arena_fix|kernel_file_system|address_fold|virtual_memory_allocation)$'
+        run: ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_vertex_metadata|audio_out2_port|gpu_memory_budget|image_readback_chunk|mfgt_arena_fix|kernel_mutex_headless|address_fold|virtual_memory_allocation)$'
       - name: Build shader regressions
         run: cmake --build _Build/regressions --target shader_cfg_tests shader_recompiler_compute_tests --parallel 2
       - name: Run shader regressions

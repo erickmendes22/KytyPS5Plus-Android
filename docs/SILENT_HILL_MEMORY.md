@@ -115,3 +115,15 @@ were added to `--gpu-tiler-only`; they require a capable device and were not
 executed locally. CI compiles that test suite and runs the CPU address tests.
 GPU completion waits remain: an 8 MiB copy limit does not impose a time bound on
 a hung or heavily loaded GPU. Android gameplay confirmation remains required.
+
+## Follow-up allocator granularity
+
+For confirmed PPSA10112 metadata only, the launcher also requests
+`--vma-block-size 32`, retaining GPU-written image writeback. Other titles,
+including My First Gran Turismo and Astro Bot, keep their original policy.
+The 202442 sample showed up to approximately 1.5 GiB of reserved allocator
+slack after reclamation. Smaller blocks may reduce retained slack; they cannot
+eliminate live resource demand or guarantee a particular RAM reduction. VMA's
+existing dedicated-allocation preference and allocation-count safeguards remain
+in force. Device validation of this change is pending. No resolution or effects
+patch with unverified executable offsets is included.

@@ -20,6 +20,19 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun smallerAllocatorBlocksAreScopedToSilentHillMetadata() {
+        for (title in listOf("PPSA10112", "ppsa10112")) {
+            val args = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = title)
+            assertEquals(1, args.count { it == LaunchArgs.FLAG_VMA_BLOCK_SIZE })
+            assertEquals("32", args[args.indexOf(LaunchArgs.FLAG_VMA_BLOCK_SIZE) + 1])
+        }
+        for (title in listOf("PPSA21564", "PPSA24156", null)) {
+            val args = LaunchArgs.forGame("/games/PPSA10112", Resolution.HD_720, titleId = title)
+            assertEquals(-1, args.indexOf(LaunchArgs.FLAG_VMA_BLOCK_SIZE))
+        }
+    }
+
+    @Test
     fun hudStyleResolvesGlobalAndPerGame() {
         val global = LaunchOptions.resolve(Resolution.HD_720, globalHud = true,
             globalTouch = true, game = GameSettings.DEFAULT, globalHudMode = com.kytyps5.android.hud.HudMode.MINIMAL)
