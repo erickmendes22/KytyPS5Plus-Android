@@ -449,3 +449,46 @@ the Adreno Vulkan compiler accepts the resulting module. Runtime
 validation must confirm `Software FP64 enabled for Gran Turismo compute
 shader`, no `shaderFloat64` Vulkan capability declaration, no shader
 module/pipeline rejection, and forward progress past the shader.
+
+
+## 2026-10-25: Reference PR integration for GT (experimental)
+
+Source: `defektu/KytyPS5` pull requests at `KytyPS5/KytyPS5`:
+- #1030 font: requested-scale glyph metrics and kerning were already present in the
+  Android fork; added missing `FontDettachDeviceCacheBuffer` NID `UuY-OJF+f0k`.
+- #1031 HLE: `libBluetoothHid`, `libDeviceService`, `libUsbd` and registration
+  were already present; no duplicate files introduced.
+- #1032 tessellation: copied the upstream version of
+  `Tessellation.cpp` and `spirvEmitterTessellation.cpp` to this experimental
+  branch, adapted the tessellation header, `ShaderRecompiler.cpp`,
+  `shader.cpp`, and added `patch_base/patch_size` to
+  `ShaderTessellationInputInfo`. Enabled native `--tessellation` at launch
+  only for PPSA24156 and added a title-scoped Android unit test. This upstream
+  rewrite replaces an older local LS/HS control-flow analysis and must be
+  regression-tested against other games before wider adoption.
+- #1033 host: EQAA and several render/texture fixes already exist in this
+  fork, partly via independent Android-specific implementations. No wholesale
+  replacement of custom Android GPU files performed.
+- #1034 shader: F64 trunc, min/max and many decoder/HLE features already
+  exist as native SPIR-V paths. This upstream fork was validated using a
+  desktop NVIDIA GPU with native shaderFloat64. It does not solve FP64 on the
+  Snapdragon Adreno 830.
+- #1035 render: ported metadata-safe EQAA acceptance and the upstream
+  mixed-color/depth-sample-count stopgap. Vulkan attachments that differ from
+  the maximum pass sample count are omitted and reported, which allows
+  progress but can **lose color/depth contents**. This is not a proper mixed
+  sample-count rendering implementation; a driver-supported mixed sample
+  extension path remains necessary for full fidelity.
+
+The attached `KytyPS5-Plus-diagnostics-20261025-161750.zip` confirms the
+first Android software FP64 shader `0xbecd439e2fa1efd1` succeeded and later
+shader `0xdaced64c72398e80` rejected `shaderFloat64`. The new shader has
+79 live FP64-related IR instructions and uses FMA64, Min64, Max64, Recip64 and
+Trunc64 in addition to operations already implemented for the first shader.
+This **remains an independent blocker** before the game can progress through
+the graphical loading sequence on the Adreno GPU.
+
+Reference-fork claims of complete GT title/menu/License Center operation are
+from Windows 11 + RTX 5060 Ti and a combination of all listed PRs, **not**
+from Android testing. Do not treat source integration, CI success, or a
+compiled APK as proof of runtime compatibility.
