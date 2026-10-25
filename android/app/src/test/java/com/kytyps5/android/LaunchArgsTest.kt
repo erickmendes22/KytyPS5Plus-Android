@@ -127,6 +127,16 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun tessellationIsEnabledOnlyForMyFirstGranTurismo() {
+        val granTurismo = LaunchArgs.forGame("/games/gt", Resolution.HD_720, titleId = "PPSA24156")
+        assertEquals(1, granTurismo.count { it == LaunchArgs.FLAG_TESSELLATION })
+        val silentHill = LaunchArgs.forGame("/games/sh", Resolution.HD_720, titleId = "PPSA10112")
+        assertEquals(-1, silentHill.indexOf(LaunchArgs.FLAG_TESSELLATION))
+        val unknown = LaunchArgs.forGame("/games/unknown", Resolution.HD_720)
+        assertEquals(-1, unknown.indexOf(LaunchArgs.FLAG_TESSELLATION))
+    }
+
+    @Test
     fun gpuTurboDefaultsOnAndFollowsGlobalUnlessTheGameOverrides() {
         val byDefault = LaunchOptions.resolve(Resolution.HD_720, globalHud = false, globalTouch = true, game = GameSettings.DEFAULT)
         assertEquals(true, byDefault.gpuTurbo)
