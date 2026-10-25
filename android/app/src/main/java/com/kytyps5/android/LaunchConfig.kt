@@ -92,9 +92,9 @@ object LaunchArgs {
             (if (gpuTurbo) arrayOf(FLAG_GPU_TURBO) else emptyArray()) +
             // Confirmed renderer-memory growth on this title. Preserve other games' policy.
             (if (titleId.equals("PPSA10112", ignoreCase = true))
-                arrayOf(FLAG_GPU_EVICT_WRITTEN, "1", FLAG_VMA_BLOCK_SIZE, "32") else emptyArray())
+                arrayOf(FLAG_GPU_EVICT_WRITTEN, "1", FLAG_VMA_BLOCK_SIZE, "32") else emptyArray()) +
             // The GT reference fork enables LS/HS/TES explicitly. Keep it title-scoped.
-            + (if (titleId.equals("PPSA24156", ignoreCase = true))
+            (if (titleId.equals("PPSA24156", ignoreCase = true))
                 arrayOf(FLAG_TESSELLATION) else emptyArray())
 }
 
