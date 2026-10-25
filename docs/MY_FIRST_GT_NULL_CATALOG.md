@@ -418,3 +418,34 @@ substitute ordinary FP32 without precision validation.
 
 These logs establish the precise unsupported instruction set, **not** an already
 implemented FP64 fallback. `investigate/mfgt-fp64` remains an isolated branch.
+
+
+## Integer-backed FP64 implementation
+
+The native backend now contains `spirvEmitterSoftFloat64.h` (commit
+`a85edb57`) and guarded integration in `SpirvEmitter.cpp` (commit
+`dad82658`). For shader hash `0xbecd439e2fa1efd1` at compute
+float_mode `0xc0`, on devices lacking Vulkan `shaderFloat64`, F64
+intermediates use `uint64_t` SPIR-V IDs and preserve their IEEE-754
+binary64 bits. The implementation lowers the measured FP64 operations:
+bitcasts (identities in integer representation), F32/F64 conversions,
+F64 addition and multiplication. Multiplication uses full-width
+`OpUMulExtended`, sticky-bit alignment, normal/subnormal packing,
+ties-to-even rounding and exceptional-value handling. All other shader
+hashes continue to reject unsupported native Float64.
+
+Independent Python arithmetic-model comparisons executed before the
+Android CI run: 100,000 random 64-bit pairs plus 150,000
+exponent-biased edge pairs yielded no numeric differences from
+host IEEE-754 double addition/multiplication after excluding NaN
+payload differences. 300,000 FP32/FP64 conversion samples matched for
+the promotion path; F64->F32 deliberately retains the existing Kyty
+clamp of overflowing finite values to the maximum finite F32, so it
+differs from ordinary host conversion for those cases. These checks
+test the integer algorithm, not on-device SPIR-V execution.
+
+A successful native test suite or signed APK build does **not** prove
+the Adreno Vulkan compiler accepts the resulting module. Runtime
+validation must confirm `Software FP64 enabled for Gran Turismo compute
+shader`, no `shaderFloat64` Vulkan capability declaration, no shader
+module/pipeline rejection, and forward progress past the shader.
