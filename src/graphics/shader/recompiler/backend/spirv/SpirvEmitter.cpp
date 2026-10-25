@@ -292,7 +292,7 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 					const auto opcode = IR::ValueOpcodeName(inst.GetOpcode());
 					++op_counts[opcode];
 					if (fp64_instructions <= 32) {
-						detail += fmt::format("  block={} inst={} opcode={} result_f64={} input_f64={}\\n",
+						detail += fmt::format("  block={} inst={} opcode={} result_f64={} input_f64={}\n",
 						                      block_index, instruction_index, opcode, result_f64, input_f64);
 					}
 				}
@@ -307,7 +307,7 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 		}
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "FP64 required: hash=0x{:016x} stage={} float_mode=0x{:x} instructions={} "
-		    "results={} inputs={} histogram:{}\\n{}",
+		    "results={} inputs={} histogram:{}\n{}",
 		    program.shader_hash, static_cast<unsigned>(program.stage), mode, fp64_instructions,
 		    f64_results, f64_inputs, histogram, detail));
 		RejectUnsupportedShader(program, "Float64 arithmetic (shaderFloat64)");
