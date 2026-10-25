@@ -929,7 +929,10 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 				EXIT_NOT_IMPLEMENTED(inst.GetOpcode() == IR::ValueOpcode::GetShaderBase);
 	}
 	pass_done("fp16");
-	LowerTessellationMemory(ir, options);
+	if (!LowerTessellationMemory(ir, options)) {
+		EXIT("%s failed hash=0x%016" PRIx64 ": unsupported tessellation memory shape\n",
+		     GetDumpLabel(options), options.shader_hash);
+	}
 	std::string cfg_dump;
 	if (options.dump_ir) {
 		cfg_dump = CFG::GraphToString(cfg);
