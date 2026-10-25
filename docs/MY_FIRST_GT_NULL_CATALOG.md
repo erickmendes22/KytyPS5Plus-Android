@@ -277,3 +277,10 @@ This supplies an equivalent native execution path for the failing initialization
 stage. It does not by itself prove which translated instruction or earlier state
 caused the device mismatch, or that later gameplay is compatible. A fresh device
 run must confirm both native-transform logs and successful catalog publication.
+
+`docs/tools/verify_mfgt_index.py` reproduces the independent checks with the
+original user inputs and Capstone, exporting neither key/state nor decoded game
+data. The filename dictionary's first vector is 2554 bytes; the subsequent rank
+vector has 320 words and exactly 7857 set bits, matching both the catalog count
+and entry count. Its serialized size ends exactly at the 3870-byte filename
+section boundary. These deeper structural checks also pass after decoding.
