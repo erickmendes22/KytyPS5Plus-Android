@@ -4,7 +4,7 @@ name: Android APK
 # No GitHub Releases are created. Signing uses the repository's KYTY_* secrets.
 on:
   push:
-    branches: [ android-boot-wip, investigate/sh-short-memory ]
+    branches: [ android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64 ]
     paths-ignore: [ 'docs/**', '**.md' ]
   workflow_dispatch:
 
