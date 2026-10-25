@@ -10,6 +10,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "kernel/eventFlag.h"
+#include "kernel/addressFold.h"
 #include "kernel/eventQueue.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
@@ -2448,6 +2449,8 @@ struct FiberObject {
 	uint32_t        magic_end;
 	// ARM64: where the suspended FiberSwitch/FiberReturnToThread call wants arg_on_run on resume.
 	uint64_t*       resume_out;
+	// Stable guest identity: native accesses may use an ARM64 folded backing pointer.
+	uint64_t        guest_identity;
 };
 
 static_assert(sizeof(FiberObject) <= 256);
@@ -2779,6 +2782,12 @@ int32_t KYTY_SYSV_ABI FiberInitialize(FiberObject* fiber, const char* name, Fibe
                                       uint64_t size_context, const FiberOptParam* opt_param,
                                       uint32_t build_version) {
 	PRINT_NAME();
+	const uint64_t guest_identity = reinterpret_cast<uint64_t>(fiber);
+#if KYTY_HOST_ARM64
+	// Fold explicitly before dereferencing: a signal-retried access can otherwise
+	// replace the pointer register and lose the guest-visible identity.
+	fiber = Kernel::AddressFold::FoldPointer(fiber);
+#endif
 
 	if (fiber == nullptr || name == nullptr || entry == nullptr) {
 		return FIBER_ERROR_NULL;
@@ -2801,6 +2810,7 @@ int32_t KYTY_SYSV_ABI FiberInitialize(FiberObject* fiber, const char* name, Fibe
 	}
 
 	std::memset(fiber, 0, sizeof(*fiber));
+	fiber->guest_identity = guest_identity;
 	std::strncpy(fiber->name, name, FIBER_MAX_NAME_LENGTH);
 	fiber->name[FIBER_MAX_NAME_LENGTH] = '\0';
 
@@ -2971,7 +2981,17 @@ int32_t KYTY_SYSV_ABI FiberGetSelf(FiberObject** fiber) {
 	}
 
 	const auto* context = FiberGetThreadContext();
-	*fiber = context != nullptr ? context->current_fiber : nullptr;
+	const auto* current = context != nullptr ? context->current_fiber : nullptr;
+	*fiber = current != nullptr ? reinterpret_cast<FiberObject*>(current->guest_identity) : nullptr;
+#if KYTY_HOST_ARM64
+	static std::atomic<uint32_t> logged_folded_identities {0};
+	if (current != nullptr && current->guest_identity != reinterpret_cast<uint64_t>(current) &&
+	    logged_folded_identities.fetch_add(1, std::memory_order_relaxed) < 4) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "Fiber identity: guest={:x} native={:x}\n", current->guest_identity,
+		    reinterpret_cast<uint64_t>(current)));
+	}
+#endif
 
 	return OK;
 }

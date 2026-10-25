@@ -46,6 +46,13 @@ void TestFoldMovesTheDomain() {
 	auto host  = reinterpret_cast<uint64_t>(&local);
 	Check(FoldPointer(&local) == &local, "host pointers are unchanged");
 	Check(Fold(host) == host, "host addresses are unchanged");
+	// MFGT's scheduler compares FiberGetSelf with the ORIGINAL guest object array.
+	// Returning the folded backing pointer underflows this exact observed range.
+	constexpr uint64_t fiber_base = 0xcc00284000ull;
+	constexpr uint64_t fiber_self = 0xcc00284300ull;
+	Check((fiber_self - fiber_base) / 256 == 3, "guest fiber identity selects scheduler slot 3");
+	Check((Fold(fiber_self) - fiber_base) / 256 > 0x3c000,
+	      "folded fiber identity fails the game's unsigned scheduler bounds check");
 }
 
 void TestFoldSpan() {

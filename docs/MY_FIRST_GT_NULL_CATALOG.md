@@ -317,3 +317,34 @@ cannot inspect `/proc/.../task`). Device catalog initialization remains unverifi
 until the next APK is tested. The previous session in this ZIP is Silent Hill,
 core `dadf9701`, with 50% resolution and no-shadow/no-SSR/no-AO/no-RT applied;
 it is not the current Gran Turismo crash session.
+
+
+## Device diagnostic 20261025-092427: catalog fixed; fiber identity mismatch
+
+Core `ab03c0d8` confirms APR read=194866/result=0, stream input `79c13aa9`
+and output `4e89f72c`, header magic/version `122bb8f2`/`11160000`, and a
+published catalog at `c400ba7e60`. The original null-catalog failure is resolved
+on the device. RAM is still available (5999 MiB) at this later crash.
+
+Both new tombstones fault reading address `1a`, at a translated load matching
+RVA `128e12` (`movsx rcx, byte ptr [r14+1a]`). The following scheduler access
+matches the `138c0` displacement and `cc0` stride. The preceding game code calls
+FiberGetSelf twice (PLT `3e424c0`, NID `p+zLIOg27zU`), then performs unsigned
+bounds checks against its original guest fiber array.
+
+The tombstone's captured guest stack contains `4c00284300` at the local return
+slot (`rbp-60`). The captured scheduler object at `90689ba80` has array base
+`cc00284000`, worker context base `c400bc1088`, and slot limit `3c000`.
+The folded identity underflows subtraction against the original guest base,
+leaving r14 null. The correct original identity `cc00284300` selects slot 3.
+This is not another index decoding failure.
+
+FiberInitialize now explicitly folds the object for native access, while storing
+the original incoming guest address in the emulator-owned FiberObject (still
+within 256 bytes). FiberGetSelf returns that saved identity, even when native
+validation or state manipulation used a folded pointer. Native context switching
+continues to use its backing pointer. Outside-fiber behavior remains unchanged.
+The existing active-fiber identity/switch/migration regressions cover identity
+initialization and lifetime; AddressFoldTests adds the exact observed scheduler
+range arithmetic. A bounded ARM64 log reports up to four identity/backing pairs.
+Device confirmation of this new correction remains pending.
