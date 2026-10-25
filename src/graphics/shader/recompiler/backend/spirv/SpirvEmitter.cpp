@@ -267,7 +267,33 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	}
 	IR::ValidateProgram(program, true);
 	program.bindings = {.push_data_start_dword = push_data_start_dword};
-	if (program.info.float64 && !device_features.shader_float64) {
+	// The PPSA24156 FP64 compute shader has a measured six-opcode footprint.
+	// Preserve original binary64 bit patterns as uint64 while lowering its exact
+	// arithmetic to integer SPIR-V. Other shaders keep the strict capability gate.
+	const bool software_float64 = program.info.float64 && !device_features.shader_float64 &&
+	    program.shader_hash == 0xbecd439e2fa1efd1ull && program.stage == ShaderType::Compute &&
+	    input_info.compute != nullptr && input_info.compute->float_mode == 0xc0;
+	if (software_float64) {
+		for (const auto* block: program.blocks) {
+			for (const auto& inst: *block) {
+				bool fp64 = inst.GetType() == IR::Type::F64;
+				for (uint32_t i=0; i<inst.NumArgs(); ++i)
+					fp64 |= inst.Arg(i).Resolve().GetType() == IR::Type::F64;
+				if (!fp64) continue;
+				switch (inst.GetOpcode()) {
+					case IR::ValueOpcode::BitCastF64U64:
+					case IR::ValueOpcode::BitCastU64F64:
+					case IR::ValueOpcode::ConvertF32F64:
+					case IR::ValueOpcode::ConvertF64F32:
+					case IR::ValueOpcode::FPAdd64:
+					case IR::ValueOpcode::FPMul64: break;
+					default: RejectUnsupportedShader(program, "unhandled software FP64 operation");
+				}
+			}
+		}
+		LOGF("Software FP64 enabled for Gran Turismo compute shader 0x%016" PRIx64 "\\n",program.shader_hash);
+	}
+	if (program.info.float64 && !device_features.shader_float64 && !software_float64) {
 		// The failed PPSA24156 compute shader is a real device-capability mismatch.
 		// Report the *surviving* native FP64 operations before rejecting it, without
 		// inventing an imprecise substitute or advertising unsupported Vulkan features.
@@ -314,6 +340,7 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	}
 	EmitterState state(program, input_info, maintenance8_enabled, device_features);
 	state.device_quirks = device_quirks;
+	state.soft_float64 = software_float64;
 	// 64-bit atomics on StorageBuffer-backed LDS only need shaderBufferInt64Atomics, which is
 	// always required. Workgroup-class LDS additionally needs shaderSharedInt64Atomics.
 	if (program.info.shared_int64_atomics && state.lds_storage_class == spv::StorageClassWorkgroup &&
