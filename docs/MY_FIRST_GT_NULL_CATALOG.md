@@ -190,3 +190,39 @@ but runs its existing `--mutex-only` mode without a Vulkan window. The previous
 run failed SDL video initialization on the headless runner, not compilation.
 The full Vulkan-dependent filesystem test remains available separately; passing
 the headless subset is not evidence that the full filesystem suite ran.
+
+## October 25, 07:49 -03:00: initializer and real backend identified
+
+Diagnostic `20261025-074904(1)` uses core ecca8a8e. The preflight finds and
+reads `/app0/contents/gt.idx` (194866 bytes). The verified initializer observer
+runs for owner 0xc400b88670, path `gt.idx`, backend 0xcc00053010 with vtable
+0x90554edb0. On return, owner +0x50 is 0xcc001a6000 while +0x58/+0x68/+0x78
+remain zero. The thread later crashes. This proves the initializer is reached;
+absence of KernelOpen traces was the wrong backend boundary, not evidence of
+no initialization.
+
+RVA 0x554edb0 is the game's APR backend, not the previously studied ordinary
+filesystem backend at RVA 0x554eac0. Relative relocations identify:
+open +0x20 -> 0x3d54b50, queued read +0x30 -> 0x3d54c40,
+stat +0x78 -> 0x3d54af0. Open resolves IDs through wrapper 0x17b32d0;
+read builds/submits APR commands. This explains why fileSystem.cpp's bounded
+KernelOpen/Read trace did not run for the index.
+
+IMPORTANT: preflight's `header_compatible=false` is only the result of applying
+the CRC transform directly to the physical file. It does NOT establish corrupt
+or mismatched installed content. Before returning from the actual whole-index
+loader (0x3d4ed90), the game can additionally transform the buffer using a
+configuration object at owner +0xa0: when its +0x28 pointer and +0x30 length
+are nonzero, it copies up to 64 bytes into a state and calls 0x3dea3c0.
+The latter uses 10 rounds of vector add/XOR/shuffle/rotation operations in a
+64-byte stream-cipher state (ChaCha-like structure). Only AFTER that optional
+stage does the caller apply the CRC transform at 0x3d4ba70 and check header
+magic/version. The raw CRC-only preflight result therefore cannot be compared
+as though it were the final guest-decoded header. The observer currently does
+not capture whether the optional state is present, or the post-transform bytes.
+Do not infer an invalid file from this diagnostic or skip the cipher/header checks.
+The +0x50 pointer can be stale after an error frees its buffer; printing the
+pointer is safe, dereferencing it after the initializer returns would not be.
+
+Actual index bytes (`contents/gt.idx`, about 190 KiB) are the next useful input
+for reproducing both decoding stages against the existing supplied executable.

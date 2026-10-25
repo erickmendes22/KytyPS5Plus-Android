@@ -132,3 +132,17 @@ The newer `20261025-071430` diagnostic is analyzed in
 [SILENT_HILL_PERFORMANCE_PATCHES.md](SILENT_HILL_PERFORMANCE_PATCHES.md), including
 its 0.5 render scale, successful status-zero exit, 1736 MiB maximum allocator
 slack and limits of interpreting the special-image counter.
+
+## October 25, 07:56 -03:00 follow-up with 32 MiB blocks
+
+Diagnostic `20261025-075654(1)` uses ecca8a8e and explicitly requests/activates
+32 MiB blocks, 0.5 host render scale and GPU-written image eviction. Both recent
+Silent Hill exits have reason 1/status 0; signal-11 reports are older GT sessions.
+Across 19 samples: driver peak 5699 MiB, VMA blocks 5624, live allocations 5531,
+RSS 3975 and swap 526 MiB; minimum sampled MemAvailable 130 MiB. Maximum
+reserved-minus-live slack is still 1780 MiB, and chunk writeback totals 1240 MiB.
+The automatic budget starts at 4046 MiB versus 3584 in the earlier 071430 run;
+scenes/timing and initial system availability differ. There is no controlled
+evidence that the 32 MiB policy reduced overall RAM demand. It did not eliminate
+retained allocation slack. This device run predates dadf9701's new native game
+resolution/effects patches and cannot validate their visual or memory effects.
