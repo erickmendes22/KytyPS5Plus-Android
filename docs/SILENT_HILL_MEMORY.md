@@ -127,3 +127,8 @@ eliminate live resource demand or guarantee a particular RAM reduction. VMA's
 existing dedicated-allocation preference and allocation-count safeguards remain
 in force. Device validation of this change is pending. No resolution or effects
 patch with unverified executable offsets is included.
+
+The newer `20261025-071430` diagnostic is analyzed in
+[SILENT_HILL_PERFORMANCE_PATCHES.md](SILENT_HILL_PERFORMANCE_PATCHES.md), including
+its 0.5 render scale, successful status-zero exit, 1736 MiB maximum allocator
+slack and limits of interpreting the special-image counter.
