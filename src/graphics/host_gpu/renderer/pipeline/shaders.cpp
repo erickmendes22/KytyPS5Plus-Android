@@ -32,6 +32,7 @@
 #include <cstring>
 #include <bit>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -853,17 +854,49 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		    static_cast<uint32_t>(rendering.stencil_format),
 		    driver_cache != nullptr ? 1 : 0));
 	}
-	// Optional title-only A/B switch; the default retains the driver cache.
-	// If the crash is specific to cache reuse, the same APK can isolate it.
-	const bool gt_nocache = gt_pipeline && std::getenv("KYTY_GT_NO_PIPELINE_CACHE") != nullptr &&
+	// All three unfinished pipelines in the 181836 device crash have
+	// native tessellation with 16/24 control points. The concurrent shader
+	// workers were inside the same Turnip V32 compiler when it dereferenced
+	// 0x10. This compatibility gate affects ONLY PPSA24156: serialize those
+	// expensive tessellation compilations, and bypass the driver's cache for
+	// them while leaving the cache intact for ordinary graphics pipelines.
+	// This is a narrow workaround candidate, not proof of a Mesa driver bug.
+	const bool gt_heavy_tess = gt_pipeline && tessellation &&
+	                           tessellation_state.patchControlPoints >= 16;
+	const bool gt_nocache_requested =
+	    gt_pipeline && std::getenv("KYTY_GT_NO_PIPELINE_CACHE") != nullptr &&
 	    std::strcmp(std::getenv("KYTY_GT_NO_PIPELINE_CACHE"), "1") == 0;
+	const bool gt_nocache = gt_heavy_tess || gt_nocache_requested;
+	if (gt_pipeline && tessellation &&
+	    tessellation_state.patchControlPoints >
+	        graphics.GetPhysicalDeviceProperties().limits.maxTessellationPatchSize) {
+		EXIT("GT tessellation patch control points %u exceed Vulkan limit %u\n",
+		     tessellation_state.patchControlPoints,
+		     graphics.GetPhysicalDeviceProperties().limits.maxTessellationPatchSize);
+	}
+	static std::mutex gt_tess_compile_mutex;
+	if (gt_heavy_tess)
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "GT tess pipeline QUEUE #{} cp={} cache_bypass=1\n",
+		    gt_serial, tessellation_state.patchControlPoints));
 	{
+		std::unique_lock<std::mutex> serialize(
+		    gt_tess_compile_mutex, std::defer_lock);
+		if (gt_heavy_tess)
+			serialize.lock();
+		if (gt_heavy_tess)
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "GT tess pipeline ENTER #{}\n", gt_serial));
 		const Common::PerfStats::ScopedStall timing(
 		    ShaderWorkerPool::OnWorkerThread() ? Common::PerfStats::StallKind::PipelineWorker
 		                                       : Common::PerfStats::StallKind::PipelineCompile);
 		result = graphics.device.createGraphicsPipelines(
 		    gt_nocache ? vk::PipelineCache {} : driver_cache, 1,
 		    &pipeline_info, nullptr, &pipeline.pipeline);
+		if (gt_heavy_tess)
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "GT tess pipeline EXIT #{} result={}\n",
+			    gt_serial, vk::to_string(result)));
 	}
 	if (gt_pipeline) {
 		Log::WriteToConsoleAndLog(fmt::format(
