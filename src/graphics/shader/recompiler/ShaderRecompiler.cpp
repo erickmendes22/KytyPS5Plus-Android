@@ -1066,7 +1066,7 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 			const auto total = dump.size();
 			if (dump.size() > max_chars) dump.resize(max_chars);
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "MFGT FP64 {}: hash=0x{:016x} bytes={} captured={}{}\\n{}\\n",
+			    "MFGT FP64 {}: hash=0x{:016x} bytes={} captured={}{}\n{}\n",
 			    label, options.shader_hash, total, dump.size(),
 			    total > dump.size() ? " (truncated)" : "", dump));
 		};
