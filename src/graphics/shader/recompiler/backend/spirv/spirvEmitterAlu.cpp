@@ -1,4 +1,5 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
+#include "graphics/shader/recompiler/backend/spirv/spirvEmitterSoftFloat64.h"
 #include "graphics/shader/ftz32.h"
 
 #include <array>
@@ -262,7 +263,24 @@ uint32_t EmitConvertU32F32(EmitterState& state, uint32_t arg0) {
 	return EmitF32ToU32(state, arg0, false);
 }
 
+
+uint32_t EmitBitCastU64F64(EmitterState& state, uint32_t arg0) {
+	return state.soft_float64 ? arg0 : Unary(state, spv::OpBitcast, TypeU64(state), arg0);
+}
+uint32_t EmitBitCastF64U64(EmitterState& state, uint32_t arg0) {
+	return state.soft_float64 ? arg0 : Unary(state, spv::OpBitcast, TypeF64(state), arg0);
+}
+uint32_t EmitFPAdd64(EmitterState& state, uint32_t arg0, uint32_t arg1) {
+	return state.soft_float64 ? Soft64::Add(state, arg0, arg1) :
+	       EmitNative<spv::OpFAdd, IR::Type::F64>(state, arg0, arg1);
+}
+uint32_t EmitFPMul64(EmitterState& state, uint32_t arg0, uint32_t arg1) {
+	return state.soft_float64 ? Soft64::Mul(state, arg0, arg1) :
+	       EmitNative<spv::OpFMul, IR::Type::F64>(state, arg0, arg1);
+}
+
 uint32_t EmitConvertF32F64(EmitterState& state, uint32_t arg0) {
+	if (state.soft_float64) return Soft64::ToFloat(state, arg0);
 	const auto converted = Unary(state, spv::OpFConvert, TypeF32(state), arg0);
 	const auto source    = EmitNative<spv::OpCompositeExtract, IR::Type::U32>(
 	    state, Unary(state, spv::OpBitcast, TypeU32Vector(state, 2), arg0), 1u);
@@ -279,6 +297,7 @@ uint32_t EmitConvertF32F64(EmitterState& state, uint32_t arg0) {
 }
 
 uint32_t EmitConvertF64F32(EmitterState& state, uint32_t arg0) {
+	if (state.soft_float64) return Soft64::FromFloat(state, arg0);
 	return EmitNative<spv::OpFConvert, IR::Type::F64>(state,
 	                                                  EmitFlushF32DenormToSignedZero(state, arg0));
 }
