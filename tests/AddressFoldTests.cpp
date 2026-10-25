@@ -64,6 +64,18 @@ void TestFoldSpan() {
               "My First Gran Turismo fixed mapping fits the host AMM window");
         Check(!FoldSpan(kFoldSize - 0x4000, 0x8000, &host), "span straddling 2^39");
 	Check(!FoldSpan(kDomainEnd - 0x4000, 0x8000, &host), "span straddling 2^40");
+	// PPSA24156: AvPlayer allocates its NV12 output at a guest VA above 2^39.
+	// Native FFmpeg writes must use the folded backing, but callback/frame pointers
+	// must keep the original address. Cover the whole buffer rather than only byte 0.
+	constexpr uint64_t video_guest = 0xd41b2fc000ull;
+	constexpr uint64_t video_bytes = 8ull * 1024 * 1024;
+	Check(FoldSpan(video_guest, video_bytes, &host) && host == 0x541b2fc000ull,
+	      "MFGT AvPlayer 8 MiB native output is within one folded host region");
+	Check(reinterpret_cast<uint64_t>(FoldPointer(reinterpret_cast<uint8_t*>(video_guest))) == host &&
+	          video_guest != host,
+	      "native video write uses folded backing and guest identity remains distinct");
+	Check(!FoldSpan(kDomainEnd - 4096, video_bytes, &host),
+	      "native video output must not cross the 2^40 fold boundary");
 	Check(!FoldSpan(0x1000, 0, &host), "empty span");
 	Check(!FoldSpan(UINT64_MAX - 10, 0x100, &host), "wrapping span");
 }
