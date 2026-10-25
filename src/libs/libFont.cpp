@@ -1490,6 +1490,14 @@ int KYTY_SYSV_ABI FontAttachDeviceCacheBuffer(FontLibrary library, void* buffer,
 	return OK;
 }
 
+// My First Gran Turismo queries the device cache detachment even without
+// using the software font cache. The request has no persistent native buffer.
+int KYTY_SYSV_ABI FontDettachDeviceCacheBuffer(FontLibrary library) {
+	PRINT_NAME();
+	LOGF("\t library = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(library));
+	return OK;
+}
+
 int KYTY_SYSV_ABI FontTextSourceInit(FontTextSource* font_text_source, const void* text_address,
                                      uint32_t text_size_byte, FontTextParseFunction text_parser,
                                      void* text_object) {
@@ -2263,6 +2271,7 @@ int KYTY_SYSV_ABI FontRenderCharGlyphImageHorizontal(FontHandle font_handle, uin
 
 LIB_DEFINE(InitFont_1) {
 	LIB_FUNC("CUKn5pX-NVY", Font::FontAttachDeviceCacheBuffer);
+	LIB_FUNC("UuY-OJF+f0k", Font::FontDettachDeviceCacheBuffer);
 	LIB_FUNC("vzHs3C8lWJk", Font::FontCloseFont);
 	LIB_FUNC("WaSFJoRWXaI", Font::FontCreateRendererWithEdition);
 	LIB_FUNC("exAxkyVLt0s", Font::FontDestroyRenderer);
