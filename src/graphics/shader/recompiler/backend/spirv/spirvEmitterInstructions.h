@@ -17,8 +17,8 @@ inline constexpr auto EmitConvertU32U16 = EmitBitCastU16F16;
 inline constexpr auto EmitConvertU32U8  = EmitBitCastU16F16;
 EMIT_NATIVE(BitCastU32F32, OpBitcast, U32, uint32_t)
 EMIT_NATIVE(BitCastF32U32, OpBitcast, F32, uint32_t)
-EMIT_NATIVE(BitCastU64F64, OpBitcast, U64, uint32_t)
-EMIT_NATIVE(BitCastF64U64, OpBitcast, F64, uint32_t)
+uint32_t EmitBitCastU64F64(EmitterState& state, uint32_t arg0);
+uint32_t EmitBitCastF64U64(EmitterState& state, uint32_t arg0);
 uint32_t              EmitConvertU16U32(EmitterState& state, uint32_t arg0);
 uint32_t              EmitConvertU8U32(EmitterState& state, uint32_t arg0);
 uint32_t              EmitConvertF16F32(EmitterState& state, uint32_t arg0);
@@ -179,8 +179,8 @@ EMIT_NATIVE(FPMul32, OpFMul, F32, uint32_t, uint32_t)
 uint32_t EmitFPAdd16(EmitterState& state, uint32_t arg0, uint32_t arg1);
 uint32_t EmitFPSub16(EmitterState& state, uint32_t arg0, uint32_t arg1);
 uint32_t EmitFPMul16(EmitterState& state, uint32_t arg0, uint32_t arg1);
-EMIT_NATIVE(FPAdd64, OpFAdd, F64, uint32_t, uint32_t)
-EMIT_NATIVE(FPMul64, OpFMul, F64, uint32_t, uint32_t)
+uint32_t EmitFPAdd64(EmitterState& state, uint32_t arg0, uint32_t arg1);
+uint32_t EmitFPMul64(EmitterState& state, uint32_t arg0, uint32_t arg1);
 inline constexpr auto EmitFPFma64 =
     EmitGlsl<GLSLstd450Fma, IR::Type::F64, uint32_t, uint32_t, uint32_t>;
 uint32_t              EmitFPRecip64(EmitterState& state, uint32_t arg0);
