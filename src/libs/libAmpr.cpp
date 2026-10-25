@@ -9,8 +9,10 @@
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
 #include "libs/errno.h"
+#include "libs/aprReadRange.h"
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <array>
@@ -759,8 +761,8 @@ static bool IsValidAprReadSize(uint64_t size) {
 }
 
 static bool IsValidAprReadRange(uint64_t destination, uint64_t size) {
-	return IsValidAprReadSize(size) && destination <= APR_MAX_APP_ADDRESS &&
-	       APR_MAX_APP_ADDRESS - destination >= size;
+	uint64_t host = 0;
+	return AprReadRange::Resolve(destination, size, APR_MAX_APP_ADDRESS, KYTY_HOST_ARM64, &host);
 }
 
 static uint64_t KernelErrorU64(int error) {
@@ -1197,6 +1199,13 @@ static int ExecuteCommand(const CommandBufferState::Command& entry) {
 		uint64_t bytes_read = 0;
 		auto     result = ReadHostFileToGuest(host_path, command.file_offset, command.destination,
 		                                      command.size, &bytes_read);
+		static std::atomic<uint32_t> s_logged_gt_index_reads {0};
+		if (host_path.filename() == "gt.idx" && s_logged_gt_index_reads.fetch_add(1) < 4) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "APR index read: destination={:x} offset={} requested={} read={} result={:08x}\n",
+			    command.destination, command.file_offset, command.size, bytes_read,
+			    static_cast<uint32_t>(result)));
+		}
 		static std::atomic<uint32_t> s_logged_dlc_reads {0};
 		if (host_path.filename() == "re_dlc_000.pak" && s_logged_dlc_reads.fetch_add(1) < 32) {
 			LOGF("\tAPR read dlc: id=0x%08" PRIx32 ", offset=0x%016" PRIx64 ", size=0x%016" PRIx64
@@ -1418,7 +1427,10 @@ static int ReadHostFileToGuest(const std::filesystem::path& host_path, uint64_t 
 	if (size == 0) {
 		return OK;
 	}
-	if (!AprShared::IsValidGuestRange(destination, size, true)) {
+	uint64_t host_destination = 0;
+	if (!AprShared::IsValidGuestRange(destination, size, true) ||
+	    !AprReadRange::Resolve(destination, size, APR_MAX_APP_ADDRESS, KYTY_HOST_ARM64,
+	                           &host_destination)) {
 		return LibKernel::KERNEL_ERROR_EFAULT;
 	}
 
@@ -1456,7 +1468,7 @@ static int ReadHostFileToGuest(const std::filesystem::path& host_path, uint64_t 
 		if (read == 0) {
 			break;
 		}
-		std::memcpy(reinterpret_cast<void*>(destination + *bytes_read), buffer.data(), read);
+		std::memcpy(reinterpret_cast<void*>(host_destination + *bytes_read), buffer.data(), read);
 		*bytes_read += read;
 	}
 

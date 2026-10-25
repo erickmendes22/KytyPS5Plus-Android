@@ -284,3 +284,36 @@ data. The filename dictionary's first vector is 2554 bytes; the subsequent rank
 vector has 320 words and exactly 7857 set bits, matching both the catalog count
 and entry count. Its serialized size ends exactly at the 3870-byte filename
 section boundary. These deeper structural checks also pass after decoding.
+
+
+## Device diagnostic 20261025-085440: APR rejects folded guest buffers
+
+Core `a59049ca` installs both native transforms. The stream logs the expected
+reference state and 194866 bytes at offset zero, but returns first word
+`3748cd85`; this is exactly the first keystream word (the original input word
+`79c13aa9` XOR the independently verified post-stream word `4e89f72c`). Thus the
+first four input bytes reaching this call were zero. The subsequent header is
+invalid (`6bea825b`, version `02308dd7`), and the original validator leaves the
+catalog null. This is not evidence of a bad index or RAM exhaustion.
+
+A concrete upstream cause is present in APR range validation: on ARM64
+`APR_MAX_APP_ADDRESS` is `7000000000`, but the game queues its read to guest
+`cc001a6000`. Comparing the guest address directly against the host limit rejects
+both measurement and read-command creation. Its backing is `4c001a6000`, within
+the existing host limit. The game's asynchronous reader discards the command
+creation error on its completion path; no file bytes reach the index buffer.
+
+APR range checks now resolve a complete contiguous folded span before applying
+the same host limit on ARM64, keeping the guest destination in queued records.
+Execution copies file bytes to the explicitly resolved backing address. x86
+retains its existing address policy. Empty, over-4-GiB, split-domain, wrapping
+and host-overrun spans remain rejected. `AddressFoldTests` exercises the exact
+observed MFGT destination, the third arena, and limit cases on any CI architecture.
+Bounded logs report up to four actual `gt.idx` reads and the transform's input
+word to distinguish successful I/O from a subsequent decode failure.
+
+Local GCC tests and ASan/UBSan pass (LeakSanitizer disabled because this container
+cannot inspect `/proc/.../task`). Device catalog initialization remains unverified
+until the next APK is tested. The previous session in this ZIP is Silent Hill,
+core `dadf9701`, with 50% resolution and no-shadow/no-SSR/no-AO/no-RT applied;
+it is not the current Gran Turismo crash session.

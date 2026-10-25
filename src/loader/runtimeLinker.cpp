@@ -255,12 +255,14 @@ static KYTY_SYSV_ABI void MfgtNativeStream(uint64_t context, uint64_t buffer, ui
 	}
 	auto data =
 	    std::span<uint8_t>(reinterpret_cast<uint8_t*>(host_buffer), static_cast<size_t>(size));
+	const auto input_word = size >= 4 ? MfgtIndexTransform::Read32(data, 0) : 0;
 	MfgtIndexTransform::Transform(state, data, offset);
 	MfgtIndexTransform::Write32(bytes, 48, state[12]);
 	if (g_mfgt_stream_logs.fetch_add(1, std::memory_order_relaxed) < 4)
 		Log::WriteToConsoleAndLog(fmt::format(
-		    "MFGT native index: stream bytes={} offset={} reference_state={} first_word={:08x}\n",
-		    size, offset, reference_match, size >= 4 ? MfgtIndexTransform::Read32(data, 0) : 0));
+		    "MFGT native index: stream bytes={} offset={} reference_state={} input_word={:08x} first_word={:08x}\n",
+		    size, offset, reference_match, input_word,
+		    size >= 4 ? MfgtIndexTransform::Read32(data, 0) : 0));
 }
 static KYTY_SYSV_ABI void MfgtNativeHeader(uint64_t buffer) {
 	uint64_t host = 0;

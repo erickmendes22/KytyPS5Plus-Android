@@ -1,4 +1,5 @@
 #include "kernel/addressFold.h"
+#include "libs/aprReadRange.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -78,6 +79,29 @@ void TestUnrealPlan() {
 	      "UE5 top allocation lands in the alias");
 }
 
+void TestAprReadBackingRange() {
+	constexpr uint64_t limit = 0x7000000000ull;
+	uint64_t host = 0;
+	Check(Libs::AprReadRange::Resolve(0xcc001a6000ull, 194866, limit, true, &host) &&
+	          host == 0x4c001a6000ull, "MFGT APR index buffer uses folded backing");
+	Check(!Libs::AprReadRange::Resolve(0xcc001a6000ull, 194866, limit, false, &host),
+	      "original ARM host-limit comparison rejects the guest address");
+	Check(Libs::AprReadRange::Resolve(0xd400000000ull, 0x1000, limit, true, &host) &&
+	          host == 0x5400000000ull, "MFGT third arena is valid for APR reads");
+	Check(Libs::AprReadRange::Resolve(limit - 8, 8, limit, true, &host), "APR exact host end");
+	for (const auto guest : {kFoldSize - 4, kDomainEnd - 4, UINT64_MAX - 4})
+		Check(!Libs::AprReadRange::Resolve(guest, 8, limit, true, &host),
+		      "APR rejects split or overflowing spans");
+	Check(!Libs::AprReadRange::Resolve(limit - 8, 9, limit, true, &host), "APR host overrun");
+	Check(!Libs::AprReadRange::Resolve(0xf000000000ull, 8, limit, true, &host),
+	      "folding does not admit backing above host limit");
+	Check(!Libs::AprReadRange::Resolve(0x1000, 0, limit, true, &host) &&
+	          !Libs::AprReadRange::Resolve(0x1000, 0x100000001ull, limit, true, &host),
+	      "APR zero and oversized reads remain invalid");
+	Check(Libs::AprReadRange::Resolve(0xcc001a6000ull, 194866, 0xf00000000000ull, false, &host) &&
+	          host == 0xcc001a6000ull, "x86 APR retains guest addresses unchanged");
+}
+
 void TestSmallerRequestsAndRejections() {
 	FoldPlan plan {};
 	// 400 GiB: the folded image is smaller, so the alias is the requested size and below the range.
@@ -112,6 +136,7 @@ int main() {
 	TestFoldIsIdentityBelowTheBoundary();
 	TestFoldMovesTheDomain();
 	TestFoldSpan();
+	TestAprReadBackingRange();
 	TestUnrealPlan();
 	TestSmallerRequestsAndRejections();
 	TestHostPlanMatchesLayout();
