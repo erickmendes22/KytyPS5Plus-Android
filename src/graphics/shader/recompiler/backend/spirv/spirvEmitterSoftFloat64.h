@@ -114,7 +114,7 @@ inline uint32_t ToFloat(EmitterState& s,uint32_t bits) {
     const auto sub=Cmp(s,spv::OpSLessThan,ef,K(s,1));
     const auto effective=Sel(s,sub,K(s,1),ef);
     const auto significand=Or(s,f,K(s,1ull<<52));
-    const auto shift=A(s,K(s,26),Sel(s,sub,D(s,K(s,1),ef),K(s,0)));
+    const auto shift=A(s,K(s,29),Sel(s,sub,D(s,K(s,1),ef),K(s,0)));
     const auto sig=ShiftJam(s,Shl(s,significand,K32(s,3)),shift);
     const auto mant=Shr(s,sig,K32(s,3)),lo=And(s,sig,K(s,7));
     const auto up=Bool(s,spv::OpLogicalOr,Gt(s,lo,K(s,4)),
@@ -123,7 +123,7 @@ inline uint32_t ToFloat(EmitterState& s,uint32_t bits) {
     const auto carry=Ne(s,And(s,rounded,K(s,1ull<<24)),K(s,0));
     rounded=Sel(s,carry,Shr(s,rounded,K32(s,1)),rounded);
     const auto exp_after=A(s,effective,Sel(s,carry,K(s,1),K(s,0)));
-    const auto is_normal=Bool(s,spv::OpLogicalOr, !false ? Cmp(s,spv::OpSGreaterThan,ef,K(s,0)) : Eq(s,ef,K(s,1)),
+    const auto is_normal=Bool(s,spv::OpLogicalOr,Cmp(s,spv::OpSGreaterThan,ef,K(s,0)),
                              Ne(s,And(s,rounded,K(s,1ull<<23)),K(s,0)));
     const auto out_exp=Sel(s,is_normal,exp_after,K(s,0));
     auto finite=Or(s,sign,Or(s,Shl(s,out_exp,K32(s,23)),And(s,rounded,K(s,0x7fffff))));
@@ -172,7 +172,7 @@ inline uint32_t Add(EmitterState& s,uint32_t x,uint32_t y) {
                Sel(s,Bool(s,spv::OpLogicalOr,ia,ib),special,finite));
 }
 inline uint32_t Mul(EmitterState& s,uint32_t x,uint32_t y) {
-    const auto sa=Sign(s,x),sb=Sign(s,y),sign=Or(s,sa,sb); // overwritten with XOR
+    const auto sa=Sign(s,x),sb=Sign(s,y);
     const auto signed_result=B(s,spv::OpBitwiseXor,sa,sb);
     const auto ea=Exp(s,x),eb=Exp(s,y),fa=Frac(s,x),fb=Frac(s,y);
     const auto ma=Or(s,fa,Sel(s,Ne(s,ea,K(s,0)),K(s,1ull<<52),K(s,0)));
