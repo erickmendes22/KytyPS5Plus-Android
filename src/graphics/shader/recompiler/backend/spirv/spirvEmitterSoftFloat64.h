@@ -207,4 +207,68 @@ inline uint32_t Mul(EmitterState& s,uint32_t x,uint32_t y) {
                    Sel(s,Bool(s,spv::OpLogicalOr,ia,ib),infinity,
                        Sel(s,zero,signed_result,finite))));
 }
+
+inline uint32_t MinMax(EmitterState& s,uint32_t a,uint32_t b,bool want_max) {
+    const auto sa=Sign(s,a), sb=Sign(s,b);
+    const auto abs_a=And(s,a,K(s,0x7fffffffffffffffull));
+    const auto abs_b=And(s,b,K(s,0x7fffffffffffffffull));
+    const auto opposite=Ne(s,sa,sb);
+    const auto negative=Ne(s,sa,K(s,0));
+    const auto same_sign_less=Select(s,TypeBool(s),negative,Gt(s,a,b),Lt(s,a,b));
+    const auto less=Select(s,TypeBool(s),opposite,negative,same_sign_less);
+    const auto chosen=Select(s,TypeU64(s),want_max ? less :
+        Unary(s,spv::OpLogicalNot,TypeBool(s),less),b,a);
+    const auto both_zero=Binary(s,spv::OpLogicalAnd,TypeBool(s),
+                               Eq(s,abs_a,K(s,0)),Eq(s,abs_b,K(s,0)));
+    const auto zero_bits=want_max ? And(s,a,b) : Or(s,a,b);
+    const auto nan_a=IsNan(s,Exp(s,a),Frac(s,a));
+    const auto nan_b=IsNan(s,Exp(s,b),Frac(s,b));
+    // Match the original Vulkan F64 lowering: other operand on NaN,
+    // except if both are NaN, where the left operand wins.
+    return Sel(s,nan_b,a,Sel(s,nan_a,b,Sel(s,both_zero,zero_bits,chosen)));
+}
+inline uint32_t Trunc(EmitterState& s,uint32_t x) {
+    const auto e=Exp(s,x);
+    const auto integral=Cmp(s,spv::OpUGreaterThanEqual,e,K(s,1075));
+    const auto tiny=Lt(s,e,K(s,1023));
+    const auto shift=Sel(s,integral,K(s,0),D(s,K(s,1075),e));
+    const auto safe_shift=Sel(s,tiny,K(s,52),shift);
+    const auto mask=D(s,Shl(s,K(s,1),safe_shift),K(s,1));
+    const auto truncated=And(s,x,Unary(s,spv::OpNot,TypeU64(s),mask));
+    const auto special=Eq(s,e,K(s,2047));
+    return Sel(s,special,x,Sel(s,integral,x,Sel(s,tiny,Sign(s,x),truncated)));
+}
+// Exact significand rounding of 1/x via 57 steps of restoring division,
+// using uint64 SPIR-V operations only. The quotient is 53+3 guard bits.
+inline uint32_t Recip(EmitterState& s,uint32_t x) {
+    const auto sign=Sign(s,x), e=Exp(s,x), frac=Frac(s,x);
+    auto m=Or(s,frac,Sel(s,Ne(s,e,K(s,0)),K(s,1ull<<52),K(s,0)));
+    auto exp=Sel(s,Eq(s,e,K(s,0)),K(s,1),e);
+    Normalize(s,m,exp,52);
+    uint32_t rem=K(s,1ull<<52), q=K(s,0);
+    for(int bit=56;bit>=0;--bit) {
+        const auto take=Cmp(s,spv::OpUGreaterThanEqual,rem,m);
+        rem=Sel(s,take,D(s,rem,m),rem);
+        q=Or(s,q,Sel(s,take,K(s,1ull<<bit),K(s,0)));
+        if(bit!=0) rem=Shl(s,rem,K32(s,1));
+    }
+    const auto sticky=Ne(s,rem,K(s,0));
+    auto sig=Or(s,q,Sel(s,sticky,K(s,1),K(s,0)));
+    const auto top=Ne(s,And(s,sig,K(s,1ull<<56)),K(s,0));
+    sig=Sel(s,top,ShiftJam(s,sig,K(s,1)),sig);
+    const auto out_e=A(s,D(s,K(s,2045),exp),Sel(s,top,K(s,1),K(s,0)));
+    const auto rounded=RoundPack(s,sign,sig,out_e);
+    const auto special=Eq(s,e,K(s,2047));
+    const auto zero=Binary(s,spv::OpLogicalAnd,TypeBool(s),
+                           Eq(s,e,K(s,0)),Eq(s,frac,K(s,0)));
+    return Sel(s,IsNan(s,e,frac),QuietNan(s),
+        Sel(s,special,sign,Sel(s,zero,
+            Or(s,sign,K(s,0x7ff0000000000000ull)),rounded)));
+}
+// Limited compatibility lowering; Mul and Add round separately, unlike FMA.
+// Use only on the known Gran Turismo shader while correctness is evaluated.
+inline uint32_t FmaApprox(EmitterState& s,uint32_t a,uint32_t b,uint32_t c) {
+    return Add(s,Mul(s,a,b),c);
+}
+
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter::Soft64
