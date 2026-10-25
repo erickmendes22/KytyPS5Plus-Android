@@ -29,6 +29,7 @@
 #include "loader/jit.h"
 #include "loader/mfgtArenaFix.h"
 #include "loader/mfgtIndexHeader.h"
+#include "loader/mfgtIndexTransform.h"
 #include "loader/shPerformancePatches.h"
 #include "loader/symbolDatabase.h"
 #include "loader/systemContent.h"
@@ -188,7 +189,7 @@ static void MfgtIndexPreflight() {
 	const auto header = MfgtIndexHeader::Decode(std::span<const uint8_t>(raw).first(read));
 	Log::WriteToConsoleAndLog(
 	    fmt::format("MFGT index preflight: path={} exists={} file={} size={} opened={} read={} "
-		            "decoded_magic={:08x} decoded_version={:08x} header_compatible={}\n",
+		            "crc_only_magic={:08x} crc_only_version={:08x} crc_only_match={}\n",
 		            path, info.has_value(), info && info->is_file, info ? info->size : 0, opened,
 		            read, header.magic, header.version, header.Compatible()));
 }
@@ -223,6 +224,99 @@ static KYTY_SYSV_ABI uint64_t MfgtCatalogInit(uint64_t owner, uint64_t flags) {
 		                                      owner, MfgtWord(owner, 0x50), MfgtWord(owner, 0x58),
 		                                      MfgtWord(owner, 0x68), MfgtWord(owner, 0x78)));
 	return result;
+}
+
+static uint64_t             g_mfgt_transform_page  = 0;
+static constexpr uint64_t   kMfgtTransformPageSize = 0x4000;
+static std::atomic_uint32_t g_mfgt_stream_logs {0}, g_mfgt_header_logs {0};
+
+static KYTY_SYSV_ABI void MfgtNativeStream(uint64_t context, uint64_t buffer, uint64_t size,
+                                           uint64_t offset) {
+	uint64_t host_context = 0, host_buffer = 0;
+	if (size > uint64_t(INT64_MAX) || !Kernel::AddressFold::FoldSpan(context, 72, &host_context) ||
+	    (size && !Kernel::AddressFold::FoldSpan(buffer, size, &host_buffer)) ||
+	    MfgtWord(context, 0) != g_mfgt_verified_base + MfgtIndexTransform::kStateVtable) {
+		using Fn = void(KYTY_SYSV_ABI*)(uint64_t, uint64_t, uint64_t, uint64_t);
+		GuestHost::CallGuestFunction(reinterpret_cast<Fn>(g_mfgt_verified_base + 0x3dea3c0),
+		                             context, buffer, size, offset);
+		return;
+	}
+	auto bytes = std::span<uint8_t>(reinterpret_cast<uint8_t*>(host_context + 8), 64);
+	MfgtIndexTransform::State state;
+	bool                      reference_match = true;
+	const auto                reference =
+	    std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(
+	                                 g_mfgt_verified_base + MfgtIndexTransform::kReferenceState),
+		                         64);
+	for (size_t i = 0; i < 16; ++i) {
+		state[i] = MfgtIndexTransform::Read32(bytes, i * 4);
+		if (i != 12 && state[i] != MfgtIndexTransform::Read32(reference, i * 4))
+			reference_match = false;
+	}
+	auto data =
+	    std::span<uint8_t>(reinterpret_cast<uint8_t*>(host_buffer), static_cast<size_t>(size));
+	MfgtIndexTransform::Transform(state, data, offset);
+	MfgtIndexTransform::Write32(bytes, 48, state[12]);
+	if (g_mfgt_stream_logs.fetch_add(1, std::memory_order_relaxed) < 4)
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "MFGT native index: stream bytes={} offset={} reference_state={} first_word={:08x}\n",
+		    size, offset, reference_match, size >= 4 ? MfgtIndexTransform::Read32(data, 0) : 0));
+}
+static KYTY_SYSV_ABI void MfgtNativeHeader(uint64_t buffer) {
+	uint64_t host = 0;
+	if (!Kernel::AddressFold::FoldSpan(buffer, 0x800, &host)) {
+		using Fn = void(KYTY_SYSV_ABI*)(uint64_t);
+		GuestHost::CallGuestFunction(reinterpret_cast<Fn>(g_mfgt_verified_base + 0x3d4ba70),
+		                             buffer);
+		return;
+	}
+	auto       data = std::span<uint8_t>(reinterpret_cast<uint8_t*>(host), 0x800);
+	const bool done = MfgtIndexTransform::TransformHeader(data);
+	EXIT_IF(!done);
+	if (g_mfgt_header_logs.fetch_add(1, std::memory_order_relaxed) < 4)
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "MFGT native index: header magic={:08x} version={:08x}\n",
+		    MfgtIndexTransform::Read32(data, 0), MfgtIndexTransform::Read32(data, 0x20)));
+}
+static void InstallMfgtNativeIndexTransforms(Program* program) {
+	if (g_mfgt_verified_base == 0 || g_mfgt_transform_page || !program ||
+	    program->base_vaddr != g_mfgt_verified_base)
+		return;
+	const auto stream_pc = g_mfgt_verified_base + MfgtIndexTransform::kStreamCall;
+	const auto header_pc = g_mfgt_verified_base + MfgtIndexTransform::kHeaderCall;
+	if (std::memcmp(reinterpret_cast<const void*>(stream_pc),
+	                MfgtIndexTransform::kStreamOriginal.data(), 5) != 0 ||
+	    std::memcmp(reinterpret_cast<const void*>(header_pc),
+	                MfgtIndexTransform::kHeaderOriginal.data(), 5) != 0) {
+		Log::WriteToConsoleAndLog("MFGT native index: call-site guard differs; no bytes changed\n");
+		return;
+	}
+	const auto page = Libs::LibKernel::Memory::AllocateRuntimeMemory(
+	    program->base_vaddr + program->mapped_size, kMfgtTransformPageSize,
+	    Common::VirtualMemory::Mode::ExecuteReadWrite, "MFGT index transforms");
+	if (!page) return;
+	std::array<uint8_t, 5> stream_call, header_call;
+	if (!MfgtIndexTransform::Call(stream_pc, page, stream_call) ||
+	    !MfgtIndexTransform::Call(header_pc, page + 16, header_call)) {
+		EXIT_IF(!Libs::LibKernel::Memory::FreeGuestMemory(page, kMfgtTransformPageSize));
+		Log::WriteToConsoleAndLog(
+		    "MFGT native index: near trampoline unavailable; no bytes changed\n");
+		return;
+	}
+	const auto stream      = GuestHost::AddressOf<&MfgtNativeStream>("MFGT native index stream");
+	const auto header      = GuestHost::AddressOf<&MfgtNativeHeader>("MFGT native index header");
+	const auto stream_jump = MfgtIndexTransform::Jump(stream);
+	const auto header_jump = MfgtIndexTransform::Jump(header);
+	std::memcpy(reinterpret_cast<void*>(page), stream_jump.data(), stream_jump.size());
+	std::memcpy(reinterpret_cast<void*>(page + 16), header_jump.data(), header_jump.size());
+	Common::VirtualMemory::FlushInstructionCache(page, kMfgtTransformPageSize);
+	std::memcpy(reinterpret_cast<void*>(stream_pc), stream_call.data(), stream_call.size());
+	std::memcpy(reinterpret_cast<void*>(header_pc), header_call.data(), header_call.size());
+	Common::VirtualMemory::FlushInstructionCache(stream_pc, 5);
+	Common::VirtualMemory::FlushInstructionCache(header_pc, 5);
+	g_mfgt_transform_page = page;
+	Log::WriteToConsoleAndLog("MFGT native index: verified stream/header call sites use native "
+	                          "equivalent transforms; original catalog validation retained\n");
 }
 
 static void InstallMfgtCatalogDiagnostic() {
@@ -1579,6 +1673,8 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	RelocateAll();
 #if KYTY_HOST_ARM64
 	InstallMfgtCatalogDiagnostic();
+	for (auto* program: m_programs)
+		InstallMfgtNativeIndexTransforms(program);
 #endif
 
 	if (!game_patch.empty()) {
@@ -1618,6 +1714,13 @@ void RuntimeLinker::Clear() {
 	Common::LockGuard lock(m_mutex);
 	GamePatch::Clear();
 #if KYTY_HOST_ARM64
+	if (g_mfgt_transform_page) {
+		EXIT_IF(!Libs::LibKernel::Memory::FreeGuestMemory(g_mfgt_transform_page,
+		                                                  kMfgtTransformPageSize));
+		g_mfgt_transform_page = 0;
+	}
+	g_mfgt_stream_logs.store(0, std::memory_order_relaxed);
+	g_mfgt_header_logs.store(0, std::memory_order_relaxed);
 	g_mfgt_verified_base = 0;
 	g_mfgt_catalog_logs.store(0, std::memory_order_relaxed);
 #endif

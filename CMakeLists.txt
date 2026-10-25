@@ -578,6 +578,9 @@ target_link_libraries(image_readback_chunk_tests common fmt::fmt Vulkan::Headers
 target_include_directories(image_readback_chunk_tests PRIVATE ${inc_headers})
 
 
+add_executable(mfgt_index_transform_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/MfgtIndexTransformTests.cpp")
+target_include_directories(mfgt_index_transform_tests PRIVATE ${inc_headers})
+
 add_executable(sh_performance_patches_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ShPerformancePatchesTests.cpp")
 target_include_directories(sh_performance_patches_tests PRIVATE ${inc_headers})
 
@@ -870,6 +873,7 @@ if(BUILD_TESTING)
 	add_test(NAME gpu_diagnostics COMMAND $<TARGET_FILE:gpu_diagnostics_tests>)
 	add_test(NAME gpu_memory_budget COMMAND $<TARGET_FILE:gpu_memory_budget_tests>)
 	add_test(NAME image_readback_chunk COMMAND $<TARGET_FILE:image_readback_chunk_tests>)
+	add_test(NAME mfgt_index_transform COMMAND $<TARGET_FILE:mfgt_index_transform_tests>)
 	add_test(NAME sh_performance_patches COMMAND $<TARGET_FILE:sh_performance_patches_tests>)
 	add_test(NAME mfgt_arena_fix COMMAND $<TARGET_FILE:mfgt_arena_fix_tests>)
 	add_test(NAME surface_lifecycle COMMAND $<TARGET_FILE:surface_lifecycle_tests>)

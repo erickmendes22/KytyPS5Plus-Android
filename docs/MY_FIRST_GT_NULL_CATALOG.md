@@ -226,3 +226,54 @@ pointer is safe, dereferencing it after the initializer returns would not be.
 
 Actual index bytes (`contents/gt.idx`, about 190 KiB) are the next useful input
 for reproducing both decoding stages against the existing supplied executable.
+
+## Supplied gt.idx: complete decoding reproduced; native transform compatibility path
+
+User supplied `gt.idx`, 194866 bytes, SHA-256
+`211323b5e5c63a5957450520aacc7cf239edaa89578e2c528051c7895d6de44f`.
+Its first word matches the raw preflight evidence. An aligned-state scan of the
+provided executable's read-only data found the ChaCha state at RVA 0x4afa250.
+A relative relocation publishes its address at RVA 0x5ba7960, which is +0x28
+of the config at RVA 0x5ba7938; the +0x30 length is 64. Startup references this
+config at RVAs 0xa4c365 and 0xa4c996. No key bytes are published here or embedded
+in the emulator; the native routine reads the game's own runtime context.
+
+A manual implementation of the vector instructions at 0x3dea453..0x3dea504
+(including the original shuffle masks) matches ordinary 20-round ChaCha on eight
+independent states. This reference decrypts the complete input, followed by the
+exact 0x800-byte CRC transform. The resulting magic/version are 0x122bb8f2 /
+0x11160000. Filename span is within the file, entry span is within the file and
+contains 7857 24-byte records. Full decoded-file FNV-1a64 is 0x18853ced4a25d0fa.
+This establishes compatibility of these supplied inputs, not corrupt content.
+The earlier CRC-only raw-header mismatch was not a valid rejection criterion.
+
+The compatibility implementation in `mfgtIndexTransform.h` uses scalar unsigned
+integer operations for both transforms and preserves the game's stream counter
+and byte-offset semantics. Only two original CALLs are redirected, after the
+existing full pristine-text fingerprint and both five-byte instruction guards:
+
+- RVA 0x3d4ef3a, originally calling 0x3dea3c0: index stream transform.
+- RVA 0x3d4ebb8, originally calling 0x3d4ba70: header CRC transform.
+
+Each CALL reaches a nearby MOVABS/JMP trampoline and the existing ARM64 HLE trap
+bridge, preserving guest arguments and return addresses. Near-range failure or
+instruction mismatch leaves both calls untouched. The native stream accepts the
+verified context vtable at RVA 0x5555b70; other context types fall back to the
+original guest function. Guest pointers are explicitly folded for native access.
+The original filename-dictionary constructor, magic/version/span checks, APR file
+reader, volume setup and lookup failure paths are retained. No file, key, catalog,
+return-success bypass or new mount is substituted. Four bounded logs per transform
+show context-template agreement and final header values without logging the state.
+The raw preflight now explicitly labels its values `crc_only_*`.
+
+GCC warnings-as-errors and AddressSanitizer/UndefinedBehaviorSanitizer tests pass.
+Tests cover a known ChaCha block, unaligned offsets, partial/exact/empty stream
+lengths and counter behavior, short-header rejection without writes, signed rel32
+limits/overflow, and MOVABS/JMP target preservation. An optional local test checks
+the original call bytes and complete supplied index decoding against the independent
+reference hash; actual game data/state are not committed as test fixtures.
+
+This supplies an equivalent native execution path for the failing initialization
+stage. It does not by itself prove which translated instruction or earlier state
+caused the device mismatch, or that later gameplay is compatible. A fresh device
+run must confirm both native-transform logs and successful catalog publication.
