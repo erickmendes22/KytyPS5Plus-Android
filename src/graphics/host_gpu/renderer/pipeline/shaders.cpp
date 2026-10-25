@@ -795,7 +795,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	// Validate every stage, not just the first VS and the optional PS.
 	for (uint32_t i = 0; i < shader_stage_count; ++i) {
 		if (shader_stages[i].module == nullptr) {
-			EXIT("graphics pipeline missing shader module: stage=%u/%u stage_bits=%u\\n",
+			EXIT("graphics pipeline missing shader module: stage=%u/%u stage_bits=%u\n",
 			     i, shader_stage_count, static_cast<uint32_t>(shader_stages[i].stage));
 		}
 	}
@@ -815,16 +815,19 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 			    static_cast<uint32_t>(shader_stages[i].stage),
 			    reinterpret_cast<uintptr_t>(static_cast<VkShaderModule>(shader_stages[i].module)));
 		}
+		std::string guest_shader_hashes;
+		for (uint32_t i = 0; i < guest_hash_count; ++i)
+			guest_shader_hashes += fmt::format(" 0x{:016x}", guest_hashes[i]);
 		std::string colors;
 		for (uint32_t i = 0; i < rendering.color_count; ++i)
 			colors += fmt::format(" {}:{}", i, static_cast<uint32_t>(rendering.color_formats[i]));
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "GT pipeline BEGIN #{} VS=0x{:016x} PS=0x{:016x} hashes={} "
 		    "topology={} tess={} cp={} stages={} raster_samples={} "
-		    "color_count={} color_formats={} depth={} stencil={} cache={}\\n",
+		    "color_count={} color_formats={} depth={} stencil={} cache={}\n",
 		    gt_serial, vs_input_info.stage.program->shader_hash,
 		    ps_active ? ps_input_info->stage.program->shader_hash : 0ull,
-		    fmt::format("{}", guest_hash_count),
+		    guest_shader_hashes,
 		    static_cast<uint32_t>(static_params.topology), tessellation ? 1 : 0,
 		    tessellation_state.patchControlPoints, stages,
 		    static_params.samples, rendering.color_count, colors,
@@ -846,7 +849,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	}
 	if (gt_pipeline) {
 		Log::WriteToConsoleAndLog(fmt::format(
-		    "GT pipeline END #{} result={} cache_bypassed={}\\n",
+		    "GT pipeline END #{} result={} cache_bypassed={}\n",
 		    gt_serial, vk::to_string(result), gt_nocache ? 1 : 0));
 	}
 	ShaderDump::RecordResult(dump_record, result);
