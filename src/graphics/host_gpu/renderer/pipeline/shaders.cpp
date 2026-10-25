@@ -41,6 +41,12 @@
 
 namespace Libs::Graphics {
 
+// PPSA24156: serialize Vulkan pipeline compilation on Turnip V32. The driver
+// previously crashed while 16/24-control-point tessellation pipelines and
+// conventional graphics pipelines were compiling concurrently. Scope this
+// workaround to the title, preserving parallelism for all other games.
+static std::mutex g_gt_native_pipeline_mutex;
+
 // IDK: maybe we can remove it?
 constexpr uint8_t kTemporaryVertexAttribFormat113 =
     static_cast<uint8_t>(Prospero::VertexAttribFormat::k16_16SInt);
@@ -874,15 +880,14 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		     tessellation_state.patchControlPoints,
 		     graphics.GetPhysicalDeviceProperties().limits.maxTessellationPatchSize);
 	}
-	static std::mutex gt_tess_compile_mutex;
 	if (gt_heavy_tess)
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "GT tess pipeline QUEUE #{} cp={} cache_bypass=1\n",
 		    gt_serial, tessellation_state.patchControlPoints));
 	{
 		std::unique_lock<std::mutex> serialize(
-		    gt_tess_compile_mutex, std::defer_lock);
-		if (gt_heavy_tess)
+		    g_gt_native_pipeline_mutex, std::defer_lock);
+		if (gt_pipeline)
 			serialize.lock();
 		if (gt_heavy_tess)
 			Log::WriteToConsoleAndLog(fmt::format(
@@ -1025,6 +1030,16 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		const Common::PerfStats::ScopedStall timing(
 		    ShaderWorkerPool::OnWorkerThread() ? Common::PerfStats::StallKind::PipelineWorker
 		                                       : Common::PerfStats::StallKind::PipelineCompile);
+		// Use the same title-specific Vulkan compiler mutex as graphical
+		// tessellation: compute pipeline compiles can otherwise overlap a
+		// graphics worker despite the graphics-only worker serialization.
+		std::string compute_title;
+		const bool gt_compute =
+		    Loader::SystemContentParamSfoGetString("TITLE_ID", &compute_title) &&
+		    compute_title == "PPSA24156";
+		std::unique_lock<std::mutex> serialize(
+		    g_gt_native_pipeline_mutex, std::defer_lock);
+		if (gt_compute) serialize.lock();
 		result = graphics.device.createComputePipelines(driver_cache, 1, &info, nullptr,
 		                                                &pipeline.pipeline);
 	}
