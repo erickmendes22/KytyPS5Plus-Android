@@ -4,6 +4,7 @@
 #include "common/perfWaits.h"
 #include "common/logging/log.h"
 #include "kernel/fileSystem.h"
+#include "kernel/addressFold.h"
 #include "kernel/pthread.h"
 #include "libs/audio.h"
 #include "libs/libs.h"
@@ -521,7 +522,16 @@ public:
 		}
 		return *this;
 	}
+	// Callback, frame output and release use the original guest pointer.
 	uint8_t* Get() const { return m_data; }
+	// Native FFmpeg/libc must access the backed address on 39-bit ARM64 hosts.
+	uint8_t* HostData() const {
+#if KYTY_HOST_ARM64
+		return Kernel::AddressFold::FoldPointer(m_data);
+#else
+		return m_data;
+#endif
+	}
 	bool     Valid() const { return m_data != nullptr; }
 	uint32_t Size() const { return m_size; }
 
@@ -640,7 +650,7 @@ public:
 			if (!guest_path.Valid() || !guest_io.Valid()) {
 				return false;
 			}
-			std::memcpy(guest_path.Get(), path.c_str(), path.size() + 1);
+			std::memcpy(guest_path.HostData(), path.c_str(), path.size() + 1);
 			if (Loader::GuestHost::CallGuestFunction(file.open, file.object_pointer,
 			                                         reinterpret_cast<const char*>(guest_path.Get())) < 0) {
 				return false;
@@ -684,7 +694,7 @@ private:
 			                                            s->guest_io.Get(), s->pos,
 			                                            static_cast<uint32_t>(len));
 			if (read > 0 && read <= len) {
-				std::memcpy(buf, s->guest_io.Get(), static_cast<size_t>(read));
+				std::memcpy(buf, s->guest_io.HostData(), static_cast<size_t>(read));
 			}
 		} else {
 			uint32_t bytes = 0;
@@ -1639,9 +1649,12 @@ private:
 			}
 			return false;
 		}
-		auto* dst = buffer->Get();
+		// Keep the guest-visible address for the game and video tracking; only native
+		// writes use the folded host backing. Libc memset/memcpy cannot reliably
+		// recover high guest addresses through the guest CPU signal retry path.
+		auto* dst = buffer->HostData();
 		auto* c   = dst + pitch * h;
-		g_writing_address.store(reinterpret_cast<uint64_t>(dst), std::memory_order_relaxed);
+		g_writing_address.store(reinterpret_cast<uint64_t>(buffer->Get()), std::memory_order_relaxed);
 		g_writing_size.store(static_cast<uint64_t>(pitch) * h * 3 / 2, std::memory_order_release);
 		// PPSA02433 samples the padded columns; zero chroma would turn them green.
 		std::memset(dst, s->codecpar->color_range == AVCOL_RANGE_JPEG ? 0 : 16,
@@ -1655,7 +1668,7 @@ private:
 		}
 		g_writing_size.store(0, std::memory_order_release);
 		std::memset(info, 0, sizeof(*info));
-		info->data       = dst;
+		info->data       = buffer->Get();
 		info->time_stamp = to_ms(
 		    src->best_effort_timestamp != AV_NOPTS_VALUE ? src->best_effort_timestamp : src->pts,
 		    s->time_base);
@@ -1721,7 +1734,7 @@ private:
 			}
 			buffer = std::move(replacement);
 		}
-		std::memcpy(buffer->Get(), pcm->data[0], size);
+		std::memcpy(buffer->HostData(), pcm->data[0], size);
 		auto* s = fmt->streams[audio_id.value()];
 		std::memset(info, 0, sizeof(*info));
 		info->data       = buffer->Get();
