@@ -1052,6 +1052,23 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 		     dead.reject != nullptr ? dead.reject : "");
 	}
 	IR::CollectShaderInfo(ir, options.input_info, native_barycentrics || emulate_barycentrics);
+	// PPSA24156 diagnostic only: preserve the exact decoded operations and final
+	// optimized IR of the unsupported FP64 compute shader. This runs once for its
+	// exact hash, and never changes compilation or substitutes lower precision.
+	if (options.shader_hash == 0xbecd439e2fa1efd1ull &&
+	    !options.device_features.shader_float64) {
+		const auto record = [&](const char* label, std::string dump) {
+			constexpr size_t max_chars = 32768;
+			const auto total = dump.size();
+			if (dump.size() > max_chars) dump.resize(max_chars);
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "MFGT FP64 {}: hash=0x{:016x} bytes={} captured={}{}\\n{}\\n",
+			    label, options.shader_hash, total, dump.size(),
+			    total > dump.size() ? " (truncated)" : "", dump));
+		};
+		record("decoded", Decoder::ProgramToString(decoded));
+		record("optimized-ir", IR::ProgramToString(ir));
+	}
 	ir.info.barycentric_emulation = {.enabled = emulate_barycentrics};
 	ir.info.group_pack            = ComputeGroupPack(ir, options);
 	if (emulate_barycentrics) {
