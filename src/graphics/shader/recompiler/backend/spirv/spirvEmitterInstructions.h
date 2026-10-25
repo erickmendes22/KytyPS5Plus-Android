@@ -181,8 +181,7 @@ uint32_t EmitFPSub16(EmitterState& state, uint32_t arg0, uint32_t arg1);
 uint32_t EmitFPMul16(EmitterState& state, uint32_t arg0, uint32_t arg1);
 uint32_t EmitFPAdd64(EmitterState& state, uint32_t arg0, uint32_t arg1);
 uint32_t EmitFPMul64(EmitterState& state, uint32_t arg0, uint32_t arg1);
-inline constexpr auto EmitFPFma64 =
-    EmitGlsl<GLSLstd450Fma, IR::Type::F64, uint32_t, uint32_t, uint32_t>;
+uint32_t EmitFPFma64(EmitterState& state, uint32_t a, uint32_t b, uint32_t c);
 uint32_t              EmitFPRecip64(EmitterState& state, uint32_t arg0);
 uint32_t EmitFPFma32(EmitterState& state, uint32_t arg0, uint32_t arg1, uint32_t arg2);
 uint32_t EmitFPMad32(EmitterState& state, uint32_t arg0, uint32_t arg1, uint32_t arg2);
@@ -206,7 +205,7 @@ inline constexpr auto EmitFPCeil32      = EmitGlsl<GLSLstd450Ceil, IR::Type::F32
 inline constexpr auto EmitFPTrunc32     = EmitGlsl<GLSLstd450Trunc, IR::Type::F32, uint32_t>;
 inline constexpr auto EmitFPFloor64     = EmitGlsl<GLSLstd450Floor, IR::Type::F64, uint32_t>;
 inline constexpr auto EmitFPCeil64      = EmitGlsl<GLSLstd450Ceil, IR::Type::F64, uint32_t>;
-inline constexpr auto EmitFPTrunc64     = EmitGlsl<GLSLstd450Trunc, IR::Type::F64, uint32_t>;
+uint32_t EmitFPTrunc64(EmitterState& state, uint32_t arg0);
 inline constexpr auto EmitFPFract32     = EmitGlsl<GLSLstd450Fract, IR::Type::F32, uint32_t>;
 inline constexpr auto EmitFPFract64     = EmitGlsl<GLSLstd450Fract, IR::Type::F64, uint32_t>;
 uint32_t              EmitFPSin(EmitterState& state, uint32_t arg0);
