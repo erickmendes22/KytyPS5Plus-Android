@@ -768,7 +768,11 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	};
 
 	std::string decoded_dump;
-	if (options.dump_ir) {
+	// Capture the one unsupported FP64 compute shader even when regular IR dumping
+	// is off; the decoded source belongs to TranslateProgram, not CompileProgram.
+	const bool mfgt_fp64_capture = options.shader_hash == 0xbecd439e2fa1efd1ull &&
+	                              !options.device_features.shader_float64;
+	if (options.dump_ir || mfgt_fp64_capture) {
 		decoded_dump = Decoder::ProgramToString(decoded);
 		if (options.early_dump) {
 			LOGF("%s decoded RDNA2 (early):\n%s", GetDumpLabel(options), decoded_dump.c_str());
@@ -940,7 +944,7 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	ir.uniform_buffer_limit = options.device_features.uniform_constant_buffer_bytes;
 	TranslateResult result;
 	result.program = std::move(ir);
-	if (options.dump_ir) {
+	if (options.dump_ir || mfgt_fp64_capture) {
 		result.decoded_dump = std::move(decoded_dump);
 		result.cfg_dump     = std::move(cfg_dump);
 	}
@@ -1066,7 +1070,7 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 			    label, options.shader_hash, total, dump.size(),
 			    total > dump.size() ? " (truncated)" : "", dump));
 		};
-		record("decoded", Decoder::ProgramToString(decoded));
+		record("decoded", translated.decoded_dump);
 		record("optimized-ir", IR::ProgramToString(ir));
 	}
 	ir.info.barycentric_emulation = {.enabled = emulate_barycentrics};
