@@ -44,6 +44,8 @@ namespace Libs::Graphics {
 constexpr uint8_t kTemporaryVertexAttribFormat113 =
     static_cast<uint8_t>(Prospero::VertexAttribFormat::k16_16SInt);
 constexpr uint32_t kTemporaryPs5BufferFormat121 = 121u;
+// PS5 format 52 is a true 64-bit unsigned vertex attribute (GT reference PR #1033).
+constexpr uint32_t kVertexBufferFormat64xU64 = 52u;
 
 static bool NarrowInputFormat(vk::Format& format, uint32_t& size, uint32_t used_components) {
 	if (used_components == 0 || used_components >= size) {
@@ -132,6 +134,15 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, 
 		}
 		format = vk::Format::eR16G16Sfloat;
 		size   = 2;
+		return;
+	}
+
+	if (raw_format == kVertexBufferFormat64xU64) {
+		static std::atomic_bool logged_52 {false};
+		if (!logged_52.exchange(true, std::memory_order_relaxed))
+			LOGF("InputFormat: mapping PS5 vertex format 52 (64xU64) to R64Uint\n");
+		format = vk::Format::eR64Uint;
+		size   = 8;
 		return;
 	}
 
@@ -510,6 +521,13 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		    compiled_components > 0 ? static_cast<int>(compiled_components) : registers_num;
 		GetInputFormat(vs_input_info.resources[index], input_attr[index].format, attr_size,
 		               static_cast<uint32_t>(used_components));
+		// Vulkan VUID-VkVertexInputAttributeDescription-format-00623:
+		// report an unsupported vertex-fetch format before passing it to the ICD.
+		if (!(graphics.GetFormatProperties(input_attr[index].format).bufferFeatures &
+		      vk::FormatFeatureFlagBits::eVertexBuffer)) {
+			EXIT("Pipeline vertex attribute %u unsupported by this Vulkan GPU: format=%u\n",
+			     index, static_cast<uint32_t>(input_attr[index].format));
+		}
 
 		if (graphics_debug_dump_enabled()) {
 			static std::atomic_uint log_count = 0;
