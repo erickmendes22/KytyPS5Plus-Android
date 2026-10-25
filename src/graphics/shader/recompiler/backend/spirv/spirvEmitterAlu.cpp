@@ -20,6 +20,7 @@ Pair ExtractPair(EmitterState& state, uint32_t value) {
 }
 
 uint32_t EmitMinMaxF64(EmitterState& state, uint32_t lhs, uint32_t rhs, bool max_value) {
+	if (state.soft_float64) return Soft64::MinMax(state, lhs, rhs, max_value);
 	const auto bits_type = TypeU32Vector(state, 2);
 	const auto lhs_bits = Unary(state, spv::OpBitcast, bits_type, lhs);
 	const auto rhs_bits = Unary(state, spv::OpBitcast, bits_type, rhs);
@@ -384,6 +385,15 @@ uint32_t EmitFPMax32(EmitterState& state, uint32_t arg0, uint32_t arg1) {
 	return EmitMinMaxF32Value(state, arg0, arg1, true);
 }
 
+uint32_t EmitFPFma64(EmitterState& state, uint32_t a, uint32_t b, uint32_t c) {
+	return state.soft_float64 ? Soft64::FmaApprox(state, a, b, c) :
+	       EmitGlsl<GLSLstd450Fma, IR::Type::F64, uint32_t, uint32_t, uint32_t>(state, a, b, c);
+}
+uint32_t EmitFPTrunc64(EmitterState& state, uint32_t arg0) {
+	return state.soft_float64 ? Soft64::Trunc(state, arg0) :
+	       EmitGlsl<GLSLstd450Trunc, IR::Type::F64, uint32_t>(state, arg0);
+}
+
 uint32_t EmitFPMin64(EmitterState& state, uint32_t arg0, uint32_t arg1) {
 	return EmitMinMaxF64(state, arg0, arg1, false);
 }
@@ -406,6 +416,7 @@ uint32_t EmitFPRecip32(EmitterState& state, uint32_t arg0) {
 }
 
 uint32_t EmitFPRecip64(EmitterState& state, uint32_t arg0) {
+	if (state.soft_float64) return Soft64::Recip(state, arg0);
 	const auto one = state.builder.Constant(spv::OpConstant, TypeF64(state), 0u, 0x3ff00000u);
 	return EmitNative<spv::OpFDiv, IR::Type::F64>(state, one, arg0);
 }
