@@ -348,3 +348,35 @@ The existing active-fiber identity/switch/migration regressions cover identity
 initialization and lifetime; AddressFoldTests adds the exact observed scheduler
 range arithmetic. A bounded ARM64 log reports up to four identity/backing pairs.
 Device confirmation of this new correction remains pending.
+
+
+## 2026-10-25 10:24 device diagnostic: AvPlayer fixed, compute FP64 rejected
+
+Input: `KytyPS5-Plus-diagnostics-20261025-102418.zip`, exact native core
+`c36c95a9` (mainline Turnip V32 / Adreno 830).
+The APR index still reads 194866 bytes and publishes the catalog. Guest fiber
+identities are original (e.g. `cc00284300` versus native `4c00284300`).
+`AvPlayer video started playing` followed by `AvPlayer video stopped` proves the
+previous native write to `0xd41b2fc000` is no longer the immediate crash.
+The renderer continues translating shaders (VS 17, PS 25, CS 38, GS 1).
+
+The subsequent native shutdown is an explicit rejection:
+`native shader rejected: hash=0xbecd439e2fa1efd1 stage=4 needs Float64 arithmetic
+(shaderFloat64)`. Stage 4 is compute; `ShaderInfoCollection` sets
+`program.info.float64` when a surviving native IR instruction produces F64.
+`SpirvEmitter.cpp` intentionally refuses Float64 SPIR-V when the device did not
+advertise the feature. This is not a missing APR file, a fiber regression, or
+an out-of-RAM event. Approximately 3.8 GiB host RAM remained. Exit reason 1,
+status 65, is consistent with the deliberate shader-recompiler abort.
+
+Do **not** enable a Vulkan feature the device reports absent, strip the feature
+guard, skip this compute shader, or substitute fp32 blindly. Those changes
+would not preserve the missing shader's semantics.
+
+Branch `investigate/mfgt-fp64` adds *diagnostic only* bounded opcode/operand
+census at the rejection site and the decoded RDNA2 plus optimized IR (maximum
+32 KiB of each) for exactly hash `0xbecd439e2fa1efd1`. No guest instructions,
+shader semantics, driver requirements, or released game patches are changed.
+The next concrete step is to use those captured operations to determine
+whether a complete, verifiable software FP64 lowering path is possible.
+This is not a claim that the current app runs the game past this compute shader.
