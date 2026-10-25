@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "id": "noshadows",
+  "name": "Shadow quality 0",
+  "description": "Disables dynamic shadows through the game setting; baked lighting can remain. Requires the verified PPSA10112 executable.",
+  "launch": {
+    "env": {
+      "KYTY_SH_NO_SHADOWS": "1"
+    }
+  }
+}

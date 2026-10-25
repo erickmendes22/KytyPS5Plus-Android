@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 2,
+  "id": "res50",
+  "name": "Internal resolution 50%",
+  "description": "Native game screen percentage. Output resolution is unchanged. Select only one resolution preset. Requires the verified PPSA10112 executable.",
+  "launch": {
+    "env": {
+      "KYTY_SH_SCREEN_PERCENTAGE": "50"
+    },
+    "renderScale": 1.0
+  }
+}

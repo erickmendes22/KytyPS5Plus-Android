@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "id": "nodof",
+  "name": "Depth of field off",
+  "description": "Sets depth-of-field quality to zero. Requires the verified PPSA10112 executable.",
+  "launch": {
+    "env": {
+      "KYTY_SH_NO_DOF": "1"
+    }
+  }
+}

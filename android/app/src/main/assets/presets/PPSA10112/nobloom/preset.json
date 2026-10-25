@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "id": "nobloom",
+  "name": "Bloom off",
+  "description": "Sets bloom quality to zero. Requires the verified PPSA10112 executable.",
+  "launch": {
+    "env": {
+      "KYTY_SH_NO_BLOOM": "1"
+    }
+  }
+}

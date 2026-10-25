@@ -14,11 +14,17 @@ import com.kytyps5.android.library.EnvVars
 object GameEnvironment {
     private const val TAG = "KytyEnv"
     private var appliedKeys: Set<String> = emptySet()
+    // Native --env presets are applied after this object and are not in appliedKeys.
+    // Clear their scoped knobs as well when SDL reuses the process for another launch.
+    internal val silentHillPresetKeys = setOf(
+        "KYTY_SH_SCREEN_PERCENTAGE", "KYTY_SH_NO_SHADOWS", "KYTY_SH_NO_FOG", "KYTY_SH_NO_SSR",
+        "KYTY_SH_NO_AO", "KYTY_SH_NO_BLOOM", "KYTY_SH_NO_DOF", "KYTY_SH_NO_MOTION_BLUR", "KYTY_SH_NO_RT",
+    )
 
     fun apply(lines: Array<String>?) {
         val vars = EnvVars.parse(lines?.joinToString("\n").orEmpty()).vars
         val (unset, set) = EnvVars.plan(appliedKeys, vars)
-        unset.forEach { key ->
+        (unset + silentHillPresetKeys).distinct().forEach { key ->
             try {
                 Os.unsetenv(key)
             } catch (e: ErrnoException) {

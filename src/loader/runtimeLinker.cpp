@@ -29,6 +29,7 @@
 #include "loader/jit.h"
 #include "loader/mfgtArenaFix.h"
 #include "loader/mfgtIndexHeader.h"
+#include "loader/shPerformancePatches.h"
 #include "loader/symbolDatabase.h"
 #include "loader/systemContent.h"
 #include "loader/x64InstructionEmulator.h"
@@ -2070,6 +2071,24 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	(void)fold_forced;
 #endif
 
+	ShPerformancePatches::Options sh_options;
+	if (const char* value = std::getenv("KYTY_SH_SCREEN_PERCENTAGE")) {
+		if (std::strcmp(value, "25") == 0)
+			sh_options.screen_percent = 25;
+		else if (std::strcmp(value, "50") == 0)
+			sh_options.screen_percent = 50;
+		else if (std::strcmp(value, "75") == 0)
+			sh_options.screen_percent = 75;
+	}
+	for (size_t effect = 0; effect < ShPerformancePatches::kEffectCount; ++effect) {
+		const char* value          = std::getenv(ShPerformancePatches::kEnvironment[effect]);
+		sh_options.disable[effect] = value != nullptr && std::strcmp(value, "1") == 0;
+	}
+	bool              sh_verified       = false;
+	const Elf64_Phdr* sh_text_segment   = nullptr;
+	bool              sh_rodata_loaded  = false;
+	bool              sh_globals_loaded = false;
+
 	std::vector<std::pair<uint64_t, uint64_t>> executable_segments;
 	uint64_t                                   eh_frame_header_addr = 0;
 	uint64_t                                   eh_frame_header_size = 0;
@@ -2089,6 +2108,24 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 			     magic_enum::enum_name(mode));
 
 			program->elf->LoadSegment(segment_addr, phdr[i].p_offset, segment_file_size);
+
+			if (sh_options.Any() && !is_shared && is_next_gen && phdr[i].p_type == PT_LOAD) {
+				if (phdr[i].p_vaddr == 0 && Common::VirtualMemory::IsExecute(mode)) {
+					std::string title;
+					SystemContentParamSfoGetString("TITLE_ID", &title);
+					sh_verified = ShPerformancePatches::MatchesIdentity(
+					    title, true, ehdr->e_entry,
+					    {reinterpret_cast<const uint8_t*>(segment_addr),
+						 static_cast<size_t>(segment_file_size)});
+					if (sh_verified) sh_text_segment = &phdr[i];
+				}
+				if (phdr[i].p_vaddr == ShPerformancePatches::kReadOnlyRva &&
+				    segment_file_size == ShPerformancePatches::kReadOnlySize)
+					sh_rodata_loaded = true;
+				if (phdr[i].p_vaddr == ShPerformancePatches::kGlobalsRva &&
+				    segment_file_size == ShPerformancePatches::kGlobalsSize)
+					sh_globals_loaded = true;
+			}
 
 #if KYTY_HOST_ARM64
 			// Before instruction/TLS rewriting and memory protection: fingerprint the
@@ -2157,6 +2194,46 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 		if (patch_guest_instructions && phdr[i].p_type == PT_GNU_EH_FRAME) {
 			eh_frame_header_addr = phdr[i].p_vaddr + program->base_vaddr;
 			eh_frame_header_size = phdr[i].p_memsz;
+		}
+	}
+
+	// All segments, including overlapping RELRO loads, are in place. No guest
+	// initializer has run. Never patch a shared module, an unknown build, or only
+	// part of a selected effects/resolution combination.
+	if (sh_options.Any() && !is_shared) {
+		bool applied = false;
+		if (sh_verified && sh_text_segment && sh_rodata_loaded && sh_globals_loaded) {
+			auto text   = std::span<uint8_t>(reinterpret_cast<uint8_t*>(program->base_vaddr),
+			                                 ShPerformancePatches::kTextSize);
+			auto rodata = std::span<const uint8_t>(
+			    reinterpret_cast<const uint8_t*>(program->base_vaddr +
+				                                 ShPerformancePatches::kReadOnlyRva),
+			    ShPerformancePatches::kReadOnlySize);
+			auto globals = std::span<uint8_t>(
+			    reinterpret_cast<uint8_t*>(program->base_vaddr + ShPerformancePatches::kGlobalsRva),
+			    ShPerformancePatches::kGlobalsSize);
+			if (ShPerformancePatches::ValidateSites(text, rodata, globals, sh_options)) {
+				const auto size = GetAlignedSize(sh_text_segment);
+				Libs::LibKernel::Memory::SetProgramMemoryProtection(
+				    program->base_vaddr, size, Common::VirtualMemory::Mode::ExecuteReadWrite);
+				applied = ShPerformancePatches::ApplySites(text, rodata, globals, sh_options);
+				Libs::LibKernel::Memory::SetProgramMemoryProtection(
+				    program->base_vaddr, size, GetMode(sh_text_segment->p_flags));
+				Common::VirtualMemory::FlushInstructionCache(program->base_vaddr, size);
+			}
+		}
+		if (applied) {
+			std::string effects;
+			for (size_t index = 0; index < sh_options.disable.size(); ++index)
+				if (sh_options.disable[index])
+					effects += std::string(ShPerformancePatches::kEnvironment[index]) + " ";
+			Log::WriteToConsoleAndLog(
+			    fmt::format("Silent Hill engine patches: applied to verified PPSA10112 executable; "
+				            "screen_percentage={} (0=unchanged), disabled=[{}], priority=Console\n",
+				            sh_options.screen_percent, effects));
+		} else {
+			Log::WriteToConsoleAndLog("Silent Hill engine patches: executable/segment/site guard "
+			                          "rejected selection; no patch bytes changed\n");
 		}
 	}
 

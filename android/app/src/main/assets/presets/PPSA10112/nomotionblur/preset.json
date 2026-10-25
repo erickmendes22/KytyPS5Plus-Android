@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "id": "nomotionblur",
+  "name": "Motion blur off",
+  "description": "Sets motion-blur quality to zero. Requires the verified PPSA10112 executable.",
+  "launch": {
+    "env": {
+      "KYTY_SH_NO_MOTION_BLUR": "1"
+    }
+  }
+}

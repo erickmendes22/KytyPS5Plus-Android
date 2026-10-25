@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "id": "nossr",
+  "name": "Screen-space reflections off",
+  "description": "Sets screen-space reflection quality to zero. Requires the verified PPSA10112 executable.",
+  "launch": {
+    "env": {
+      "KYTY_SH_NO_SSR": "1"
+    }
+  }
+}

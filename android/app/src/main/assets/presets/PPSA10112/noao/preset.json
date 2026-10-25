@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "id": "noao",
+  "name": "Screen-space ambient occlusion off",
+  "description": "Sets ambient occlusion levels to zero. Requires the verified PPSA10112 executable.",
+  "launch": {
+    "env": {
+      "KYTY_SH_NO_AO": "1"
+    }
+  }
+}

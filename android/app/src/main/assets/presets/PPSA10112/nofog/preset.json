@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "id": "nofog",
+  "name": "Volumetric fog off",
+  "description": "Disables volumetric fog through the game setting. Requires the verified PPSA10112 executable.",
+  "launch": {
+    "env": {
+      "KYTY_SH_NO_FOG": "1"
+    }
+  }
+}

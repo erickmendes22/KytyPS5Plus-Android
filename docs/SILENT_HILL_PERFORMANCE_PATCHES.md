@@ -62,3 +62,73 @@ The next APK requests 32 MiB allocator blocks only for confirmed PPSA10112.
 This targets retained reservation slack; it cannot remove the 5+ GiB peak live
 resource demand. Its RAM effect still needs the next device test.
 No unverified native-game resolution/RT/shadow offsets are enabled in that APK.
+
+## Implemented patch plan (opt-in)
+
+The native loader now implements the binary plan in `src/loader/shPerformancePatches.h`.
+It requires PPSA10112, a main executable with entry RVA 0x80, exact text length
+0x57554cc and pristine-text FNV-1a64 0x10ca182d422310d0. It identifies the text
+before instruction rewriting, then validates the complete original registration
+instructions for every selected option after all segment/RELRO loads. Unsupported
+builds/sites cause the entire selection to be rejected before patch writes.
+No game file on storage is modified.
+
+Eleven opt-in launcher presets are shipped under `assets/presets/PPSA10112`:
+three engine screen percentages (75/50/25), and eight independent effect switches
+(shadow quality zero, volumetric fog, SSR, SSAO, bloom, DOF, motion blur and enforced
+RT zero). Effects combine with one resolution choice through separate KYTY_SH_*
+launch variables, without the one-JSON-game-patch limitation. Conflicting resolution
+selections use the existing first-preset-wins rule and conflict report. Resolution
+presets explicitly choose host render scale 1.0 to avoid stacking game percentage
+with the emulator's alternate-backing downscale. Output dimensions are unchanged.
+Disabling presets restores original executable values on the next launch; their
+scoped environment keys are cleared even if Android/SDL reuses the process.
+
+### Override mechanism proved in the supplied binary
+
+The console manager vtable at RVA 0x74b6eb8 resolves integer registration to
+0x1217540 and float registration to 0x12175f0. They store the incoming flags at
+object +0x18 and seed game/render-thread values at +0x44/+0x48. The flag priority
+check at 0x1216120 masks both incoming and existing sources with 0xff000000,
+compares them at 0x1216157 and accepts incoming >= existing. Its own source-name
+table labels levels 0..9 Constructor, Scalability, GameSetting, ProjectSetting,
+SystemSettingsIni, DeviceProfile, ConsoleVariablesIni, Commandline, Code, Console.
+The patches set source 9 while preserving all low 24 flag bits. Thus ordinary
+lower-priority engine/config writes cannot undo the selected values. An explicit
+equal-priority console write can still override them.
+
+This also covers pre-registration INI values: the CreatedFromIni path at
+0x1216c60..0x1216c7a invokes the normal Set(value, old_source), which reaches the
+same priority check. Merely patching a default without this would not be sufficient.
+
+For resolution, only the `r.ScreenPercentage` registration's RIP-relative float
+load changes, referencing an already-existing read-only constant containing 75,
+50 or 25. Shared float constants themselves stay unchanged. `r.DynamicRes.OperationMode`
+retains its existing zero default and is also assigned Console priority so a
+lower-priority dynamic-resolution policy does not supersede the chosen percentage.
+A percentage is not asserted to be any absolute 720p/540p value.
+
+For fog, the exact external integer at RVA 0x7b27f4c changes 1->0 before guest
+initializers run, and its reference CVar receives the same source priority. Direct
+RIP-reference analysis found the reference registration and no direct immediate
+store resetting that integer. Other effects change their individual EDX constructor
+value to zero. RT already starts at zero, so its preset only enforces that value;
+no RT performance improvement is claimed from the original diagnostic.
+
+### Validation and limits
+
+`ShPerformancePatchesTests` passes on GCC with warnings-as-errors and with
+AddressSanitizer/UndefinedBehaviorSanitizer. It exercises all 1024 selection
+combinations on synthetic segments and on the actual supplied executable segments.
+It checks untouched options, original flag preservation, resolution targets,
+priority ordering, exact changed-byte boundaries, identity guards, invalid options,
+short inputs and all-or-nothing rejection of a late registration/fog-data mismatch.
+The original eboot remains unchanged. Android tests cover shipped-manifest parsing,
+combined launch arguments, no double host scaling, resolution conflicts and the
+complete set of environment keys cleared between launches.
+
+This is binary/logic validation. Visual behavior, stability, RAM reduction and FPS
+benefit of each option still require a device run. Zero dynamic-shadow quality does
+not remove baked lighting; SSAO/SSR switches do not establish that every alternative
+AO/reflection path in every scene is disabled. No lower-resolution textures, shader
+removals, guessed draw skips or arbitrary render-output changes are included.

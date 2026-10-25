@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "id": "nort",
+  "name": "Ray tracing off (enforced)",
+  "description": "Keeps the main ray-tracing setting at zero. Its original default is already zero; a performance gain is not established. Requires the verified PPSA10112 executable.",
+  "launch": {
+    "env": {
+      "KYTY_SH_NO_RT": "1"
+    }
+  }
+}
