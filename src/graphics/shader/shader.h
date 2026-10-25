@@ -126,6 +126,9 @@ struct ShaderTessellationInputInfo {
 	uint32_t domain                = 0;
 	uint32_t partitioning          = 0;
 	uint32_t output_topology       = 0;
+	// Per-patch HS output range reflected from the control shader (PR #1032).
+	uint32_t patch_base            = 0;
+	uint32_t patch_size            = 0;
 };
 
 // --gpu-indirect: a draw whose arguments stay in GPU memory. The hardware vertex/instance ID
