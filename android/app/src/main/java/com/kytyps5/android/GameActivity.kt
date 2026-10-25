@@ -48,7 +48,22 @@ class GameActivity : SDLActivity() {
      */
     override fun getArguments(): Array<String> {
         val launchArgs = intent?.getStringArrayExtra(LaunchArgs.EXTRA_GAME_ARGS) ?: emptyArray()
-        return PresetLaunchArgs.apply(arrayOf(LaunchArgs.FLAG_DATA_DIR, filesDir.absolutePath) + launchArgs, presetLaunch)
+        // PPSA24156 on the experimental tessellation path: capture the *native*
+        // SPIR-V modules and graphics pipeline state before vkCreateGraphicsPipelines
+        // enters Turnip. These files are needed to reproduce its null dereference.
+        // Other games retain the existing command line and no shader dump overhead.
+        val captureGranTurismo = launchArgs.contains(LaunchArgs.FLAG_TESSELLATION) &&
+            (intent?.getStringExtra(LaunchArgs.EXTRA_GAME_PATH)
+                ?: LaunchArgs.gamePath(launchArgs))?.contains("PPSA24156", ignoreCase = true) == true
+        val diagnosticArgs = if (captureGranTurismo) {
+            arrayOf("--dump-shaders", java.io.File(filesDir, "gt-pipeline-dumps").absolutePath)
+        } else {
+            emptyArray()
+        }
+        return PresetLaunchArgs.apply(
+            arrayOf(LaunchArgs.FLAG_DATA_DIR, filesDir.absolutePath) + launchArgs + diagnosticArgs,
+            presetLaunch,
+        )
     }
 
     /**
