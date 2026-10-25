@@ -98,6 +98,7 @@ struct EmitterState {
 	IR::Program&                                     program;
 	ShaderStageInputInfo                             input_info;
 	bool                                            maintenance8_enabled;
+	bool                                            soft_float64 = false;
 	ShaderDeviceFeatures                            device_features {};
 	// Host compiler workarounds (graphics/shader/deviceQuirks.h); all off on desktop drivers.
 	ShaderDeviceQuirks                              device_quirks {};
