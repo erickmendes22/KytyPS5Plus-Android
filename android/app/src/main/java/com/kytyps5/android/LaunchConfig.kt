@@ -59,6 +59,7 @@ object LaunchArgs {
     const val FLAG_GPU_TURBO = "--gpu-turbo"
     const val FLAG_GPU_EVICT_WRITTEN = "--gpu-evict-written"
     const val FLAG_VMA_BLOCK_SIZE = "--vma-block-size"
+    const val FLAG_TESSELLATION = "--tessellation"
 
     /** Launcher-only extras read by GameActivity (not emulator flags). */
     const val EXTRA_GAME_PATH = "com.kytyps5.android.extra.GAME_PATH"
@@ -92,6 +93,9 @@ object LaunchArgs {
             // Confirmed renderer-memory growth on this title. Preserve other games' policy.
             (if (titleId.equals("PPSA10112", ignoreCase = true))
                 arrayOf(FLAG_GPU_EVICT_WRITTEN, "1", FLAG_VMA_BLOCK_SIZE, "32") else emptyArray())
+            // The GT reference fork enables LS/HS/TES explicitly. Keep it title-scoped.
+            + (if (titleId.equals("PPSA24156", ignoreCase = true))
+                arrayOf(FLAG_TESSELLATION) else emptyArray())
 }
 
 /** Which GPU driver a launch uses: a per-game override wins over the global choice. */
