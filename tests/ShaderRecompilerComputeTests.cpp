@@ -19751,7 +19751,7 @@ public:
                                 Prospero::BufferFormat::k16_16_16_16UNorm}) {
         auto info = MakeTilingImage(format, 267, 521, 9, 3, mode, 0, false);
         info.pixel_format = VulkanFormat(format);
-        Image native(m_runtime_context, scheduler, info);
+        Libs::Graphics::Image native(m_runtime_context, scheduler, info);
         std::vector<uint8_t> linear(info.LinearSize());
         fill(&linear, ++case_index);
         std::vector<uint8_t> expected(info.data.size, 0xab),
