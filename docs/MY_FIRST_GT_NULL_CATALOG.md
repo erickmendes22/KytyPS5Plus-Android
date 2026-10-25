@@ -380,3 +380,41 @@ shader semantics, driver requirements, or released game patches are changed.
 The next concrete step is to use those captured operations to determine
 whether a complete, verifiable software FP64 lowering path is possible.
 This is not a claim that the current app runs the game past this compute shader.
+
+
+## 2026-10-25 14:55 device FP64 opcode census
+
+Input: `KytyPS5-Plus-diagnostics-20261025-145542.zip` (session core
+`828bf9eb`, Mainline Turnip v32, Adreno 830, PPSA24156). The last exit is
+not memory pressure or the old APR, fiber or AvPlayer problem: the same native
+compute shader rejects unsupported Vulkan `shaderFloat64`.
+
+The exact active shader `0xbecd439e2fa1efd1` has `stage=4` (compute),
+`float_mode=0xc0`, 56 live FP64-related IR instructions:
+
+| Opcode | Occurrences |
+|---|---:|
+| BitCastF64U64 | 22 |
+| BitCastU64F64 | 14 |
+| ConvertF32F64 | 6 |
+| ConvertF64F32 | 6 |
+| FPAdd64 | 2 |
+| FPMul64 | 6 |
+
+The decoded RDNA2 was captured completely (27330 characters); optimized IR
+contains 96479 characters but the bounded device diagnostic captured the first
+32768. The assembly confirms both `V_ADD_F64` and `V_MUL_F64`. This shader
+does not appear to need FP64 divide, sqrt, FMA, comparisons or transcendental
+operations. Memory failure cannot explain this deliberate abort.
+
+A correct implementation should supply FP64 arithmetic software lowering in the
+SPIR-V backend using integer operations and proper IEEE-754 handling (including
+rounding, sign, subnormal, overflow and NaN cases), then verify conversion,
+addition and multiplication against a reference across edge cases before enabling
+it for this shader. Preserve guest 64-bit bitcast semantics and allow native FP64
+on hardware that actually supports `shaderFloat64`. Never remove the support
+guard, claim that the Vulkan device supports FP64, drop the compute shader or
+substitute ordinary FP32 without precision validation.
+
+These logs establish the precise unsupported instruction set, **not** an already
+implemented FP64 fallback. `investigate/mfgt-fp64` remains an isolated branch.
