@@ -47,8 +47,15 @@ static bool DccAlphaOnMsb(const HW::ColorInfo& info) {
 static void ComputeColorTargetDesc(const HW::RenderTarget& rt, uint32_t rt_slot, uint32_t mask,
                                    uint32_t render_target_slice_offset, RenderColorInfo& r) {
 	const auto samples = render_sample_count(rt.attrib.num_fragments);
-	// TODO(PPSA24156): Replace this 2x MSAA approximation with proper 4-coverage/2-fragment EQAA.
-	const bool approximate_eqaa = rt.attrib.num_samples == 2 && rt.attrib.num_fragments == 1;
+	// From defektu/KytyPS5 PR #1035: EQAA is legal without FMASK/CMASK/DCC.
+	// Approximate coverage using the actual color fragment count until the host
+	// has an independent coverage-sample representation.
+	const bool approximate_eqaa =
+	    rt.attrib.num_samples > rt.attrib.num_fragments &&
+	    !rt.info.fmask_compression_enable && !rt.info.fmask_data_compression_disable &&
+	    !rt.info.fmask_one_frag_mode && !rt.info.cmask_fast_clear_enable &&
+	    !rt.info.dcc_compression_enable && rt.cmask.addr == 0 &&
+	    rt.fmask.addr == 0 && rt.dcc_addr.addr == 0;
 	if (approximate_eqaa) {
 		static std::atomic_bool logged = false;
 		if (!logged.exchange(true, std::memory_order_relaxed)) {
