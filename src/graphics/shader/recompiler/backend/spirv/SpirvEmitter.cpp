@@ -11,6 +11,10 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <map>
+#include <string>
+#include <string_view>
+#include <fmt/format.h>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv {
 
@@ -264,6 +268,48 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	IR::ValidateProgram(program, true);
 	program.bindings = {.push_data_start_dword = push_data_start_dword};
 	if (program.info.float64 && !device_features.shader_float64) {
+		// The failed PPSA24156 compute shader is a real device-capability mismatch.
+		// Report the *surviving* native FP64 operations before rejecting it, without
+		// inventing an imprecise substitute or advertising unsupported Vulkan features.
+		// This is bounded to 32 instruction samples so default Silent logging still
+		// captures the evidence in a diagnostic ZIP.
+		std::map<std::string_view, uint32_t> op_counts;
+		std::string detail;
+		uint32_t f64_results = 0, f64_inputs = 0, fp64_instructions = 0;
+		uint32_t block_index = 0;
+		for (const auto* block: program.blocks) {
+			uint32_t instruction_index = 0;
+			for (const auto& inst: *block) {
+				const bool result_f64 = inst.GetType() == IR::Type::F64;
+				bool input_f64 = false;
+				for (uint32_t arg = 0; arg < inst.NumArgs(); ++arg) {
+					input_f64 |= inst.Arg(arg).Resolve().GetType() == IR::Type::F64;
+				}
+				if (result_f64 || input_f64) {
+					++fp64_instructions;
+					f64_results += result_f64;
+					f64_inputs += input_f64;
+					const auto opcode = IR::ValueOpcodeName(inst.GetOpcode());
+					++op_counts[opcode];
+					if (fp64_instructions <= 32) {
+						detail += fmt::format("  block={} inst={} opcode={} result_f64={} input_f64={}\\n",
+						                      block_index, instruction_index, opcode, result_f64, input_f64);
+					}
+				}
+				++instruction_index;
+			}
+			++block_index;
+		}
+		const uint32_t mode = input_info.compute != nullptr ? input_info.compute->float_mode : 0;
+		std::string histogram;
+		for (const auto& [opcode, count]: op_counts) {
+			histogram += fmt::format(" {}={}", opcode, count);
+		}
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "FP64 required: hash=0x{:016x} stage={} float_mode=0x{:x} instructions={} "
+		    "results={} inputs={} histogram:{}\\n{}",
+		    program.shader_hash, static_cast<unsigned>(program.stage), mode, fp64_instructions,
+		    f64_results, f64_inputs, histogram, detail));
 		RejectUnsupportedShader(program, "Float64 arithmetic (shaderFloat64)");
 	}
 	EmitterState state(program, input_info, maintenance8_enabled, device_features);
