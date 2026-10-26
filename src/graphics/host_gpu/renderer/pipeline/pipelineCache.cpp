@@ -478,14 +478,14 @@ struct PipelineCache::ProgramCache {
 			    optimized.size() < result.spirv.size()) {
 				const auto original_words = result.spirv.size();
 				result.spirv = std::move(optimized);
-				LOGF("GT HS SPIR-V simplified: hash=0x%016" PRIx64
-				     " original=%zu optimized=%zu barriers=%u\n",
-				     options.shader_hash, original_words, result.spirv.size(), before_barriers);
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "GT HS SPIR-V simplified hash=0x{:016x} original={} optimized={} barriers={}\n",
+				    options.shader_hash, original_words, result.spirv.size(), before_barriers));
 			} else {
-				LOGF("GT HS SPIR-V simplification skipped: hash=0x%016" PRIx64
-				     " original=%zu candidate=%zu barriers=%u/%u\n",
-				     options.shader_hash, result.spirv.size(), optimized.size(),
-				     before_barriers, barrier_count(optimized));
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "GT HS SPIR-V simplification skipped hash=0x{:016x} original={} candidate={} barriers={}/{}\n",
+				    options.shader_hash, result.spirv.size(), optimized.size(),
+				    before_barriers, barrier_count(optimized)));
 			}
 		}
 		DumpShaderSpirv(stage_name, options.shader_hash, result.spirv);
