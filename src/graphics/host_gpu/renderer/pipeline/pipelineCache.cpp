@@ -1889,8 +1889,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 	// pipeline. This prevents just those known compiler entries from executing,
 	// at the cost of missing tessellated geometry, and leaves other games and
 	// other drivers unmodified. KYTY_GT_TESS_QUARANTINE=0 disables this A/B test.
-	if (vertex_info.size() == 3 && vertex_info[1].stage != nullptr &&
-	    vertex_info[1].stage.program != nullptr) {
+	if (vertex_info.size() == 3 && vertex_info[1].stage.program != nullptr) {
 		const auto& device_properties = m_graphics.GetPhysicalDeviceProperties();
 		std::string current_title;
 		const bool gt_title = Loader::SystemContentParamSfoGetString("TITLE_ID", &current_title) &&
