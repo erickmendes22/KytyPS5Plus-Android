@@ -48,6 +48,7 @@
 #include <optional>
 #include <span>
 #include <spirv-tools/libspirv.hpp>
+#include <spirv-tools/optimizer.hpp>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -447,6 +448,44 @@ struct PipelineCache::ProgramCache {
 				DumpShaderSpirv(stage_name, options.shader_hash, result.spirv);
 				EXIT("%s failed hash=0x%016" PRIx64 ": SPIR-V validation failed\n", options.dump_label,
 				     options.shader_hash);
+			}
+		}
+		// Target the reproducible PPSA24156 tessellation-control crashes:
+		// d959... and e3aa... both enter Turnip V32 with huge selection-heavy
+		// HS SPIR-V and crash inside its compiler. The pipeline creation
+		// eDisableOptimization hint did not prevent the crash, so simplify the
+		// binary *before* the ICD sees it. This does not affect other shaders.
+		// Preserve the entry point interfaces and compare control barriers:
+		// dropping a barrier could change guest cross-invocation semantics.
+		if (options.shader_hash == 0xd9596b2d7a2e4202ull ||
+		    options.shader_hash == 0xe3aa2b7279a8cf65ull) {
+			auto barrier_count = [](const std::vector<uint32_t>& binary) {
+				uint32_t count = 0;
+				for (size_t i = 5; i < binary.size();) {
+					const auto word_count = binary[i] >> 16;
+					if (word_count == 0 || i + word_count > binary.size()) return UINT32_MAX;
+					if ((binary[i] & 0xffffu) == spv::OpControlBarrier) ++count;
+					i += word_count;
+				}
+				return count;
+			};
+			spvtools::Optimizer optimizer(SPV_ENV_VULKAN_1_3);
+			optimizer.RegisterSizePasses(true);
+			std::vector<uint32_t> optimized;
+			const auto before_barriers = barrier_count(result.spirv);
+			if (optimizer.Run(result.spirv.data(), result.spirv.size(), &optimized) &&
+			    !optimized.empty() && barrier_count(optimized) == before_barriers &&
+			    optimized.size() < result.spirv.size()) {
+				const auto original_words = result.spirv.size();
+				result.spirv = std::move(optimized);
+				LOGF("GT HS SPIR-V simplified: hash=0x%016" PRIx64
+				     " original=%zu optimized=%zu barriers=%u\n",
+				     options.shader_hash, original_words, result.spirv.size(), before_barriers);
+			} else {
+				LOGF("GT HS SPIR-V simplification skipped: hash=0x%016" PRIx64
+				     " original=%zu candidate=%zu barriers=%u/%u\n",
+				     options.shader_hash, result.spirv.size(), optimized.size(),
+				     before_barriers, barrier_count(optimized));
 			}
 		}
 		DumpShaderSpirv(stage_name, options.shader_hash, result.spirv);
