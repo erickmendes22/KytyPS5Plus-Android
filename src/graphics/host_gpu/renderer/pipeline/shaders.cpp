@@ -897,15 +897,16 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	// native tessellation with 16/24 control points. The concurrent shader
 	// workers were inside the same Turnip V32 compiler when it dereferenced
 	// 0x10. This compatibility gate affects ONLY PPSA24156: serialize those
-	// expensive tessellation compilations, and bypass the driver's cache for
-	// them while leaving the cache intact for ordinary graphics pipelines.
+	// expensive tessellation compilations. Keep the Vulkan driver cache enabled:
+	// bypassing it in earlier experiments did not stop the crash and discarded
+	// successful 16/24-point pipeline compilations across launches.
 	// This is a narrow workaround candidate, not proof of a Mesa driver bug.
 	const bool gt_heavy_tess = gt_pipeline && tessellation &&
 	                           tessellation_state.patchControlPoints >= 16;
 	const bool gt_nocache_requested =
 	    gt_pipeline && std::getenv("KYTY_GT_NO_PIPELINE_CACHE") != nullptr &&
 	    std::strcmp(std::getenv("KYTY_GT_NO_PIPELINE_CACHE"), "1") == 0;
-	const bool gt_nocache = gt_heavy_tess || gt_nocache_requested;
+	const bool gt_nocache = gt_nocache_requested;
 	if (gt_pipeline && tessellation &&
 	    tessellation_state.patchControlPoints >
 	        graphics.GetPhysicalDeviceProperties().limits.maxTessellationPatchSize) {
@@ -915,8 +916,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	}
 	if (gt_heavy_tess)
 		Log::WriteToConsoleAndLog(fmt::format(
-		    "GT tess pipeline QUEUE #{} cp={} cache_bypass=1\n",
-		    gt_serial, tessellation_state.patchControlPoints));
+		    "GT tess pipeline QUEUE #{} cp={} cache_bypass={}\n",
+		    gt_serial, tessellation_state.patchControlPoints, gt_nocache ? 1 : 0));
 	{
 		std::unique_lock<std::mutex> serialize(
 		    g_gt_native_pipeline_mutex, std::defer_lock);
