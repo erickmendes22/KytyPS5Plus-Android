@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <map>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 
@@ -562,27 +563,46 @@ void PlanBarycentricEmulation(EmitterState& state) {
 	};
 	emulation.primitive_id = reads(IR::StageInputKind::PrimitiveId);
 	emulation.layer        = reads(IR::StageInputKind::Layer);
-	const auto        limit = state.device_features.geometry_varying_locations;
+	const auto limit = state.device_features.geometry_varying_locations;
 	std::vector<bool> used(limit, false);
+	// Geometry-stage outputs do not have to preserve the source VS/TES
+	// Location numbers. Keeping sparse native locations in the pixel shader
+	// fragments the output space and prevents a contiguous uvec4[3] per-vertex
+	// payload from fitting even when the total number of free slots suffices.
+	// Compact only the *output* locations; the GS reads every source at its
+	// original location and the pixel shader reads each remapped output.
+	// Restrict relocation to the exact PS identified in the GT 005347 log.
+	// Other titles retain their previously validated original Location layout.
+	const bool compact_gt = state.program.shader_hash == 0x4fbce58eb928a327ull;
+	std::map<uint32_t, uint32_t> interpolated_locations;
+	uint32_t next_interpolated = 0;
 	for (auto& input: state.inputs) {
 		if (input.kind != IR::StageInputKind::Parameter || input.per_vertex) {
 			continue;
 		}
-		const auto location = PixelParameterLocation(state, input.location);
-		if (location >= limit) {
-			FailBarycentricEmulation(state, "a pixel parameter location exceeds the device's "
-			                                "geometry varying limit");
+		const auto source = PixelParameterLocation(state, input.location);
+		if (source >= limit) {
+			FailBarycentricEmulation(state, "a vertex input location exceeds the device's "
+			                                "geometry input varying limit");
 		}
-		input.emulated_location = location;
-		if (used[location]) {
+		const auto existing = interpolated_locations.find(source);
+		if (existing != interpolated_locations.end()) {
+			input.emulated_location = existing->second;
 			continue;
 		}
-		used[location]  = true;
+		if (compact_gt && next_interpolated >= limit) {
+			FailBarycentricEmulation(state, "interpolated attributes exceed the device's "
+			                                "geometry varying locations");
+		}
+		const auto destination = compact_gt ? next_interpolated++ : source;
+		interpolated_locations.emplace(source, destination);
+		used[destination]       = true;
+		input.emulated_location = destination;
 		const bool flat = PixelParameterIsFlat(state, input.location);
 		emulation.varyings.push_back({
 		    .kind            = IR::EmulatedVaryingKind::Interpolated,
-		    .source_location = location,
-		    .location        = location,
+		    .source_location = source,
+		    .location        = destination,
 		    .flat            = flat,
 		    .no_perspective  = state.input_info.pixel->ps_no_perspective && !flat,
 		    .sampling        = PixelParameterUsesSampling(state, input)
@@ -598,9 +618,14 @@ void PlanBarycentricEmulation(EmitterState& state) {
 				return first;
 			}
 		}
-		FailBarycentricEmulation(state, "the pixel shader's per-vertex parameters and barycentric "
-		                                "vectors need more varying locations than the device "
-		                                "allows between geometry and fragment stages");
+		const auto occupied = static_cast<size_t>(std::ranges::count(used, true));
+		LOGF("Barycentric allocation: shader=0x%016" PRIx64
+		     " limit=%u occupied=%zu requested=%u interpolated=%u remaining=%zu\n",
+		     state.program.shader_hash, limit, occupied, count, next_interpolated,
+		     used.size() - occupied);
+		FailBarycentricEmulation(state, "the pixel shader's packed per-vertex parameters and "
+		                                "barycentric vectors exceed the device's geometry-to-"
+		                                "fragment varying locations");
 	};
 	for (auto& input: state.inputs) {
 		if (input.kind != IR::StageInputKind::Parameter || !input.per_vertex) {
