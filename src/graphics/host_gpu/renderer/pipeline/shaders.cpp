@@ -145,11 +145,22 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, 
 	}
 
 	if (raw_format == kVertexBufferFormat64xU64) {
+		// A single 64-bit guest vertex datum is fetched as two raw dwords.
+		// The guest IR carries them as separate U32 components, *not* an
+		// OpTypeInt(64) vertex input. Adreno/Turnip does not expose R64Uint
+		// as a vertex-fetch format; R32G32Uint preserves all 64 bits in the
+		// exact same 8 bytes without numerical conversion to FP32.
+		// When only the low dword is consumed, use R32Uint. Both forms are
+		// bit-preserving for the components that the recompiler actually reads.
+		if (used_components == 0 || used_components > 2) {
+			EXIT("Unsupported PS5 vertex format 52 component count %u\n", used_components);
+		}
+		format = used_components == 1 ? vk::Format::eR32Uint : vk::Format::eR32G32Uint;
+		size   = 8;
 		static std::atomic_bool logged_52 {false};
 		if (!logged_52.exchange(true, std::memory_order_relaxed))
-			LOGF("InputFormat: mapping PS5 vertex format 52 (64xU64) to R64Uint\n");
-		format = vk::Format::eR64Uint;
-		size   = 8;
+			LOGF("VertexInput: PS5 U64 attribute represented by two U32 halves (format=%u)\n",
+			     static_cast<uint32_t>(format));
 		return;
 	}
 
