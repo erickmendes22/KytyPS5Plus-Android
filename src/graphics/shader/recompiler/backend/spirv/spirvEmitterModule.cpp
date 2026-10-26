@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <map>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 
@@ -614,7 +615,7 @@ void PlanBarycentricEmulation(EmitterState& state) {
 				return first;
 			}
 		}
-		const auto occupied = std::ranges::count(used, true);
+		const auto occupied = static_cast<size_t>(std::ranges::count(used, true));
 		LOGF("Barycentric allocation: shader=0x%016" PRIx64
 		     " limit=%u occupied=%zu requested=%u interpolated=%u remaining=%zu\n",
 		     state.program.shader_hash, limit, occupied, count, next_interpolated,
