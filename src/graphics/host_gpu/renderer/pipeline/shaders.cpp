@@ -150,10 +150,12 @@ static void GetInputFormat(const ShaderBufferResource& res, vk::Format& format, 
 		// OpTypeInt(64) vertex input. Adreno/Turnip does not expose R64Uint
 		// as a vertex-fetch format; R32G32Uint preserves all 64 bits in the
 		// exact same 8 bytes without numerical conversion to FP32.
-		// When only the low dword is consumed, use R32Uint. Both forms are
-		// bit-preserving for the components that the recompiler actually reads.
-		if (used_components == 0 || used_components > 2) {
-			EXIT("Unsupported PS5 vertex format 52 component count %u\n", used_components);
+		// The shader can declare uvec3/uvec4 even when the source format
+		// contains only two 32-bit components. Vulkan fills missing unsigned
+		// components with 0 (and the fourth with 1). Do NOT fetch 12 or 16 bytes:
+		// source format 52 contains only the original 8 bytes.
+		if (used_components == 0 || used_components > 4) {
+			EXIT("Invalid PS5 vertex format 52 component count %u\n", used_components);
 		}
 		format = used_components == 1 ? vk::Format::eR32Uint : vk::Format::eR32G32Uint;
 		size   = 8;
