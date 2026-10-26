@@ -49,6 +49,7 @@
 #include <span>
 #include <spirv-tools/libspirv.hpp>
 #include <spirv-tools/optimizer.hpp>
+#include <spirv/unified1/spirv.hpp>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -473,8 +474,18 @@ struct PipelineCache::ProgramCache {
 			optimizer.RegisterSizePasses(true);
 			std::vector<uint32_t> optimized;
 			const auto before_barriers = barrier_count(result.spirv);
-			if (optimizer.Run(result.spirv.data(), result.spirv.size(), &optimized) &&
-			    !optimized.empty() && barrier_count(optimized) == before_barriers &&
+			// Validate the *transformed* binary, not just the original
+			// translation. A valid optimization pass is not a guarantee that
+			// all of the device's Vulkan 1.3 module rules remain satisfied.
+			spvtools::SpirvTools validator(SPV_ENV_VULKAN_1_3);
+			spvtools::ValidatorOptions validator_options;
+			validator_options.SetAllowOffsetTextureOperand(options.maintenance8_enabled);
+			const bool optimization_ok =
+			    optimizer.Run(result.spirv.data(), result.spirv.size(), &optimized);
+			const bool candidate_valid =
+			    optimization_ok && !optimized.empty() &&
+			    validator.Validate(optimized.data(), optimized.size(), validator_options);
+			if (candidate_valid && barrier_count(optimized) == before_barriers &&
 			    optimized.size() < result.spirv.size()) {
 				const auto original_words = result.spirv.size();
 				result.spirv = std::move(optimized);
