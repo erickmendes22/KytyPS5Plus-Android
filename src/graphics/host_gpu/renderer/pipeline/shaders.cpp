@@ -815,6 +815,26 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	if (ps_active) {
 		guest_hashes[guest_hash_count++] = ps_input_info->stage.program->shader_hash;
 	}
+	// The two repeatedly crashing PPSA24156 native HS programs (e3aa/d959)
+	// each contain ~7k SPIR-V instructions, 3 control barriers and a large
+	// selection-heavy CFG. Turnip V32 dereferences null during optimization
+	// for either program, even with compilation serialized and cache bypassed.
+	// VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT is a standard Vulkan hint
+	// that may avoid this backend optimization path without changing shader
+	// semantics or modifying any other game's pipeline.
+	const bool gt_tess_reduced_opt = tessellation && guest_hash_count == 4 &&
+	    guest_hashes[0] == 0x17ce9b3880b66cb1ull &&
+	    (guest_hashes[1] == 0xe3aa2b7279a8cf65ull ||
+	     guest_hashes[1] == 0xd9596b2d7a2e4202ull);
+	if (gt_tess_reduced_opt) {
+		pipeline_info.flags |= vk::PipelineCreateFlagBits::eDisableOptimization;
+		static std::atomic_uint32_t logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 12u)
+			LOGF("GT tess backend optimizer bypass: HS=0x%016" PRIx64
+			     " PS=0x%016" PRIx64 " flags=0x%x\n",
+			     guest_hashes[1], guest_hashes[3],
+			     static_cast<uint32_t>(pipeline_info.flags));
+	}
 	const bool capture_stats =
 	    PipelineStats::Wants(graphics, std::span(guest_hashes).first(guest_hash_count));
 	if (capture_stats) {
