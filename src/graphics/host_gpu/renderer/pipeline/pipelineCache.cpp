@@ -1878,6 +1878,41 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 	EXIT_IF(ps_active && !pixel_program);
 	const auto color_count = static_cast<uint32_t>(colors.size());
 
+	// PPSA24156 / Turnip V32 (Adreno 830): the two recorded tessellation-control
+	// shaders repeatedly crash *inside* vkCreateGraphicsPipelines, before the ICD
+	// returns VkResult (SIGSEGV at libvulkan_freedreno.so+0xc21168). Disabling
+	// pipeline optimizations and SPIR-V size passes did not avoid the fault.
+	//
+	// Experimental safety quarantine: skip only the draws using those exact HS
+	// hashes on this exact driver build. A null pipeline is already an ordinary
+	// "skip this draw" result for the renderer, so never synthesize a fake Vulkan
+	// pipeline. This prevents just those known compiler entries from executing,
+	// at the cost of missing tessellated geometry, and leaves other games and
+	// other drivers unmodified. KYTY_GT_TESS_QUARANTINE=0 disables this A/B test.
+	if (vertex_info.size() == 3 && vertex_info[1].stage != nullptr &&
+	    vertex_info[1].stage.program != nullptr) {
+		const auto& device_properties = m_graphics.GetPhysicalDeviceProperties();
+		const bool driver_affected = device_properties.vendorID == 20803u &&
+		                             device_properties.deviceID == 1141178369u &&
+		                             device_properties.driverVersion == 109060195u;
+		const uint64_t hs_hash = vertex_info[1].stage.program->shader_hash;
+		const bool failing_hs = hs_hash == 0xd9596b2d7a2e4202ull ||
+		                        hs_hash == 0xe3aa2b7279a8cf65ull;
+		static const bool quarantine_enabled = [] {
+			const char* value = std::getenv("KYTY_GT_TESS_QUARANTINE");
+			return value == nullptr || std::strcmp(value, "0") != 0;
+		}();
+		if (driver_affected && failing_hs && quarantine_enabled) {
+			static std::atomic<uint32_t> reported {0};
+			const uint32_t flag = hs_hash == 0xd9596b2d7a2e4202ull ? 1u : 2u;
+			if ((reported.fetch_or(flag, std::memory_order_relaxed) & flag) == 0)
+				PipelineCacheLog("GT V32 tess quarantine: skipping draw for HS=0x{:016x} (geometry may be missing)",
+				                 hs_hash);
+			return nullptr;
+		}
+	}
+
+
 	auto&             ctx = command.GetRegisters();
 
 	const HW::ModeControl& mc = ctx.GetModeControl();
