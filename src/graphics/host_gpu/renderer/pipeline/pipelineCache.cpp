@@ -1892,7 +1892,11 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 	if (vertex_info.size() == 3 && vertex_info[1].stage != nullptr &&
 	    vertex_info[1].stage.program != nullptr) {
 		const auto& device_properties = m_graphics.GetPhysicalDeviceProperties();
-		const bool driver_affected = device_properties.vendorID == 20803u &&
+		std::string current_title;
+		const bool gt_title = Loader::SystemContentParamSfoGetString("TITLE_ID", &current_title) &&
+		                      current_title == "PPSA24156";
+		const bool driver_affected = gt_title &&
+		                             device_properties.vendorID == 20803u &&
 		                             device_properties.deviceID == 1141178369u &&
 		                             device_properties.driverVersion == 109060195u;
 		const uint64_t hs_hash = vertex_info[1].stage.program->shader_hash;
