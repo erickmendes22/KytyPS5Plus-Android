@@ -456,6 +456,11 @@ VertexInputScalarKind VertexParameterScalarKind(const EmitterState& state, uint3
 		return VertexInputScalarKind::Float;
 	}
 
+	// PS5 raw buffer format 52 is a 64-bit uint fetched in two 32-bit
+	// lanes. Match the R32(Uint)/R32G32Uint Vulkan vertex attribute type;
+	// the existing parameter loader returns the raw U32 bit pattern.
+	if (state.input_info.vertex->resources[location].RawFormat() == 52u)
+		return VertexInputScalarKind::Uint;
 	switch (state.input_info.vertex->resources[location].Format()) {
 		case Prospero::BufferFormat::k8UInt:
 		case Prospero::BufferFormat::k16UInt:
