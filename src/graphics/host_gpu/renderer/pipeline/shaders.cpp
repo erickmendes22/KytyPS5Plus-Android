@@ -817,7 +817,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	}
 	// The two repeatedly crashing PPSA24156 native HS programs (e3aa/d959)
 	// each contain ~7k SPIR-V instructions, 3 control barriers and a large
-	// selection-heavy CFG. Turnip V32 dereferences null during optimization
+	// selection-heavy CFG. Turnip V32 dereferences null in its compiler
 	// for either program, even with compilation serialized and cache bypassed.
 	// VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT is a standard Vulkan hint
 	// that may avoid this backend optimization path without changing shader
