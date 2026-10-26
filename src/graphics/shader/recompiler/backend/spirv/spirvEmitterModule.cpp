@@ -571,6 +571,9 @@ void PlanBarycentricEmulation(EmitterState& state) {
 	// payload from fitting even when the total number of free slots suffices.
 	// Compact only the *output* locations; the GS reads every source at its
 	// original location and the pixel shader reads each remapped output.
+	// Restrict relocation to the exact PS identified in the GT 005347 log.
+	// Other titles retain their previously validated original Location layout.
+	const bool compact_gt = state.program.shader_hash == 0x4fbce58eb928a327ull;
 	std::map<uint32_t, uint32_t> interpolated_locations;
 	uint32_t next_interpolated = 0;
 	for (auto& input: state.inputs) {
@@ -587,11 +590,11 @@ void PlanBarycentricEmulation(EmitterState& state) {
 			input.emulated_location = existing->second;
 			continue;
 		}
-		if (next_interpolated >= limit) {
+		if (compact_gt && next_interpolated >= limit) {
 			FailBarycentricEmulation(state, "interpolated attributes exceed the device's "
 			                                "geometry varying locations");
 		}
-		const auto destination = next_interpolated++;
+		const auto destination = compact_gt ? next_interpolated++ : source;
 		interpolated_locations.emplace(source, destination);
 		used[destination]       = true;
 		input.emulated_location = destination;
