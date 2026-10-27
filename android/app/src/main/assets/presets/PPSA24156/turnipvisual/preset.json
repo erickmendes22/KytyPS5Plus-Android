@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "turnipvisual",
   "name": "Turnip v32: restaurar gráficos (experimental)",
-  "description": "Teste opcional para PPSA24156, Adreno 830, Turnip v32: mantém o HS/TCS mínimo que evitou o crash e repassa a saída uint da localização 0 ao DS/TES original, restaurando também o Pixel Shader original somente para o HS d9596b2d7a2e4202. Outros pipelines continuam no isolamento comprovado. Pode voltar a causar crash ou falhas gráficas; desligar restaura o modo mínimo que funcionou. Pode ser combinado com o coletor e patches de memória.",
+  "description": "Experimental para PPSA24156/Adreno 830/Turnip v32: tenta recuperar geometria dos HS d9596b2d7a2e4202 (uint escalar), 2f056d60c0ea5193 ([28][2] uvec4) e 30cc064c6fc120d4 ([16][2] uvec4), preservando TES e PS originais. Nos dois últimos usa ponte compacta [4][12] uvec4, não reproduz toda a matemática do HS original. Outros shaders mantêm o fallback mínimo anticrash. Pode ter gráficos incompletos ou crash. Desativar volta ao fallback anterior.",
   "launch": {
     "env": {
       "KYTY_GT_TURNIP_VISUAL_RESTORE": "1"
