@@ -518,6 +518,51 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		                                       .pName  = "main"};
 	}
 
+	// Stage-isolation experiment for the documented Turnip V32 SIGSEGV on
+	// PPSA24156 / A830. Keep VS/TCS/TES and every other pipeline parameter
+	// unchanged, but use a valid empty fragment shader for tessellated draws.
+	// If the ICD still crashes, the original fragment module is unnecessary.
+	// This intentionally makes tessellated geometry visually incomplete;
+	// it is NOT a production workaround. Disable via
+	// KYTY_GT_TURNIP_FRAGMENT_PROBE=0 to compare with the original behavior.
+	vk::ShaderModule gt_fragment_probe_module = nullptr;
+	if (tessellation && ps_active) {
+		const auto& props = graphics.GetPhysicalDeviceProperties();
+		std::string title;
+		const bool gt = Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		                title == "PPSA24156";
+		const char* toggle = std::getenv("KYTY_GT_TURNIP_FRAGMENT_PROBE");
+		if (gt && (toggle == nullptr || std::strcmp(toggle, "0") != 0) &&
+		    props.vendorID == 20803u && props.deviceID == 1141178369u &&
+		    props.driverVersion == 109060195u) {
+			const std::vector<uint32_t> empty_fragment {
+			    0x07230203u, 0x00010300u, 0u, 6u, 0u,
+			    0x00020011u, 1u,
+			    0x0003000eu, 0u, 1u,
+			    0x0005000fu, 4u, 4u, 0x6e69616du, 0u,
+			    0x00030010u, 4u, 7u,
+			    0x00020013u, 1u,
+			    0x00030021u, 2u, 1u,
+			    0x00050036u, 1u, 4u, 0u, 2u,
+			    0x000200f8u, 5u,
+			    0x000100fdu,
+			    0x00010038u,
+			};
+			gt_fragment_probe_module = CompileSPV(empty_fragment, graphics.device);
+			EXIT_IF(gt_fragment_probe_module == nullptr);
+			ShaderDump::RecordModule(gt_fragment_probe_module, "turnip_probe_fs", 0,
+			                         empty_fragment);
+			shader_stages[shader_stage_count - 1].module = gt_fragment_probe_module;
+			static std::atomic_uint32_t once {0};
+			if (once.fetch_add(1, std::memory_order_relaxed) < 8) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "GT TURNIP PROBE: using empty fragment stage; HS={:016x} original_PS={:016x}\n",
+				    vertex_info[1].stage.program->shader_hash,
+				    ps_input_info->stage.program->shader_hash));
+			}
+		}
+	}
+
 	vk::VertexInputAttributeDescription input_attr[ShaderVertexInputInfo::RES_MAX] {};
 	vk::VertexInputBindingDescription   input_desc[ShaderVertexInputInfo::RES_MAX] {};
 
@@ -920,6 +965,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "GT pipeline END #{} result={} cache_bypassed={}\n",
 		    gt_serial, vk::to_string(result), gt_nocache ? 1 : 0));
+	}
+	if (gt_fragment_probe_module != nullptr) {
+		ShaderDump::ForgetModule(gt_fragment_probe_module);
+		graphics.device.destroyShaderModule(gt_fragment_probe_module, nullptr);
 	}
 	ShaderDump::RecordResult(dump_record, result);
 	if (capture_stats && result == vk::Result::eSuccess) {
