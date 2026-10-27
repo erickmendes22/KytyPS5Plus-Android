@@ -92,6 +92,46 @@ GT7's published performance mode reduces or omits some effects, including
 RT in gameplay; that does not establish that My First Gran Turismo executes
 the same paths, or that a guessed RT-disable would reduce its memory.
 
+## October 27 follow-up: direct x86-64 instruction/reference audit
+
+After the initial string scan, the exact 109,163,961-byte SELF was
+mapped using its embedded ELF64 header at file offset `0x1a0`. The
+executable has a 0x4000 load-offset bias for its RX segment. References
+were scanned with the actual RIP-relative `REX.W + LEA reg, [rip + disp32]`
+instruction shape, and disassembled with `objdump -b binary -m i386:x86-64`.
+
+Concrete findings (all below are **SELF file offsets**, not validated
+GoldHEN `offset` patch RVAs):
+
+| Name / candidate | ELF/SELF file offset | RX LEA reference found | Inspection |
+| --- | --- | --- | --- |
+| `volumetricFog` | `0x488cf57` | `0x00ef40b0` | Metadata registration: loads a descriptor and string, then calls common registration helper `0x0055d8c0` |
+| `SceneMotionBlur` | `0x482a728` | `0x01e937bd` | Static member/descriptor registration, not the postprocess allocation or enable flag |
+| `disable_ssao` | `0x48f14d5` | none through direct RIP-LEA scan | Name alone not a patch site |
+| `enableRayTracingSpecular` | `0x48f129d` | none through direct RIP-LEA scan | Typed setting names also exist in mangled template symbols |
+| `enableAmbientOcclusion` | `0x48d6ef8` | none through direct RIP-LEA scan | Typed setting metadata, not a proven allocation switch |
+| `disableRenderCloudBuffer` | `0x48d6cea` | none through direct RIP-LEA scan | Typed `CloudSetting` symbols present; actual code consumer untraced |
+| `disableShadow` | `0x4748182` | none through direct RIP-LEA scan | Also appears in `CrowdSetting` type names, likely crowd-specific rather than a global shadow cutoff |
+| `no_rt` and `no_motionblur` | `0x4779ecf`, `0x4779ed5` | none through direct RIP-LEA scan | Candidate command/config symbols, not established branch points |
+
+**Negative direct-LEA scan is not proof of no use.** The game can access
+strings via hashing, indirect tables, pointers, or other instruction
+encodings. This audit does establish why string-only offsets must not be
+patched. The two confirmed LEA examples point at **metadata
+initializers** rather than resource allocation paths.
+
+The PlayStation GT7 performance-priority setting already omits or
+simplifies ray tracing for real-time racing; My First Gran Turismo's
+specific rendering path remains to be proved. A speculative RT-off
+binary patch is especially unlikely to solve all RAM growth and may
+have no effect in that mode.
+
+**No additional effect-disabling native patch has passed producer/
+consumer tracing and original-byte validation yet.** Do not present
+shadows / SSAO / RT / blur switches as confirmed functional patches.
+They remain investigation candidates; keep `native720` as the only
+exposed experiment.
+
 ## Validation
 
 - CI: Android APK and native regression tests.
