@@ -86,11 +86,16 @@ object Diagnostics {
                 appendLine("Package: ${context.packageName}")
                 appendLine("Generated: ${Date()}")
                 appendLine("Exit reports returned: ${exits.size}")
+                appendLine("Low-memory kill reporting supported: " +
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                        ActivityManager.isLowMemoryKillReportSupported() else "unavailable")
+                appendLine("Note: SIGKILL (reason 2) can be LMK if Android does not report low-memory kills.")
                 for ((index, info) in exits.withIndex()) {
                     appendLine("---- Exit $index ----")
                     appendLine("Time: ${Date(info.timestamp)}")
                     appendLine("Process: ${info.processName}")
                     appendLine("Reason code: ${info.reason}")
+                    appendLine("Process importance: ${info.importance}")
                     appendLine("Status/signal: ${info.status}")
                     appendLine("Description: ${info.description}")
                     appendLine("PSS/RSS KB: ${info.pss}/${info.rss}")

@@ -2483,7 +2483,17 @@ void TextureCache::RunGarbageCollector() {
 		// Live allocations: free space inside VMA blocks is not something eviction can return.
 		const auto used_memory = m_graphics.GetLiveDeviceMemory();
 		LogMemoryBreakdown(used_memory);
-		if (used_memory >= m_trigger_gc_memory) {
+		// GT could have <1 GiB system RAM free while its VMA allocations were
+		// BELOW the GPU trigger (17:16 device trace). The old early return
+		// disabled reclaim exactly when Android was about to terminate us.
+		std::string title_id;
+		const bool gt = Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id) &&
+		                title_id == "PPSA24156";
+		const auto host_pressure = gt
+		    ? GpuBudget::ClassifyGtHostPressure(Common::ReadProcessMemory().available)
+		    : GpuBudget::GtHostPressure::None;
+		if (used_memory >= m_trigger_gc_memory ||
+		    host_pressure != GpuBudget::GtHostPressure::None) {
 			CollectWithinBudget(tick, used_memory);
 		}
 		return;
