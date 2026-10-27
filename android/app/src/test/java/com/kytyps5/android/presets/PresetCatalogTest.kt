@@ -136,10 +136,11 @@ class PresetCatalogTest {
             PresetLaunchArgs.Resolved(mode.id, mode.launch, "/tmp/gt720.json"),
             PresetLaunchArgs.Resolved(visual.id, visual.launch, null)
         ))
+        // PresetLaunchArgs groups ALL --env values before resolution/patch
+        // arguments, independent of the presets' order of selection.
         assertEquals(listOf("--env", "KYTY_GT_LARGE_DEPTH_HALF=1", "--env",
-            "KYTY_GT_HDR_HALF=1", "--render-scale", "0.33333334",
-            "--game-patch", "/tmp/gt720.json",
-            "--env", "KYTY_GT_TURNIP_VISUAL_RESTORE=1"), plan.args)
+            "KYTY_GT_HDR_HALF=1", "--env", "KYTY_GT_TURNIP_VISUAL_RESTORE=1",
+            "--render-scale", "0.33333334", "--game-patch", "/tmp/gt720.json"), plan.args)
         assertEquals(emptyList<String>(), plan.conflicts)
         assertEquals(emptyList<String>(), warnings)
     }
