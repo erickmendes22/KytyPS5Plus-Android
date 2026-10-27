@@ -132,6 +132,48 @@ shadows / SSAO / RT / blur switches as confirmed functional patches.
 They remain investigation candidates; keep `native720` as the only
 exposed experiment.
 
+## Implemented graphical-memory experiments (subsequent revision)
+
+In addition to the single retained `native720` resolution preset, **two new
+optional non-resolution patches** have now been implemented in the renderer,
+scoped to the exact `PPSA24156` title and available independently. This
+supersedes the earlier statement that only the 720p preset is exposed.
+
+1. **`depthhalf` — GT large depth atlases 50%:** for square single-mip,
+   single-sample depth images of at least 2048×2048, allocate host Vulkan
+   backing at half the current render scale, **only when depth image blits
+   are supported**. It targets memory used by shadow-like depth atlases and
+   other depth-only rendering. A depth-only render pass uses the matching
+   viewport/scissor/shader scale; mixed color/depth passes return to guest
+   backing instead of mixing incompatible attachment sizes. The game does
+   not stop drawing shadows, so do **not** label this “disable shadows”.
+2. **`hdrhalf` — GT HDR effect buffers 50%:** frame-sized,
+   single-sample, one-mip RGBA16F color buffers can use half the backing
+   resolution in single-color passes. Multi-attachment/color+depth passes
+   are never assigned incompatible framebuffer scales. It is a
+   lighting/postprocessing allocation experiment, **not** a verified
+   SSR/SSAO/RT disable.
+
+The implementation checks actual format, size, block compression,
+multisample/mip eligibility and Vulkan blit support. Eligible creations
+produce bounded `GT EFFECT BACKING: kind=large-depth` or
+`kind=hdr-color` diagnostic records including **guest and host**
+dimensions and the `scaled` flag. The new modes are disabled unless
+their individual presets are selected.
+
+Selecting either mode together with `native720` multiplies backing
+scale by 0.5 for eligible images (for example `1/3 * 1/2 = 1/6`
+linear size). These are intentionally **aggressive experimental values**
+and can cause visual defects, extra fallback blits, device-loss errors or
+a lack of memory savings. They should be benchmarked separately before
+combining. Do not merge into production or claim successful device
+operation based on a passing CI build.
+
+No binary shadow/SSAO/SSR/RT toggle has been shipped, since no
+instruction-level control with proven prevention of source allocations
+has been identified. This restriction remains necessary even though the
+two Vulkan residency patches are now implemented.
+
 ## Validation
 
 - CI: Android APK and native regression tests.
