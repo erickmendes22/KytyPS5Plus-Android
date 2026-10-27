@@ -1,9 +1,0 @@
-{
-  "schemaVersion": 2,
-  "id": "mem75",
-  "name": "GT memory test (75% render scale)",
-  "description": "Experimental emulator render-target scale, combined with this branch's GT image-eviction policy and 32 MiB allocator blocks. Does not change game output dimensions. This is not a native eboot patch; compare RAM and performance.",
-  "launch": {
-    "renderScale": 0.75
-  }
-}
