@@ -102,13 +102,17 @@ class PresetCatalogTest {
     fun shippedGranTurismoMemoryPresetsAreTitleScopedAndConflictSafely() {
         val shipped = PresetCatalog(DirectoryPresetSource(File("src/main/assets/presets"))) { warnings += it }
         val gt = shipped.forTitle("PPSA24156")
-        assertEquals(listOf("depthhalf", "hdrhalf", "native720"), gt.map { it.id })
+        assertEquals(listOf("depthhalf", "hdrhalf", "native720", "turnipvisual"), gt.map { it.id })
         val depth = gt.single { it.id == "depthhalf" }
         val hdr = gt.single { it.id == "hdrhalf" }
         assertEquals("1", depth.launch.env["KYTY_GT_LARGE_DEPTH_HALF"])
         assertEquals("1", hdr.launch.env["KYTY_GT_HDR_HALF"])
         assertEquals(null, depth.launch.gamePatch)
         assertEquals(null, hdr.launch.gamePatch)
+        val visual = gt.single { it.id == "turnipvisual" }
+        assertEquals("1", visual.launch.env["KYTY_GT_TURNIP_VISUAL_RESTORE"])
+        assertEquals(null, visual.launch.gamePatch)
+        assertEquals(null, visual.launch.renderScale)
         val mode = gt.single { it.id == "native720" }
         assertTrue(mode.files.isEmpty())
         assertTrue(mode.launch.env.isEmpty())
@@ -129,11 +133,13 @@ class PresetCatalogTest {
         val plan = PresetLaunchArgs.plan(listOf(
             PresetLaunchArgs.Resolved(depth.id, depth.launch, null),
             PresetLaunchArgs.Resolved(hdr.id, hdr.launch, null),
-            PresetLaunchArgs.Resolved(mode.id, mode.launch, "/tmp/gt720.json")
+            PresetLaunchArgs.Resolved(mode.id, mode.launch, "/tmp/gt720.json"),
+            PresetLaunchArgs.Resolved(visual.id, visual.launch, null)
         ))
         assertEquals(listOf("--env", "KYTY_GT_LARGE_DEPTH_HALF=1", "--env",
             "KYTY_GT_HDR_HALF=1", "--render-scale", "0.33333334",
-            "--game-patch", "/tmp/gt720.json"), plan.args)
+            "--game-patch", "/tmp/gt720.json",
+            "--env", "KYTY_GT_TURNIP_VISUAL_RESTORE=1"), plan.args)
         assertEquals(emptyList<String>(), plan.conflicts)
         assertEquals(emptyList<String>(), warnings)
     }
