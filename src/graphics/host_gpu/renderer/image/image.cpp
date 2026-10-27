@@ -39,7 +39,8 @@ namespace {
 // A depth image that cannot safely support render-scale blitting remains native.
 [[nodiscard]] float EffectiveGtDepthBackingScale(const ImageInfo& info) {
 	const float base = Config::GetRenderScale();
-	if (!info.IsDepth() || info.extent.width < 2048u || info.extent.height < 1024u ||
+	if (!info.IsDepth() || info.extent.width < 2048u ||
+	    info.extent.width != info.extent.height ||
 	    info.samples != 1 || info.resources.levels != 1) {
 		return base;
 	}
