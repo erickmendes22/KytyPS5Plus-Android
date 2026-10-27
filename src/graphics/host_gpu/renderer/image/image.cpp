@@ -55,6 +55,32 @@ namespace {
 	return base * 0.5f;
 }
 
+// Optional GT HDR intermediate test: half-size 16-bit-float color backing.
+// This is *not* an SSAO/RT disable; it targets high-bandwidth color buffers
+// that can be used by lighting and postprocessing passes. Only allow a real
+// reduced Vulkan backing when image format/shape/blit support permits it.
+[[nodiscard]] float EffectiveGtHdrBackingScale(const ImageInfo& info) {
+	const float base = Config::GetRenderScale();
+	if (info.IsDepth() || info.pixel_format != vk::Format::eR16G16B16A16Sfloat ||
+	    !RenderScale::GeometryEligible(info.type, info.extent, info.resources.levels,
+	                                   info.samples, info.IsBlock())) {
+		return base;
+	}
+	const char* setting = std::getenv("KYTY_GT_HDR_HALF");
+	if (setting == nullptr || std::strcmp(setting, "1") != 0) return base;
+	static const bool is_gt = [] {
+		std::string title;
+		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		       title == "PPSA24156";
+	}();
+	return is_gt ? base * 0.5f : base;
+}
+
+[[nodiscard]] float EffectiveGtBackingScale(const ImageInfo& info) {
+	if (info.IsDepth()) return EffectiveGtDepthBackingScale(info);
+	return EffectiveGtHdrBackingScale(info);
+}
+
 [[nodiscard]] vk::ImageType HostImageType(Prospero::ImageType type) {
 	switch (type) {
 		case Prospero::ImageType::kColor1D: return vk::ImageType::e1D;
@@ -900,7 +926,8 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	if (info.pixel_format == vk::Format::eUndefined) {
 		return;
 	}
-	const float scale = EffectiveGtDepthBackingScale(info);
+	const float scale = EffectiveGtBackingScale(info);
+	gt_hdr_half = !info.IsDepth() && scale < Config::GetRenderScale();
 	gt_large_depth_half = info.IsDepth() &&
 	                      scale < Config::GetRenderScale() &&
 	                      (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_NO_DEPTH) == 0;
@@ -920,19 +947,20 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	           (!info.IsDepth() ||
 	            (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_NO_DEPTH) == 0);
 	gt_large_depth_half &= scalable;
+	gt_hdr_half &= scalable;
 	const bool want_scaled = scaled_hint && scalable;
 	const auto extent = want_scaled ? RenderScale::ScaleExtent(info.extent, scale) : info.extent;
 	// For the GT large-depth experiment, a real reduced backing is the
 	// evidence that the effect-residency test is active. Diagnostic counters
 	// are bounded so normal rendering is not flooded with logs.
-	if (gt_large_depth_half) {
+	if (gt_large_depth_half || gt_hdr_half) {
 		static std::atomic_uint32_t logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 48) {
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "GT DEPTH BACKING: guest={}x{} host={}x{} scaled={} format={} "
+			    "GT EFFECT BACKING: kind={} guest={}x{} host={}x{} scaled={} format={} "
 			    "layers={} levels={} samples={} (effect memory test)\n",
-			    info.extent.width, info.extent.height, extent.width, extent.height,
-			    want_scaled ? 1 : 0, static_cast<uint32_t>(info.pixel_format),
+			    gt_large_depth_half ? "large-depth" : "hdr-color", info.extent.width,
+			    info.extent.height, extent.width, extent.height, want_scaled ? 1 : 0, static_cast<uint32_t>(info.pixel_format),
 			    info.resources.layers, info.resources.levels, info.samples));
 		}
 	}
@@ -990,7 +1018,7 @@ void Image::SetScaled(bool want_scaled, bool preserve) {
 	}
 	KYTY_PROFILER_FUNCTION();
 	const auto extent =
-	    want_scaled ? RenderScale::ScaleExtent(info.extent, EffectiveGtDepthBackingScale(info)) : info.extent;
+	    want_scaled ? RenderScale::ScaleExtent(info.extent, EffectiveGtBackingScale(info)) : info.extent;
 	if (m_alternate_backing.image == nullptr && !CreateBacking(extent, m_alternate_backing)) {
 		EXIT("render scale: failed to allocate a %ux%u backing for image 0x%016" PRIx64 "\n",
 		     extent.width, extent.height, info.data.address);
