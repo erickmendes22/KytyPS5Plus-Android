@@ -90,8 +90,13 @@ object LaunchArgs {
         ) + (gpuDriverDir?.let { arrayOf(FLAG_GPU_DRIVER, it) } ?: emptyArray()) +
             (if (renderScale == RenderScale.NATIVE) emptyArray() else arrayOf(FLAG_RENDER_SCALE, renderScale.factor)) +
             (if (gpuTurbo) arrayOf(FLAG_GPU_TURBO) else emptyArray()) +
-            // Confirmed renderer-memory growth on this title. Preserve other games' policy.
-            (if (titleId.equals("PPSA10112", ignoreCase = true))
+            // The same 32-MiB VMA-block experiment used for Silent Hill now runs
+            // alongside GT's existing memory-collector experiment, not in a
+            // separate graphics-patch build. Smaller blocks can reduce unused
+            // allocator reservation; this does not reduce the game's live
+            // image demand and is not a native executable patch.
+            (if (titleId.equals("PPSA10112", ignoreCase = true) ||
+                 titleId.equals("PPSA24156", ignoreCase = true))
                 arrayOf(FLAG_GPU_EVICT_WRITTEN, "1", FLAG_VMA_BLOCK_SIZE, "32") else emptyArray()) +
             // The GT reference fork enables LS/HS/TES explicitly. Keep it title-scoped.
             (if (titleId.equals("PPSA24156", ignoreCase = true))
