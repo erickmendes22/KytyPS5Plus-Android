@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "id": "hdrhalf",
+  "name": "GT HDR effect buffers 50% (RAM experiment)",
+  "description": "Opt-in PPSA24156 GPU memory patch: frame-sized RGBA16F high-precision render targets use half the usual Vulkan backing dimensions in single-color-only passes. Targets lighting/postprocessing memory, not a confirmed SSR/RT disable. Compatible with native720; device validation required.",
+  "launch": {
+    "env": {
+      "KYTY_GT_HDR_HALF": "1"
+    }
+  }
+}
