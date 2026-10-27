@@ -25,6 +25,7 @@
 #include "loader/guestCall.h"
 #include "loader/guestHostFunction.h"
 #include "loader/runtimeLinker.h"
+#include "loader/systemContent.h"
 #include "loader/symbolDatabase.h"
 
 #if KYTY_HOST_ARM64
@@ -1427,6 +1428,26 @@ static int KYTY_SYSV_ABI KernelGetOperationMode(int* mode, int* submode) {
 
 	*mode    = 2; // PS5 Base
 	*submode = 0; // None
+	// Native low-resolution experiment for the GT7-family renderer. The GT7
+	// engine has a genuine 1080p quality path when the operation submode is
+	// one; unlike --render-scale this changes the dimensions the game requests
+	// from the GPU. My First Gran Turismo may use the same selector, but its
+	// on-device memory benefit has NOT yet been validated. Stay opt-in,
+	// title-scoped and separate from the Turnip compiler investigation.
+	const char* native_1080 = std::getenv("KYTY_GT_NATIVE_1080P");
+	if (native_1080 != nullptr && std::strcmp(native_1080, "1") == 0) {
+		std::string title;
+		if (Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		    title == "PPSA24156") {
+			*submode = 1;
+			static std::atomic_bool reported {false};
+			if (!reported.exchange(true)) {
+				Log::WriteToConsoleAndLog(
+				    "GT native resolution experiment: sceKernelGetOperationMode mode=2 submode=1 "
+				    "(1080p candidate, executable unchanged)\n");
+			}
+		}
+	}
 	LOGF("\t mode = %d, submode = %d\n", *mode, *submode);
 	return OK;
 }
