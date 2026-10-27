@@ -96,6 +96,25 @@ class PresetCatalogTest {
         assertEquals(emptyList<String>(), warnings)
     }
 
+    /** Gran Turismo's optional rendering-memory tests must run on the existing
+     * image-eviction and VMA policy branch, not as separate builds. */
+    @Test
+    fun shippedGranTurismoMemoryPresetsAreTitleScopedAndConflictSafely() {
+        val shipped = PresetCatalog(DirectoryPresetSource(File("src/main/assets/${PresetCatalog.ASSET_ROOT}"))) { warnings += it }
+        val gt = shipped.forTitle("PPSA24156")
+        assertEquals(listOf("mem50", "mem75"), gt.map { it.id })
+        assertTrue(gt.all { it.files.isEmpty() && it.launch.gamePatch == null })
+        assertEquals(0.5f, gt[0].launch.renderScale)
+        assertEquals(0.75f, gt[1].launch.renderScale)
+        assertEquals(emptyList<GamePreset>(), shipped.forTitle("PPSA01317"))
+        val plan = PresetLaunchArgs.plan(gt.map {
+            PresetLaunchArgs.Resolved(it.id, it.launch, null)
+        })
+        assertEquals(listOf("--render-scale", "0.5"), plan.args)
+        assertEquals(listOf("mem75: render scale already set by mem50"), plan.conflicts)
+        assertEquals(emptyList<String>(), warnings)
+    }
+
     /** Astro's performance mode: launch options only, with a game patch for the shipped eboot version. */
     @Test
     fun shippedAstroPerformanceModeIsValid() {
