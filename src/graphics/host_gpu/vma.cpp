@@ -20,6 +20,7 @@
 #include "common/profiler.h"
 #include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "loader/systemContent.h"
 
 #include <algorithm>
 #include <chrono>
@@ -165,6 +166,22 @@ uint64_t GraphicContext::UpdateMemoryBudget() {
 	memory_budget_effective =
 	    GpuBudget::Effective(memory_budget_configured, totals.usage,
 	                         memory_budget_ext_enabled ? totals.budget : 0, available);
+	// PPSA24156 was repeatedly rebounding from ~1.7 GiB to 4 GiB while only
+	// 0.8-1.1 GiB of shared RAM was available. Do not immediately refill
+	// evictable allocations after the collector frees a little headroom.
+	// Keep the stable recovery rule limited to this title and shared-memory GPUs.
+	std::string title_id;
+	if (available &&
+	    Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id) &&
+	    title_id == "PPSA24156") {
+		std::optional<uint64_t> driver_headroom;
+		if (memory_budget_ext_enabled) {
+			driver_headroom = totals.budget > totals.usage
+			                      ? totals.budget - totals.usage : 0;
+		}
+		memory_budget_effective = GpuBudget::StableRecovery(
+		    previous, memory_budget_effective, available, driver_headroom);
+	}
 	// Log real moves only: the headroom jitters by a few MiB every second.
 	constexpr uint64_t LogStep = 128 * GpuBudget::MiB;
 	const auto         moved   = memory_budget_effective > previous

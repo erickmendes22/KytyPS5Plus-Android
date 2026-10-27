@@ -55,6 +55,24 @@ inline constexpr uint64_t        kWrittenChunkBytes = 8 * MiB;
 	return static_cast<uint32_t>(std::min<uint64_t>(remaining, blocks * alignment));
 }
 
+// GT PPSA24156: memory pressure can briefly clear after eviction even while host
+// RAM remains near the Android kill threshold. Without hysteresis the budget jumps
+// back to its startup value, then collapses again on the next scene allocation.
+// Decrease immediately; recover only after both measured headrooms are healthy,
+// and never by more than 256 MiB per budget sample (normally one second).
+// Caller restricts this policy to GT on unified-memory devices.
+[[nodiscard]] constexpr uint64_t StableRecovery(uint64_t previous, uint64_t proposed,
+                                                 std::optional<uint64_t> host_available,
+                                                 std::optional<uint64_t> driver_headroom) {
+	if (proposed <= previous) return proposed;
+	constexpr uint64_t kRecoveryWater = 1536 * MiB;
+	if ((host_available && *host_available < kRecoveryWater) ||
+	    (driver_headroom && *driver_headroom < kRecoveryWater)) {
+		return previous;
+	}
+	return previous + std::min(proposed - previous, 256 * MiB);
+}
+
 [[nodiscard]] constexpr Thresholds ForBudget(uint64_t budget) {
 	return {budget / 100 * 55, budget / 100 * 80, budget / 100 * 92};
 }

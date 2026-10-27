@@ -73,6 +73,26 @@ void TestUnifiedSystemPressure() {
 	      "no unsigned underflow and floor does not exceed configured budget");
 }
 
+void TestGtPressureRecovery() {
+	// Replay the 17:16 GT trace: the collector briefly frees GPU memory,
+	// but MemAvailable remains below one GiB. A jump to 4 GiB undoes the GC.
+	Check(StableRecovery(1878 * MiB, 4099 * MiB, 961 * MiB, 865 * MiB) ==
+	          1878 * MiB,
+	      "do not restore startup GPU budget while GT shares critically low RAM");
+	Check(StableRecovery(1725 * MiB, 4099 * MiB, 1800 * MiB, 900 * MiB) ==
+	          1725 * MiB,
+	      "driver headroom also gates recovery");
+	Check(StableRecovery(1725 * MiB, 4099 * MiB, 1800 * MiB, 1700 * MiB) ==
+	          (1725 + 256) * MiB,
+	      "healthy headroom permits gradual recovery");
+	Check(StableRecovery(2000 * MiB, 1800 * MiB, 175 * MiB, 100 * MiB) ==
+	          1800 * MiB,
+	      "urgent budget reductions remain immediate");
+	Check(StableRecovery(3900 * MiB, 4099 * MiB, 1800 * MiB, 1700 * MiB) ==
+	          4099 * MiB,
+	      "recovery cannot exceed original configured budget");
+}
+
 void TestProcessMemoryReadings() {
 	std::istringstream meminfo("MemTotal: 12000000 kB\nMemAvailable:\t512000 kB\n");
 	std::istringstream status("Name:\tkyty\nVmRSS: 6000000 kB\nRssAnon: 4000000 kB\nVmSwap: 0 kB\n");
@@ -129,6 +149,7 @@ int main() {
   TestThresholds();
   TestEffective();
   TestUnifiedSystemPressure();
+  TestGtPressureRecovery();
   TestProcessMemoryReadings();
   TestWrittenDownloadLimits();
   std::printf("GpuMemoryBudgetTests: ok\n");
