@@ -97,7 +97,7 @@ static std::vector<uint32_t> MakeGtTurnipMinimalTessEval() {
 // Vulkan input patchControlPoints is 24. Keep both distinct. TES and PS probes
 // do not consume the original HS output, so only tessellation levels are
 // needed. This replacement is NOT an image-preserving graphics workaround.
-static std::vector<uint32_t> MakeGtTurnipMinimalTessControl() {
+static std::vector<uint32_t> MakeGtTurnipMinimalTessControl(bool passthrough_location0 = false) {
 	using ShaderRecompiler::Spirv::Builder;
 	Builder b;
 	b.RequireCapability(spv::CapabilityShader);
@@ -125,14 +125,36 @@ static std::vector<uint32_t> MakeGtTurnipMinimalTessControl() {
 	b.AddAnnotation(spv::OpDecorate, outer, spv::DecorationPatch);
 	b.AddAnnotation(spv::OpDecorate, inner, spv::DecorationBuiltIn, spv::BuiltInTessLevelInner);
 	b.AddAnnotation(spv::OpDecorate, inner, spv::DecorationPatch);
+	// Captured HS d9596b...: input Location 0 and output Location 0
+	// both have exactly one 32-bit unsigned integer component. The
+	// captured original TES reads this same Location 0 as uint. When
+	// explicitly requested, forward that varying to recover the
+	// original TES/FS interface without restoring the large HS program.
+	// Keep default probe byte-for-byte unchanged when disabled.
+	uint32_t location_input = 0, location_output = 0;
+	std::vector<uint32_t> interfaces {invocation, outer, inner};
+	if (passthrough_location0) {
+		const auto in_uint_ptr = b.Type(spv::OpTypePointer, spv::StorageClassInput, uint_type);
+		const auto out_uint_ptr = b.Type(spv::OpTypePointer, spv::StorageClassOutput, uint_type);
+		location_input = b.DefineGlobalVariable(in_uint_ptr, spv::StorageClassInput);
+		location_output = b.DefineGlobalVariable(out_uint_ptr, spv::StorageClassOutput);
+		b.AddAnnotation(spv::OpDecorate, location_input, spv::DecorationLocation, 0u);
+		b.AddAnnotation(spv::OpDecorate, location_output, spv::DecorationLocation, 0u);
+		interfaces.push_back(location_input);
+		interfaces.push_back(location_output);
+	}
 	const auto zero = b.Constant(spv::OpConstant, int_type, 0u);
 	const auto one = b.Constant(spv::OpConstant, float_type, 0x3f800000u);
 	const auto main = b.AllocateId();
 	b.AddExecutionMode(main, spv::ExecutionModeOutputVertices, 4u);
-	b.AddEntryPoint(spv::ExecutionModelTessellationControl, main, "main",
-	                {invocation, outer, inner});
+	b.AddEntryPoint(spv::ExecutionModelTessellationControl, main, "main", interfaces);
 	b.AddFunction(spv::OpFunction, void_type, main, spv::FunctionControlMaskNone, function_type);
 	b.AddFunction(spv::OpLabel, b.AllocateId());
+	if (passthrough_location0) {
+		const auto value = b.AllocateId();
+		b.AddFunction(spv::OpLoad, uint_type, value, location_input);
+		b.AddFunction(spv::OpStore, location_output, value);
+	}
 	const auto id = b.AllocateId();
 	b.AddFunction(spv::OpLoad, int_type, id, invocation);
 	const auto first = b.AllocateId();
