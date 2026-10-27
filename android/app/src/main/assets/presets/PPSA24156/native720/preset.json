@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "id": "native720",
+  "name": "Native GT 720p target (memory test)",
+  "description": "Opt-in 01.010 eboot patch to request 1280x720 instead of 4K/1080p in two game output-target setup paths. Validated original instruction bytes; effects on GPU memory and scene resolution require on-device testing. Works alongside GT image eviction and 32 MiB VMA blocks.",
+  "launch": {
+    "gamePatch": "gt_native720.json"
+  }
+}
