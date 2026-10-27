@@ -712,7 +712,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	// PPSA24156 + the captured A830 Turnip v32. To A/B compare use
 	// KYTY_GT_TURNIP_TCS_PROBE=0.
 	vk::ShaderModule gt_tcs_probe_module = nullptr;
-	if (tessellation && ps_active) {
+	// This TCS emits no user varyings: never pair it with the original TES,
+	// which needs those outputs. Require both preceding minimal stages.
+	if (tessellation && ps_active && gt_tes_probe_module != nullptr &&
+	    gt_fragment_probe_module != nullptr) {
 		const auto& props = graphics.GetPhysicalDeviceProperties();
 		std::string title;
 		const char* toggle = std::getenv("KYTY_GT_TURNIP_TCS_PROBE");
