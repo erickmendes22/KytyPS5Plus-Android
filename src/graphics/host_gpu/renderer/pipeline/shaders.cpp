@@ -635,10 +635,9 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 			static std::atomic_uint32_t once {0};
 			if (once.fetch_add(1, std::memory_order_relaxed) < 8) {
 				Log::WriteToConsoleAndLog(fmt::format(
-				    "GT TURNIP TES PROBE: minimal DS/TES active; original HS={} (unchanged) "
-				    "patch_control_points={}; original PS replaced={}\n",
-				    fmt::format("{:016x}", vertex_info[1].stage.program->shader_hash),
-				    tessellation_state.patchControlPoints,
+				    "GT TURNIP TES PROBE: minimal DS/TES active; original HS={:016x} (unchanged) "
+				    "original PS replaced={}\n",
+				    vertex_info[1].stage.program->shader_hash,
 				    gt_fragment_probe_module != nullptr ? 1 : 0));
 			}
 		}
