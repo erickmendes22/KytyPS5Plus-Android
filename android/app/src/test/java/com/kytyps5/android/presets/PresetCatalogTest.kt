@@ -102,15 +102,17 @@ class PresetCatalogTest {
     fun shippedGranTurismoMemoryPresetsAreTitleScopedAndConflictSafely() {
         val shipped = PresetCatalog(DirectoryPresetSource(File("src/main/assets/${PresetCatalog.ASSET_ROOT}"))) { warnings += it }
         val gt = shipped.forTitle("PPSA24156")
-        assertEquals(listOf("mem50", "mem75"), gt.map { it.id })
+        assertEquals(listOf("mem50", "mem75", "native1080"), gt.map { it.id })
         assertTrue(gt.all { it.files.isEmpty() && it.launch.gamePatch == null })
         assertEquals(0.5f, gt[0].launch.renderScale)
         assertEquals(0.75f, gt[1].launch.renderScale)
+        assertEquals(null, gt[2].launch.renderScale)
+        assertEquals("1", gt[2].launch.env["KYTY_GT_NATIVE_1080P"])
         assertEquals(emptyList<GamePreset>(), shipped.forTitle("PPSA01317"))
         val plan = PresetLaunchArgs.plan(gt.map {
             PresetLaunchArgs.Resolved(it.id, it.launch, null)
         })
-        assertEquals(listOf("--render-scale", "0.5"), plan.args)
+        assertEquals(listOf("--env", "KYTY_GT_NATIVE_1080P=1", "--render-scale", "0.5"), plan.args)
         assertEquals(listOf("mem75: render scale already set by mem50"), plan.conflicts)
         assertEquals(emptyList<String>(), warnings)
     }
