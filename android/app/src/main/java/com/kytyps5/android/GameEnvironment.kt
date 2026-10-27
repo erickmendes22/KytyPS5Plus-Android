@@ -25,6 +25,7 @@ object GameEnvironment {
     // Android happens to reuse SDL's process after a launch.
     internal val granTurismoPresetKeys = setOf(
         "KYTY_GT_LARGE_DEPTH_HALF", "KYTY_GT_HDR_HALF",
+        "KYTY_GT_TURNIP_VISUAL_RESTORE",
     )
 
     fun apply(lines: Array<String>?) {
