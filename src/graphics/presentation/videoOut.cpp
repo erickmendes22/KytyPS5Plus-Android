@@ -1470,6 +1470,25 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 	     attribute->aspect_ratio, attribute->width, attribute->height, attribute->pitch_in_pixel,
 	     attribute->option, category);
 
+	// GT720: the game can register 3840x2160 video-out images even when
+	// its internal display-target instructions were patched to 1280x720.
+	// Record the guest dimensions AND host backing scale, so the next
+	// diagnostic can confirm that the requested 720p memory reduction
+	// actually reaches Vulkan. No host/guest dimensions are altered here.
+	std::string gt_title;
+	if (Loader::SystemContentParamSfoGetString("TITLE_ID", &gt_title) &&
+	    gt_title == "PPSA24156") {
+		static std::atomic_uint32_t count {0};
+		if (count.fetch_add(1, std::memory_order_relaxed) < 12) {
+			const auto scale = Config::GetRenderScale();
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "GT VIDEOOUT: buffers={} guest={}x{} backing_scale={:.8f} "
+			    "estimated_backing={}x{} (rounded dimensions are approximate)\n",
+			    buffer_num, attribute->width, attribute->height, scale,
+			    static_cast<uint32_t>(attribute->width * scale),
+			    static_cast<uint32_t>(attribute->height * scale)));
+		}
+	}
 	if (option != nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_OPTION;
 	}
