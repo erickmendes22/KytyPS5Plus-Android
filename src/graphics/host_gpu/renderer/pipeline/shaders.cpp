@@ -648,6 +648,16 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		                                       .pName  = "main"};
 	}
 
+	// Only the captured HS d9596b... exposes an unsigned 32-bit
+	// input and output at Location 0, consumed by the original TES.
+	// This is opt-in, retains the proven three-minimal-stage fallback
+	// unless enabled, and does not affect other guest HS signatures.
+	const char* gt_restore_option = std::getenv("KYTY_GT_TURNIP_VISUAL_RESTORE");
+	const bool gt_visual_restore_requested =
+	    tessellation && ps_active && vertex_info.size() > 1 &&
+	    gt_restore_option != nullptr && std::strcmp(gt_restore_option, "1") == 0 &&
+	    vertex_info[1].stage.program->shader_hash == 0xd9596b2d7a2e4202ULL;
+
 	// Stage-isolation experiment for the documented Turnip V32 SIGSEGV on
 	// PPSA24156 / A830. Keep VS/TCS/TES and every other pipeline parameter
 	// unchanged, but use a valid empty fragment shader for tessellated draws.
@@ -656,7 +666,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	// it is NOT a production workaround. Disable via
 	// KYTY_GT_TURNIP_FRAGMENT_PROBE=0 to compare with the original behavior.
 	vk::ShaderModule gt_fragment_probe_module = nullptr;
-	if (tessellation && ps_active) {
+	if (tessellation && ps_active && !gt_visual_restore_requested) {
 		const auto& props = graphics.GetPhysicalDeviceProperties();
 		std::string title;
 		const bool gt = Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
@@ -699,7 +709,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	// The control/hull shader stays original; the evaluation stage emits only
 	// the required built-in position. This is explicitly not a rendering fix.
 	vk::ShaderModule gt_tes_probe_module = nullptr;
-	if (tessellation && ps_active) {
+	if (tessellation && ps_active && !gt_visual_restore_requested) {
 		const auto& props = graphics.GetPhysicalDeviceProperties();
 		std::string title;
 		const char* toggle = std::getenv("KYTY_GT_TURNIP_TES_PROBE");
@@ -734,10 +744,12 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	// PPSA24156 + the captured A830 Turnip v32. To A/B compare use
 	// KYTY_GT_TURNIP_TCS_PROBE=0.
 	vk::ShaderModule gt_tcs_probe_module = nullptr;
-	// This TCS emits no user varyings: never pair it with the original TES,
-	// which needs those outputs. Require both preceding minimal stages.
-	if (tessellation && ps_active && gt_tes_probe_module != nullptr &&
-	    gt_fragment_probe_module != nullptr) {
+	// The known-good minimal control shader is paired with minimal TES/FS.
+	// The opt-in Location-0 passthrough is the only exception: reflection
+	// of the captured guest HS/DS confirms the original uint interface.
+	if (tessellation && ps_active &&
+	    (gt_visual_restore_requested ||
+	     (gt_tes_probe_module != nullptr && gt_fragment_probe_module != nullptr))) {
 		const auto& props = graphics.GetPhysicalDeviceProperties();
 		std::string title;
 		const char* toggle = std::getenv("KYTY_GT_TURNIP_TCS_PROBE");
@@ -745,7 +757,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		    Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
 		    title == "PPSA24156" && props.vendorID == 20803u &&
 		    props.deviceID == 1141178369u && props.driverVersion == 109060195u) {
-			const auto minimal_tcs = MakeGtTurnipMinimalTessControl();
+			const auto minimal_tcs = MakeGtTurnipMinimalTessControl(gt_visual_restore_requested);
 			gt_tcs_probe_module = CompileSPV(minimal_tcs, graphics.device);
 			EXIT_IF(gt_tcs_probe_module == nullptr);
 			ShaderDump::RecordModule(gt_tcs_probe_module, "turnip_probe_tcs", 0, minimal_tcs);
@@ -763,9 +775,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 				Log::WriteToConsoleAndLog(fmt::format(
 				    "GT TURNIP TCS PROBE: minimal HS/TCS active, output_vertices=4 "
 				    "input_patch_control_points={} original_HS={:016x} "
-				    "TES_minimal={} FS_minimal={}\n",
+				    "passthrough_location0={} TES_minimal={} FS_minimal={}\n",
 				    vs_input_info.tess.input_control_points,
 				    vertex_info[1].stage.program->shader_hash,
+				    gt_visual_restore_requested ? 1 : 0,
 				    gt_tes_probe_module != nullptr ? 1 : 0,
 				    gt_fragment_probe_module != nullptr ? 1 : 0));
 			}
