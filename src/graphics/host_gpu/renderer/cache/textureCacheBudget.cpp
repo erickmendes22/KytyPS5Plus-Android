@@ -2,6 +2,8 @@
 // (gpuMemoryBudget.h) instead of the legacy heap-size thresholds.
 
 #include "common/perfWaits.h"
+#include "common/processMemory.h"
+#include "loader/systemContent.h"
 #include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
@@ -46,11 +48,24 @@ void TextureCache::NoteEviction(const Image& image, bool downloaded) {
 void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 	m_gc_written_cold_bytes  = 0;
 	m_gc_written_large_bytes = 0;
-	const bool critical  = used_memory >= m_critical_gc_memory;
+	// Android can run out of shared RAM before an allocation returns OOM. The
+	// normal collector waits six ticks even when there is almost no headroom.
+	// Apply a more urgent policy only to the confirmed GT title; in-flight
+	// images used on the current tick remain protected by the LRU threshold.
+	static const bool gt_title = [] {
+		std::string title;
+		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		       title == "PPSA24156";
+	}();
+	const auto available = gt_title ? Common::ReadProcessMemory().available
+	                                : std::optional<uint64_t> {};
+	const bool emergency = available && *available < 768u * GpuBudget::MiB;
+	const bool critical  = emergency || used_memory >= m_critical_gc_memory;
 	const bool pressured = critical || used_memory >= m_pressure_gc_memory;
-	const auto age       = std::min(critical ? kAgeCritical : pressured ? kAgePressured : kAgeNormal,
-	                                tick);
-	const size_t limit = critical ? 40 : pressured ? 20 : 10;
+	const auto age       = std::min<uint64_t>(
+	    emergency ? 1u : critical ? kAgeCritical : pressured ? kAgePressured : kAgeNormal,
+	    tick);
+	const size_t limit = emergency ? 128 : critical ? 40 : pressured ? 20 : 10;
 
 	const auto evictable = [&](ImageId id) -> const Image* {
 		const auto* image = m_slot_images.try_get(id);
@@ -90,13 +105,15 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 	// In particular, FreeImage must not untrack it while the priority callback still owns
 	// the only up-to-date bytes. One image per pass bounds copy volume and GPU waits.
 	if (!pressured || !m_evict_written || !m_scheduler.Active()) return;
-	const auto idle = GpuBudget::WrittenIdleFrames(critical);
+	const auto idle = emergency ? 2u : GpuBudget::WrittenIdleFrames(critical);
 	if (tick < idle) return;
 	const auto& staging     = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
 	const auto  limit_bytes = GpuBudget::WrittenDownloadLimit(critical, staging.Size());
 	const auto  chunk_bytes = std::min(staging.Size(), GpuBudget::kWrittenChunkBytes);
 	ImageId     candidate {};
 	uint64_t    candidate_bytes = 0;
+	ImageId     chunk_candidate {};
+	uint64_t    chunk_candidate_bytes = UINT64_MAX;
 	m_lru_cache.ForEachItemBelow(tick - idle, [&](ImageId id) {
 		const auto* image = evictable(id);
 		if (image == nullptr || !image->SafeToDownload() || image->usage.video_out ||
@@ -110,18 +127,25 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 				m_gc_written_large_bytes += image->AccountedSize();
 				return;
 			}
-		}
-		if (id == m_written_window.image && image->ContentVersion() == m_written_window.version) {
-			candidate       = id;
-			candidate_bytes = UINT64_MAX;
+			// A chunked image can require tens of GC passes before a single byte
+			// becomes reclaimable. Keep it as a fallback, not ahead of images
+			// that can be completely downloaded and freed in one pass.
+			const bool resuming = id == m_written_window.image &&
+			                      image->ContentVersion() == m_written_window.version;
+			if (resuming || !chunk_candidate ||
+			    (chunk_candidate_bytes != 0 && image->AccountedSize() < chunk_candidate_bytes)) {
+				chunk_candidate = id;
+				chunk_candidate_bytes = resuming ? 0 : image->AccountedSize();
+			}
 			return;
 		}
-		// Reclaim a useful amount rather than spending the pass on a tiny old image.
+		// A complete single-pass readback returns memory to Android immediately.
 		if (image->AccountedSize() > candidate_bytes) {
 			candidate       = id;
 			candidate_bytes = image->AccountedSize();
 		}
 	});
+	if (!candidate) candidate = chunk_candidate;
 	if (!candidate) return;
 	if (m_slot_images[candidate].info.data.size > limit_bytes) {
 		if (DownloadImageMemoryChunk(candidate, chunk_bytes)) {
