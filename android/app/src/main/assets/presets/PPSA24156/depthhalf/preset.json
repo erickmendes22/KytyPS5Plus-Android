@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "id": "depthhalf",
+  "name": "GT depth atlases 50% (RAM experiment)",
+  "description": "Opt-in PPSA24156 GPU memory patch: square depth atlases of at least 2048x2048 use half the usual Vulkan backing dimensions when depth blits are supported. May affect shadow fidelity. Does not disable shadows and does not change eboot bytes. Compatible with native720; requires device validation.",
+  "launch": {
+    "env": {
+      "KYTY_GT_LARGE_DEPTH_HALF": "1"
+    }
+  }
+}
