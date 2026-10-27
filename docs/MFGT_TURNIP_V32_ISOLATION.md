@@ -35,6 +35,46 @@ disable-optimization and limited SPIR-V size optimization did not prevent
 the crash. Blocking a couple of HS hashes only exposed more failing HS
 variants. Do not repeat these as supposed fixes.
 
+## 2026-10-27 13:37 user log: original HS still crashes with both other stages replaced
+
+Input: `KytyPS5-Plus-diagnostics-20261027-133711.zip`, build `4fbaf52`.
+The session log confirms `GT TURNIP PROBE` and `GT TURNIP TES PROBE`
+for the native tessellation pipelines. Pipelines #158 (input control points
+26) and #159 (16) returned `Success`, while pipeline #160 (24) entered
+`vkCreateGraphicsPipelines` and SIGSEGV occurred in the SAME Turnip
+function at `libvulkan_freedreno.so+0xc21168` (read from address `0x10`).
+Guest HS hash: `d9596b2d7a2e4202`. The fragment AND tessellation
+evaluation modules supplied to the ICD were minimal; only guest VS/HS
+remained. This rules out a requirement for the original PS or DS/TES to
+trigger the crash. It does **not** establish whether HS, VS or pipeline
+state causes the driver bug. The ZIP also has a previous session reaching
+pipeline #356 without the same termination; do not conflate both sessions.
+
+### Third-stage isolation: minimal HS/TCS (commit 240e0efb)
+
+A new default-on, device/title-scoped `KYTY_GT_TURNIP_TCS_PROBE` stage
+replaces the guest HS with a minimal tessellation-control SPIR-V shader.
+It writes only `gl_TessLevelOuter` and `gl_TessLevelInner` from
+invocation zero (all levels 1.0), and deliberately emits none of the
+original tessellation varyings, since the minimal TES reads none.
+
+**Critical captured SPIR-V fact:** HS `d9596b2d7a2e4202` declares
+`OpExecutionMode OutputVertices 4`. Meanwhile, the failing Vulkan
+pipeline declares `patchControlPoints=24`. The shader emits **4 output
+vertices**, distinct from the **24 input patch control points**. The
+new minimal TCS preserves this distinction and does not silently change
+the pipeline's input patch count.
+
+All three stage probes are restricted to `PPSA24156`, vendor `20803`,
+device `1141178369`, driverVersion `109060195`. The TCS module
+requires the minimal TES and FS probes to be enabled; they are needed to
+keep pipeline stage interfaces internally consistent. To A/B isolate:
+`KYTY_GT_TURNIP_TCS_PROBE=0`, or individually turn off other probes.
+The output will be severely incomplete (expected); **this is not a
+release-ready fix**. The relevant log line is `GT TURNIP TCS PROBE:`.
+The next Android ZIP should be checked against the same driver offset,
+pipeline identifier, output and input tessellation counts.
+
 ## Current diagnostic experiment: isolate the fragment stage
 
 Only when ALL conditions match:
