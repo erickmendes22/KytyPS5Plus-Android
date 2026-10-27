@@ -24,7 +24,7 @@ object GameEnvironment {
     fun apply(lines: Array<String>?) {
         val vars = EnvVars.parse(lines?.joinToString("\n").orEmpty()).vars
         val (unset, set) = EnvVars.plan(appliedKeys, vars)
-        (unset + silentHillPresetKeys + setOf("KYTY_GT_NATIVE_1080P")).distinct().forEach { key ->
+        (unset + silentHillPresetKeys).distinct().forEach { key ->
             try {
                 Os.unsetenv(key)
             } catch (e: ErrnoException) {
