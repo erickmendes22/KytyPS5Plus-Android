@@ -96,22 +96,19 @@ class PresetCatalogTest {
         assertEquals(emptyList<String>(), warnings)
     }
 
-    /** Gran Turismo's optional rendering-memory tests must run on the existing
-     * image-eviction and VMA policy branch, not as separate builds. */
+    /** The sole GT 720p preset combines the verified executable patch with
+     * reduced Vulkan image backing; other experiments have been removed. */
     @Test
     fun shippedGranTurismoMemoryPresetsAreTitleScopedAndConflictSafely() {
-        val shipped = PresetCatalog(DirectoryPresetSource(File("src/main/assets/${PresetCatalog.ASSET_ROOT}"))) { warnings += it }
+        val shipped = PresetCatalog(DirectoryPresetSource(File("src/main/assets/presets"))) { warnings += it }
         val gt = shipped.forTitle("PPSA24156")
-        assertEquals(listOf("mem50", "mem75", "native1080", "native720"), gt.map { it.id })
-        assertTrue(gt.all { it.files.isEmpty() })
-        assertTrue(gt.take(3).all { it.launch.gamePatch == null })
-        assertEquals(0.5f, gt[0].launch.renderScale)
-        assertEquals(0.75f, gt[1].launch.renderScale)
-        assertEquals(null, gt[2].launch.renderScale)
-        assertEquals("1", gt[2].launch.env["KYTY_GT_NATIVE_1080P"])
-        val native720 = gt.single { it.id == "native720" }
-        assertEquals("gt_native720.json", native720.launch.gamePatch)
-        val patch = org.json.JSONObject(String(shipped.launchFileBytes(native720, requireNotNull(native720.launch.gamePatch))))
+        assertEquals(listOf("native720"), gt.map { it.id })
+        val mode = gt.single()
+        assertTrue(mode.files.isEmpty())
+        assertTrue(mode.launch.env.isEmpty())
+        assertEquals("gt_native720.json", mode.launch.gamePatch)
+        assertEquals(0.33333334f, mode.launch.renderScale)
+        val patch = org.json.JSONObject(String(shipped.launchFileBytes(mode, requireNotNull(mode.launch.gamePatch))))
         assertEquals("PPSA24156", patch.getString("id"))
         assertEquals("01.010.000", patch.getString("version"))
         assertEquals("eboot.bin", patch.getString("process"))
@@ -123,11 +120,11 @@ class PresetCatalogTest {
             assertTrue(write.getString("offset").startsWith("0x"))
         }
         assertEquals(emptyList<GamePreset>(), shipped.forTitle("PPSA01317"))
-        val plan = PresetLaunchArgs.plan(gt.map {
-            PresetLaunchArgs.Resolved(it.id, it.launch, null)
-        })
-        assertEquals(listOf("--env", "KYTY_GT_NATIVE_1080P=1", "--render-scale", "0.5"), plan.args)
-        assertEquals(listOf("mem75: render scale already set by mem50"), plan.conflicts)
+        val plan = PresetLaunchArgs.plan(listOf(
+            PresetLaunchArgs.Resolved(mode.id, mode.launch, "/tmp/gt720.json")
+        ))
+        assertEquals(listOf("--render-scale", "0.33333334", "--game-patch", "/tmp/gt720.json"), plan.args)
+        assertEquals(emptyList<String>(), plan.conflicts)
         assertEquals(emptyList<String>(), warnings)
     }
 
