@@ -15,6 +15,10 @@
 #include "graphics/host_gpu/renderer/image/ubwcProbe.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "kernel/memory.h"
+#include "loader/systemContent.h"
+
+#include <cstdlib>
+#include <cstring>
 
 #include <algorithm>
 #include <array>
@@ -27,6 +31,28 @@
 namespace Libs::Graphics {
 
 namespace {
+
+// PPSA24156-only effect-memory experiment: large depth attachments may be
+// shadow atlases or other depth pre-passes. This changes *host image backing*
+// dimensions, not the game's binary or its visibility decisions. Keep the
+// override opt-in and do not apply it to color textures or video-out images.
+// A depth image that cannot safely support render-scale blitting remains native.
+[[nodiscard]] float EffectiveGtDepthBackingScale(const ImageInfo& info) {
+	const float base = Config::GetRenderScale();
+	if (!info.IsDepth() || info.extent.width < 2048u || info.extent.height < 1024u ||
+	    info.samples != 1 || info.resources.levels != 1) {
+		return base;
+	}
+	const char* setting = std::getenv("KYTY_GT_LARGE_DEPTH_HALF");
+	if (setting == nullptr || std::strcmp(setting, "1") != 0) return base;
+	static const bool is_gt = [] {
+		std::string title;
+		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		       title == "PPSA24156";
+	}();
+	if (!is_gt) return base;
+	return base * 0.5f;
+}
 
 [[nodiscard]] vk::ImageType HostImageType(Prospero::ImageType type) {
 	switch (type) {
@@ -873,7 +899,7 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	if (info.pixel_format == vk::Format::eUndefined) {
 		return;
 	}
-	const float scale = Config::GetRenderScale();
+	const float scale = EffectiveGtDepthBackingScale(info);
 	scalable          = RenderScale::Active(scale) &&
 	           RenderScale::GeometryEligible(info.type, info.extent, info.resources.levels,
 	                                         info.samples, info.IsBlock()) &&
@@ -882,6 +908,22 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	            (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_NO_DEPTH) == 0);
 	const bool want_scaled = scaled_hint && scalable;
 	const auto extent = want_scaled ? RenderScale::ScaleExtent(info.extent, scale) : info.extent;
+	// For the GT large-depth experiment, a real reduced backing is the
+	// evidence that the effect-residency test is active. Diagnostic counters
+	// are bounded so normal rendering is not flooded with logs.
+	if (info.IsDepth() && info.extent.width >= 2048u && info.extent.height >= 1024u &&
+	    scale < Config::GetRenderScale()) {
+		static std::atomic_uint32_t logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 48) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "GT DEPTH BACKING: guest={}x{} host={}x{} scaled={} format={} "
+			    "layers={} levels={} samples={} (effect memory test)\n",
+			    info.extent.width, info.extent.height, extent.width, extent.height,
+			    want_scaled ? 1 : 0, static_cast<uint32_t>(info.pixel_format),
+			    info.resources.layers, info.resources.levels, info.samples));
+		}
+	}
+
 	if (RenderScale::Active(scale) && RenderScale::FrameSized(info.extent.width, info.extent.height)) {
 		static std::atomic_uint32_t s_logged = 0;
 		if (s_logged.fetch_add(1, std::memory_order_relaxed) < 64) {
@@ -935,7 +977,7 @@ void Image::SetScaled(bool want_scaled, bool preserve) {
 	}
 	KYTY_PROFILER_FUNCTION();
 	const auto extent =
-	    want_scaled ? RenderScale::ScaleExtent(info.extent, Config::GetRenderScale()) : info.extent;
+	    want_scaled ? RenderScale::ScaleExtent(info.extent, EffectiveGtDepthBackingScale(info)) : info.extent;
 	if (m_alternate_backing.image == nullptr && !CreateBacking(extent, m_alternate_backing)) {
 		EXIT("render scale: failed to allocate a %ux%u backing for image 0x%016" PRIx64 "\n",
 		     extent.width, extent.height, info.data.address);
