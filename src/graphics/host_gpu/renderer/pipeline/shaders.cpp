@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/barycentricGeometryShader.h"
+#include "graphics/shader/recompiler/backend/spirv/SpirvBuilder.h"
 #include "graphics/shader/meshVertexPullShader.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
@@ -46,6 +47,50 @@ namespace Libs::Graphics {
 // conventional graphics pipelines were compiling concurrently. Scope this
 // workaround to the title, preserving parallelism for all other games.
 static std::mutex g_gt_native_pipeline_mutex;
+
+// Diagnostic-only TES replacement for the exact GT/A830/Turnip-v32 crash.
+// Match the captured DS execution modes: Quads / FractionalEven / CW.
+// Keep the original HS/TCS, VS, patchControlPoints and all fixed pipeline
+// state. A constant gl_Position and an empty PS guarantee missing geometry,
+// which is expected; this must never be enabled in a normal release.
+static std::vector<uint32_t> MakeGtTurnipMinimalTessEval() {
+	using ShaderRecompiler::Spirv::Builder;
+	Builder b;
+	b.RequireCapability(spv::CapabilityShader);
+	b.RequireCapability(spv::CapabilityTessellation);
+	b.AddMemoryModel(spv::AddressingModelLogical, spv::MemoryModelGLSL450);
+	const auto void_type  = b.Type(spv::OpTypeVoid);
+	const auto int_type   = b.Type(spv::OpTypeInt, 32u, 1u);
+	const auto float_type = b.Type(spv::OpTypeFloat, 32u);
+	const auto vec4_type  = b.Type(spv::OpTypeVector, float_type, 4u);
+	const auto func_type  = b.Type(spv::OpTypeFunction, void_type);
+	const auto per_vertex = b.DecoratedType(
+	    spv::OpTypeStruct,
+	    {{spv::OpMemberDecorate, {0u, spv::DecorationBuiltIn, spv::BuiltInPosition}},
+	     {spv::OpDecorate, {spv::DecorationBlock}}},
+	    vec4_type);
+	const auto out_struct_ptr = b.Type(spv::OpTypePointer, spv::StorageClassOutput, per_vertex);
+	const auto out_vec4_ptr   = b.Type(spv::OpTypePointer, spv::StorageClassOutput, vec4_type);
+	const auto gl_out = b.DefineGlobalVariable(out_struct_ptr, spv::StorageClassOutput);
+	const auto idx0   = b.Constant(spv::OpConstant, int_type, 0u);
+	const auto fzero  = b.Constant(spv::OpConstant, float_type, 0u);
+	const auto fone   = b.Constant(spv::OpConstant, float_type, 0x3f800000u);
+	const auto pos    = b.Constant(spv::OpConstantComposite, vec4_type, fzero, fzero, fzero, fone);
+	const auto main   = b.AllocateId();
+	b.AddExecutionMode(main, spv::ExecutionModeQuads);
+	b.AddExecutionMode(main, spv::ExecutionModeSpacingFractionalEven);
+	b.AddExecutionMode(main, spv::ExecutionModeVertexOrderCw);
+	b.AddEntryPoint(spv::ExecutionModelTessellationEvaluation, main, "main", {gl_out});
+	b.AddFunction(spv::OpFunction, void_type, main, spv::FunctionControlMaskNone, func_type);
+	b.AddFunction(spv::OpLabel, b.AllocateId());
+	const auto address = b.AllocateId();
+	b.AddFunction(spv::OpAccessChain, out_vec4_ptr, address, gl_out, idx0);
+	b.AddFunction(spv::OpStore, address, pos);
+	b.AddFunction(spv::OpReturn);
+	b.AddFunction(spv::OpFunctionEnd);
+	return b.Build();
+}
+
 
 // IDK: maybe we can remove it?
 constexpr uint8_t kTemporaryVertexAttribFormat113 =
@@ -563,6 +608,42 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		}
 	}
 
+
+	// After the empty-fragment experiment reproduced the *same* ICD null
+	// dereference at pipeline #69, isolate the tessellation evaluation stage.
+	// The control/hull shader stays original; the evaluation stage emits only
+	// the required built-in position. This is explicitly not a rendering fix.
+	vk::ShaderModule gt_tes_probe_module = nullptr;
+	if (tessellation && ps_active) {
+		const auto& props = graphics.GetPhysicalDeviceProperties();
+		std::string title;
+		const char* toggle = std::getenv("KYTY_GT_TURNIP_TES_PROBE");
+		if ((toggle == nullptr || std::strcmp(toggle, "0") != 0) &&
+		    Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		    title == "PPSA24156" && props.vendorID == 20803u &&
+		    props.deviceID == 1141178369u && props.driverVersion == 109060195u) {
+			const auto minimal_tes = MakeGtTurnipMinimalTessEval();
+			gt_tes_probe_module = CompileSPV(minimal_tes, graphics.device);
+			EXIT_IF(gt_tes_probe_module == nullptr);
+			ShaderDump::RecordModule(gt_tes_probe_module, "turnip_probe_tes", 0, minimal_tes);
+			for (uint32_t i = 0; i < shader_stage_count; i++) {
+				if (shader_stages[i].stage == vk::ShaderStageFlagBits::eTessellationEvaluation) {
+					shader_stages[i].module = gt_tes_probe_module;
+					break;
+				}
+			}
+			static std::atomic_uint32_t once {0};
+			if (once.fetch_add(1, std::memory_order_relaxed) < 8) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "GT TURNIP TES PROBE: minimal DS/TES active; original HS={} (unchanged) "
+				    "patch_control_points={}; original PS replaced={}\n",
+				    fmt::format("{:016x}", vertex_info[1].stage.program->shader_hash),
+				    tessellation_state.patchControlPoints,
+				    gt_fragment_probe_module != nullptr ? 1 : 0));
+			}
+		}
+	}
+
 	vk::VertexInputAttributeDescription input_attr[ShaderVertexInputInfo::RES_MAX] {};
 	vk::VertexInputBindingDescription   input_desc[ShaderVertexInputInfo::RES_MAX] {};
 
@@ -969,6 +1050,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	if (gt_fragment_probe_module != nullptr) {
 		ShaderDump::ForgetModule(gt_fragment_probe_module);
 		graphics.device.destroyShaderModule(gt_fragment_probe_module, nullptr);
+	}
+	if (gt_tes_probe_module != nullptr) {
+		ShaderDump::ForgetModule(gt_tes_probe_module);
+		graphics.device.destroyShaderModule(gt_tes_probe_module, nullptr);
 	}
 	ShaderDump::RecordResult(dump_record, result);
 	if (capture_stats && result == vk::Result::eSuccess) {
