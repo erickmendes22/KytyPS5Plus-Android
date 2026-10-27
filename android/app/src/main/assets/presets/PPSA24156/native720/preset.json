@@ -1,9 +1,10 @@
 {
   "schemaVersion": 2,
   "id": "native720",
-  "name": "Native GT 720p target (memory test)",
-  "description": "Opt-in 01.010 eboot patch to request 1280x720 instead of 4K/1080p in two game output-target setup paths. Validated original instruction bytes; effects on GPU memory and scene resolution require on-device testing. Works alongside GT image eviction and 32 MiB VMA blocks.",
+  "name": "GT 720p + RAM recovery (experimental)",
+  "description": "Keeps the exact-01.010 native eboot display-target patch and additionally scales Vulkan render-target backing to one third, so a game-created 3840x2160 video-out image uses about 1280x720 backing (the original native patch alone left 4K images). Includes this branch's image eviction and 32 MiB VMA allocation policy. Game render-path quality and device stability must be verified on hardware; this is not a confirmed native internal 720p mode.",
   "launch": {
-    "gamePatch": "gt_native720.json"
+    "gamePatch": "gt_native720.json",
+    "renderScale": 0.33333334
   }
 }
