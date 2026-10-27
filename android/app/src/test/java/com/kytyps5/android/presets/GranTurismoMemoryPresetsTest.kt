@@ -15,12 +15,15 @@ class GranTurismoMemoryPresetsTest {
         }
         val gt = catalog.forTitle("PPSA24156")
         assertTrue(warnings.isEmpty())
-        assertEquals(listOf("mem50", "mem75", "native1080"), gt.map { it.id })
+        assertEquals(listOf("mem50", "mem75", "native1080", "native720"), gt.map { it.id })
         val preset = gt.single { it.id == "native1080" }
         assertEquals(mapOf("KYTY_GT_NATIVE_1080P" to "1"), preset.launch.env)
         assertTrue(preset.files.isEmpty())
         assertEquals(null, preset.launch.renderScale)
         assertEquals(null, preset.launch.gamePatch)
+        val patched720 = gt.single { it.id == "native720" }
+        assertEquals("gt_native720.json", patched720.launch.gamePatch)
+        assertTrue(patched720.launch.env.isEmpty())
         assertTrue(catalog.forTitle("PPSA10112").none { it.id == preset.id })
 
         val plan = PresetLaunchArgs.plan(
