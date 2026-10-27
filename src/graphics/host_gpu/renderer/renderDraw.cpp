@@ -612,12 +612,26 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	const auto* depth_owner = depth.image_id ? cache.m_slot_images.try_get(depth.image_id) : nullptr;
 	const bool gt_depth_half_pass =
 	    color_count == 0 && depth_owner != nullptr && depth_owner->gt_large_depth_half;
+	const bool gt_hdr_half_pass =
+	    color_count == 1 && !depth.image_id &&
+	    cache.m_slot_images.try_get(colors[0].image_id) != nullptr &&
+	    cache.m_slot_images[colors[0].image_id].gt_hdr_half;
 	const float render_scale =
-	    Config::GetRenderScale() * (gt_depth_half_pass ? 0.5f : 1.0f);
+	    Config::GetRenderScale() * ((gt_depth_half_pass || gt_hdr_half_pass) ? 0.5f : 1.0f);
 	bool pass_scaled = RenderScale::Active(render_scale) &&
 	                   (color_count != 0 || static_cast<bool>(depth.image_id));
-	if (color_count != 0 && depth_owner != nullptr && depth_owner->gt_large_depth_half)
-		pass_scaled = false; // color+depth mixed passes must use a single guest-sized backing
+	// Multi-attachment passes cannot mix host backings with different
+	// dimensions or shader coordinate scales. Restore guest-sized backings
+	// instead of risking a framebuffer/viewport mismatch.
+	if ((color_count != 0 && depth_owner && depth_owner->gt_large_depth_half) ||
+	    (color_count != 1 || depth.image_id) &&
+	        std::any_of(std::begin(colors), std::begin(colors) + color_count,
+	                    [&](const RenderColorInfo& color) {
+		                    const auto* img = cache.m_slot_images.try_get(color.image_id);
+		                    return img && img->gt_hdr_half;
+	                    })) {
+		pass_scaled = false;
+	}
 	for (uint32_t i = 0; i < color_count && pass_scaled; i++) {
 		const auto owner = cache.m_slot_images.try_get(colors[i].image_id);
 		pass_scaled      = owner != nullptr && owner->CanScale();
