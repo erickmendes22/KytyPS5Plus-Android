@@ -1,0 +1,54 @@
+{
+  "id": "PPSA24156",
+  "version": "01.010.000",
+  "process": "eboot.bin",
+  "name": "My First Gran Turismo native 720p output-target memory experiment",
+  "mods": [
+    {
+      "name": "Verified display-target 4K/1080p setup to 720p (not guaranteed internal scene resolution)",
+      "enabled": true,
+      "memory": [
+        {
+          "offset": "0x2f1e79",
+          "off": "c7053d45920570080000",
+          "on": "c7053d459205d0020000"
+        },
+        {
+          "offset": "0x2f1e83",
+          "off": "c7052f459205000f0000",
+          "on": "c7052f45920500050000"
+        },
+        {
+          "offset": "0x2f1e8d",
+          "off": "be000f0000",
+          "on": "be00050000"
+        },
+        {
+          "offset": "0x2f1e92",
+          "off": "ba70080000",
+          "on": "bad0020000"
+        },
+        {
+          "offset": "0x2f1ee8",
+          "off": "c705ca44920580070000",
+          "on": "c705ca44920500050000"
+        },
+        {
+          "offset": "0x2f1ef2",
+          "off": "c705c444920538040000",
+          "on": "c705c4449205d0020000"
+        },
+        {
+          "offset": "0x2f1efc",
+          "off": "be80070000",
+          "on": "be00050000"
+        },
+        {
+          "offset": "0x2f1f01",
+          "off": "ba38040000",
+          "on": "bad0020000"
+        }
+      ]
+    }
+  ]
+}
