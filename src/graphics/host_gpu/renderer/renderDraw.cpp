@@ -605,9 +605,19 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	// --render-scale: every attachment of a pass shares one size. The pass is scaled when all
 	// of them can be; otherwise the scalable ones return to guest size for good (a partner that
 	// cannot scale means this is not a plain frame-sized pass).
-	const float render_scale = Config::GetRenderScale();
-	bool        pass_scaled  = RenderScale::Active(render_scale) &&
+	// A square high-resolution GT depth atlas is a depth-only pass.
+	// Its scaled backing needs a matching viewport/scissor/push-data ratio;
+	// never mix its extra 1/2 scaling with color attachments using the
+	// ordinary --render-scale ratio.
+	const auto* depth_owner = depth.image_id ? cache.m_slot_images.try_get(depth.image_id) : nullptr;
+	const bool gt_depth_half_pass =
+	    color_count == 0 && depth_owner != nullptr && depth_owner->gt_large_depth_half;
+	const float render_scale =
+	    Config::GetRenderScale() * (gt_depth_half_pass ? 0.5f : 1.0f);
+	bool pass_scaled = RenderScale::Active(render_scale) &&
 	                   (color_count != 0 || static_cast<bool>(depth.image_id));
+	if (color_count != 0 && depth_owner != nullptr && depth_owner->gt_large_depth_half)
+		pass_scaled = false; // color+depth mixed passes must use a single guest-sized backing
 	for (uint32_t i = 0; i < color_count && pass_scaled; i++) {
 		const auto owner = cache.m_slot_images.try_get(colors[i].image_id);
 		pass_scaled      = owner != nullptr && owner->CanScale();
