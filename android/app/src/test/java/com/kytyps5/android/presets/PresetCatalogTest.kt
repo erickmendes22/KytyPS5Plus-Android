@@ -102,12 +102,26 @@ class PresetCatalogTest {
     fun shippedGranTurismoMemoryPresetsAreTitleScopedAndConflictSafely() {
         val shipped = PresetCatalog(DirectoryPresetSource(File("src/main/assets/${PresetCatalog.ASSET_ROOT}"))) { warnings += it }
         val gt = shipped.forTitle("PPSA24156")
-        assertEquals(listOf("mem50", "mem75", "native1080"), gt.map { it.id })
-        assertTrue(gt.all { it.files.isEmpty() && it.launch.gamePatch == null })
+        assertEquals(listOf("mem50", "mem75", "native1080", "native720"), gt.map { it.id })
+        assertTrue(gt.all { it.files.isEmpty() })
+        assertTrue(gt.take(3).all { it.launch.gamePatch == null })
         assertEquals(0.5f, gt[0].launch.renderScale)
         assertEquals(0.75f, gt[1].launch.renderScale)
         assertEquals(null, gt[2].launch.renderScale)
         assertEquals("1", gt[2].launch.env["KYTY_GT_NATIVE_1080P"])
+        val native720 = gt.single { it.id == "native720" }
+        assertEquals("gt_native720.json", native720.launch.gamePatch)
+        val patch = org.json.JSONObject(String(shipped.launchFileBytes(native720, requireNotNull(native720.launch.gamePatch))))
+        assertEquals("PPSA24156", patch.getString("id"))
+        assertEquals("01.010.000", patch.getString("version"))
+        assertEquals("eboot.bin", patch.getString("process"))
+        val writes = patch.getJSONArray("mods").getJSONObject(0).getJSONArray("memory")
+        assertEquals(8, writes.length())
+        for (i in 0 until writes.length()) {
+            val write = writes.getJSONObject(i)
+            assertEquals(write.getString("off").length, write.getString("on").length)
+            assertTrue(write.getString("offset").startsWith("0x"))
+        }
         assertEquals(emptyList<GamePreset>(), shipped.forTitle("PPSA01317"))
         val plan = PresetLaunchArgs.plan(gt.map {
             PresetLaunchArgs.Resolved(it.id, it.launch, null)
