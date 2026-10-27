@@ -176,6 +176,7 @@ public:
 	ImageInfo        info;
 	VulkanImage      backing;
 	bool             scalable      = false;
+	bool             gt_large_depth_half = false; // PPSA24156 opt-in effect-memory experiment
 	bool             scaled        = false;
 	bool             scale_blocked = false;
 	vk::Filter       scale_filter  = vk::Filter::eNearest;
