@@ -20,13 +20,15 @@ class LaunchArgsTest {
     }
 
     @Test
-    fun smallerAllocatorBlocksAreScopedToSilentHillMetadata() {
-        for (title in listOf("PPSA10112", "ppsa10112")) {
+    fun smallerAllocatorBlocksAreScopedToSilentHillAndGranTurismoMetadata() {
+        for (title in listOf("PPSA10112", "ppsa10112", "PPSA24156", "ppsa24156")) {
             val args = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = title)
             assertEquals(1, args.count { it == LaunchArgs.FLAG_VMA_BLOCK_SIZE })
             assertEquals("32", args[args.indexOf(LaunchArgs.FLAG_VMA_BLOCK_SIZE) + 1])
+            assertEquals(1, args.count { it == LaunchArgs.FLAG_GPU_EVICT_WRITTEN })
+            assertEquals("1", args[args.indexOf(LaunchArgs.FLAG_GPU_EVICT_WRITTEN) + 1])
         }
-        for (title in listOf("PPSA21564", "PPSA24156", null)) {
+        for (title in listOf("PPSA21564", "PPSA01317", null)) {
             val args = LaunchArgs.forGame("/games/PPSA10112", Resolution.HD_720, titleId = title)
             assertEquals(-1, args.indexOf(LaunchArgs.FLAG_VMA_BLOCK_SIZE))
         }
