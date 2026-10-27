@@ -21,10 +21,16 @@ object GameEnvironment {
         "KYTY_SH_NO_AO", "KYTY_SH_NO_BLOOM", "KYTY_SH_NO_DOF", "KYTY_SH_NO_MOTION_BLUR", "KYTY_SH_NO_RT",
     )
 
+    // These two native --env presets must not leak into another game when
+    // Android happens to reuse SDL's process after a launch.
+    internal val granTurismoPresetKeys = setOf(
+        "KYTY_GT_LARGE_DEPTH_HALF", "KYTY_GT_HDR_HALF",
+    )
+
     fun apply(lines: Array<String>?) {
         val vars = EnvVars.parse(lines?.joinToString("\n").orEmpty()).vars
         val (unset, set) = EnvVars.plan(appliedKeys, vars)
-        (unset + silentHillPresetKeys).distinct().forEach { key ->
+        (unset + silentHillPresetKeys + granTurismoPresetKeys).distinct().forEach { key ->
             try {
                 Os.unsetenv(key)
             } catch (e: ErrnoException) {
