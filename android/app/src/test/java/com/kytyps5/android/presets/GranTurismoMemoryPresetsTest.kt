@@ -1,47 +1,48 @@
 package com.kytyps5.android.presets
 
 import java.io.File
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GranTurismoMemoryPresetsTest {
     @Test
-    fun nativeResolutionPresetIsScopedOptInAndDoesNotOverrideCollectorOrOutputSize() {
+    fun onlyCorrected720ModeShipsAndUsesMemoryCollector() {
         val warnings = mutableListOf<String>()
         val catalog = PresetCatalog(DirectoryPresetSource(File("src/main/assets/presets"))) {
             warnings += it
         }
         val gt = catalog.forTitle("PPSA24156")
         assertTrue(warnings.isEmpty())
-        assertEquals(listOf("mem50", "mem75", "native1080", "native720"), gt.map { it.id })
-        val preset = gt.single { it.id == "native1080" }
-        assertEquals(mapOf("KYTY_GT_NATIVE_1080P" to "1"), preset.launch.env)
+        assertEquals(listOf("native720"), gt.map { it.id })
+        val preset = gt.single()
         assertTrue(preset.files.isEmpty())
-        assertEquals(null, preset.launch.renderScale)
-        assertEquals(null, preset.launch.gamePatch)
-        val patched720 = gt.single { it.id == "native720" }
-        assertEquals("gt_native720.json", patched720.launch.gamePatch)
-        assertTrue(patched720.launch.env.isEmpty())
-        assertTrue(catalog.forTitle("PPSA10112").none { it.id == preset.id })
+        assertTrue(preset.launch.env.isEmpty())
+        assertEquals("gt_native720.json", preset.launch.gamePatch)
+        val scale = requireNotNull(preset.launch.renderScale)
+        assertTrue(scale > 0.3333f && scale < 0.3334f)
+        val patch = JSONObject(String(catalog.launchFileBytes(preset, "gt_native720.json")))
+        assertEquals("PPSA24156", patch.getString("id"))
+        assertEquals("01.010.000", patch.getString("version"))
+        assertEquals("eboot.bin", patch.getString("process"))
+        assertEquals(8, patch.getJSONArray("mods").getJSONObject(0).getJSONArray("memory").length())
 
-        val plan = PresetLaunchArgs.plan(
-            listOf(PresetLaunchArgs.Resolved(preset.id, preset.launch, null)),
-        )
+        val path = "/data/gt_native720.json"
+        val plan = PresetLaunchArgs.plan(listOf(
+            PresetLaunchArgs.Resolved(preset.id, preset.launch, path),
+        ))
         assertTrue(plan.conflicts.isEmpty())
-        assertEquals(listOf("--env", "KYTY_GT_NATIVE_1080P=1"), plan.args)
         val merged = PresetLaunchArgs.apply(
             arrayOf("--game", "/gt", "--screen-width", "1280", "--screen-height", "720",
                 "--gpu-evict-written", "1", "--vma-block-size", "32", "--tessellation"),
             plan,
         ).toList()
-        assertTrue("KYTY_GT_NATIVE_1080P=1" in merged)
-        assertTrue("--gpu-evict-written" in merged)
-        assertTrue("--vma-block-size" in merged)
-        assertTrue("--tessellation" in merged)
-        assertTrue("--screen-width" in merged)
-        assertEquals("1280", merged[merged.indexOf("--screen-width") + 1])
-        assertFalse("--game-patch" in merged)
+        assertEquals("0.33333334", merged[merged.indexOf("--render-scale") + 1])
+        assertEquals(path, merged[merged.indexOf("--game-patch") + 1])
+        assertEquals("1", merged[merged.indexOf("--gpu-evict-written") + 1])
+        assertEquals("32", merged[merged.indexOf("--vma-block-size") + 1])
+        assertEquals(1, merged.count { it == "--tessellation" })
+        assertTrue(catalog.forTitle("PPSA10112").none { it.id == preset.id })
     }
 }
