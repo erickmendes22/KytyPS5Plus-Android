@@ -66,6 +66,43 @@ device/game/driver receives these modifications.
    validation. Compare shader-stage logs, visible geometry, GPU RAM
    and crashes during a like-for-like game sequence.
 
+## Optional visual-restoration experiment (disabled by default)
+
+The three-stage fallback is unchanged unless the user explicitly selects
+`turnipvisual` / `KYTY_GT_TURNIP_VISUAL_RESTORE=1`. The optional test
+is scoped further to the **exact guest HS hash
+`d9596b2d7a2e4202`** and the known A830/Turnip v32 device.
+
+Reflection of the user's `20261027-133711` SPIR-V capture shows:
+
+- Original LS output: **Location 0, unsigned 32-bit scalar**
+- Original HS input: **Location 0, unsigned 32-bit scalar**
+- Original HS output: **Location 0, unsigned 32-bit scalar**
+- Original DS/TES input: **Location 0, unsigned 32-bit scalar**
+- Original HS uses `OutputVertices=4`; original pipeline input patch
+  control points remain **24**.
+
+The option runs a minimal HS/TCS that preserves the Location-0
+unsigned scalar interface as an input-to-output passthrough, writes
+the same required tessellation levels, and attempts to use the
+**original TES and original pixel shader** for the matching HS.
+This can restore some tessellated visuals while avoiding the original
+HS's large compiler program. Remaining unmatched HS hashes still use
+the proven three-minimal-stage fallback.
+
+This is **an unvalidated A/B experiment**; the original HS computes
+real output values that a simple passthrough may not replicate, and
+the Turnip driver might still crash while compiling original TES/PS
+with this different interface. Do not call it a definitive fix.
+To return to the known working stage combination, disable the
+`turnipvisual` preset. The `last-launch.txt` diagnostic logs the
+effective preset arguments, and `GT TURNIP TCS PROBE` includes
+`passthrough_location0=1`, `TES_minimal=0`, `FS_minimal=0`.
+
+Test without combining `native720`, `hdrhalf` or `depthhalf`
+first to isolate tessellation rendering and driver stability; after
+successful visual testing, combine patches one at a time.
+
 ## Observed earlier Turnip evidence
 
 - Original shaders: `SIGSEGV` in `libvulkan_freedreno.so+0xc21168`.
