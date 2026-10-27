@@ -900,19 +900,31 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 		return;
 	}
 	const float scale = EffectiveGtDepthBackingScale(info);
-	scalable          = RenderScale::Active(scale) &&
-	           RenderScale::GeometryEligible(info.type, info.extent, info.resources.levels,
-	                                         info.samples, info.IsBlock()) &&
+	gt_large_depth_half = info.IsDepth() &&
+	                      scale < Config::GetRenderScale() &&
+	                      (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_NO_DEPTH) == 0;
+	const bool regular_geometry =
+	    RenderScale::GeometryEligible(info.type, info.extent, info.resources.levels,
+	                                  info.samples, info.IsBlock());
+	// Square high-resolution depth atlases are excluded by the ordinary
+	// frame-aspect test. The GT depth-only memory experiment explicitly
+	// handles single-mip 2D depth attachments of that shape, but only when
+	// Vulkan supports a real depth blit and the depth path is enabled.
+	const bool depth_geometry = gt_large_depth_half &&
+	                            info.type == Prospero::ImageType::kColor2D &&
+	                            info.extent.depth == 1 && info.samples == 1 &&
+	                            info.resources.levels == 1 && !info.IsBlock();
+	scalable = RenderScale::Active(scale) && (regular_geometry || depth_geometry) &&
 	           ScaleBlitSupported(graphics, info.pixel_format, scale_filter) &&
 	           (!info.IsDepth() ||
 	            (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_NO_DEPTH) == 0);
+	gt_large_depth_half &= scalable;
 	const bool want_scaled = scaled_hint && scalable;
 	const auto extent = want_scaled ? RenderScale::ScaleExtent(info.extent, scale) : info.extent;
 	// For the GT large-depth experiment, a real reduced backing is the
 	// evidence that the effect-residency test is active. Diagnostic counters
 	// are bounded so normal rendering is not flooded with logs.
-	if (info.IsDepth() && info.extent.width >= 2048u && info.extent.height >= 1024u &&
-	    scale < Config::GetRenderScale()) {
+	if (gt_large_depth_half) {
 		static std::atomic_uint32_t logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 48) {
 			Log::WriteToConsoleAndLog(fmt::format(
