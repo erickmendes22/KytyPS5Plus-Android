@@ -15,8 +15,13 @@ class GranTurismoMemoryPresetsTest {
         }
         val gt = catalog.forTitle("PPSA24156")
         assertTrue(warnings.isEmpty())
-        assertEquals(listOf("native720"), gt.map { it.id })
-        val preset = gt.single()
+        assertEquals(listOf("depthhalf", "hdrhalf", "native720"), gt.map { it.id })
+        val depth = gt.single { it.id == "depthhalf" }
+        val hdr = gt.single { it.id == "hdrhalf" }
+        assertEquals(mapOf("KYTY_GT_LARGE_DEPTH_HALF" to "1"), depth.launch.env)
+        assertEquals(mapOf("KYTY_GT_HDR_HALF" to "1"), hdr.launch.env)
+        assertTrue(depth.launch.gamePatch == null && hdr.launch.gamePatch == null)
+        val preset = gt.single { it.id == "native720" }
         assertTrue(preset.files.isEmpty())
         assertTrue(preset.launch.env.isEmpty())
         assertEquals("gt_native720.json", preset.launch.gamePatch)
@@ -43,6 +48,15 @@ class GranTurismoMemoryPresetsTest {
         assertEquals("1", merged[merged.indexOf("--gpu-evict-written") + 1])
         assertEquals("32", merged[merged.indexOf("--vma-block-size") + 1])
         assertEquals(1, merged.count { it == "--tessellation" })
+        val combined = PresetLaunchArgs.plan(listOf(
+            PresetLaunchArgs.Resolved(depth.id, depth.launch, null),
+            PresetLaunchArgs.Resolved(hdr.id, hdr.launch, null),
+            PresetLaunchArgs.Resolved(preset.id, preset.launch, path),
+        ))
+        assertTrue(combined.conflicts.isEmpty())
+        assertTrue("KYTY_GT_LARGE_DEPTH_HALF=1" in combined.args)
+        assertTrue("KYTY_GT_HDR_HALF=1" in combined.args)
+        assertTrue("--game-patch" in combined.args && "--render-scale" in combined.args)
         assertTrue(catalog.forTitle("PPSA10112").none { it.id == preset.id })
     }
 }
