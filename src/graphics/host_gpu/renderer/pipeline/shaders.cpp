@@ -92,6 +92,69 @@ static std::vector<uint32_t> MakeGtTurnipMinimalTessEval() {
 }
 
 
+
+// Third diagnostic stage: captured GT HS has OutputVertices=4 although the
+// Vulkan input patchControlPoints is 24. Keep both distinct. TES and PS probes
+// do not consume the original HS output, so only tessellation levels are
+// needed. This replacement is NOT an image-preserving graphics workaround.
+static std::vector<uint32_t> MakeGtTurnipMinimalTessControl() {
+	using ShaderRecompiler::Spirv::Builder;
+	Builder b;
+	b.RequireCapability(spv::CapabilityShader);
+	b.RequireCapability(spv::CapabilityTessellation);
+	b.AddMemoryModel(spv::AddressingModelLogical, spv::MemoryModelGLSL450);
+	const auto void_type = b.Type(spv::OpTypeVoid);
+	const auto bool_type = b.Type(spv::OpTypeBool);
+	const auto int_type = b.Type(spv::OpTypeInt, 32u, 1u);
+	const auto uint_type = b.Type(spv::OpTypeInt, 32u, 0u);
+	const auto float_type = b.Type(spv::OpTypeFloat, 32u);
+	const auto function_type = b.Type(spv::OpTypeFunction, void_type);
+	const auto n4 = b.Constant(spv::OpConstant, uint_type, 4u);
+	const auto n2 = b.Constant(spv::OpConstant, uint_type, 2u);
+	const auto outer_array = b.Type(spv::OpTypeArray, float_type, n4);
+	const auto inner_array = b.Type(spv::OpTypeArray, float_type, n2);
+	const auto input_ptr = b.Type(spv::OpTypePointer, spv::StorageClassInput, int_type);
+	const auto outer_ptr = b.Type(spv::OpTypePointer, spv::StorageClassOutput, outer_array);
+	const auto inner_ptr = b.Type(spv::OpTypePointer, spv::StorageClassOutput, inner_array);
+	const auto float_ptr = b.Type(spv::OpTypePointer, spv::StorageClassOutput, float_type);
+	const auto invocation = b.DefineGlobalVariable(input_ptr, spv::StorageClassInput);
+	const auto outer = b.DefineGlobalVariable(outer_ptr, spv::StorageClassOutput);
+	const auto inner = b.DefineGlobalVariable(inner_ptr, spv::StorageClassOutput);
+	b.AddAnnotation(spv::OpDecorate, invocation, spv::DecorationBuiltIn, spv::BuiltInInvocationId);
+	b.AddAnnotation(spv::OpDecorate, outer, spv::DecorationBuiltIn, spv::BuiltInTessLevelOuter);
+	b.AddAnnotation(spv::OpDecorate, outer, spv::DecorationPatch);
+	b.AddAnnotation(spv::OpDecorate, inner, spv::DecorationBuiltIn, spv::BuiltInTessLevelInner);
+	b.AddAnnotation(spv::OpDecorate, inner, spv::DecorationPatch);
+	const auto zero = b.Constant(spv::OpConstant, int_type, 0u);
+	const auto one = b.Constant(spv::OpConstant, float_type, 0x3f800000u);
+	const auto main = b.AllocateId();
+	b.AddExecutionMode(main, spv::ExecutionModeOutputVertices, 4u);
+	b.AddEntryPoint(spv::ExecutionModelTessellationControl, main, "main",
+	                {invocation, outer, inner});
+	b.AddFunction(spv::OpFunction, void_type, main, spv::FunctionControlMaskNone, function_type);
+	b.AddFunction(spv::OpLabel, b.AllocateId());
+	const auto id = b.AllocateId();
+	b.AddFunction(spv::OpLoad, int_type, id, invocation);
+	const auto first = b.AllocateId();
+	b.AddFunction(spv::OpIEqual, bool_type, first, id, zero);
+	const auto write = b.AllocateId();
+	const auto merge = b.AllocateId();
+	b.AddFunction(spv::OpSelectionMerge, merge, spv::SelectionControlMaskNone);
+	b.AddFunction(spv::OpBranchConditional, first, write, merge);
+	b.AddFunction(spv::OpLabel, write);
+	for (uint32_t i = 0; i < 6u; i++) {
+		const auto index = b.Constant(spv::OpConstant, int_type, i < 4u ? i : i - 4u);
+		const auto ptr = b.AllocateId();
+		b.AddFunction(spv::OpAccessChain, float_ptr, ptr, i < 4u ? outer : inner, index);
+		b.AddFunction(spv::OpStore, ptr, one);
+	}
+	b.AddFunction(spv::OpBranch, merge);
+	b.AddFunction(spv::OpLabel, merge);
+	b.AddFunction(spv::OpReturn);
+	b.AddFunction(spv::OpFunctionEnd);
+	return b.Build();
+}
+
 // IDK: maybe we can remove it?
 constexpr uint8_t kTemporaryVertexAttribFormat113 =
     static_cast<uint8_t>(Prospero::VertexAttribFormat::k16_16SInt);
@@ -643,6 +706,47 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		}
 	}
 
+
+	// Isolate remaining native HS/TCS after the FS and TES probes still
+	// crashed inside the same Turnip ICD function. Default on ONLY on
+	// PPSA24156 + the captured A830 Turnip v32. To A/B compare use
+	// KYTY_GT_TURNIP_TCS_PROBE=0.
+	vk::ShaderModule gt_tcs_probe_module = nullptr;
+	if (tessellation && ps_active) {
+		const auto& props = graphics.GetPhysicalDeviceProperties();
+		std::string title;
+		const char* toggle = std::getenv("KYTY_GT_TURNIP_TCS_PROBE");
+		if ((toggle == nullptr || std::strcmp(toggle, "0") != 0) &&
+		    Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		    title == "PPSA24156" && props.vendorID == 20803u &&
+		    props.deviceID == 1141178369u && props.driverVersion == 109060195u) {
+			const auto minimal_tcs = MakeGtTurnipMinimalTessControl();
+			gt_tcs_probe_module = CompileSPV(minimal_tcs, graphics.device);
+			EXIT_IF(gt_tcs_probe_module == nullptr);
+			ShaderDump::RecordModule(gt_tcs_probe_module, "turnip_probe_tcs", 0, minimal_tcs);
+			bool replaced = false;
+			for (uint32_t i = 0; i < shader_stage_count; i++) {
+				if (shader_stages[i].stage == vk::ShaderStageFlagBits::eTessellationControl) {
+					shader_stages[i].module = gt_tcs_probe_module;
+					replaced = true;
+					break;
+				}
+			}
+			EXIT_IF(!replaced);
+			static std::atomic_uint32_t once {0};
+			if (once.fetch_add(1, std::memory_order_relaxed) < 12u) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "GT TURNIP TCS PROBE: minimal HS/TCS active, output_vertices=4 "
+				    "input_patch_control_points={} original_HS={:016x} "
+				    "TES_minimal={} FS_minimal={}\n",
+				    vs_input_info.tess.input_control_points,
+				    vertex_info[1].stage.program->shader_hash,
+				    gt_tes_probe_module != nullptr ? 1 : 0,
+				    gt_fragment_probe_module != nullptr ? 1 : 0));
+			}
+		}
+	}
+
 	vk::VertexInputAttributeDescription input_attr[ShaderVertexInputInfo::RES_MAX] {};
 	vk::VertexInputBindingDescription   input_desc[ShaderVertexInputInfo::RES_MAX] {};
 
@@ -1053,6 +1157,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	if (gt_tes_probe_module != nullptr) {
 		ShaderDump::ForgetModule(gt_tes_probe_module);
 		graphics.device.destroyShaderModule(gt_tes_probe_module, nullptr);
+	}
+	if (gt_tcs_probe_module != nullptr) {
+		ShaderDump::ForgetModule(gt_tcs_probe_module);
+		graphics.device.destroyShaderModule(gt_tcs_probe_module, nullptr);
 	}
 	ShaderDump::RecordResult(dump_record, result);
 	if (capture_stats && result == vk::Result::eSuccess) {
