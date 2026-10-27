@@ -624,12 +624,11 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	// dimensions or shader coordinate scales. Restore guest-sized backings
 	// instead of risking a framebuffer/viewport mismatch.
 	if ((color_count != 0 && depth_owner && depth_owner->gt_large_depth_half) ||
-	    (color_count != 1 || depth.image_id) &&
-	        std::any_of(std::begin(colors), std::begin(colors) + color_count,
-	                    [&](const RenderColorInfo& color) {
-		                    const auto* img = cache.m_slot_images.try_get(color.image_id);
-		                    return img && img->gt_hdr_half;
-	                    })) {
+	    ((color_count != 1 || depth.image_id) &&
+	     std::any_of(colors, colors + color_count, [&](const RenderColorInfo& color) {
+		     const auto* img = cache.m_slot_images.try_get(color.image_id);
+		     return img && img->gt_hdr_half;
+	     }))) {
 		pass_scaled = false;
 	}
 	for (uint32_t i = 0; i < color_count && pass_scaled; i++) {
