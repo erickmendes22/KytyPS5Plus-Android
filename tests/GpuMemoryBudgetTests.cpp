@@ -73,21 +73,6 @@ void TestUnifiedSystemPressure() {
 	      "no unsigned underflow and floor does not exceed configured budget");
 }
 
-void TestGtHostPressure() {
-	Check(ClassifyGtHostPressure(std::nullopt) == GtHostPressure::None,
-	      "unknown host RAM must not trigger a GT-only reclaim");
-	Check(ClassifyGtHostPressure(2 * GiB) == GtHostPressure::None,
-	      "healthy host RAM uses legacy thresholds");
-	Check(ClassifyGtHostPressure(1536 * MiB) == GtHostPressure::None,
-	      "elevated pressure begins below 1536 MiB");
-	Check(ClassifyGtHostPressure(1200 * MiB) == GtHostPressure::Elevated,
-	      "early reclaim before Android has critically low RAM");
-	for (const uint64_t mib: {830ull, 677ull, 536ull, 175ull}) {
-		Check(ClassifyGtHostPressure(mib * MiB) == GtHostPressure::Critical,
-		      "all four reproduced GT SIGKILL traces trigger critical GC");
-	}
-}
-
 void TestProcessMemoryReadings() {
 	std::istringstream meminfo("MemTotal: 12000000 kB\nMemAvailable:\t512000 kB\n");
 	std::istringstream status("Name:\tkyty\nVmRSS: 6000000 kB\nRssAnon: 4000000 kB\nVmSwap: 0 kB\n");
@@ -144,7 +129,6 @@ int main() {
   TestThresholds();
   TestEffective();
   TestUnifiedSystemPressure();
-  TestGtHostPressure();
   TestProcessMemoryReadings();
   TestWrittenDownloadLimits();
   std::printf("GpuMemoryBudgetTests: ok\n");

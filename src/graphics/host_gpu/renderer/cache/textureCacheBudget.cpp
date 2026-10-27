@@ -59,12 +59,9 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 	}();
 	const auto available = gt_title ? Common::ReadProcessMemory().available
 	                                : std::optional<uint64_t> {};
-	const auto host_pressure = GpuBudget::ClassifyGtHostPressure(available);
-	const bool emergency = gt_title && available && *available < 768u * GpuBudget::MiB;
-	const bool critical  = emergency || used_memory >= m_critical_gc_memory ||
-	                       (gt_title && host_pressure == GpuBudget::GtHostPressure::Critical);
-	const bool pressured = critical || used_memory >= m_pressure_gc_memory ||
-	                       (gt_title && host_pressure != GpuBudget::GtHostPressure::None);
+	const bool emergency = available && *available < 768u * GpuBudget::MiB;
+	const bool critical  = emergency || used_memory >= m_critical_gc_memory;
+	const bool pressured = critical || used_memory >= m_pressure_gc_memory;
 	const auto age       = std::min<uint64_t>(
 	    emergency ? 1u : critical ? kAgeCritical : pressured ? kAgePressured : kAgeNormal,
 	    tick);

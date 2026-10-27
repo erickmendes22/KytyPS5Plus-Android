@@ -55,18 +55,6 @@ inline constexpr uint64_t        kWrittenChunkBytes = 8 * MiB;
 	return static_cast<uint32_t>(std::min<uint64_t>(remaining, blocks * alignment));
 }
 
-// PPSA24156 on unified-memory Android: respond to OS RAM pressure even if
-// the Vulkan heap is currently below its own eviction threshold. A process
-// killed by lmkd cannot run a last-chance collector, so reclaim earlier.
-enum class GtHostPressure : uint8_t { None, Elevated, Critical };
-[[nodiscard]] constexpr GtHostPressure ClassifyGtHostPressure(
-    std::optional<uint64_t> available) {
-	if (!available) return GtHostPressure::None;
-	if (*available < 1024 * MiB) return GtHostPressure::Critical;
-	if (*available < 1536 * MiB) return GtHostPressure::Elevated;
-	return GtHostPressure::None;
-}
-
 [[nodiscard]] constexpr Thresholds ForBudget(uint64_t budget) {
 	return {budget / 100 * 55, budget / 100 * 80, budget / 100 * 92};
 }

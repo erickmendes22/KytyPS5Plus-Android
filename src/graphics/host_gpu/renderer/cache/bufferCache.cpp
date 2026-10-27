@@ -10,7 +10,6 @@
 #include "common/hostFaultAccess.h"
 #include "common/logging/log.h"
 #include "common/perfWaits.h"
-#include "common/processMemory.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/gpuFatal.h"
@@ -30,7 +29,6 @@
 #include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "kernel/memory.h"
-#include "loader/systemContent.h"
 
 #include <xxhash.h>
 
@@ -1374,29 +1372,13 @@ void BufferCache::RunGarbageCollector() {
 	                         : m_graphics.CanReportMemoryUsage()
 	                             ? m_graphics.GetDeviceMemoryUsage()
 	                             : m_total_used_memory;
-	// Buffer GC previously returned whenever VMA usage was below the GPU
-	// threshold, even with only 175-830 MiB available to the Android OS.
-	// This path is scoped to GT, and clean/dirty buffer ownership rules
-	// below are unchanged. Young/current-frame buffers remain protected.
-	std::string title_id;
-	const bool gt = m_budget_mode &&
-	                Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id) &&
-	                title_id == "PPSA24156";
-	const auto host_pressure = gt
-	    ? GpuBudget::ClassifyGtHostPressure(Common::ReadProcessMemory().available)
-	    : GpuBudget::GtHostPressure::None;
-	if (used_memory < m_trigger_gc_memory &&
-	    host_pressure == GpuBudget::GtHostPressure::None) {
+	if (used_memory < m_trigger_gc_memory) {
 		return;
 	}
 
-	const bool aggressive = used_memory >= m_critical_gc_memory ||
-	                        host_pressure == GpuBudget::GtHostPressure::Critical;
-	const uint64_t age = std::min<uint64_t>(
-	    host_pressure == GpuBudget::GtHostPressure::Critical ? 8u :
-	    host_pressure == GpuBudget::GtHostPressure::Elevated ? 16u :
-	    aggressive ? 80u : 160u, tick);
-	const size_t limit = aggressive ? 64 : 32;
+	const bool     aggressive = used_memory >= m_critical_gc_memory;
+	const uint64_t age        = std::min<uint64_t>(aggressive ? 80 : 160, tick);
+	const size_t   limit      = aggressive ? 64 : 32;
 
 	std::vector<BufferId> dirty_buffers;
 	size_t                retire_count  = 0;
