@@ -586,8 +586,22 @@ private:
 
 	bool PunchHole(uint64_t backing_offset, uint64_t size) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
-		return fallocate(m_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
-		                 static_cast<off_t>(backing_offset), static_cast<off_t>(size)) == 0;
+		if (fallocate(m_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+		              static_cast<off_t>(backing_offset), static_cast<off_t>(size)) == 0) {
+			return true;
+		}
+#if defined(MADV_REMOVE)
+		// memfd is MAP_SHARED tmpfs. Some Android kernels reject punching
+		// tmpfs holes via fallocate but implement MADV_REMOVE for the same
+		// operation. Do not round bounds into neighboring live pages.
+		const long page = sysconf(_SC_PAGESIZE);
+		if (page > 0 && (backing_offset % static_cast<uint64_t>(page)) == 0 &&
+		    (size % static_cast<uint64_t>(page)) == 0 &&
+		    madvise(m_backing_base + backing_offset, size, MADV_REMOVE) == 0) {
+			return true;
+		}
+#endif
+		return false;
 #else
 		(void)backing_offset;
 		(void)size;

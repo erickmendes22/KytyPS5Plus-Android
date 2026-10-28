@@ -16,6 +16,7 @@
 #include "kernel/lazyReservation.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "loader/systemContent.h"
 
 #include <algorithm>
 #include <array>
@@ -873,6 +874,45 @@ static std::atomic<uint64_t>              g_memory_pool_committed = 0;
 static void                               MemoryPoolSubtractCommitted(uint64_t len);
 // Keep host mappings, physical blocks, placeholders, and virtual ranges in step.
 static std::recursive_mutex g_memory_operation_mutex;
+
+// Released pooled PS5 physical spans are logically free, but used to remain
+// resident in KytyDirectMemory's shared memfd even after pool DECOMMIT/UNMAP.
+// Only reclaim a physical span *after* its last pooled mapping has been removed.
+// Keep this change scoped to PPSA24156 while investigating Android SIGKILLs.
+static bool GtPoolPageDiscardEnabled() {
+	std::string title;
+	return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+	       title == "PPSA24156";
+}
+
+static void GtDiscardFreedPoolSpan(uint64_t offset, uint64_t size, const char* reason) {
+	if (size == 0 || !GtPoolPageDiscardEnabled() || g_guest_address_space == nullptr) return;
+	static uint64_t attempted = 0, released = 0, failed = 0;
+	static uint32_t logs = 0;
+	attempted += size;
+	const bool ok = g_guest_address_space->DiscardBacking(offset, size);
+	if (ok) released += size;
+	else failed += size;
+	// All callers hold the recursive memory-operation mutex. Bounded output
+	// reports real page-discard failures and cumulative success in log ZIPs.
+	if (!ok || logs < 12 || ((attempted / (256ull << 20u)) !=
+	                        ((attempted - size) / (256ull << 20u)))) {
+		if (logs++ < 64) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "GT pool physical discard: source={} ok={} bytes={} MiB "
+			    "cumulative_attempted={} freed={} failed={} MiB\n",
+			    reason, ok ? 1 : 0, size >> 20u,
+			    attempted >> 20u, released >> 20u, failed >> 20u));
+		}
+	}
+}
+
+static void GtDiscardFreedPoolMappings(const std::vector<PooledMemory::Mapping>& mappings,
+                                      const char* reason) {
+	for (const auto& mapping: mappings)
+		GtDiscardFreedPoolSpan(mapping.phys_addr, mapping.size, reason);
+}
+
 
 static std::atomic<bool> g_address_fold_enabled {false};
 
@@ -2826,6 +2866,11 @@ static int UnmapMemoryOwner(const VirtualRanges::Range& range, uint64_t vaddr, s
 			if (owner_unmapped && !g_pooled_memory->Release(vaddr, len, &gpu_mode)) {
 				EXIT("failed to release unmapped pooled-memory range\n");
 			}
+			if (owner_unmapped) {
+				// The pool no longer owns these physical offsets. Previously
+				// their memfd pages survived unmap indefinitely.
+				GtDiscardFreedPoolMappings(mappings, "unmap");
+			}
 		}
 		if (!owner_unmapped) {
 			return KERNEL_ERROR_EACCES;
@@ -3179,6 +3224,8 @@ static int ReleaseDirectMemoryInternal(int64_t start, size_t len) {
 		if (!g_physical_memory->ReleasePoolExpansion(static_cast<uint64_t>(start), len)) {
 			EXIT("failed to release physical pool expansion\n");
 		}
+		// No active pool mappings remain, and the entire expansion is free.
+		GtDiscardFreedPoolSpan(static_cast<uint64_t>(start), len, "release-expansion");
 		return OK;
 	}
 
@@ -4696,6 +4743,10 @@ static int DecommitMemoryPoolRange(uint64_t vaddr, size_t len) {
 		g_free_callback(vaddr, len);
 	}
 
+	// Decommit has removed both the guest virtual mapping and the
+	// allocator's physical ownership; discard the now-unreachable memfd
+	// pages so Android can reclaim the real backing, not only its VA.
+	GtDiscardFreedPoolMappings(mappings, "decommit");
 	MemoryPoolSubtractCommitted(len);
 	return OK;
 }
