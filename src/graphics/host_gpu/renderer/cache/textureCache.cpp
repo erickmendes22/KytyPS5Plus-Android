@@ -182,6 +182,7 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 		std::string title_id;
 		const bool gt_title = Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id) &&
 		                      title_id == "PPSA24156";
+		m_gt_prealloc_reclaim = gt_title;
 		const bool gt_written_reclaim = gt_title && [] {
 			const char* disabled = std::getenv("KYTY_GT_DISABLE_WRITTEN_RECLAIM");
 			return disabled == nullptr || std::strcmp(disabled, "1") != 0;
@@ -269,6 +270,41 @@ TextureCache::BindingType TextureCache::UploadBinding(const Image& image) {
 }
 
 ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scaled) {
+	// Android's low-memory killer can terminate PPSA24156 before Vulkan ever
+	// returns VK_ERROR_OUT_OF_DEVICE_MEMORY. In both observed LOW_MEMORY exits,
+	// ~1.8 GiB of new sampled texture backing appeared between collector logs.
+	// Run the existing ownership-safe, GPU-synchronised allocation recovery
+	// *before* allocating more images, not only after an allocation fails.
+	// Check once every 8 insertions (or for a >=32 MiB image); do not sample
+	// /proc/meminfo or VMA statistics for each small texture.
+	if (m_gt_prealloc_reclaim && m_scheduler.Active() && m_gc_tick >= 3 &&
+	    ((++m_gt_prealloc_insertions % 8u) == 0u || info.data.size >= 32u * GpuBudget::MiB)) {
+		const auto available = Common::ReadProcessMemory().available;
+		if (available && *available < GpuBudget::kGtPreallocLowRam) {
+			const uint64_t live = m_graphics.GetLiveDeviceMemory();
+			const uint64_t frames_since_attempt =
+			    m_gt_prealloc_last_usage == 0 ? 0 :
+			    m_gc_tick >= m_gt_prealloc_last_tick
+			        ? m_gc_tick - m_gt_prealloc_last_tick : 0;
+			if (GpuBudget::ShouldPreemptGtImageAllocation(
+			        available, live, m_gt_prealloc_last_usage, frames_since_attempt)) {
+				// EvictForAllocation protects this call's keep image, skips current
+				// and recently used/bound images, copies authoritative GPU data
+				// back before freeing, and waits for Vulkan retirement.
+				const bool reclaimed = EvictForAllocation(keep);
+				m_gt_prealloc_last_usage = live;
+				m_gt_prealloc_last_tick = m_gc_tick;
+				static std::atomic_uint32_t reported {0};
+				if (reported.fetch_add(1, std::memory_order_relaxed) < 180u) {
+					LOGF("GT prealloc reclaim: host_available=%" PRIu64
+					     " MiB used_before=%" PRIu64
+					     " MiB reclaimed=%u gc_tick=%" PRIu64 "\n",
+					     *available / GpuBudget::MiB, live / GpuBudget::MiB,
+					     reclaimed ? 1u : 0u, m_gc_tick);
+				}
+			}
+		}
+	}
 	auto id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
 	for (int attempt = 0; m_slot_images[id].allocation_failed; attempt++) {
 		m_slot_images.erase(id);

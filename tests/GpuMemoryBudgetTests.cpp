@@ -73,6 +73,29 @@ void TestUnifiedSystemPressure() {
 	      "no unsigned underflow and floor does not exceed configured budget");
 }
 
+void TestGtPreallocationReclaim() {
+	Check(!ShouldPreemptGtImageAllocation(std::nullopt, 5 * GiB, 0, 0),
+	      "unknown Android RAM must not enable preallocation eviction");
+	Check(!ShouldPreemptGtImageAllocation(2 * GiB, 5 * GiB, 0, 0),
+	      "healthy RAM leaves allocation path unchanged");
+	Check(!ShouldPreemptGtImageAllocation(512 * MiB, 512 * MiB, 0, 0),
+	      "low usage avoids unnecessary recovery");
+	Check(ShouldPreemptGtImageAllocation(1200 * MiB, 2500 * MiB, 0, 0),
+	      "preempt before system enters the 100 MiB danger zone");
+	Check(!ShouldPreemptGtImageAllocation(1200 * MiB, 2500 * MiB,
+	                                    2490 * MiB, 0),
+	      "no duplicate reclaim on adjacent small allocations");
+	Check(ShouldPreemptGtImageAllocation(100 * MiB, 2600 * MiB,
+	                                   2500 * MiB, 0),
+	      "rapid growth triggers a second reclaim in the same frame");
+	Check(ShouldPreemptGtImageAllocation(512 * MiB, 2500 * MiB,
+	                                   2500 * MiB, 3),
+	      "new frame allows retry on newly cold images");
+	Check(!ShouldPreemptGtImageAllocation(512 * MiB, 2500 * MiB,
+	                                    2500 * MiB, 2),
+	      "short frame gap throttles GPU synchronizations");
+}
+
 void TestProcessMemoryReadings() {
 	std::istringstream meminfo("MemTotal: 12000000 kB\nMemAvailable:\t512000 kB\n");
 	std::istringstream status("Name:\tkyty\nVmRSS: 6000000 kB\nRssAnon: 4000000 kB\nVmSwap: 0 kB\n");
@@ -129,6 +152,7 @@ int main() {
   TestThresholds();
   TestEffective();
   TestUnifiedSystemPressure();
+  TestGtPreallocationReclaim();
   TestProcessMemoryReadings();
   TestWrittenDownloadLimits();
   std::printf("GpuMemoryBudgetTests: ok\n");

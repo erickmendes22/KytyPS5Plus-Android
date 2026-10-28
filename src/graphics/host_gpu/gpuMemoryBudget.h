@@ -59,6 +59,29 @@ inline constexpr uint64_t        kWrittenChunkBytes = 8 * MiB;
 	return {budget / 100 * 55, budget / 100 * 80, budget / 100 * 92};
 }
 
+// PPSA24156: the two Android REASON_LOW_MEMORY sessions (09:54 / 09:58)
+// exhausted shared RAM while creating hundreds of sampled images. Vulkan
+// vmaCreateImage had not yet returned OOM, so the existing allocation-failure
+// recovery was never attempted. Try that *same* safe eviction ahead of the next
+// image allocation when the OS is running short of memory. Throttle attempts
+// by allocation growth / frame age; this does not modify GPU budget thresholds.
+inline constexpr uint64_t kGtPreallocLowRam = 1536 * MiB;
+inline constexpr uint64_t kGtPreallocMinUsage = 1536 * MiB;
+inline constexpr uint64_t kGtPreallocGrowth = 64 * MiB;
+
+[[nodiscard]] constexpr bool ShouldPreemptGtImageAllocation(
+    std::optional<uint64_t> available, uint64_t device_usage,
+    uint64_t previous_attempt_usage, uint64_t frames_since_attempt) {
+	if (!available || *available >= kGtPreallocLowRam ||
+	    device_usage < kGtPreallocMinUsage) return false;
+	if (previous_attempt_usage == 0) return true;
+	// Re-check when GPU residency grows significantly within a single frame,
+	// or when a new frame has made more old cache entries safe to reclaim.
+	return (device_usage > previous_attempt_usage &&
+	        device_usage - previous_attempt_usage >= kGtPreallocGrowth) ||
+	       frames_since_attempt >= 3;
+}
+
 // mem_available: MemAvailable at start (bytes); 0 when unknown.
 [[nodiscard]] constexpr uint64_t AutoBudget(uint64_t mem_available) {
 	if (mem_available == 0) {

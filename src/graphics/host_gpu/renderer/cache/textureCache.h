@@ -212,6 +212,10 @@ private:
 	uint64_t         m_gc_tick                = 0;
 	bool             m_budget_mode            = false;
 	bool             m_evict_written          = false;
+	bool             m_gt_prealloc_reclaim    = false;
+	uint32_t         m_gt_prealloc_insertions = 0;
+	uint64_t         m_gt_prealloc_last_usage = 0;
+	uint64_t         m_gt_prealloc_last_tick  = 0;
 	uint64_t                                          m_gc_written_cold_bytes  = 0;
 	uint64_t                                          m_gc_written_large_bytes = 0;
 	struct WrittenWindow {
