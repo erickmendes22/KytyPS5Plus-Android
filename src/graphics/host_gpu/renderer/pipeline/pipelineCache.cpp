@@ -1265,6 +1265,13 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 	                 m_workers->Async() ? "async shaders: draws skip pipelines that are not ready"
 	                                    : "synchronous");
 	InitializeDriverCache();
+#if defined(__ANDROID__)
+	m_gt_no_live_cache_checkpoint = PipelineCacheTitleId() == "PPSA24156";
+	if (m_gt_no_live_cache_checkpoint) {
+		PipelineCacheLog("GT Vulkan driver cache: disable repeated live checkpoints; "
+		                 "save only after shader workers stop on clean exit");
+	}
+#endif
 	if (Config::ShaderDiskCacheEnabled()) {
 		if (const auto title_id = PipelineCacheTitleId(); !title_id.empty()) {
 			m_program_cache->OpenDiskCache(title_id);
@@ -1381,6 +1388,14 @@ void PipelineCache::CheckpointDriverCache() {
 		return;
 	}
 	m_driver_cache_dirty = true;
+	// The Android app's SIGKILL reports contain repeated 72-MB driver cache
+	// snapshots (several byte-identical) throughout guest boot. The snapshot
+	// itself is not a proof of SIGKILL origin, but this removes avoidable
+	// vkGetPipelineCacheData / file I/O while shaders and pipelines are live.
+	// Keep the cache loaded for reuse; a normal exit still calls Save().
+	if (m_gt_no_live_cache_checkpoint) {
+		return;
+	}
 	if (std::chrono::steady_clock::now() < m_next_driver_cache_save) {
 		return;
 	}

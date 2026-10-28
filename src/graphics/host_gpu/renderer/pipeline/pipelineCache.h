@@ -198,6 +198,11 @@ private:
 	std::filesystem::path         m_driver_cache_path;
 	std::chrono::steady_clock::time_point m_next_driver_cache_save;
 	bool                                  m_driver_cache_dirty = false;
+	// During PPSA24156 loading Android was serializing the ~72 MB Vulkan
+	// driver cache repeatedly at ten-second intervals (including identical
+	// snapshots). Never call vkGetPipelineCacheData on the live GT path;
+	// Save() still writes the cache after workers stop on a clean exit.
+	bool                                  m_gt_no_live_cache_checkpoint = false;
 	// Android writes checkpoints on a worker thread (see CheckpointDriverCache).
 	std::thread                           m_flush_thread;
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<Pipeline>, GraphicsPipelineKeyHash>
