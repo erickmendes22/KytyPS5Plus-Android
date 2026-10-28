@@ -26,6 +26,8 @@ object Diagnostics {
     private const val MAX_EXITS = 8
 
     fun saveLaunch(context: Context, path: String, args: Array<String>) {
+        CrashDiagnostics.preserveNativeBeforeLaunch(context)
+        CrashDiagnostics.start(context, path)
         try {
             val dir = File(context.filesDir, "logs")
             if (!dir.isDirectory && !dir.mkdirs()) throw IOException("Cannot create ${dir.path}")
@@ -85,11 +87,15 @@ object Diagnostics {
             val exitReport = buildString {
                 appendLine("Package: ${context.packageName}")
                 appendLine("Generated: ${Date()}")
+                appendLine("Low-memory kill reporting supported: ${ActivityManager.isLowMemoryKillReportSupported()}")
                 appendLine("Exit reports returned: ${exits.size}")
                 for ((index, info) in exits.withIndex()) {
                     appendLine("---- Exit $index ----")
                     appendLine("Time: ${Date(info.timestamp)}")
                     appendLine("Process: ${info.processName}")
+                    appendLine("PID: ${info.pid} UID: ${info.realUid} packageUID: ${info.packageUid}")
+                    appendLine("Importance: ${info.importance}")
+                    appendLine("Process state summary: ${info.processStateSummary?.toString(Charsets.UTF_8)}")
                     appendLine("Reason code: ${info.reason}")
                     appendLine("Status/signal: ${info.status}")
                     appendLine("Description: ${info.description}")
@@ -115,6 +121,7 @@ object Diagnostics {
                 }
             }
 
+            count += CrashDiagnostics.export(context, zip)
             count += exportGtTessellationCapture(context, zip)
 
             if (files.isEmpty()) {

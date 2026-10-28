@@ -116,17 +116,20 @@ class GameActivity : SDLActivity() {
     }
 
     override fun onResume() {
+        CrashDiagnostics.phase("game-resume")
         super.onResume()
         overlays?.onResume()
     }
 
     override fun onPause() {
+        CrashDiagnostics.phase("game-pause")
         overlays?.onPause()
         super.onPause()
     }
 
     /** SDL_SetWindowTitle lands here; the emulator puts its frame counter and FPS in the title. */
     override fun onTitleChanged(title: CharSequence?, color: Int) {
+        CrashDiagnostics.title()
         super.onTitleChanged(title, color)
         overlays?.onTitle(title)
     }
@@ -134,6 +137,21 @@ class GameActivity : SDLActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) enterImmersiveMode()
+    }
+
+    override fun onStop() {
+        CrashDiagnostics.phase("game-stop")
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        CrashDiagnostics.stop()
+        super.onDestroy()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        CrashDiagnostics.phase("trim-memory-$level")
+        super.onTrimMemory(level)
     }
 
     private fun enterImmersiveMode() {
