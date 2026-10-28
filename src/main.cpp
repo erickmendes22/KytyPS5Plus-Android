@@ -6,6 +6,7 @@
 #include "common/perfStats.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "common/signalOrigin.h"
 #include "common/virtualMemory.h"
 #include "emulator.h"
 #include "graphics/presentation/window/vulkanDriver.h"
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
@@ -906,6 +908,27 @@ static int Main(int argc, char* argv[]) {
 #if defined(KYTY_ANDROID)
 	UnblockSynchronousSignals();
 	RedirectStdioToLogcat(argc, argv);
+    // This experimental build probes only the GT launch used in the SIGKILL reports.
+    bool gt_signal_probe = false;
+    const char* probe_data_dir = nullptr;
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string_view(argv[i]) == "--game" &&
+            std::string_view(argv[i + 1]).find("PPSA24156") != std::string_view::npos) gt_signal_probe = true;
+        if (std::string_view(argv[i]) == "--data-dir") probe_data_dir = argv[i + 1];
+    }
+    if (gt_signal_probe && probe_data_dir) {
+        const auto logs = std::filesystem::path(probe_data_dir) / "logs";
+        const bool active = SignalOrigin::Install((logs / "signal-origin.txt").c_str());
+        ::printf("[KytyDiagnostic] SIGKILL syscall provenance active=%d (TSYNC + safe self-test)\n", active);
+        if (active) {
+            std::thread([maps = (logs / "signal-origin-maps.txt").string()] {
+                for (;;) {
+                    SignalOrigin::SnapshotMaps(maps.c_str());
+                    std::this_thread::sleep_for(std::chrono::seconds(5));
+                }
+            }).detach();
+        }
+    }
 #endif
 
 	VirtualMemory::Init();

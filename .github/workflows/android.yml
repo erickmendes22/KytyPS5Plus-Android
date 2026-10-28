@@ -213,6 +213,10 @@ jobs:
           path: ~/.cache/ccache
           key: ccache-native-tests-${{ github.sha }}
           restore-keys: ccache-native-tests-
+      - name: Verify SIGKILL provenance filter
+        run: |
+          g++ -std=c++20 -pthread -Isrc tests/manual/signal_origin_probe.cpp -o /tmp/signal-origin-test
+          timeout 30 /tmp/signal-origin-test
       - name: Configure host regression tests
         run: |
           ccache --max-size=2G

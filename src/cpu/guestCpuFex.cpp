@@ -4,6 +4,7 @@
 #include "cpu/guestCpuFex.h"
 
 #include "common/hostFaultAccess.h"
+#include "common/signalOrigin.h"
 
 #include "ArchHelpers/MContext.h"
 #include "CodeLoader.h"
@@ -178,7 +179,15 @@ bool BringUpTranslator() {
 	EnableHardwareTsoIfAvailable(ctx.get());
 
 	static auto signals = FEX::HLE::CreateSignalDelegator(ctx.get(), "kyty-guest", host.SupportsAVX, host.SupportsSVE256);
-	static auto thunks  = FEX::HLE::CreateThunkHandler();
+	#if defined(KYTY_ANDROID)
+    // FEX owns signal disposition after startup. Keep our marked seccomp traps
+    // on the host; unrelated SIGSYS still follows FEX's existing routing.
+    signals->RegisterHostSignalHandlerFirst(SIGSYS,
+        [](FEXCore::Core::InternalThreadState*, int sig, void* info, void* context) {
+            return Common::SignalOrigin::Handle(sig, info, context);
+        }, true);
+#endif
+    static auto thunks  = FEX::HLE::CreateThunkHandler();
 	static auto syscalls = FEX::HLE::x64::CreateHandler(ctx.get(), signals.get(), thunks.get());
 
 	syscalls->SetCodeLoader(&loader);
@@ -206,6 +215,12 @@ bool BringUpTranslator() {
 	syscalls->UninstallTLSState(init_thread);
 	syscalls->TM.DestroyThread(init_thread);
 
+#if defined(KYTY_ANDROID)
+    if (Common::SignalOrigin::fd >= 0) {
+        syscall(SYS_kill, getpid(), 0);
+        dprintf(Common::SignalOrigin::fd, "FEX_DELEGATOR_PROBE_COMPLETE\n");
+    }
+#endif
 	g_runtime.ctx      = ctx.get();
 	g_runtime.signals  = signals.get();
 	g_runtime.syscalls = syscalls.get();
