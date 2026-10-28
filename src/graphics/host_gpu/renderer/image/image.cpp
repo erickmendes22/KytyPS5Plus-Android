@@ -19,6 +19,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 
 #include <algorithm>
 #include <array>
@@ -1025,19 +1026,22 @@ uint64_t Image::ReleaseInactiveBacking() {
 	const uint64_t allocated = InactiveBackingBytes();
 	// Do not touch the current backing or the guest's GPU-written data. Views
 	// of the alternate may still be referenced by already-submitted commands.
-	VulkanImage retired;
-	MoveVulkanImage(retired, m_alternate_backing);
+	// VulkanImage is intentionally non-movable (per-subresource state).
+	// Move its *handles and members* through the existing swap helper instead.
+	// The deferred callback owns this heap object until the GPU fence retires.
+	auto retired = std::make_shared<VulkanImage>();
+	MoveVulkanImage(*retired, m_alternate_backing);
 	auto retired_views = std::move(m_alternate_views);
 	m_alternate_views.clear();
 	auto* graphics = &m_graphics;
 	m_scheduler.DeferOperation(
-	    [graphics, retired = std::move(retired), retired_views = std::move(retired_views)]() mutable {
+	    [graphics, retired, retired_views = std::move(retired_views)]() mutable {
 		    for (const auto& cached: retired_views) {
 			    if (cached.view != nullptr)
 				    graphics->device.destroyImageView(cached.view, nullptr);
 		    }
-		    if (retired.image != nullptr)
-			    graphics->DeleteImage(retired);
+		    if (retired->image != nullptr)
+			    graphics->DeleteImage(*retired);
 	    });
 	return allocated;
 }
