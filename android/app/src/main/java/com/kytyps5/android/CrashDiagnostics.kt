@@ -36,6 +36,7 @@ object CrashDiagnostics {
     private var app: Context? = null
     private var profileListenerRegistered = false
     private var lastStack = 0L
+    private var summaryErrorReported = false
     private var resourceSources: List<File> = emptyList()
     private const val MAX_TRACE = 64L * 1024 * 1024
     private const val MAX_TEXT = 2L * 1024 * 1024
@@ -73,6 +74,17 @@ object CrashDiagnostics {
     fun initialize(context: Context) {
         val c = context.applicationContext
         app = c
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        if (previous != null) Thread.setDefaultUncaughtExceptionHandler { thread, failure ->
+            try {
+                val directory = session ?: root(c)
+                append(File(directory, "uncaught-process-${Process.myPid()}.txt"),
+                    "wall=${System.currentTimeMillis()} elapsed=${SystemClock.elapsedRealtime()} pid=${Process.myPid()} thread=${thread.name} phase=$phase\n" +
+                        failure.stackTraceToString().take(65536) + "\n", 128 * 1024)
+            } catch (_: Throwable) {
+                // An OOM may prevent even constructing this report; always preserve Android's handler.
+            } finally { previous.uncaughtException(thread, failure) }
+        }
         executor.execute {
             recover(c)
             if (Build.VERSION.SDK_INT >= 35) {
@@ -111,7 +123,7 @@ object CrashDiagnostics {
             write(File(dir, "session.properties"), "pid=${Process.myPid()}\nuid=${Process.myUid()}\nstarted=$now\nelapsed=${SystemClock.elapsedRealtime()}\nversionCode=${pkg.longVersionCode}\ncollector=2\n")
             write(File(dir, "launch.txt"), "game=$game\ndevice=${Build.FINGERPRINT}\nkernel=${System.getProperty("os.version")}\n")
             write(File(root(c), "active-session.txt"), dir.name)
-            session = dir
+            session = dir; summaryErrorReported = false
             lastBeat = SystemClock.elapsedRealtime(); pendingBeat.set(false)
             resourceSources = discoverSources(c, dir)
             sampling = executor.scheduleWithFixedDelay({
@@ -181,7 +193,11 @@ object CrashDiagnostics {
         ActivityManager.getMyMemoryState(info)
         val lag = elapsed - lastBeat
         val summary = "v2 pid=${Process.myPid()} session=${dir.name} phase=$phase mainLag=$lag frameAge=${if (titleAt == 0L) -1 else elapsed-titleAt}"
-        safe { (c.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).setProcessStateSummary(summary.take(128).toByteArray(Charsets.US_ASCII)); "ok" }
+        val summaryResult = safe { (c.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).setProcessStateSummary(summary.take(128).toByteArray(Charsets.US_ASCII)); "ok" }
+        if (summaryResult != "ok" && !summaryErrorReported) {
+            summaryErrorReported = true
+            append(File(dir, "recorder-errors.txt"), "PROCESS_STATE_SUMMARY $summaryResult\n")
+        }
         val text = buildString {
             appendLine("--- wall=${System.currentTimeMillis()} elapsed=$elapsed pid=${Process.myPid()} importance=${info.importance} phase=$phase mainLagMs=$lag titleAgeMs=${if (titleAt == 0L) -1 else elapsed-titleAt}")
             appendLine(read(File("/proc/self/status"), 12000))
