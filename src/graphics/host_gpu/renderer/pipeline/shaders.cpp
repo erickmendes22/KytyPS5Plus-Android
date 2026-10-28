@@ -98,7 +98,9 @@ static std::vector<uint32_t> MakeGtTurnipMinimalTessEval() {
 // do not consume the original HS output, so only tessellation levels are
 // needed. This replacement is NOT an image-preserving graphics workaround.
 static std::vector<uint32_t> MakeGtTurnipMinimalTessControl(bool passthrough_location0 = false,
-                                                              uint32_t packed_input_vertices = 0) {
+                                                              uint32_t packed_input_vertices = 0,
+                                                              uint32_t packed_input_stride = 2,
+                                                              uint32_t packed_output_stride = 12) {
 	using ShaderRecompiler::Spirv::Builder;
 	Builder b;
 	b.RequireCapability(spv::CapabilityShader);
@@ -134,20 +136,22 @@ static std::vector<uint32_t> MakeGtTurnipMinimalTessControl(bool passthrough_loc
 	// Keep default probe byte-for-byte unchanged when disabled.
 	uint32_t location_input = 0, location_output = 0;
 	std::vector<uint32_t> interfaces {invocation, outer, inner};
-	// The captured GT HS 2f056d... and 30cc06... do not expose a scalar
-	// Location 0. The LS passes [input_cp][2] uvec4, while their original
-	// TES reads [4][12] uvec4. Keep the full interface with an inexpensive
-	// packed passthrough instead of the empty TCS/TES/FS diagnostic trio.
-	// This is an experimental geometry restore, not the original HS math.
+	// Exact SPIR-V Location 0 layouts from GT captures, not shader-hash guesses:
+	// 2f056d... / 30cc06...: input [28/16][2] -> TES [4][12] uvec4
+	// 168f33... / 5037bc... / f7ba8c...: input [16/18/16][1]
+	//                                    -> TES [4][9] uvec4
+	// Original HS arithmetic is not reconstructed. Keep a bounded, type-
+	// compatible passthrough; never enable it without an exact known layout.
 	uint32_t packed_in_ptr = 0, packed_out_ptr = 0;
 	uint32_t packed_in_vec4_ptr = 0, packed_out_vec4_ptr = 0;
 	if (packed_input_vertices != 0) {
 		const auto uvec4 = b.Type(spv::OpTypeVector, uint_type, 4u);
-		const auto inner2 = b.Type(spv::OpTypeArray, uvec4, n2);
+		const auto input_width = b.Constant(spv::OpConstant, uint_type, packed_input_stride);
+		const auto in_inner = b.Type(spv::OpTypeArray, uvec4, input_width);
 		const auto cp_count = b.Constant(spv::OpConstant, uint_type, packed_input_vertices);
-		const auto in_array = b.Type(spv::OpTypeArray, inner2, cp_count);
-		const auto n12 = b.Constant(spv::OpConstant, uint_type, 12u);
-		const auto out_inner = b.Type(spv::OpTypeArray, uvec4, n12);
+		const auto in_array = b.Type(spv::OpTypeArray, in_inner, cp_count);
+		const auto output_width = b.Constant(spv::OpConstant, uint_type, packed_output_stride);
+		const auto out_inner = b.Type(spv::OpTypeArray, uvec4, output_width);
 		const auto out_array = b.Type(spv::OpTypeArray, out_inner, n4);
 		packed_in_ptr = b.DefineGlobalVariable(
 		    b.Type(spv::OpTypePointer, spv::StorageClassInput, in_array),
@@ -187,34 +191,36 @@ static std::vector<uint32_t> MakeGtTurnipMinimalTessControl(bool passthrough_loc
 	const auto id = b.AllocateId();
 	b.AddFunction(spv::OpLoad, int_type, id, invocation);
 	if (packed_input_vertices != 0) {
-		const auto six = b.Constant(spv::OpConstant, int_type, 6u);
-		const auto cp = b.Constant(spv::OpConstant, int_type, packed_input_vertices);
+		const auto out_width = b.Constant(spv::OpConstant, int_type, packed_output_stride);
+		const auto in_width = b.Constant(spv::OpConstant, int_type, packed_input_stride);
+		const auto in_vectors = b.Constant(
+		    spv::OpConstant, int_type, packed_input_vertices * packed_input_stride);
 		const auto base = b.AllocateId();
-		b.AddFunction(spv::OpIMul, int_type, base, id, six);
+		b.AddFunction(spv::OpIMul, int_type, base, id, out_width);
 		const auto uvec4 = b.Type(spv::OpTypeVector, uint_type, 4u);
-		for (uint32_t group = 0; group < 6u; ++group) {
+		for (uint32_t group = 0; group < packed_output_stride; ++group) {
 			const auto delta = b.Constant(spv::OpConstant, int_type, group);
 			const auto src_linear = b.AllocateId();
 			b.AddFunction(spv::OpIAdd, int_type, src_linear, base, delta);
-			// The 16-cp HS generates 48 output vectors from 32 source
-			// vectors. Wrap the remaining indices; 28-cp captures use 24
-			// vertices directly. Never index an input past its declared size.
+			// Flatten the input's [patch][component] dimensions, then wrap
+			// to the *total number of input vectors*. No out-of-range read,
+			// including 16-CP -> 36/48-output-vector captures.
+			const auto wrapped = b.AllocateId();
+			b.AddFunction(spv::OpSMod, int_type, wrapped, src_linear, in_vectors);
 			const auto source = b.AllocateId();
-			b.AddFunction(spv::OpSMod, int_type, source, src_linear, cp);
-			for (uint32_t component = 0; component < 2u; ++component) {
-				const auto in_component = b.Constant(spv::OpConstant, int_type, component);
-				const auto out_component = b.Constant(
-				    spv::OpConstant, int_type, group * 2u + component);
-				const auto in_address = b.AllocateId();
-				b.AddFunction(spv::OpAccessChain, packed_in_vec4_ptr,
-				              in_address, packed_in_ptr, source, in_component);
-				const auto value = b.AllocateId();
-				b.AddFunction(spv::OpLoad, uvec4, value, in_address);
-				const auto out_address = b.AllocateId();
-				b.AddFunction(spv::OpAccessChain, packed_out_vec4_ptr,
-				              out_address, packed_out_ptr, id, out_component);
-				b.AddFunction(spv::OpStore, out_address, value);
-			}
+			b.AddFunction(spv::OpSDiv, int_type, source, wrapped, in_width);
+			const auto in_component = b.AllocateId();
+			b.AddFunction(spv::OpSMod, int_type, in_component, wrapped, in_width);
+			const auto out_component = delta;
+			const auto in_address = b.AllocateId();
+			b.AddFunction(spv::OpAccessChain, packed_in_vec4_ptr,
+			              in_address, packed_in_ptr, source, in_component);
+			const auto value = b.AllocateId();
+			b.AddFunction(spv::OpLoad, uvec4, value, in_address);
+			const auto out_address = b.AllocateId();
+			b.AddFunction(spv::OpAccessChain, packed_out_vec4_ptr,
+			              out_address, packed_out_ptr, id, out_component);
+			b.AddFunction(spv::OpStore, out_address, value);
 		}
 	}
 	const auto first = b.AllocateId();
@@ -715,13 +721,22 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	const char* gt_restore_option = std::getenv("KYTY_GT_TURNIP_VISUAL_RESTORE");
 	const uint64_t gt_hs_hash = vertex_info.size() > 1
 	    ? vertex_info[1].stage.program->shader_hash : 0;
-	// Shader shapes verified against the two actual SPIR-V bundles exported
-	// by GT at 17:12 and 17:15. The first HS input is [28][2] uvec4 and
-	// the second is [16][2] uvec4; both TES inputs are [4][12] uvec4.
-	// Never apply the packed pass to another unverified shader signature.
+	// Reflected *original* HS and DS SPIR-V from the 2026-10-27/28
+	// exports. The new shaders are input [CP][1] -> output [4][9],
+	// NOT the [CP][2] -> [4][12] assumed in the previous build.
+	// Other signatures stay on the proven minimal-shader fallback.
+	const bool gt_new_packed_hs =
+	    gt_hs_hash == 0x168f33ab4c937fd1ULL ||
+	    gt_hs_hash == 0x5037bc6a32053c45ULL ||
+	    gt_hs_hash == 0xf7ba8c4f6ec43ddfULL;
 	const uint32_t gt_packed_input_vertices =
 	    gt_hs_hash == 0x2f056d60c0ea5193ULL ? 28u :
-	    gt_hs_hash == 0x30cc064c6fc120d4ULL ? 16u : 0u;
+	    gt_hs_hash == 0x30cc064c6fc120d4ULL ? 16u :
+	    gt_hs_hash == 0x168f33ab4c937fd1ULL ? 16u :
+	    gt_hs_hash == 0x5037bc6a32053c45ULL ? 18u :
+	    gt_hs_hash == 0xf7ba8c4f6ec43ddfULL ? 16u : 0u;
+	const uint32_t gt_packed_input_stride = gt_new_packed_hs ? 1u : 2u;
+	const uint32_t gt_packed_output_stride = gt_new_packed_hs ? 9u : 12u;
 	const bool gt_scalar_restore = gt_hs_hash == 0xd9596b2d7a2e4202ULL;
 	const bool gt_visual_restore_requested =
 	    tessellation && ps_active && vertex_info.size() > 1 &&
@@ -829,7 +844,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		    props.deviceID == 1141178369u && props.driverVersion == 109060195u) {
 			const auto minimal_tcs = MakeGtTurnipMinimalTessControl(
 			    gt_visual_restore_requested && gt_scalar_restore,
-			    gt_visual_restore_requested ? gt_packed_input_vertices : 0);
+			    gt_visual_restore_requested ? gt_packed_input_vertices : 0,
+			    gt_packed_input_stride, gt_packed_output_stride);
 			gt_tcs_probe_module = CompileSPV(minimal_tcs, graphics.device);
 			EXIT_IF(gt_tcs_probe_module == nullptr);
 			ShaderDump::RecordModule(gt_tcs_probe_module, "turnip_probe_tcs", 0, minimal_tcs);
@@ -847,11 +863,14 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 				Log::WriteToConsoleAndLog(fmt::format(
 				    "GT TURNIP TCS PROBE: minimal HS/TCS active, output_vertices=4 "
 				    "input_patch_control_points={} original_HS={:016x} "
-				    "passthrough_location0={} packed_input_vertices={} TES_minimal={} FS_minimal={}\n",
+				    "passthrough_location0={} packed_input_vertices={} packed_stride={}->{} "
+				    "TES_minimal={} FS_minimal={}\n",
 				    vs_input_info.tess.input_control_points,
 				    vertex_info[1].stage.program->shader_hash,
 				    gt_visual_restore_requested && gt_scalar_restore ? 1 : 0,
 				    gt_visual_restore_requested ? gt_packed_input_vertices : 0u,
+				    gt_visual_restore_requested && gt_packed_input_vertices ? gt_packed_input_stride : 0u,
+				    gt_visual_restore_requested && gt_packed_input_vertices ? gt_packed_output_stride : 0u,
 				    gt_tes_probe_module != nullptr ? 1 : 0,
 				    gt_fragment_probe_module != nullptr ? 1 : 0));
 			}
