@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "turnipvisual",
   "name": "Turnip v32: restaurar gráficos (experimental)",
-  "description": "Teste experimental de recuperação gráfica no PPSA24156, Adreno 830 e Turnip v32. Estende a ponte TCS para hashes 168f33ab4c937fd1 (16×1 uvec4), 5037bc6a32053c45 (18×1) e f7ba8c4f6ec43ddf (16×1), com saída 4×9 uvec4 para o TES original. Mantém os caminhos conhecidos 2×12 e escalar e o fallback anticrash para os demais. Não replica a matemática do HS original e ainda pode produzir geometria errada ou travar.",
+  "description": "Experimental para PPSA24156/Adreno 830/Turnip v32: tenta recuperar geometria dos HS d9596b2d7a2e4202 (uint escalar), 2f056d60c0ea5193 ([28][2] uvec4) e 30cc064c6fc120d4 ([16][2] uvec4), preservando TES e PS originais. Nos dois últimos usa ponte compacta [4][12] uvec4, não reproduz toda a matemática do HS original. Outros shaders mantêm o fallback mínimo anticrash. Pode ter gráficos incompletos ou crash. Desativar volta ao fallback anterior.",
   "launch": {
     "env": {
       "KYTY_GT_TURNIP_VISUAL_RESTORE": "1"
