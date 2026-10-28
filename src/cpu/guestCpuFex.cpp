@@ -183,7 +183,13 @@ bool BringUpTranslator() {
     // FEX owns signal disposition after startup. Keep our marked seccomp traps
     // on the host; unrelated SIGSYS still follows FEX's existing routing.
     signals->RegisterHostSignalHandlerFirst(SIGSYS,
-        [](FEXCore::Core::InternalThreadState*, int sig, void* info, void* context) {
+        [](FEXCore::Core::InternalThreadState* thread, int sig, void* info, void* context) {
+            const auto* si = static_cast<const siginfo_t*>(info);
+            if (sig == SIGSYS && si && si->si_code == 1 &&
+                si->si_errno == Common::SignalOrigin::Marker && thread && thread->CurrentFrame) {
+                const auto& state = thread->CurrentFrame->State;
+                Common::SignalOrigin::RecordGuest(state.rip, state.gregs, std::size(state.gregs));
+            }
             return Common::SignalOrigin::Handle(sig, info, context);
         }, true);
 #endif
@@ -333,6 +339,13 @@ bool AttachCurrentThread(uint64_t guest_stack_top) {
 	// Registering all three separately allocated and installed two signal stacks
 	// per guest thread, leaking the first and desynchronizing FEX thread state.
 	rt.syscalls->RegisterTLSState(state);
+#if defined(KYTY_ANDROID)
+    static std::atomic<bool> checked {false};
+    if (Common::SignalOrigin::fd >= 0 && !checked.exchange(true)) {
+        syscall(SYS_kill, getpid(), 0);
+        dprintf(Common::SignalOrigin::fd, "FEX_REGISTERED_THREAD_PROBE_COMPLETE\n");
+    }
+#endif
 
 	state->ThreadInfo.PID = ::getpid();
 	state->ThreadInfo.TID = FHU::Syscalls::gettid();

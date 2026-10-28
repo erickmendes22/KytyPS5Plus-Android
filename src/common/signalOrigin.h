@@ -56,6 +56,23 @@ inline void Record(const char* label, const siginfo_t* info, void* context) {
     if (fd >= 0) (void)::write(fd, out, n);
 }
 
+inline void RecordGuest(uint64_t rip, const uint64_t* regs, size_t count) {
+    char out[512];
+    size_t n = 0;
+    const char label[] = "FEX_SAVED_GUEST_STATE rip=";
+    for (char c : label) if (c) out[n++] = c;
+    auto hex = [&](uint64_t v) {
+        out[n++] = '0'; out[n++] = 'x';
+        for (int i = 60; i >= 0; i -= 4) out[n++] = "0123456789abcdef"[(v >> i) & 15];
+    };
+    hex(rip);
+    for (size_t i = 0; i < count && i < 16; ++i) {
+        out[n++] = ' '; hex(regs[i]);
+    }
+    out[n++] = '\n';
+    if (fd >= 0) (void)write(fd, out, n);
+}
+
 inline bool Handle(int sig, void* raw_info, void* context) {
     auto* info = static_cast<siginfo_t*>(raw_info);
     if (sig != SIGSYS || !info || info->si_code != 1 || info->si_errno != Marker) return false;
