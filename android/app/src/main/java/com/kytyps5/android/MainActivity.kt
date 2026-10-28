@@ -594,16 +594,13 @@ class MainActivity : Activity() {
     }
 
     private fun launch(game: GameEntry) {
-        val gameOverrides = settings.gameSettings(game.path)
         val options = LaunchOptions.resolve(
             globalResolution = settings.resolution,
             globalHud = settings.hudEnabled,
             globalTouch = settings.touchControlsEnabled,
-            game = gameOverrides,
+            game = settings.gameSettings(game.path),
             globalRenderScale = settings.renderScale,
-            globalGpuTurbo = GtSigkillClockPolicy.turboEnabled(
-                game.titleId, gameOverrides.gpuTurbo, settings.gpuTurbo
-            ),
+            globalGpuTurbo = settings.gpuTurbo,
             globalHudMode = settings.hudMode,
         )
         val args = LaunchArgs.forGame(

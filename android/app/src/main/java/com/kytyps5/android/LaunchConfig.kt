@@ -103,22 +103,6 @@ object LaunchArgs {
                 arrayOf(FLAG_TESSELLATION) else emptyArray())
 }
 
-/**
- * PPSA24156 SIGKILL isolation: every captured crash ran with --gpu-turbo,
- * which continually reasserts maximum clocks on a system-wide Adreno device.
- * The process watchdog only reports stalls and never kills the process.
- *
- * Default turbo OFF for this title while the signal 9 exit is investigated.
- * Preserve the existing per-game override, so comparisons can re-enable turbo;
- * other titles continue to honor the global setting.
- *
- * This does not claim the vendor/system SIGKILL was caused by GPU clocks.
- */
-object GtSigkillClockPolicy {
-    fun turboEnabled(titleId: String?, gameOverride: Boolean?, globalTurbo: Boolean): Boolean =
-        gameOverride ?: if (titleId.equals("PPSA24156", ignoreCase = true)) false else globalTurbo
-}
-
 /** Which GPU driver a launch uses: a per-game override wins over the global choice. */
 object GpuDriverChoice {
     /**

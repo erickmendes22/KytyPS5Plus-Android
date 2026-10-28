@@ -179,14 +179,4 @@ class LaunchArgsTest {
         assertEquals(null, LaunchArgs.gamePath(arrayOf("--game")))
         assertEquals(null, LaunchArgs.gamePath(arrayOf("--game", "")))
     }
-    @org.junit.Test
-    fun gtSigkillClockPolicyDisablesTurboOnlyByDefault() {
-        org.junit.Assert.assertFalse(GtSigkillClockPolicy.turboEnabled("PPSA24156", null, true))
-        org.junit.Assert.assertFalse(GtSigkillClockPolicy.turboEnabled("ppsa24156", null, true))
-        org.junit.Assert.assertTrue(GtSigkillClockPolicy.turboEnabled("PPSA24156", true, false))
-        org.junit.Assert.assertFalse(GtSigkillClockPolicy.turboEnabled("PPSA24156", false, true))
-        org.junit.Assert.assertTrue(GtSigkillClockPolicy.turboEnabled("PPSA10112", null, true))
-        org.junit.Assert.assertFalse(GtSigkillClockPolicy.turboEnabled("PPSA10112", null, false))
-    }
-
 }
