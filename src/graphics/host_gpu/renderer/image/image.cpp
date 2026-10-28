@@ -1011,6 +1011,37 @@ void Image::SwapBackings() {
 	views.swap(m_alternate_views);
 }
 
+uint64_t Image::InactiveBackingBytes() const {
+	if (m_alternate_backing.allocation == nullptr || m_graphics.allocator == nullptr)
+		return 0;
+	VmaAllocationInfo info {};
+	vmaGetAllocationInfo(m_graphics.allocator, m_alternate_backing.allocation, &info);
+	return info.size;
+}
+
+uint64_t Image::ReleaseInactiveBacking() {
+	if (m_alternate_backing.image == nullptr || !m_scheduler.Active())
+		return 0;
+	const uint64_t allocated = InactiveBackingBytes();
+	// Do not touch the current backing or the guest's GPU-written data. Views
+	// of the alternate may still be referenced by already-submitted commands.
+	VulkanImage retired;
+	MoveVulkanImage(retired, m_alternate_backing);
+	auto retired_views = std::move(m_alternate_views);
+	m_alternate_views.clear();
+	auto* graphics = &m_graphics;
+	m_scheduler.DeferOperation(
+	    [graphics, retired = std::move(retired), retired_views = std::move(retired_views)]() mutable {
+		    for (const auto& cached: retired_views) {
+			    if (cached.view != nullptr)
+				    graphics->device.destroyImageView(cached.view, nullptr);
+		    }
+		    if (retired.image != nullptr)
+			    graphics->DeleteImage(retired);
+	    });
+	return allocated;
+}
+
 void Image::SetScaled(bool want_scaled, bool preserve) {
 	if (!scalable || scaled == want_scaled || backing.image == nullptr ||
 	    (want_scaled && scale_blocked)) {

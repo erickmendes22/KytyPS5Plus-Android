@@ -94,6 +94,9 @@ private:
 	void ApplyBudgetThresholds(uint64_t budget);
 	void CollectWithinBudget(uint64_t tick, uint64_t used_memory);
 	void NoteEviction(const Image& image, bool downloaded);
+	// GT only. Free redundant native/scaled alternate images through deferred
+	// Vulkan retirement, before trying to destroy authoritative cached images.
+	void TrimGtInactiveBackings();
 	struct MetaDataInfo {
 		enum class Type : uint8_t { CMask, FMask, HTile };
 
@@ -216,6 +219,7 @@ private:
 	uint32_t         m_gt_prealloc_insertions = 0;
 	uint64_t         m_gt_prealloc_last_usage = 0;
 	uint64_t         m_gt_prealloc_last_tick  = 0;
+	uint64_t         m_gt_last_alternate_trim = 0;
 	uint64_t                                          m_gc_written_cold_bytes  = 0;
 	uint64_t                                          m_gc_written_large_bytes = 0;
 	struct WrittenWindow {

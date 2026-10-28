@@ -66,6 +66,11 @@ public:
 	// across unless `preserve` is false (the caller overwrites the whole image next). Ends the
 	// open render pass; views made before the call stay valid until the GPU is done with them.
 	void SetScaled(bool want_scaled, bool preserve = true);
+	// Inactive native-size/scaled-size backing is a full second Vulkan image.
+	// Under shared-RAM pressure, its data are redundant with the active backing.
+	// Its GPU handles are retired only when the scheduler finishes their last use.
+	[[nodiscard]] uint64_t InactiveBackingBytes() const;
+	[[nodiscard]] uint64_t ReleaseInactiveBacking();
 	void BlockScaling() {
 		SetScaled(false);
 		scale_blocked = true;

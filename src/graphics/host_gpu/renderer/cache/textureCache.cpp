@@ -296,11 +296,11 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 				m_gt_prealloc_last_tick = m_gc_tick;
 				static std::atomic_uint32_t reported {0};
 				if (reported.fetch_add(1, std::memory_order_relaxed) < 180u) {
-					LOGF("GT prealloc reclaim: host_available=%" PRIu64
-					     " MiB used_before=%" PRIu64
-					     " MiB reclaimed=%u gc_tick=%" PRIu64 "\n",
-					     *available / GpuBudget::MiB, live / GpuBudget::MiB,
-					     reclaimed ? 1u : 0u, m_gc_tick);
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "GT prealloc reclaim: host_available={} MiB used_before={} MiB "
+					    "reclaimed={} gc_tick={}\n",
+					    *available / GpuBudget::MiB, live / GpuBudget::MiB,
+					    reclaimed ? 1u : 0u, m_gc_tick));
 				}
 			}
 		}
@@ -2405,6 +2405,40 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 	}
 }
 
+void TextureCache::TrimGtInactiveBackings() {
+	if (!m_gt_prealloc_reclaim || !m_scheduler.Active() || m_gc_tick < 12 ||
+	    (m_gt_last_alternate_trim && m_gc_tick - m_gt_last_alternate_trim < 12))
+		return;
+	const auto available = Common::ReadProcessMemory().available;
+	if (!available || *available >= GpuBudget::kGtPreallocLowRam)
+		return;
+	m_gt_last_alternate_trim = m_gc_tick;
+	uint64_t bytes_queued = 0;
+	uint32_t images_queued = 0;
+	// Limit to cold/unbound images: alternate backing is never authoritative,
+	// but old cached image views may still be in flight. Image defers Vulkan
+	// destruction to after the submission completes, then destroys old views.
+	m_lru_cache.ForEachItemBelow(m_gc_tick - 8, [&](ImageId id) {
+		auto* image = m_slot_images.try_get(id);
+		if (image == nullptr || !image->registered || image->depth_id ||
+		    image->binding.is_bound || image->binding.is_target)
+			return false;
+		const uint64_t freed = image->ReleaseInactiveBacking();
+		if (freed == 0) return false;
+		bytes_queued += freed;
+		++images_queued;
+		return bytes_queued >= 256u * GpuBudget::MiB || images_queued >= 48;
+	});
+	if (!images_queued) return;
+	// Deferred destruction must run before the following texture allocation.
+	m_scheduler.Finish();
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "GT inactive backing reclaim: host_available={} MiB retired={} "
+	    "MiB images={} tick={}\n",
+	    *available / GpuBudget::MiB, bytes_queued / GpuBudget::MiB,
+	    images_queued, m_gc_tick));
+}
+
 void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	constexpr int64_t LogIntervalNs = 10'000'000'000;
 	const auto        now           = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -2419,7 +2453,12 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	std::array<uint32_t, Count> images {};
 	uint64_t                    guest_bytes = 0;
 	uint64_t                    gpu_written_bytes = 0;
+	uint64_t                    inactive_bytes = 0;
+	uint32_t                    inactive_images = 0;
 	m_slot_images.ForEach([&](ImageId, const Image& image) {
+		const uint64_t inactive = image.InactiveBackingBytes();
+		inactive_bytes += inactive;
+		inactive_images += inactive != 0;
 		if (image.backing.allocation == nullptr || m_graphics.allocator == nullptr) {
 			return;
 		}
@@ -2477,6 +2516,14 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	        (host.swap ? 8u : 0u),
 	    m_gc_written_cold_bytes / MiB, m_gc_written_large_bytes / MiB, m_log_writeback_chunks,
 	    m_log_writeback_chunk_bytes / MiB));
+	if (m_gt_prealloc_reclaim) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "GT image backing breakdown: active={} MiB inactive={} MiB ({} images) "
+		    "other_vma={} MiB\n",
+		    image_bytes / MiB, inactive_bytes / MiB, inactive_images,
+		    (allocated > image_bytes + inactive_bytes
+		         ? allocated - image_bytes - inactive_bytes : 0) / MiB));
+	}
 	// At most once per ten seconds: identify why the surviving GPU-written images
 	// cannot be reclaimed. Count guest-accounted bytes, separate from VMA usage.
 	// This only runs for the title-scoped opt-in, and never changes image lifetime.
@@ -2519,8 +2566,10 @@ void TextureCache::RunGarbageCollector() {
 		// Live allocations: free space inside VMA blocks is not something eviction can return.
 		const auto used_memory = m_graphics.GetLiveDeviceMemory();
 		LogMemoryBreakdown(used_memory);
-		if (used_memory >= m_trigger_gc_memory) {
-			CollectWithinBudget(tick, used_memory);
+		TrimGtInactiveBackings();
+		const auto live_after_trim = m_graphics.GetLiveDeviceMemory();
+		if (live_after_trim >= m_trigger_gc_memory) {
+			CollectWithinBudget(tick, live_after_trim);
 		}
 		return;
 	}
