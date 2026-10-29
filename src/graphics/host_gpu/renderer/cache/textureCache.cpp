@@ -181,24 +181,24 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 	if (m_graphics.MemoryBudgetEnabled()) {
 		m_budget_mode   = true;
 		// My First Gran Turismo can retain over 1 GiB of GPU-written images
-		// while Android MemAvailable drops below 200 MiB. Neptunia ReVerse
-		// also reaches low system headroom before Vulkan allocation failures.
-		// Preserve cold GPU-written images through bounded readback on both
-		// titles; other titles keep the current default and shaders unchanged.
+		// while Android MemAvailable drops below 200 MiB. The existing written
+		// image collector preserves their contents through bounded readback
+		// before freeing the Vulkan allocation. Enable it only for PPSA24156;
+		// keep every other title's default unchanged. This does not alter the
+		// tessellation shaders or pipeline creation path.
 		std::string title_id;
-		const bool has_title = Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id);
-		const bool gt_title = has_title && title_id == "PPSA24156";
-		const bool neptunia_title = has_title && title_id == "PPSA02721";
-		m_gt_prealloc_reclaim = gt_title || neptunia_title;
+		const bool gt_title = Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id) &&
+		                      title_id == "PPSA24156";
+		m_gt_prealloc_reclaim = gt_title;
 		const bool gt_written_reclaim = gt_title && [] {
 			const char* disabled = std::getenv("KYTY_GT_DISABLE_WRITTEN_RECLAIM");
 			return disabled == nullptr || std::strcmp(disabled, "1") != 0;
 		}();
-		m_evict_written = Config::GpuEvictWrittenEnabled() || gt_written_reclaim || neptunia_title;
-		if (gt_title || neptunia_title) {
+		m_evict_written = Config::GpuEvictWrittenEnabled() || gt_written_reclaim;
+		if (gt_title) {
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "PS5 pressure reclaim: title={} enabled={} requested_by_config={} (chunked readback; cold-only)\n",
-			    title_id, m_evict_written ? 1 : 0, Config::GpuEvictWrittenEnabled() ? 1 : 0));
+			    "GT written image reclaim: enabled={} requested_by_config={} (chunked readback; cold-only)\n",
+			    m_evict_written ? 1 : 0, Config::GpuEvictWrittenEnabled() ? 1 : 0));
 		}
 		ApplyBudgetThresholds(m_graphics.MemoryBudget());
 	} else if (m_graphics.CanReportMemoryUsage()) {

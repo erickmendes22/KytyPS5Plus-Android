@@ -50,14 +50,14 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 	m_gc_written_large_bytes = 0;
 	// Android can run out of shared RAM before an allocation returns OOM. The
 	// normal collector waits six ticks even when there is almost no headroom.
-	// Apply emergency policy only to the observed GT and Neptunia pressure paths.
-	// In-flight images used in the current tick remain protected.
-	static const bool pressure_title = [] {
+	// Apply a more urgent policy only to the confirmed GT title; in-flight
+	// images used on the current tick remain protected by the LRU threshold.
+	static const bool gt_title = [] {
 		std::string title;
 		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
-		       (title == "PPSA24156" || title == "PPSA02721");
+		       title == "PPSA24156";
 	}();
-	const auto available = pressure_title ? Common::ReadProcessMemory().available
+	const auto available = gt_title ? Common::ReadProcessMemory().available
 	                                : std::optional<uint64_t> {};
 	const bool emergency = available && *available < 768u * GpuBudget::MiB;
 	const bool critical  = emergency || used_memory >= m_critical_gc_memory;

@@ -166,12 +166,11 @@ uint64_t GraphicContext::UpdateMemoryBudget() {
 	memory_budget_effective =
 	    GpuBudget::Effective(memory_budget_configured, totals.usage,
 	                         memory_budget_ext_enabled ? totals.budget : 0, available);
-	static const bool pressure_title = [] {
+	static const bool gt_title = [] {
         std::string title;
-        return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
-               (title == "PPSA24156" || title == "PPSA02721");
+        return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) && title == "PPSA24156";
     }();
-    if (pressure_title) {
+    if (gt_title) {
         memory_budget_effective = GpuBudget::StabilizeGtBudget(
             memory_budget_configured, previous, memory_budget_effective, totals.usage,
             memory_budget_ext_enabled ? totals.budget : 0, available);

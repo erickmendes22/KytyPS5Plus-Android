@@ -878,13 +878,11 @@ static std::recursive_mutex g_memory_operation_mutex;
 // Released pooled PS5 physical spans are logically free, but used to remain
 // resident in KytyDirectMemory's shared memfd even after pool DECOMMIT/UNMAP.
 // Only reclaim a physical span *after* its last pooled mapping has been removed.
-// PPSA02721 (Neptunia ReVerse) showed 6.2 GiB RSS with only 1.5 GiB of device
-// memory live. Reclaim orphaned pool backing for this title as we already do
-// for PPSA24156 (Gran Turismo), without touching any still-mapped guest pages.
+// Keep this change scoped to PPSA24156 while investigating Android SIGKILLs.
 static bool GtPoolPageDiscardEnabled() {
 	std::string title;
 	return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
-	       (title == "PPSA24156" || title == "PPSA02721");
+	       title == "PPSA24156";
 }
 
 static void GtDiscardFreedPoolSpan(uint64_t offset, uint64_t size, const char* reason) {
@@ -901,7 +899,7 @@ static void GtDiscardFreedPoolSpan(uint64_t offset, uint64_t size, const char* r
 	                        ((attempted - size) / (256ull << 20u)))) {
 		if (logs++ < 64) {
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "PS5 pool physical discard: source={} ok={} bytes={} MiB "
+			    "GT pool physical discard: source={} ok={} bytes={} MiB "
 			    "cumulative_attempted={} freed={} failed={} MiB\n",
 			    reason, ok ? 1 : 0, size >> 20u,
 			    attempted >> 20u, released >> 20u, failed >> 20u));
