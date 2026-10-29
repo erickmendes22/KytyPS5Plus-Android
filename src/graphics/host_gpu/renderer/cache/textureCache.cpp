@@ -2679,11 +2679,12 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
         // a readback, even when used earlier in this frame. Current draw bindings
         // and the insertion/merge source remain protected. FreeImage queues Vulkan
         // destruction, and Finish below waits before the next allocation.
-        m_lru_cache.ForEachItemBelow(m_gc_tick + 1, [&](ImageId id) {
+        m_lru_cache.ForEachItemBelow(m_gc_tick, [&](ImageId id) {
             const auto* image = m_slot_images.try_get(id);
             if (image == nullptr || !image->registered || id == keep ||
                 image->binding.is_bound || image->binding.is_target ||
-                image->IsGpuModified() || image->usage.video_out ||
+                image->IsGpuModified() || image->IsBufferModified() ||
+                image->usage.video_out || image->usage.render_target || image->usage.storage ||
                 image->info.IsDepth() || image->depth_id || !image->stencil_ids.empty() ||
                 std::find(victims.begin(), victims.end(), id) != victims.end()) return false;
             victims.push_back(id);
