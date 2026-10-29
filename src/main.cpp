@@ -908,15 +908,19 @@ static int Main(int argc, char* argv[]) {
 #if defined(KYTY_ANDROID)
 	UnblockSynchronousSignals();
 	RedirectStdioToLogcat(argc, argv);
-    // This experimental build probes only the GT launch used in the SIGKILL reports.
-    bool gt_signal_probe = false;
+    // SIGKILL provenance must run for the failing PS5 title too. Previously this
+    // covered only GT (PPSA24156), leaving Neptunia's signal-origin.txt stale
+    // from an unrelated PID and making a self-kill indistinguishable from
+    // an Android-external SIGKILL.
+    bool target_signal_probe = false;
     const char* probe_data_dir = nullptr;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string_view(argv[i]) == "--game" &&
-            std::string_view(argv[i + 1]).find("PPSA24156") != std::string_view::npos) gt_signal_probe = true;
+            (std::string_view(argv[i + 1]).find("PPSA24156") != std::string_view::npos ||
+             std::string_view(argv[i + 1]).find("PPSA02721") != std::string_view::npos)) target_signal_probe = true;
         if (std::string_view(argv[i]) == "--data-dir") probe_data_dir = argv[i + 1];
     }
-    if (gt_signal_probe && probe_data_dir) {
+    if (target_signal_probe && probe_data_dir) {
         const auto logs = std::filesystem::path(probe_data_dir) / "logs";
         const bool active = SignalOrigin::Install((logs / "signal-origin.txt").c_str());
         ::printf("[KytyDiagnostic] SIGKILL syscall provenance active=%d (TSYNC + safe self-test)\n", active);
