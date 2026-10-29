@@ -110,6 +110,13 @@ void NoteRecreate(const char* reason, const ImageInfo& requested, const ImageInf
 	if (code == 0x00) {
 		return true;
 	}
+	// In the 2:10:10:10 layout alpha occupies the low two bits. Integer
+	// backing clears must carry the complete guest word, not float channels.
+	if (desc.info.guest_format == Prospero::BufferFormat::k2_10_10_10UNorm) {
+		clear.uint32[0] = ((code & 0x80u) != 0 ? 0xfffffffcu : 0u) |
+		                  ((code & 0x40u) != 0 ? 3u : 0u);
+		return true;
+	}
 	switch (format) {
 		case vk::Format::eR8Unorm:
 		case vk::Format::eR8G8Unorm:

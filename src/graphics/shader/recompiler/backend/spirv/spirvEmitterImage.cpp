@@ -854,7 +854,8 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 		return;
 	}
 	if (image_info.needs_sampler &&
-	    image.conversion_format == Prospero::BufferFormat::k11_11_10UNorm) {
+	    (image.conversion_format == Prospero::BufferFormat::k11_11_10UNorm ||
+	     image.conversion_format == Prospero::BufferFormat::k2_10_10_10UNorm)) {
 		if (op != IR::ValueOpcode::ImageSampleRaw ||
 		    image.dimension != ImageDimension::Dim2D ||
 		    mem.image_dimension != ImageDimension::Dim2D || mem.data_bits != 32u ||

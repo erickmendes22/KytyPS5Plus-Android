@@ -14844,6 +14844,24 @@ void TestRenderTargetReverseExportMapping() {
             format.export_mapping.ApplyMask(0xfu) == 0xfu,
         "reverse RGBA16F render-target export or write-mask mapping is "
         "incorrect");
+  // Exact tuple from the 01:06 device failure. No Vulkan packed format has
+  // the guest's low 2-bit lane, so preserve all bits in an R32_UINT backing.
+  const auto packed_2101010 = TextureGetRenderTargetFormat(
+      static_cast<Prospero::ChannelLayout>(8), static_cast<Prospero::ChannelType>(0),
+      static_cast<Prospero::ChannelOrder>(2));
+  Check(packed_2101010.format == vk::Format::eR32Uint &&
+            packed_2101010.bytes_per_element == 4 &&
+            packed_2101010.guest_format == Prospero::BufferFormat::k2_10_10_10UNorm &&
+            packed_2101010.export_mapping == Prospero::ColorMappingAbgr,
+        "captured reversed 2:10:10:10 target lost its raw storage or export order");
+  const auto sampled_2101010 = TextureGetSurfaceFormatInfo(
+      Prospero::BufferFormat::k2_10_10_10UNorm);
+  Check(sampled_2101010.vk_format == vk::Format::eR32Uint &&
+            sampled_2101010.conversion_format == Prospero::BufferFormat::k2_10_10_10UNorm &&
+            Prospero::NumBytesPerElement(Prospero::BufferFormat::k2_10_10_10UNorm) == 4 &&
+            Prospero::SampledTextureNumericClass(Prospero::BufferFormat::k2_10_10_10UNorm) ==
+                Prospero::TextureNumericClass::Float,
+        "2:10:10:10 sampled aliases lost conversion or physical byte width");
   const auto legacy_alt = TextureGetRenderTargetFormat(
       Prospero::ChannelLayout::k8_8_8_8, Prospero::ChannelType::kUNorm,
       Prospero::ChannelOrder::kAlt);
@@ -15052,6 +15070,34 @@ void TestRenderTargetReverseExportMapping() {
   packed_info.target_round_mode = 0;
   Check(MakeStageStaticKey(packed_info) == half_up_key,
         "restoring packed MRT rounding did not restore the static key");
+  packed_info.target_packed_2101010_mask = 1;
+  packed_info.target_export_mapping[0] = packed_2101010.export_mapping;
+  const auto packed_2101010_key = MakeStageStaticKey(packed_info);
+  const auto packed_2101010_shader = RecompileForTest(shader, options);
+  Check(packed_2101010_key != half_up_key &&
+            packed_2101010_shader.spirv != packed.spirv &&
+            SpirvContainsVectorShuffle(packed_2101010_shader.spirv, {3u, 2u, 1u, 0u}),
+        "2:10:10:10 export reused 11:11:10 packing or omitted reversed channels");
+  CheckSpirvBinaryValidates(packed_2101010_shader.spirv);
+  packed_info.target_round_mode = 1;
+  const auto packed_2101010_truncated = RecompileForTest(shader, options);
+  Check(MakeStageStaticKey(packed_info) != packed_2101010_key &&
+            packed_2101010_truncated.spirv != packed_2101010_shader.spirv,
+        "2:10:10:10 rounding did not specialize its export");
+  CheckSpirvBinaryValidates(packed_2101010_truncated.spirv);
+  const uint32_t compressed_2101010[] = {
+      EncodeExp0(0, 0xf, true, true), EncodeExp1(0, 1, 0, 0), 0xbf810000u};
+  for (uint32_t mode : {4u, 5u, 6u}) {
+    packed_info.target_output_mode[0] = mode;
+    const auto compressed = RecompileForTest(compressed_2101010, options);
+    CheckSpirvBinaryValidates(compressed.spirv);
+    Check(DisassembleSpirvBinary(compressed.spirv).find("OpVariable %_ptr_Output_v4uint Output") !=
+              std::string::npos,
+          "compressed 2:10:10:10 export lost integer backing");
+  }
+  packed_info.target_output_mode[0] = 9;
+  packed_info.target_round_mode = 0;
+  packed_info.target_packed_2101010_mask = 0;
   packed_info.target_export_mapping[0] = Prospero::ColorMappingBgra;
   const auto packed_reversed = RecompileForTest(shader, options);
   Check(MakeStageStaticKey(packed_info) != half_up_key &&

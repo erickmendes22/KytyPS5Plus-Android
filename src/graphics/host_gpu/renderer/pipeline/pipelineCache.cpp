@@ -1645,19 +1645,24 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 			const auto target_mask = render_target_mask_slot(context.GetRenderTargetMask(), slot);
 			if (rt.base.addr == 0 || target_mask == 0u) continue;
 			const auto format = Prospero::ResolveRenderTargetFormat(rt.info.format, rt.info.channel_type);
-			if (format.buffer_format != Prospero::BufferFormat::k11_11_10UNorm) continue;
+			const bool packed_2101010 = format.buffer_format == Prospero::BufferFormat::k2_10_10_10UNorm;
+			if (format.buffer_format != Prospero::BufferFormat::k11_11_10UNorm && !packed_2101010) continue;
+			const auto required_mask = packed_2101010 ? 15u : 7u;
 			const auto mapping = pixel_info.target_export_mapping[export_index];
 			const auto shader_mask = render_target_mask_slot(pixel_info.target_shader_mask, slot);
 			const bool blend = context.GetBlendControl(slot).enable && !rt.info.blend_bypass;
-			if (blend || (mapping.ApplyMask(target_mask) & 7u) != 7u ||
-			    (mapping.ApplyMask(shader_mask) & 7u) != 7u ||
-			    pixel_info.target_output_mode[export_index] != 9u) {
+			if (blend || (mapping.ApplyMask(target_mask) & required_mask) != required_mask ||
+			    (mapping.ApplyMask(shader_mask) & required_mask) != required_mask ||
+			    (pixel_info.target_output_mode[export_index] != 9u &&
+			     !(packed_2101010 && pixel_info.target_output_mode[export_index] >= 4u &&
+			       pixel_info.target_output_mode[export_index] <= 6u))) {
 				EXIT("unsupported packed UNorm render-target export: slot=%u export=%u mode=%u "
 				     "target_mask=0x%x shader_mask=0x%x mapping=0x%02x blend=%u\n",
 				     slot, export_index, pixel_info.target_output_mode[export_index], target_mask,
 				     shader_mask, mapping.packed, static_cast<uint32_t>(blend));
 			}
 			pixel_info.target_packed_unorm_mask |= 1u << export_index;
+			if (packed_2101010) pixel_info.target_packed_2101010_mask |= 1u << export_index;
 			pixel_info.target_round_mode |= static_cast<uint8_t>(rt.info.round_mode) << export_index;
 		}
 		if (!mesh_active && !tess_active && Prospero::IsRectList(user_config.GetPrimType())) {
@@ -1884,7 +1889,8 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 		++kept_color_count;
 		static_params.color_mask[slot] = colors[i].export_mapping.ApplyMask(
 		    render_target_mask_slot(ctx.GetRenderTargetMask(), colors[i].target_slot));
-		if (colors[i].desc.info.guest_format == Prospero::BufferFormat::k11_11_10UNorm) {
+		if ((colors[i].desc.info.guest_format == Prospero::BufferFormat::k11_11_10UNorm ||
+		     colors[i].desc.info.guest_format == Prospero::BufferFormat::k2_10_10_10UNorm)) {
 			static_params.color_mask[slot] = 1u;
 		}
 		rendering.color_formats[slot] = colors[i].desc.view_info.format;

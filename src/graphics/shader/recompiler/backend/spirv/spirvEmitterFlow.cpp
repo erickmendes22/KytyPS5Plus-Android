@@ -669,12 +669,21 @@ void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 				value = mapped;
 			}
 			if ((state.input_info.pixel->target_packed_unorm_mask & (1u << exp.index)) != 0u) {
-				if (exp.compr || MrtOutputMode(state, exp) != 9u ||
-				    (mapping.ApplyMask(exp.en) & 7u) != 7u) {
+				const bool packed_2101010 =
+				    (state.input_info.pixel->target_packed_2101010_mask & (1u << exp.index)) != 0u;
+				const auto required_mask = packed_2101010 ? 15u : 7u;
+				const auto mode = MrtOutputMode(state, exp);
+				const bool supported_encoding = packed_2101010
+				    ? ((!exp.compr && mode == 9u) || (exp.compr && mode >= 4u && mode <= 6u))
+				    : (!exp.compr && mode == 9u);
+				if (!supported_encoding ||
+				    (mapping.ApplyMask(exp.en) & required_mask) != required_mask) {
 					EXIT("unsupported packed UNorm EXP: export=%u mode=%u en=0x%x compr=%u\n",
 					     exp.index, MrtOutputMode(state, exp), exp.en, static_cast<uint32_t>(exp.compr));
 				}
-				const auto info = Format::GetFormatInfo(Prospero::BufferFormat::k11_11_10UNorm);
+				const auto info = Format::GetFormatInfo(packed_2101010
+				    ? Prospero::BufferFormat::k2_10_10_10UNorm
+				    : Prospero::BufferFormat::k11_11_10UNorm);
 				const auto rounding = (state.input_info.pixel->target_round_mode & (1u << exp.index)) != 0
 				                          ? UnormRounding::Truncate : UnormRounding::HalfUp;
 				const auto raw = Unary(state, spv::OpBitcast, TypeU32Vector(state, 4), value);

@@ -923,7 +923,8 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		if (raw_sint_format == Prospero::BufferFormat::k16UInt) image.conversion_format = format;
 		image.numeric_class = Prospero::SampledTextureNumericClass(
 		    Prospero::RemapTextureFormat(format));
-		if (!storage && format == Prospero::BufferFormat::k11_11_10UNorm) {
+		if (!storage && (format == Prospero::BufferFormat::k11_11_10UNorm ||
+		                 format == Prospero::BufferFormat::k2_10_10_10UNorm)) {
 			if (image.indirect_root != ImageResource::NoIndirectImage) {
 				return SpecializationFail("packed UNorm sampling requires a direct image");
 			}
