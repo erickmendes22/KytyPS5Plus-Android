@@ -24,6 +24,7 @@ struct GraphicContext;
 struct RenderColorInfo;
 struct RenderDepthInfo;
 class CommandBuffer;
+class CommandScheduler;
 
 namespace HW {
 class Context;
@@ -119,6 +120,7 @@ public:
 		vk::Pipeline            pipeline              = nullptr;
 		vk::DescriptorSetLayout descriptor_set_layout = nullptr;
 		bool                    uses_push_descriptors = false;
+		uint64_t                last_used             = 0;
 		vk::ShaderStageFlags    push_constant_stages  = {};
 	};
 
@@ -191,6 +193,8 @@ private:
 		std::size_t operator()(const GraphicsPipelineKey& key) const;
 	};
 
+	uint64_t                          m_pipeline_use_clock = 0;
+	void ReclaimGraphicsPipelines();
 	GraphicContext&                   m_graphics;
 	std::unique_ptr<ShaderWorkerPool> m_workers;
 	std::unique_ptr<ProgramCache>     m_program_cache;
@@ -218,14 +222,15 @@ private:
 	template <typename Key, typename Hash, typename MakeJob>
 	Pipeline* PollPipeline(std::unordered_map<Key, std::unique_ptr<Pipeline>, Hash>&   installed,
 	                       std::unordered_map<Key, std::shared_ptr<PipelineJob>, Hash>& pending,
-	                       const Key& key, MakeJob&& make_job, bool blocking);
+	                       const Key& key, MakeJob&& make_job, bool blocking,
+	                       CommandScheduler* recovery_scheduler = nullptr);
 	void InitializeDriverCache();
 	[[nodiscard]] bool WriteDriverCacheFile() const;
 	void CheckpointDriverCache();
 };
 
 void LogPipelineTrace(const char* phase, uint64_t vertex_program_id, uint64_t pixel_program_id);
-void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
+vk::Result CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                             const PipelineRenderingState&          rendering,
                             const PipelineVertexInputState&        vertex_input,
                             std::span<const ShaderVertexInputInfo> vertex_info,

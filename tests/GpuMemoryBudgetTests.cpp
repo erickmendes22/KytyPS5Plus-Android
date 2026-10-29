@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "common/processMemory.h"
+#include "graphics/host_gpu/pipelineAllocationRecovery.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,39 @@ void Check(bool value, const char* text) {
 		std::fprintf(stderr, "GpuMemoryBudgetTests: failed: %s\n", text);
 		std::abort();
 	}
+}
+
+void TestPipelineAllocationRecovery() {
+  using Libs::Graphics::RecoverPipelineAllocation;
+  // Inject the exact Vulkan error from PID 14101 and device-memory exhaustion.
+  // Track resource lifetime and GPU completion, not just the retry return code.
+  for (int32_t initial : {-1, -2}) {
+    for (int32_t retried : {0, -1, -2, -4}) {
+      std::string events;
+      bool gpu_in_flight = true;
+      int failed_objects = 1, cached_objects = 3, attempts = 0;
+      const auto result = RecoverPipelineAllocation(initial,
+          [&] { Check(failed_objects == 1, "failed allocation is released once");
+                failed_objects = 0; events += 'F'; },
+          [&] { Check(failed_objects == 0, "failed objects freed before GPU drain");
+                gpu_in_flight = false; events += 'D'; },
+          [&] { Check(!gpu_in_flight, "cached pipeline cannot be destroyed in flight");
+                cached_objects = 1; events += 'E'; },
+          [&] { Check(!gpu_in_flight && cached_objects == 1 && failed_objects == 0,
+                      "retry starts after reclamation");
+                ++attempts; events += 'R'; return retried; });
+      Check(result == retried && attempts == 1 && events == "FDER",
+            "OOM recovery is ordered and retries exactly once, even after a repeated failure");
+    }
+  }
+  for (int32_t result : {0, -3, -4, -13, -1000012000}) {
+    bool touched = false;
+    const auto actual = RecoverPipelineAllocation(result,
+        [&] { touched = true; }, [&] { touched = true; }, [&] { touched = true; },
+        [&] { touched = true; return int32_t{0}; });
+    Check(actual == result && !touched,
+          "success/device loss/invalid shader must not trigger memory recovery");
+  }
 }
 
 void TestAutoBudget() {
@@ -172,6 +206,7 @@ int main() {
   Check(ReadbackRows(1, 0, 1, 1, UINT64_MAX) == 0 &&
             ReadbackRows(1, 1, 0, 1, UINT64_MAX) == 0,
         "reject invalid geometry");
+  TestPipelineAllocationRecovery();
   TestAutoBudget();
   TestThresholds();
   TestEffective();

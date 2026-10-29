@@ -4,6 +4,7 @@
 #include "graphics/host_gpu/renderer/image/renderScale.h"
 
 #include "common/assert.h"
+#include "graphics/host_gpu/pipelineAllocationRecovery.h"
 #include "common/emulatorConfig.h"
 #include "common/perfStats.h"
 #include "common/perfWaits.h"
@@ -1199,21 +1200,24 @@ struct PipelineCache::PipelineJob: ShaderWorkerPool::Job {
 	vk::ShaderModule                                module  = nullptr;
 	// Result, valid once Done(); taken by the GPU thread at install.
 	std::unique_ptr<Pipeline> result;
+	vk::Result allocation_result = vk::Result::eSuccess;
 
-	~PipelineJob() override {
+	void ReleasePipeline() {
 		if (result) {
 			graphics->device.destroyPipeline(result->pipeline, nullptr);
 			graphics->device.destroyPipelineLayout(result->pipeline_layout, nullptr);
 			graphics->device.destroyDescriptorSetLayout(result->descriptor_set_layout, nullptr);
+			result.reset();
 		}
 	}
+	~PipelineJob() override { ReleasePipeline(); }
 
 	void Run() override {
 		auto pipeline = std::make_unique<Pipeline>();
 		if (compute) {
 			CreatePipelineInternal(*graphics, *pipeline, *program, module, driver_cache);
 		} else {
-			CreatePipelineInternal(*graphics, *pipeline, rendering, vertex_input,
+			allocation_result = CreatePipelineInternal(*graphics, *pipeline, rendering, vertex_input,
 			                       std::span<const ShaderVertexInputInfo>(vertex_info.data(), vertex_count),
 			                       pixel_info ? &*pixel_info : nullptr, programs, static_params,
 			                       driver_cache);
@@ -1226,8 +1230,9 @@ template <typename Key, typename Hash, typename MakeJob>
 PipelineCache::Pipeline* PipelineCache::PollPipeline(
     std::unordered_map<Key, std::unique_ptr<Pipeline>, Hash>&   installed,
     std::unordered_map<Key, std::shared_ptr<PipelineJob>, Hash>& pending, const Key& key,
-    MakeJob&& make_job, bool blocking) {
+    MakeJob&& make_job, bool blocking, CommandScheduler* recovery_scheduler) {
 	if (const auto found = installed.find(key); found != installed.end()) {
+		found->second->last_used = ++m_pipeline_use_clock;
 		return found->second.get();
 	}
 	auto                         pending_it = pending.find(key);
@@ -1248,12 +1253,52 @@ PipelineCache::Pipeline* PipelineCache::PollPipeline(
 		return nullptr;
 	}
 	pending.erase(pending_it);
+	if (recovery_scheduler != nullptr) {
+		const auto initial = static_cast<int32_t>(job->allocation_result);
+		const auto result = RecoverPipelineAllocation(initial,
+		    [&] { job->ReleasePipeline(); job.reset(); },
+		    [&] { recovery_scheduler->Finish(); },
+		    [&] { ReclaimGraphicsPipelines(); },
+		    [&] {
+			job = make_job();
+			// A retry must not grow the driver's optional compilation cache.
+			job->driver_cache = nullptr;
+			m_workers->RunNow(job);
+			return static_cast<int32_t>(job->allocation_result);
+		});
+		if (result != static_cast<int32_t>(vk::Result::eSuccess)) {
+			EXIT("GT graphics pipeline allocation failed after one GPU-drained recovery: %s\n",
+			     vk::to_string(static_cast<vk::Result>(result)).c_str());
+		}
+	}
 	EXIT_NOT_IMPLEMENTED(!job->result || job->result->pipeline == nullptr ||
 	                     job->result->pipeline_layout == nullptr);
+	job->result->last_used = ++m_pipeline_use_clock;
 	auto [iter, inserted] = installed.emplace(key, std::move(job->result));
 	EXIT_IF(!inserted);
 	CheckpointDriverCache();
 	return iter->second.get();
+}
+
+void PipelineCache::ReclaimGraphicsPipelines() {
+	// Called only after Finish(): no submitted or open GPU command retains these
+	// handles. Workers read shader permutations, not installed Pipeline objects.
+	// Keep the newest half (at most 128), so frequently reused states survive.
+	const auto keep = std::min<size_t>(128, m_graphics_pipelines.size() / 2);
+	const auto count = m_graphics_pipelines.size() - keep;
+	// Do not allocate a sorting buffer while handling an allocation failure.
+	while (m_graphics_pipelines.size() > keep) {
+		auto oldest = m_graphics_pipelines.begin();
+		for (auto it = m_graphics_pipelines.begin(); it != m_graphics_pipelines.end(); ++it)
+			if (it->second->last_used < oldest->second->last_used) oldest = it;
+		const auto& pipeline = *oldest->second;
+		m_graphics.device.destroyPipeline(pipeline.pipeline, nullptr);
+		m_graphics.device.destroyPipelineLayout(pipeline.pipeline_layout, nullptr);
+		m_graphics.device.destroyDescriptorSetLayout(pipeline.descriptor_set_layout, nullptr);
+		m_graphics_pipelines.erase(oldest);
+	}
+	PipelineCacheLog("GT pipeline OOM recovery: retired {} graphics pipelines, kept {}; retry once without driver cache",
+	                 count, keep);
 }
 
 PipelineCache::PipelineCache(GraphicContext& graphics)
@@ -2043,7 +2088,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 		job->programs      = programs;
 		job->static_params = key.static_params;
 		return job;
-	}, /*blocking=*/false);
+	}, /*blocking=*/false, &command.GetContext().GetCommandScheduler());
 }
 
 PipelineCache::Pipeline&

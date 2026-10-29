@@ -587,7 +587,7 @@ static vk::ShaderModule CreateMeshVertexPullModule(
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
+vk::Result CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                             const PipelineRenderingState&          rendering,
                             const PipelineVertexInputState&        vertex_input,
                             std::span<const ShaderVertexInputInfo> vertex_info,
@@ -1282,6 +1282,27 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		PipelineStats::Write(graphics, pipeline.pipeline, label,
 		                     std::span(guest_hashes).first(guest_hash_count));
 	}
+	auto release_temporary_modules = [&] {
+		if (tess_control_shader_module != nullptr) {
+			ShaderDump::ForgetModule(tess_control_shader_module);
+			graphics.device.destroyShaderModule(tess_control_shader_module, nullptr);
+		}
+		if (tess_eval_shader_module != nullptr) {
+			ShaderDump::ForgetModule(tess_eval_shader_module);
+			graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
+		}
+		if (geometry_shader_module != nullptr)
+			graphics.device.destroyShaderModule(geometry_shader_module, nullptr);
+		if (mesh_vertex_module != nullptr)
+			graphics.device.destroyShaderModule(mesh_vertex_module, nullptr);
+	};
+	// Workers cannot retire renderer-owned pipelines or submit its command buffer.
+	// Hand the actual GT allocation error back to the recording thread instead.
+	if (gt_pipeline && (result == vk::Result::eErrorOutOfHostMemory ||
+	                    result == vk::Result::eErrorOutOfDeviceMemory)) {
+		release_temporary_modules();
+		return result;
+	}
 	if (result != vk::Result::eSuccess) {
 		std::string stages;
 		for (uint32_t i = 0; i < guest_hash_count; i++) {
@@ -1310,20 +1331,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
 
-	if (tess_control_shader_module != nullptr) {
-		ShaderDump::ForgetModule(tess_control_shader_module);
-		graphics.device.destroyShaderModule(tess_control_shader_module, nullptr);
-	}
-	if (tess_eval_shader_module != nullptr) {
-		ShaderDump::ForgetModule(tess_eval_shader_module);
-		graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
-	}
-	if (geometry_shader_module != nullptr) {
-		graphics.device.destroyShaderModule(geometry_shader_module, nullptr);
-	}
-	if (mesh_vertex_module != nullptr) {
-		graphics.device.destroyShaderModule(mesh_vertex_module, nullptr);
-	}
+	release_temporary_modules();
+	return vk::Result::eSuccess;
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
