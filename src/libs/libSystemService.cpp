@@ -262,6 +262,12 @@ static int KYTY_SYSV_ABI SystemServiceDisableMusicPlayer() {
 	return OK;
 }
 
+// NID 9kPCz7Or+1Y: restores PS5 background music after a title disabled it.
+// Kyty has no host system music player; acknowledge the request successfully.
+static int KYTY_SYSV_ABI SystemServiceReenableMusicPlayer() {
+	return OK;
+}
+
 static int KYTY_SYSV_ABI SystemServiceReportAbnormalTermination(const void* info) {
 	PRINT_NAME();
 
@@ -582,6 +588,7 @@ LIB_DEFINE(InitSystemService_1) {
 	LIB_FUNC("Q3utJvma4Mo", SystemService::SystemServiceSetNoticeScreenSkipFlag);
 	LIB_FUNC("XbbJC3E+L5M", SystemService::SystemServicePowerTick);
 	LIB_FUNC("x1UB9bwDSOw", SystemService::SystemServiceDisableMusicPlayer);
+	LIB_FUNC("9kPCz7Or+1Y", SystemService::SystemServiceReenableMusicPlayer);
 	LIB_FUNC("3s8cHiCBKBE", SystemService::SystemServiceReportAbnormalTermination);
 	SystemGesture::InitSystemGesture_1(s);
 }
