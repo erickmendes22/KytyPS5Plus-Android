@@ -140,9 +140,9 @@ object Diagnostics {
 
 
     /**
-     * Capture the last ENTERed PPSA24156 tessellation pipeline. Queued
-     * pipelines are excluded: only an ENTERed call reaches the Vulkan driver.
-     * Include its exact SPIR-V modules and fixed-function pipeline JSON.
+     * Prefer the graphics pipeline that returned an error. Fall back to the last
+     * ENTERed tessellation call when a driver crash prevents a result record.
+     * Export the exact SPIR-V filenames referenced by its pipeline JSON.
      */
     private fun exportGtTessellationCapture(context: Context, zip: ZipOutputStream): Int {
         val logFile = File(context.filesDir, "logs/session.log")
@@ -150,33 +150,48 @@ object Diagnostics {
         if (!logFile.isFile || !dump.isDirectory) return 0
         return try {
             val records = logFile.readLines()
-            val entered = records.lastOrNull { it.startsWith("GT tess pipeline ENTER #") }
-                ?: return 0
-            val serial = Regex("""ENTER #(\d+)""").find(entered)
+            val entered = records.lastOrNull {
+                it.startsWith("GT pipeline END #") &&
+                    !it.substringAfter(" result=", "").substringBefore(' ').let { result ->
+                        result.isEmpty() || result == "Success"
+                    }
+            } ?: records.lastOrNull { it.startsWith("GT tess pipeline ENTER #") } ?: return 0
+            val serial = Regex("""#(\d+)""").find(entered)
                 ?.groupValues?.getOrNull(1) ?: return 0
             val begin = records.lastOrNull { it.startsWith("GT pipeline BEGIN #$serial ") }
                 ?: return 0
             val hashRegion = begin.substringAfter(" hashes=", "").substringBefore(" topology=", "")
             val hashes = Regex("""0x([a-fA-F0-9]{16})""").findAll(hashRegion)
                 .map { it.groupValues[1].lowercase(Locale.ROOT) }.toList()
-            if (hashes.size < 3) return 0
+            if (hashes.isEmpty()) return 0
 
             val files = mutableListOf<File>()
             val prefix = "gfx_" + hashes.joinToString("_") + "_"
-            File(dump, "pipelines").listFiles()
-                ?.filter { it.isFile && it.extension == "json" && it.name.startsWith(prefix) }
-                ?.sortedByDescending { it.lastModified() }?.take(3)?.let(files::addAll)
-            val spvs = File(dump, "spv").listFiles().orEmpty()
-            for (hash in hashes) {
-                spvs.filter { it.isFile && it.extension == "spv" && it.name.contains("_${hash}_") }
-                    .sortedByDescending { it.lastModified() }.take(3).let(files::addAll)
+            val exactName = records.lastOrNull { it.contains("dump record: $prefix") }
+                ?.substringAfter("dump record: ")?.trim()
+                ?.takeIf { it.startsWith(prefix) && it.endsWith(".json") && '/' !in it && '\\' !in it }
+            val exact = exactName?.let { File(dump, "pipelines/$it") }?.takeIf { it.isFile }
+            val pipelineFiles = if (exact != null) listOf(exact) else
+                File(dump, "pipelines").listFiles().orEmpty()
+                    .filter { it.isFile && it.extension == "json" && it.name.startsWith(prefix) }
+                    .sortedByDescending { it.lastModified() }.take(3)
+            files.addAll(pipelineFiles)
+            for (pipelineFile in pipelineFiles) {
+                val stages = org.json.JSONObject(pipelineFile.readText()).optJSONArray("stages")
+                    ?: continue
+                for (i in 0 until stages.length()) {
+                    val relative = stages.optJSONObject(i)?.optString("spv").orEmpty()
+                    if (!relative.startsWith("spv/") || relative.split('/').contains("..") ||
+                        '\\' in relative) continue
+                    File(dump, relative).takeIf { it.isFile }?.let(files::add)
+                }
             }
             File(dump, "device.json").takeIf { it.isFile }?.let(files::add)
 
             var budget = 16L * 1024L * 1024L
             var exported = 0
             val note = buildString {
-                appendLine("PPSA24156 last entered tessellation pipeline #$serial")
+                appendLine("PPSA24156 selected graphics pipeline #$serial")
                 appendLine(begin)
                 appendLine(entered)
                 appendLine("Shaders: ${hashes.joinToString(" ")}")
