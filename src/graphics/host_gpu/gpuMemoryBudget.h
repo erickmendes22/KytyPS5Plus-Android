@@ -114,6 +114,24 @@ inline constexpr uint64_t kGtPreallocGrowth = 64 * MiB;
 	return std::clamp(shrunk, std::min(kRuntimeFloor, configured), configured);
 }
 
+// PPSA24156 replay (PID 1517, 2026-10-29): Effective() followed growing
+// usage back up to 3584 MiB while available RAM stayed below 200 MiB.
+// Keep a pressure reduction latched until headroom has actually recovered;
+// then restore at most 128 MiB per one-second sample, not in a single jump.
+[[nodiscard]] constexpr uint64_t StabilizeGtBudget(
+    uint64_t configured, uint64_t previous, uint64_t proposed,
+    uint64_t usage, uint64_t driver_budget,
+    std::optional<uint64_t> available) {
+    if (configured == 0) return 0;
+    if (previous == 0) previous = configured;
+    auto headroom = driver_budget == 0 ? UINT64_MAX
+        : driver_budget > usage ? driver_budget - usage : 0;
+    if (available) headroom = std::min(headroom, *available);
+    if (headroom < 2 * GiB) return std::min(previous, proposed);
+    const auto step = std::min(configured - std::min(previous, configured), 128 * MiB);
+    return std::min(proposed, previous + step);
+}
+
 } // namespace Libs::Graphics::GpuBudget
 
 #endif // EMULATOR_SRC_GRAPHICS_HOST_GPU_GPUMEMORYBUDGET_H_

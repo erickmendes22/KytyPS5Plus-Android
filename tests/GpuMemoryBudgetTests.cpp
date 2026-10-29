@@ -27,6 +27,30 @@ void TestAutoBudget() {
 	Check(AutoBudget(64 * GiB) == kAutoCap, "never above the cap");
 }
 
+void TestGtPressureReplay() {
+    // Exact usage/budget/available samples around the confirmed LOW_MEMORY exit.
+    struct Sample { uint64_t usage, budget, available; };
+    const Sample samples[] = {
+        {2278,2992,793}, {2002,2765,847}, {1907,2721,904},
+        {2352,2675,357}, {2294,2509,239}, {2484,2659,194},
+        {2761,2839,86}, {3559,3684,138}, {5785,5950,183},
+    };
+    auto previous = 3584 * MiB;
+    for (auto sample : samples) {
+        const auto proposed = Effective(3584 * MiB, sample.usage * MiB,
+            sample.budget * MiB, sample.available * MiB);
+        const auto actual = StabilizeGtBudget(3584 * MiB, previous, proposed,
+            sample.usage * MiB, sample.budget * MiB, sample.available * MiB);
+        Check(actual <= previous, "GT budget cannot grow during the recorded pressure burst");
+        Check(actual >= kRuntimeFloor, "GT pressure replay keeps the configured runtime floor");
+        previous = actual;
+    }
+    const auto recovering = StabilizeGtBudget(3584 * MiB, previous, 3584 * MiB,
+        2 * GiB, 6 * GiB, 3 * GiB);
+    Check(recovering == previous + 128 * MiB, "GT budget recovers gradually after real headroom returns");
+    Check(StabilizeGtBudget(0, 0, 0, 0, 0, 0) == 0, "disabled GT budget stays disabled");
+}
+
 void TestThresholds() {
 	const auto t = ForBudget(4 * GiB); // also what --gpu-memory-budget 4096 gives
 	Check(t.trigger < t.pressure && t.pressure < t.critical && t.critical < 4 * GiB,
@@ -151,6 +175,7 @@ int main() {
   TestAutoBudget();
   TestThresholds();
   TestEffective();
+  TestGtPressureReplay();
   TestUnifiedSystemPressure();
   TestGtPreallocationReclaim();
   TestProcessMemoryReadings();

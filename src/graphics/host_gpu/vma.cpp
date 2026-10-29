@@ -20,6 +20,7 @@
 #include "common/profiler.h"
 #include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "loader/systemContent.h"
 
 #include <algorithm>
 #include <chrono>
@@ -165,6 +166,15 @@ uint64_t GraphicContext::UpdateMemoryBudget() {
 	memory_budget_effective =
 	    GpuBudget::Effective(memory_budget_configured, totals.usage,
 	                         memory_budget_ext_enabled ? totals.budget : 0, available);
+	static const bool gt_title = [] {
+        std::string title;
+        return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) && title == "PPSA24156";
+    }();
+    if (gt_title) {
+        memory_budget_effective = GpuBudget::StabilizeGtBudget(
+            memory_budget_configured, previous, memory_budget_effective, totals.usage,
+            memory_budget_ext_enabled ? totals.budget : 0, available);
+    }
 	// Log real moves only: the headroom jitters by a few MiB every second.
 	constexpr uint64_t LogStep = 128 * GpuBudget::MiB;
 	const auto         moved   = memory_budget_effective > previous

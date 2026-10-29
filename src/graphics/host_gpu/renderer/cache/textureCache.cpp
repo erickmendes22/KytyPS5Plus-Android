@@ -291,7 +291,8 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 				// EvictForAllocation protects this call's keep image, skips current
 				// and recently used/bound images, copies authoritative GPU data
 				// back before freeing, and waits for Vulkan retirement.
-				const bool reclaimed = EvictForAllocation(keep);
+				const bool reclaimed = EvictForAllocation(
+                        keep, *available < GpuBudget::kLowWater);
 				m_gt_prealloc_last_usage = live;
 				m_gt_prealloc_last_tick = m_gc_tick;
 				static std::atomic_uint32_t reported {0};
@@ -2644,7 +2645,7 @@ void TextureCache::RunGarbageCollector() {
 // source image, downloading GPU-written ones like the collector does, then finish the GPU work so
 // their deferred destruction actually returns the memory before the caller retries. Caller holds
 // m_lock; none of the scheduler's deferred operations take it.
-bool TextureCache::EvictForAllocation(ImageId keep) {
+bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_backed) {
 	constexpr uint64_t EVICT_TARGET    = 256ull << 20u;
 	constexpr uint64_t DOWNLOAD_BUDGET = 32ull << 20u;
 	if (!m_scheduler.Active() || m_gc_tick < 2) {
@@ -2670,6 +2671,34 @@ bool TextureCache::EvictForAllocation(ImageId keep) {
 		bytes += image->AccountedSize();
 		return bytes >= EVICT_TARGET;
 	});
+    uint64_t recent_bytes = 0;
+    if (reclaim_recent_cpu_backed && bytes < EVICT_TARGET) {
+        // The GT LOW_MEMORY trace grew ~1.8 GiB of sampled images in tick 2747.
+        // A frame-age-only collector can never catch that burst. Unbound plain
+        // textures already have authoritative guest bytes, so evict them without
+        // a readback, even when used earlier in this frame. Current draw bindings
+        // and the insertion/merge source remain protected. FreeImage queues Vulkan
+        // destruction, and Finish below waits before the next allocation.
+        m_lru_cache.ForEachItemBelow(m_gc_tick + 1, [&](ImageId id) {
+            const auto* image = m_slot_images.try_get(id);
+            if (image == nullptr || !image->registered || id == keep ||
+                image->binding.is_bound || image->binding.is_target ||
+                image->IsGpuModified() || image->usage.video_out ||
+                image->info.IsDepth() || image->depth_id || !image->stencil_ids.empty() ||
+                std::find(victims.begin(), victims.end(), id) != victims.end()) return false;
+            victims.push_back(id);
+            const auto size = image->AccountedSize();
+            bytes += size; recent_bytes += size;
+            return bytes >= EVICT_TARGET;
+        });
+    }
+    if (recent_bytes) {
+        static std::atomic_uint32_t reported {0};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 180u)
+            Log::WriteToConsoleAndLog(fmt::format(
+                "GT intra-frame reclaim: tick={} recent_cpu_backed={} MiB candidates={} (bound/target/keep/GPU-written protected)\n",
+                m_gc_tick, recent_bytes / GpuBudget::MiB, victims.size()));
+    }
 	size_t freed = 0;
 	for (const auto id: victims) {
 		auto& image = m_slot_images[id];
