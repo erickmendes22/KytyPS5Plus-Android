@@ -85,6 +85,31 @@ void TestGtPressureReplay() {
     Check(StabilizeGtBudget(0, 0, 0, 0, 0, 0) == 0, "disabled GT budget stays disabled");
 }
 
+void TestNeptuniaPressureReplay() {
+    struct Sample { uint64_t usage, driver_budget, available; };
+    // The exact recorded transition 3584 -> 1547 -> 3584 -> 1554 -> 3584
+    // is not a recovery: MemAvailable remained below 1 GiB.
+    const Sample samples[] = {
+        {1635, 2315, 755}, {1524, 2314, 877}, {1588, 2322, 814},
+        {1524, 2363, 932}, {1588, 2314, 805}, {1460, 2291, 922},
+        {1909, 2509, 666},
+    };
+    auto previous = 3584 * MiB;
+    bool shrunk = false;
+    for (auto sample : samples) {
+        const auto proposed = Effective(3584 * MiB, sample.usage * MiB,
+                                        sample.driver_budget * MiB, sample.available * MiB);
+        const auto stable = StabilizeGtBudget(3584 * MiB, previous, proposed,
+                                              sample.usage * MiB,
+                                              sample.driver_budget * MiB, sample.available * MiB);
+        Check(stable <= previous, "Neptunia must not restore budget under pressure");
+        Check(stable >= kRuntimeFloor, "Neptunia respects runtime floor");
+        shrunk |= stable < previous;
+        previous = stable;
+    }
+    Check(shrunk, "Neptunia budget actually shrinks");
+}
+
 void TestThresholds() {
 	const auto t = ForBudget(4 * GiB); // also what --gpu-memory-budget 4096 gives
 	Check(t.trigger < t.pressure && t.pressure < t.critical && t.critical < 4 * GiB,
@@ -211,6 +236,7 @@ int main() {
   TestThresholds();
   TestEffective();
   TestGtPressureReplay();
+  TestNeptuniaPressureReplay();
   TestUnifiedSystemPressure();
   TestGtPreallocationReclaim();
   TestProcessMemoryReadings();
