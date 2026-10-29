@@ -63,10 +63,10 @@ index 9f427da20..442797b3f 100644
  public:
    struct {
 +#ifdef __ANDROID__
-+    // Span of guest addresses the per-thread L2 lookup table indexes directly (8 bytes of address space
-+    // per 4 KiB guest page; higher addresses alias, lookups still compare the full address). A 39-bit
-+    // host cannot spend 128 MiB of address space per guest thread on it.
-+    uint64_t VirtualMemSize {1ULL << 34};
++    // Android's per-thread L2 lookup uses a 4 GiB masked index to bound virtual reservations.
++    // Higher guest addresses safely alias because every cache hit compares full guest RIP.
++    // The L2 table is 8 MiB instead of the 128 MiB default on 39-bit Android hosts.
++    uint64_t VirtualMemSize {1ULL << 32};
 +#else
      uint64_t VirtualMemSize {1ULL << 36};
 +#endif
@@ -595,3 +595,36 @@ index 50a9bae57..4edeb9454 100644
  #include <array>
  #include <dlfcn.h>
  #include <elf.h>
+
+diff --git a/FEXCore/Source/Interface/Core/LookupCache.h b/FEXCore/Source/Interface/Core/LookupCache.h
+--- a/FEXCore/Source/Interface/Core/LookupCache.h
++++ b/FEXCore/Source/Interface/Core/LookupCache.h
+@@ -460,14 +460,20 @@
+ 
+   size_t TotalCacheSize;
+ 
+-  // Start with 8k entries in L1 to give 128KB of L1 cache to each thread.
+-  // Max out at 1 million entries to give each thread 16MB of L1 cache maximum.
+-  constexpr static size_t MIN_L1_ENTRIES = 8 * 1024;        // Must be a power of 2
+-  constexpr static size_t MAX_L1_ENTRIES = 1 * 1024 * 1024; // Must be a power of 2
+-
+-  constexpr static size_t CODE_SIZE = 128 * 1024 * 1024;
+-  constexpr static size_t SIZE_PER_PAGE = FEXCore::Utils::FEX_PAGE_SIZE * sizeof(LookupCacheEntry);
+-  constexpr static size_t MAX_L1_SIZE = MAX_L1_ENTRIES * sizeof(LookupCacheEntry);
++  // Start with 8k entries in L1 to give 128KB of L1 cache to each thread.
++  constexpr static size_t MIN_L1_ENTRIES = 8 * 1024;        // Must be a power of 2
++#ifdef __ANDROID__
++  // The guest reserves most of a 39-bit host VA window. Limit each FEX guest-thread lookup
++  // mapping to 8 MiB page pointers + 32 MiB block backing + 4 MiB L1 = 44 MiB total.
++  // Evicting the per-thread L2 is safe: full guest RIPs are validated and L3 remains authoritative.
++  constexpr static size_t MAX_L1_ENTRIES = 256 * 1024; // 4 MiB L1 maximum
++  constexpr static size_t CODE_SIZE = 32 * 1024 * 1024;
++#else
++  constexpr static size_t MAX_L1_ENTRIES = 1 * 1024 * 1024;
++  constexpr static size_t CODE_SIZE = 128 * 1024 * 1024;
++#endif
++  constexpr static size_t SIZE_PER_PAGE = FEXCore::Utils::FEX_PAGE_SIZE * sizeof(LookupCacheEntry);
++  constexpr static size_t MAX_L1_SIZE = MAX_L1_ENTRIES * sizeof(LookupCacheEntry);
+ 
+   size_t AllocateOffset {};
+ 
