@@ -112,7 +112,10 @@ object CrashDiagnostics {
     }
 
     fun start(context: Context, game: String) {
-        if (!game.contains("PPSA24156", true)) return
+        // Include Neptunia ReVerse in the same per-PID crash evidence pipeline as GT.
+        // Without this the exported active-session and signal-origin data remain from
+        // an unrelated GT process, preventing accurate SIGKILL attribution.
+        if (!game.contains("PPSA24156", true) && !game.contains("PPSA02721", true)) return
         val c = context.applicationContext
         phase = "game-create"; titleAt = 0L
         executor.execute {
