@@ -1257,7 +1257,19 @@ PipelineCache::Pipeline* PipelineCache::PollPipeline(
 		const auto initial = static_cast<int32_t>(job->allocation_result);
 		const auto result = RecoverPipelineAllocation(initial,
 		    [&] { job->ReleasePipeline(); job.reset(); },
-		    [&] { recovery_scheduler->Finish(); },
+		    [&] {
+			// Pending jobs carry copies of m_driver_cache. Complete every user
+			// before reclaiming that optional cache, including compute jobs.
+			for (auto& [pending_key, pending_job]: m_pending_graphics) {
+				(void)pending_key;
+				m_workers->RunNow(pending_job);
+			}
+			for (auto& [pending_key, pending_job]: m_pending_compute) {
+				(void)pending_key;
+				m_workers->RunNow(pending_job);
+			}
+			recovery_scheduler->Finish();
+		},
 		    [&] { ReclaimGraphicsPipelines(); },
 		    [&] {
 			job = make_job();
@@ -1296,6 +1308,15 @@ void PipelineCache::ReclaimGraphicsPipelines() {
 		m_graphics.device.destroyPipelineLayout(pipeline.pipeline_layout, nullptr);
 		m_graphics.device.destroyDescriptorSetLayout(pipeline.descriptor_set_layout, nullptr);
 		m_graphics_pipelines.erase(oldest);
+	}
+	// Turnip's VkPipelineCache can retain compiled shader references after
+	// vkDestroyPipeline. All pipeline jobs using this handle were drained above;
+	// drop it too, or retirement may leave those allocations resident. Existing
+	// retained pipelines own their shader references and remain valid.
+	if (m_driver_cache != nullptr) {
+		m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
+		m_driver_cache = nullptr;
+		m_driver_cache_dirty = false;
 	}
 	PipelineCacheLog("GT pipeline OOM recovery: retired {} graphics pipelines, kept {}; retry once without driver cache",
 	                 count, keep);
