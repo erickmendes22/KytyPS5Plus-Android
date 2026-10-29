@@ -293,7 +293,10 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 				// back before freeing, and waits for Vulkan retirement.
 				const bool reclaimed = EvictForAllocation(
                         keep, *available < GpuBudget::kLowWater);
-				m_gt_prealloc_last_usage = live;
+				// Measure growth from the post-reclaim residency, not the old
+                // high-water mark. Otherwise repeated bursts in one frame can
+                // ratchet the peak upward by 64 MiB on every eviction pass.
+                m_gt_prealloc_last_usage = reclaimed ? m_graphics.GetLiveDeviceMemory() : live;
 				m_gt_prealloc_last_tick = m_gc_tick;
 				static std::atomic_uint32_t reported {0};
 				if (reported.fetch_add(1, std::memory_order_relaxed) < 180u) {
