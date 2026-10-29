@@ -110,6 +110,9 @@ static_assert(sizeof(KernelMemoryPoolBlockStats) == 16,
 
 void                   RegisterCallbacks(callback_func_t alloc_func, callback_func_t free_func);
 void                   SetFlexibleMemorySize(uint64_t size);
+// Preserve PS5 direct-memory contents while paging cold resident memfd pages to Android swap.
+// Called once per budget sample; only PPSA02721 opts in.
+void                   MaybePageOutDirectBacking(uint64_t host_mem_available);
 int AllocateDirectMemory(int64_t search_start, int64_t search_end, size_t size, size_t alignment,
                          int memory_type, int64_t* phys_addr_out, bool automatic = false);
 int MapAutomaticMemory(uint64_t vaddr, size_t size, int type, int prot);
