@@ -1402,48 +1402,6 @@ void SetFlexibleMemorySize(uint64_t size) {
 	     size / (1024ull * 1024ull));
 }
 
-// Android's process is killed while Neptunia still has free PS5 virtual memory:
-// the logs show ~6 GiB RSS, of which only ~0.5 GiB is anonymous.
-// This gives the host kernel a content-preserving way to page out dormant
-// KytyDirectMemory pages. It does not alter guest allocations or Vulkan budgets.
-void MaybePageOutDirectBacking(uint64_t host_mem_available) {
-#if defined(KYTY_ANDROID) && KYTY_PLATFORM == KYTY_PLATFORM_LINUX
-	constexpr uint64_t MiB = 1024ull * 1024ull;
-	static const bool neptunia = [] {
-		std::string title;
-		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
-		       title == "PPSA02721";
-	}();
-	if (!neptunia || host_mem_available == 0 || host_mem_available >= 3072ull * MiB ||
-	    g_guest_address_space == nullptr) return;
-	static bool supported = true;
-	if (!supported) return;
-	const uint64_t total = g_guest_address_space->GetBackingSize();
-	if (total == 0) return;
-	static uint64_t cursor = 0;
-	constexpr uint64_t Batch = 256ull * MiB;
-	if (cursor >= total) cursor = 0;
-	const uint64_t length = std::min(Batch, total - cursor);
-	const bool ok = g_guest_address_space->PageOutBacking(cursor, length);
-	if (!ok) {
-		supported = false; // Avoid repeated failed madvise on kernels without PAGEOUT.
-		Log::WriteToConsoleAndLog(
-		    "Neptunia direct backing pageout unsupported; preserving all guest pages\n");
-		return;
-	}
-	cursor += length;
-	static uint32_t reports = 0;
-	if (reports++ < 3 || reports % 16 == 0) {
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "Neptunia direct backing pageout: offset={} MiB length={} MiB "
-		    "MemAvailable={} MiB (content preserved)\n",
-		    (cursor - length) / MiB, length / MiB, host_mem_available / MiB));
-	}
-#else
-	(void)host_mem_available;
-#endif
-}
-
 bool PhysicalMemory::Alloc(uint64_t search_start, uint64_t search_end, size_t len, size_t alignment,
                            uint64_t* phys_addr_out, int memory_type, AllocationKind kind) {
 	if (phys_addr_out == nullptr) {

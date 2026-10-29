@@ -21,7 +21,6 @@
 #include "graphics/host_gpu/gpuMemoryBudget.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "loader/systemContent.h"
-#include "kernel/memory.h"
 
 #include <algorithm>
 #include <chrono>
@@ -164,11 +163,6 @@ uint64_t GraphicContext::UpdateMemoryBudget() {
 	// Only unified-memory devices share this headroom with the CPU. Keep discrete-GPU policy.
 	const auto available = physical_device_properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu
 	                           ? std::nullopt : ReadMemAvailable();
-	// Neptunia: relieve resident PS5 direct-memory backing before Android reaches
-	// low-RAM process termination. This preserves guest bytes and GPU budget policy.
-	if (available.has_value()) {
-		LibKernel::Memory::MaybePageOutDirectBacking(*available);
-	}
 	memory_budget_effective =
 	    GpuBudget::Effective(memory_budget_configured, totals.usage,
 	                         memory_budget_ext_enabled ? totals.budget : 0, available);

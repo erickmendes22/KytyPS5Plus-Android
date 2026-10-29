@@ -195,22 +195,6 @@ public:
 	}
 
 	// Returns the pages of a range the guest no longer owns to the host. It reads back as zeros.
-	// Hint to the kernel to move resident shared memfd pages to swap, preserving every
-	// byte and all guest aliases. Unlike DiscardRange this must NEVER punch holes.
-	// PPSA02721 can have >5 GiB file-backed RSS during shader initialization.
-	[[nodiscard]] bool PageOutRange(uint64_t backing_offset, uint64_t size) {
-#if defined(KYTY_ANDROID) && KYTY_PLATFORM == KYTY_PLATFORM_LINUX
-		if (!IsAvailable() || !RangeOk(backing_offset, size)) return false;
-		// Linux MADV_PAGEOUT = 21; the NDK may omit the newer UAPI name.
-		constexpr int kMadvPageOut = 21;
-		return madvise(m_backing_base + backing_offset, size, kMadvPageOut) == 0;
-#else
-		(void)backing_offset;
-		(void)size;
-		return false;
-#endif
-	}
-
 	bool DiscardRange(uint64_t backing_offset, uint64_t size) {
 		if (!IsAvailable() || !RangeOk(backing_offset, size)) {
 			return false;
@@ -806,10 +790,6 @@ public:
 
 	bool DiscardBacking(uint64_t backing_offset, uint64_t size) {
 		return m_backing->DiscardRange(backing_offset, size);
-	}
-
-	[[nodiscard]] bool PageOutBacking(uint64_t backing_offset, uint64_t size) {
-		return m_backing->PageOutRange(backing_offset, size);
 	}
 
 	[[nodiscard]] bool Owns(uint64_t vaddr, uint64_t size) {
