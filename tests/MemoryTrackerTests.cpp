@@ -286,6 +286,26 @@ void Release(uint8_t *memory) {
 }
 
 void TestRangeSet() {
+  // CapyPS5 node-reuse regression: insert before, over and inside existing
+  // intervals, repeatedly. All intersecting/adjacent intervals must coalesce.
+  RangeSet reused;
+  reused.Add(0x2200, 0x100);
+  reused.Add(0x2400, 0x100);
+  reused.Add(0x2000, 0x100);
+  reused.Add(0x2100, 0x100);
+  reused.Add(0x2300, 0x100);
+  reused.Add(0x2070, 0x210);
+  reused.Add(0x2000, 0x500);
+  unsigned reused_count = 0;
+  reused.ForEach([&](uint64_t begin, uint64_t end) {
+    ++reused_count;
+    Check(begin == 0x2000 && end == 0x2500,
+          "range reuse produced inconsistent merged endpoints");
+  });
+  Check(reused_count == 1 && reused.Contains(0x2100, 0x350) &&
+            !reused.Intersects(0x2500, 1),
+        "range node reuse did not merge overlapping/adjacent intervals");
+
   RangeSet ranges;
   ranges.Add(0x1000, 0x80);
   ranges.Add(0x1080, 0x80);
