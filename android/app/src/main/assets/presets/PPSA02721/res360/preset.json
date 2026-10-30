@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "id": "res360",
+  "name": "Neptunia ReVerse 360p extreme performance (experimental)",
+  "description": "EXPERIMENTAL, PS5 PPSA02721 v01.000.000 only. Modifies eight byte-verified eboot instructions: screen-size getters, three 4K output setup paths and three 1080p render-target allocations to 640x360. Internal scene quality and performance gains require in-game confirmation. Original executable is unchanged; turn this preset off to revert.",
+  "launch": {
+    "gamePatch": "neptunia_res360.json"
+  }
+}

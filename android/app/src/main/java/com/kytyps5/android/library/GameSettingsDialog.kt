@@ -60,6 +60,23 @@ class GameSettingsDialog(
         val errors = label("", secondary = true)
         val titleId = presets.titleIdFor(game)
         val presetSwitches = titleId?.let { presets.available(it) }.orEmpty().map { it to presetSwitch(it) }
+        // Each title has only one active eboot rewrite. Avoid silently selecting
+        // the alphabetically first resolution when several switches were enabled.
+        if (titleId == "PPSA02721") {
+            presetSwitches.forEach { (preset, toggle) ->
+                if (preset.id.startsWith("res")) {
+                    toggle.setOnCheckedChangeListener { _, selected ->
+                        if (selected) {
+                            presetSwitches.forEach { (other, otherToggle) ->
+                                if (other.id.startsWith("res") && otherToggle !== toggle) {
+                                    otherToggle.isChecked = false
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         val driverButton = Button(activity).apply {
             text = driverLabel(game)
             isAllCaps = false

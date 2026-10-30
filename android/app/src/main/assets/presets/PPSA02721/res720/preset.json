@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "id": "res720",
+  "name": "Neptunia ReVerse 720p performance (experimental)",
+  "description": "EXPERIMENTAL, PS5 PPSA02721 v01.000.000 only. Modifies eight byte-verified eboot instructions: screen-size getters, three 4K output setup paths and three 1080p render-target allocations to 1280x720. Internal scene quality and performance gains require in-game confirmation. Original executable is unchanged; turn this preset off to revert.",
+  "launch": {
+    "gamePatch": "neptunia_res720.json"
+  }
+}

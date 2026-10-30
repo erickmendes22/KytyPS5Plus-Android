@@ -1,0 +1,53 @@
+{
+  "id": "PPSA02721",
+  "version": "01.000.000",
+  "process": "eboot.bin",
+  "mods": [
+    {
+      "name": "Neptunia ReVerse output + three render targets 640x360 (experimental; v01.000.000 only)",
+      "enabled": true,
+      "memory": [
+        {
+          "offset": "0x27d7e0",
+          "off": "b8000f0000",
+          "on": "b880020000"
+        },
+        {
+          "offset": "0x27d7f0",
+          "off": "b870080000",
+          "on": "b868010000"
+        },
+        {
+          "offset": "0x3f20e8",
+          "off": "b9000f000041b870080000",
+          "on": "b98002000041b868010000"
+        },
+        {
+          "offset": "0x4294cf",
+          "off": "ba000f0000b970080000",
+          "on": "ba80020000b968010000"
+        },
+        {
+          "offset": "0x429532",
+          "off": "be000f0000ba70080000",
+          "on": "be80020000ba68010000"
+        },
+        {
+          "offset": "0x3f3775",
+          "off": "49be8007000038040000",
+          "on": "49be8002000068010000"
+        },
+        {
+          "offset": "0x3f3916",
+          "off": "48bb8007000038040000",
+          "on": "48bb8002000068010000"
+        },
+        {
+          "offset": "0x3f39d9",
+          "off": "49bf8007000038040000",
+          "on": "49bf8002000068010000"
+        }
+      ]
+    }
+  ]
+}
