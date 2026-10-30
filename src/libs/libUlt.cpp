@@ -6,9 +6,7 @@
 #include "loader/symbolDatabase.h"
 #include "loader/guestCall.h"
 #include "loader/guestHostFunction.h"
-#include "loader/systemContent.h"
 
-#include <algorithm>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -77,38 +75,18 @@ struct UltQueueState {
 	void*                            data_pool    = nullptr;
 };
 
-using UltUlthreadEntry = KYTY_SYSV_ABI int32_t (*)(uint64_t);
-
-struct UltWorkerPool;
-
-// ULT tasks are fibers scheduled on a fixed pool of worker pthreads, not
-// one new host pthread per short-lived ulthread (as the original shim did).
-struct UltUlthreadState {
-	UltUlthreadEntry   entry  = nullptr;
-	uint64_t           arg    = 0;
-	LibKernel::Pthread thread = nullptr; // Legacy path for other games.
-	std::shared_ptr<UltWorkerPool> pool;
-	std::mutex              completion_mutex;
-	std::condition_variable completion_cv;
-	bool                    completed = false;
-	int32_t                 status    = 0;
-};
-
-struct UltWorkerPool {
-	std::mutex                                   mutex;
-	std::condition_variable                      available;
-	std::deque<std::shared_ptr<UltUlthreadState>> pending;
-	std::vector<LibKernel::Pthread>              workers;
-	uint32_t                                     worker_count = 0;
-	bool                                         started      = false;
-	bool                                         stopping     = false;
-};
-
 struct UltRuntimeState {
 	uint32_t max_num_ulthread  = 0;
 	uint32_t num_worker_thread = 0;
 	void*    work_area         = nullptr;
-	std::shared_ptr<UltWorkerPool> pool;
+};
+
+using UltUlthreadEntry = KYTY_SYSV_ABI int32_t (*)(uint64_t);
+
+struct UltUlthreadState {
+	UltUlthreadEntry   entry  = nullptr;
+	uint64_t           arg    = 0;
+	LibKernel::Pthread thread = nullptr;
 };
 
 static std::mutex                                                    g_ult_mutex;
@@ -147,12 +125,8 @@ static int KYTY_SYSV_ABI UltFinalize() {
 	PRINT_NAME();
 
 	std::vector<std::shared_ptr<UltSemaphoreState>> semaphores;
-	std::vector<std::shared_ptr<UltWorkerPool>> workers;
 	{
 		std::scoped_lock lock(g_ult_mutex);
-		for (const auto& [_, runtime]: g_ult_runtimes) {
-			if (runtime.pool != nullptr) workers.push_back(runtime.pool);
-		}
 		semaphores.reserve(g_ult_semaphores.size());
 		for (auto& entry: g_ult_semaphores) {
 			auto&            state = entry.second;
@@ -170,21 +144,6 @@ static int KYTY_SYSV_ABI UltFinalize() {
 	}
 	for (const auto& state: semaphores) {
 		state->available.notify_all();
-	}
-	// Stop guest schedulers only after releasing the global ULT state lock.
-	// The workers can be inside guest code that invokes other ULT APIs.
-	for (const auto& pool: workers) {
-		{
-			std::lock_guard lock(pool->mutex);
-			pool->stopping = true;
-		}
-		pool->available.notify_all();
-	}
-	for (const auto& pool: workers) {
-		for (auto* worker: pool->workers) {
-			(void)LibKernel::PthreadJoin(worker, nullptr);
-		}
-		pool->workers.clear();
 	}
 
 	return OK;
@@ -239,24 +198,8 @@ static int KYTY_SYSV_ABI UltUlthreadRuntimeCreate(void* runtime, const char* nam
 
 	std::memset(runtime, 0, 4096);
 
-	std::shared_ptr<UltWorkerPool> pool;
-	// PPSA02721 creates ~25 tiny particle ulthreads per second (verified in
-	// Perfetto), while ULT explicitly advertises a bounded number of workers.
-	// Keep the other titles on their existing implementation until validated.
-	static const bool neptunia = [] {
-		std::string title;
-		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
-		       title == "PPSA02721";
-	}();
-	if (neptunia) {
-		pool = std::make_shared<UltWorkerPool>();
-		// A native ULT task may block inside a host syscall rather than yield as
-		// a real PS5 fiber. Three workers cover the observed peak concurrency.
-		pool->worker_count = std::clamp(std::max(num_worker_thread, 3u), 3u, 8u);
-	}
 	std::scoped_lock lock(g_ult_mutex);
-	if (g_ult_runtimes.contains(runtime)) return ULT_ERROR_STATE;
-	g_ult_runtimes[runtime] = {max_num_ulthread, num_worker_thread, work_area, pool};
+	g_ult_runtimes[runtime] = {max_num_ulthread, num_worker_thread, work_area};
 
 	return OK;
 }
@@ -265,48 +208,6 @@ static KYTY_SYSV_ABI void* UltUlthreadRun(void* arg) {
 	auto* state = static_cast<UltUlthreadState*>(arg);
 	return reinterpret_cast<void*>(
 	    static_cast<intptr_t>(Loader::GuestHost::CallGuestFunction(state->entry, state->arg)));
-}
-
-// Guest-callable worker main, entered once per native pthread. The FEX guest
-// thread context and guest stack remain attached across ulthread tasks.
-static KYTY_SYSV_ABI void* UltWorkerRun(void* arg) {
-	auto* pool = static_cast<UltWorkerPool*>(arg);
-	for (;;) {
-		std::shared_ptr<UltUlthreadState> task;
-		{
-			std::unique_lock lock(pool->mutex);
-			pool->available.wait(lock, [&] { return pool->stopping || !pool->pending.empty(); });
-			if (pool->stopping && pool->pending.empty()) break;
-			task = std::move(pool->pending.front());
-			pool->pending.pop_front();
-		}
-		const auto result =
-		    static_cast<int32_t>(Loader::GuestHost::CallGuestFunction(task->entry, task->arg));
-		{
-			std::lock_guard lock(task->completion_mutex);
-			task->status    = result;
-			task->completed = true;
-		}
-		task->completion_cv.notify_all();
-	}
-	return nullptr;
-}
-
-static bool UltStartWorkersLocked(UltWorkerPool& pool) {
-	// Caller holds pool.mutex. Worker threads wait on that mutex until the
-	// batch has been created, preventing races with partial initialization.
-	if (!pool.started) {
-		pool.started = true;
-		const auto run = reinterpret_cast<LibKernel::pthread_entry_func_t>(
-		    Loader::GuestHost::AddressOf<UltWorkerRun>("LibUlt::UltWorkerRun"));
-		for (uint32_t i = 0; i < pool.worker_count; ++i) {
-			LibKernel::Pthread thread = nullptr;
-			if (LibKernel::PthreadCreate(&thread, nullptr, run, &pool, "KytyUltWorker") != OK)
-				break;
-			pool.workers.push_back(thread);
-		}
-	}
-	return !pool.workers.empty();
 }
 
 static int KYTY_SYSV_ABI UltUlthreadCreate(void* ulthread, const char* name, UltUlthreadEntry entry,
@@ -336,28 +237,16 @@ static int KYTY_SYSV_ABI UltUlthreadCreate(void* ulthread, const char* name, Ult
 	state->entry = entry;
 	state->arg   = arg;
 
-	std::shared_ptr<UltWorkerPool> pool;
 	{
 		std::scoped_lock lock(g_ult_mutex);
-		const auto runtime_it = g_ult_runtimes.find(runtime);
-		if (runtime_it == g_ult_runtimes.end()) return ULT_ERROR_STATE;
-		if (g_ult_ulthreads.contains(ulthread)) return ULT_ERROR_STATE;
-		pool = runtime_it->second.pool;
+		if (g_ult_runtimes.find(runtime) == g_ult_runtimes.end()) {
+			return ULT_ERROR_STATE;
+		}
+		if (g_ult_ulthreads.find(ulthread) != g_ult_ulthreads.end()) {
+			return ULT_ERROR_STATE;
+		}
 		std::memset(ulthread, 0, 512);
 		g_ult_ulthreads[ulthread] = state;
-	}
-
-	if (pool != nullptr) {
-		std::unique_lock lock(pool->mutex);
-		if (!pool->stopping && UltStartWorkersLocked(*pool)) {
-			state->pool = pool;
-			pool->pending.push_back(state);
-			lock.unlock();
-			pool->available.notify_one();
-			return OK;
-		}
-		// Failed to create the worker pool: preserve the old per-ulthread
-		// path, rather than reporting a spurious game thread creation error.
 	}
 
 	// The ulthread is a guest thread: its native entry must be guest-callable (a trap on ARM64).
@@ -395,19 +284,13 @@ static int KYTY_SYSV_ABI UltUlthreadJoin(void* ulthread, int32_t* status) {
 		state = it->second;
 	}
 
-	int32_t final_status = 0;
-	if (state->pool != nullptr) {
-		std::unique_lock lock(state->completion_mutex);
-		state->completion_cv.wait(lock, [&] { return state->completed; });
-		final_status = state->status;
-	} else {
-		void* result = nullptr;
-		if (LibKernel::PthreadJoin(state->thread, &result) != OK) {
-			return ULT_ERROR_STATE;
-		}
-		final_status = static_cast<int32_t>(reinterpret_cast<intptr_t>(result));
+	void* result = nullptr;
+	if (LibKernel::PthreadJoin(state->thread, &result) != OK) {
+		return ULT_ERROR_STATE;
 	}
-	if (status != nullptr) *status = final_status;
+	if (status != nullptr) {
+		*status = static_cast<int32_t>(reinterpret_cast<intptr_t>(result));
+	}
 
 	std::scoped_lock lock(g_ult_mutex);
 	g_ult_ulthreads.erase(ulthread);
