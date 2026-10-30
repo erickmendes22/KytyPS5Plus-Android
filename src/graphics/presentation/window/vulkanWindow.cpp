@@ -309,7 +309,8 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		check_feature(device_features2.features.fragmentStoresAndAtomics,
 		              "fragmentStoresAndAtomics");
 
-		check_feature(device_features2.features.samplerAnisotropy, "samplerAnisotropy");
+		// Optional: PanVK and some other mobile drivers lack samplerAnisotropy.
+		// SamplerCache disables it when this feature is not exposed.
 		check_feature(device_features2.features.robustBufferAccess, "robustBufferAccess");
 		check_feature(device_features2.features.shaderStorageImageWriteWithoutFormat,
 		              "shaderStorageImageWriteWithoutFormat");
@@ -676,7 +677,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	EXIT_NOT_IMPLEMENTED(supported_features2.features.dualSrcBlend != VK_TRUE);
 	vk::PhysicalDeviceFeatures device_features {};
 	device_features.fragmentStoresAndAtomics = VK_TRUE;
-	device_features.samplerAnisotropy        = VK_TRUE;
+	device_features.samplerAnisotropy        = supported_features2.features.samplerAnisotropy;
+	graphics.sampler_anisotropy_enabled      = device_features.samplerAnisotropy == VK_TRUE;
 	device_features.robustBufferAccess       = VK_TRUE;
 	device_features.depthBounds = graphics.optional_features.depth_bounds ? VK_TRUE : VK_FALSE;
 #if !defined(__APPLE__)

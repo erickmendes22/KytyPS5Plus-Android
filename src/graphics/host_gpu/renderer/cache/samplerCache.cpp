@@ -130,9 +130,15 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
     );
 	sampler_info.anisotropyEnable        = (aniso ? VK_TRUE : VK_FALSE);
 	sampler_info.maxAnisotropy           = aniso_ratio;
+	if (!m_graphics.sampler_anisotropy_enabled) {
+		// Feature absent on PanVK: request ordinary filtering, not an invalid sampler.
+		sampler_info.anisotropyEnable = VK_FALSE;
+		sampler_info.maxAnisotropy    = 1.0f;
+	}
 	sampler_info.compareEnable           = (r.DepthCompareFunc() != 0 ? VK_TRUE : VK_FALSE);
 	sampler_info.compareOp               = static_cast<vk::CompareOp>(r.DepthCompareFunc());
-	sampler_info.minLod                  = min_lod;
+	// PS5 games may encode an inverted LOD range; Vulkan requires minLod <= maxLod.
+	sampler_info.minLod                  = std::min(min_lod, max_lod);
 	sampler_info.maxLod                  = max_lod;
 	sampler_info.borderColor             = border;
 	sampler_info.unnormalizedCoordinates = (r.ForceUnormCoords() ? VK_TRUE : VK_FALSE);
