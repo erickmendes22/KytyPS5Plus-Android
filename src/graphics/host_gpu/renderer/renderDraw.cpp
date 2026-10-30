@@ -616,8 +616,12 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	    color_count == 1 && !depth.image_id &&
 	    cache.m_slot_images.try_get(colors[0].image_id) != nullptr &&
 	    cache.m_slot_images[colors[0].image_id].gt_hdr_half;
-	const float render_scale =
-	    Config::GetRenderScale() * ((gt_depth_half_pass || gt_hdr_half_pass) ? 0.5f : 1.0f);
+	// The pixel shader's guest/host transform must match the actual depth
+	// backing. A square shadow atlas uses the global ratio; the optional GT
+	// experiment may have its own (half) ratio.
+	const float render_scale = gt_depth_half_pass
+	    ? depth_owner->render_scale_factor
+	    : Config::GetRenderScale() * (gt_hdr_half_pass ? 0.5f : 1.0f);
 	bool pass_scaled = RenderScale::Active(render_scale) &&
 	                   (color_count != 0 || static_cast<bool>(depth.image_id));
 	// Multi-attachment passes cannot mix host backings with different

@@ -85,15 +85,16 @@ class LaunchArgsTest {
     fun shadowAtlasScaleUsesIndependentOptionalEnvironment() {
         val native = LaunchArgs.forGame("/g", Resolution.HD_720)
         assertEquals(-1, native.indexOf("KYTY_SHADOW_SCALE=0.5"))
-        val half = LaunchArgs.forGame("/g", Resolution.HD_720, shadowScale = ShadowScale.HALF)
-        assertEquals("KYTY_SHADOW_SCALE=0.5", half[half.indexOf("--env") + 1])
-        assertEquals(ShadowScale.HALF, ShadowScale.fromStorage("0.5"))
-        assertEquals(GameSettings(shadowScale = ShadowScale.HALF),
-            GameSettings.fromJson(GameSettings(shadowScale = ShadowScale.HALF).toJson()))
+        val match = LaunchArgs.forGame("/g", Resolution.HD_720, shadowScale = ShadowScale.MATCH_RENDER)
+        assertEquals("KYTY_SHADOW_SCALE=match", match[match.indexOf("--env") + 1])
+        assertEquals(ShadowScale.MATCH_RENDER, ShadowScale.fromStorage("match"))
+        assertEquals(ShadowScale.MATCH_RENDER, ShadowScale.fromStorage("0.5"))
+        assertEquals(GameSettings(shadowScale = ShadowScale.MATCH_RENDER),
+            GameSettings.fromJson(GameSettings(shadowScale = ShadowScale.MATCH_RENDER).toJson()))
         val game = LaunchOptions.resolve(
             Resolution.HD_720, globalHud = false, globalTouch = true,
             game = GameSettings(shadowScale = ShadowScale.NATIVE),
-            globalShadowScale = ShadowScale.HALF,
+            globalShadowScale = ShadowScale.MATCH_RENDER,
         )
         assertEquals(ShadowScale.NATIVE, game.shadowScale)
     }

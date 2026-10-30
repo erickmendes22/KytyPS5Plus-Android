@@ -180,8 +180,9 @@ public:
 
 	ImageInfo        info;
 	VulkanImage      backing;
+	float            render_scale_factor = 1.0f; // Actual host/guest ratio, including optional depth atlas scale.
 	bool             scalable      = false;
-	bool             gt_large_depth_half = false; // PPSA24156 opt-in effect-memory experiment
+	bool             gt_large_depth_half = false; // Separate square depth pass (shadow or GT) needs matching ratio
 	bool             gt_hdr_half         = false; // PPSA24156 opt-in HDR effect buffer experiment
 	bool             scaled        = false;
 	bool             scale_blocked = false;
