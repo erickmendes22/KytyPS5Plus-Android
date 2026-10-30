@@ -18,6 +18,7 @@ import com.kytyps5.android.GameEntry
 import com.kytyps5.android.LauncherSettings
 import com.kytyps5.android.hud.HudMode
 import com.kytyps5.android.RenderScale
+import com.kytyps5.android.ShadowScale
 import com.kytyps5.android.Resolution
 import com.kytyps5.android.input.OverlayProfileStore
 import com.kytyps5.android.presets.GamePreset
@@ -45,6 +46,8 @@ class GameSettingsDialog(
         resolution.setSelection(current.resolution?.let { Resolution.entries.indexOf(it) + 1 } ?: 0)
         val renderScale = spinner(listOf("Global (${settings.renderScale.label})") + RenderScale.entries.map { it.label })
         renderScale.setSelection(current.renderScale?.let { RenderScale.entries.indexOf(it) + 1 } ?: 0)
+        val shadowScale = spinner(listOf("Global (${settings.shadowScale.label})") + ShadowScale.entries.map { it.label })
+        shadowScale.setSelection(current.shadowScale?.let { ShadowScale.entries.indexOf(it) + 1 } ?: 0)
         val hud = triState("Performance HUD", current.hud, settings.hudEnabled)
         val hudMode = spinner(listOf("Global (${settings.hudMode.label})") + HudMode.entries.map { it.label })
         hudMode.setSelection(current.hudMode?.let { HudMode.entries.indexOf(it) + 1 } ?: 0)
@@ -88,8 +91,10 @@ class GameSettingsDialog(
             addView(label(listOfNotNull(game.titleId, game.path).joinToString("\n"), secondary = true))
             addView(label("Resolution", bold = true))
             addView(resolution)
-            addView(label("Render scale (internal resolution of frame-sized render targets)", bold = true))
+            addView(label("Render scale (Vulkan internal resolution, not an eboot patch)", bold = true))
             addView(renderScale)
+            addView(label("Shadow atlas resolution (experimental, square depth-only passes)", bold = true))
+            addView(shadowScale)
             addView(label("GPU driver", bold = true))
             addView(driverButton)
             addView(hud.first)
@@ -144,6 +149,7 @@ class GameSettingsDialog(
                         touchControls = touch.second(),
                         gpuTurbo = gpuTurbo.second(),
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
+                        shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
                     ),
                 )
                 if (titleId != null && presetSwitches.isNotEmpty()) {
