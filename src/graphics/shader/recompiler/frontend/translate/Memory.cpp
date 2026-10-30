@@ -966,6 +966,8 @@ void Translator::EmitMemory(const Decoder::Instruction& inst) {
 		case Decoder::Opcode::S_BUFFER_LOAD_DWORDX4:
 		case Decoder::Opcode::S_BUFFER_LOAD_DWORDX8:
 		case Decoder::Opcode::S_BUFFER_LOAD_DWORDX16: return S_LOAD(inst, false);
+		// No extra host-side scalar cache exists in the translated shader.
+		case Decoder::Opcode::S_DCACHE_INV: return;
 		case Decoder::Opcode::S_MEMREALTIME: {
 			static std::atomic_flag warned = ATOMIC_FLAG_INIT;
 			if (!warned.test_and_set(std::memory_order_relaxed)) {

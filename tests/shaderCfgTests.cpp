@@ -2038,6 +2038,28 @@ void TestNggVertexEntryState() {
   }
 }
 
+void TestScalarDCacheInvalidationNoOp() {
+  using namespace ShaderRecompiler;
+  // AGC SMEM opcode 0x20 is scalar data-cache invalidation. Unlike buffer
+  // GL0/GL1 invalidates it has no guest memory operands or host-side cache.
+  const std::array code = {EncodeSmem0(0x20u, 0, 0), 0u, EncodeSopp(0x01)};
+  Decoder::Program decoded;
+  Decoder::DecodeProgram(code, decoded);
+  Check(decoded.instructions.size() == 2u &&
+            decoded.instructions.front().opcode == Decoder::Opcode::S_DCACHE_INV &&
+            decoded.instructions.front().word_count == 2u &&
+            decoded.instructions.front().src_count == 0u &&
+            decoded.instructions.front().dst.kind == Decoder::OperandKind::Unknown,
+        "s_dcache_inv acquired bogus operands or lost its SMEM encoding");
+  auto options = MakeCompileOptions(ShaderType::Compute);
+  ShaderComputeInputInfo compute{};
+  compute.threads_num[0] = compute.wave_size = options.wave_size = 32u;
+  compute.threads_num[1] = compute.threads_num[2] = 1u;
+  options.input_info.compute = &compute;
+  const auto result = RecompileForTest(code, options);
+  CheckSpirvBinaryValidates(result.spirv);
+}
+
 void TestNativeDataCacheInvalidation() {
   using namespace ShaderRecompiler;
   // Captured f5edf70dbb1f6057:0x194 and 0x1a4, each followed by S_WAITCNT.
@@ -17878,6 +17900,7 @@ int main() {
   TestNewShaderDecoderArchitecture();
   TestImageAddressOperands();
   TestSopkCompareImmediateExtension();
+  TestScalarDCacheInvalidationNoOp();
   TestNativeDataCacheInvalidation();
   TestNativeStoreCompletion();
   TestNewShaderRecompilerCapturedVopcSdwaCmpxClass();

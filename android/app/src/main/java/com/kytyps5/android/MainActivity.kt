@@ -275,7 +275,7 @@ class MainActivity : Activity() {
                 label("Resolução de saída", bold = true), resolutionGroup,
                 label("Escala interna (Vulkan, sem patch por jogo)", bold = true), renderScaleGroup,
                 label("Em jogos que renderizam a 4K: 33% ≈ 720p, 25% ≈ 540p. A resolução de saída não muda.", sizeSp = 11f, secondary = true),
-                label("Sombras: resolução de atlas quadrados (experimental)", bold = true), shadowScaleGroup,
+                label("Sombras: acompanhar escala interna (experimental)", bold = true), shadowScaleGroup,
             ))
         }
 

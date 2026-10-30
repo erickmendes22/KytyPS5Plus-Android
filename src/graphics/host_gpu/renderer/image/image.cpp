@@ -45,11 +45,9 @@ namespace {
 	    info.resources.levels != 1 || info.IsBlock()) {
 		return base;
 	}
-	// A quarter-resolution color pass followed by an eighth-resolution shadow atlas
-	// is too lossy on a phone. At 25% and 33% global resolution use unmodified shadows.
-	const char* shadow = std::getenv("KYTY_SHADOW_SCALE");
-	const bool shadow_half = base >= 0.5f && shadow != nullptr &&
-	                         std::strcmp(shadow, "0.5") == 0;
+	// Independent square-depth scale requires a second image mask and shader ratio.
+	// Until those are available, shadows can only use the same factor as the
+	// color pass; this function still handles the separate GT depth experiment.
 	const char* setting = std::getenv("KYTY_GT_LARGE_DEPTH_HALF");
 	bool gt_half = false;
 	if (info.extent.width >= 2048u && setting != nullptr && std::strcmp(setting, "1") == 0) {
@@ -60,7 +58,7 @@ namespace {
 		}();
 		gt_half = is_gt;
 	}
-	return shadow_half || gt_half ? base * 0.5f : base;
+	return gt_half ? base * 0.5f : base;
 }
 
 // Optional GT HDR intermediate test: half-size 16-bit-float color backing.
@@ -935,9 +933,22 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 		return;
 	}
 	const float scale = EffectiveGtBackingScale(info);
+	render_scale_factor = scale;
 	gt_hdr_half = !info.IsDepth() && scale < Config::GetRenderScale();
+	// Capy-inspired option: scale eligible square shadow maps along with the
+	// screen render scale, using the existing single-ratio shader push data.
+	const char* shadow_choice = std::getenv("KYTY_SHADOW_SCALE");
+	const bool shadow_follow = info.IsDepth() &&
+	                           info.type == Prospero::ImageType::kColor2D &&
+	                           info.extent.depth == 1u &&
+	                           info.extent.width == info.extent.height &&
+	                           info.extent.width >= 1024u &&
+	                           info.samples == 1 && info.resources.levels == 1 &&
+	                           !info.IsBlock() && RenderScale::Active(scale) &&
+	                           shadow_choice != nullptr &&
+	                           std::strcmp(shadow_choice, "match") == 0;
 	gt_large_depth_half = info.IsDepth() &&
-	                      scale < Config::GetRenderScale() &&
+	                      (scale < Config::GetRenderScale() || shadow_follow) &&
 	                      (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_NO_DEPTH) == 0;
 	const bool regular_geometry =
 	    RenderScale::GeometryEligible(info.type, info.extent, info.resources.levels,
@@ -1060,7 +1071,7 @@ void Image::SetScaled(bool want_scaled, bool preserve) {
 	}
 	KYTY_PROFILER_FUNCTION();
 	const auto extent =
-	    want_scaled ? RenderScale::ScaleExtent(info.extent, EffectiveGtBackingScale(info)) : info.extent;
+	    want_scaled ? RenderScale::ScaleExtent(info.extent, render_scale_factor) : info.extent;
 	if (m_alternate_backing.image == nullptr && !CreateBacking(extent, m_alternate_backing)) {
 		EXIT("render scale: failed to allocate a %ux%u backing for image 0x%016" PRIx64 "\n",
 		     extent.width, extent.height, info.data.address);

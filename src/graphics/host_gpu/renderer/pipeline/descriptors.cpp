@@ -590,7 +590,9 @@ static TextureDescEntry ComputeTextureDesc(const ShaderRecompiler::IR::ImageReso
 	const auto    image_layers = layered ? depth : 1u;
 	auto          view_base    = static_cast<uint32_t>(base_level);
 	auto pixel_format = surface_format.vk_format;
-	if (resource.depth_compare) {
+	// Vulkan only guarantees depth attachments for 2D images. In particular,
+	// Adreno rejects 1D depth images created for a compare sample.
+	if (resource.depth_compare && TextureBaseType(type) == Prospero::ImageType::kColor2D) {
 		if (const auto* depth_format = FindGuestDepthFormatPolicy(format)) {
 			pixel_format = depth_format->depth_attachment_format;
 		}

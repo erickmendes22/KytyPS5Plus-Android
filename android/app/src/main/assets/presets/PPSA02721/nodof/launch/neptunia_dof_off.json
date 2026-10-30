@@ -1,0 +1,18 @@
+{
+  "id": "PPSA02721",
+  "version": "01.000.000",
+  "process": "eboot.bin",
+  "mods": [
+    {
+      "name": "Neptunia depth of field OFF (experimental)",
+      "enabled": true,
+      "memory": [
+        {
+          "offset": "0x41da50",
+          "off": "554889e5535089fbe85359fdff",
+          "on": "554889e5535031dbe85359fdff"
+        }
+      ]
+    }
+  ]
+}

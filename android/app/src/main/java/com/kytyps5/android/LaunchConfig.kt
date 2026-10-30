@@ -44,11 +44,12 @@ enum class RenderScale(
 /** Optional conservative shadow atlas downscale (square depth-only passes). */
 enum class ShadowScale(val label: String, val factor: String, val storageValue: String) {
     NATIVE(label = "Native", factor = "1.0", storageValue = "1.0"),
-    HALF(label = "50% (experimental)", factor = "0.5", storageValue = "0.5");
+    MATCH_RENDER(label = "Mesma escala interna", factor = "match", storageValue = "match");
 
     companion object {
         fun fromStorage(value: String?): ShadowScale =
-            entries.firstOrNull { it.storageValue == value } ?: NATIVE
+            entries.firstOrNull { it.storageValue == value } ?:
+                if (value == "0.5") MATCH_RENDER else NATIVE
     }
 }
 
