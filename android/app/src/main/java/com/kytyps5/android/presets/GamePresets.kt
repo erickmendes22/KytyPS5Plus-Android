@@ -15,6 +15,7 @@ import java.io.File
 class GamePresets(context: Context, private val settings: LauncherSettings) {
     private val catalog = PresetCatalog(AssetPresetSource(context.assets))
     private val installer = PresetInstaller(context.filesDir)
+    private val patchCombiner = PresetGamePatchCombiner(context.filesDir)
 
     fun titleIdFor(game: GameEntry): String? = TitleIds.resolve(game.titleId, game.folder)
 
@@ -30,6 +31,20 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
 
     companion object {
         private const val TAG = "KytyPresets"
+
+        /** One CSM size at a time; prefer the newly selected choice. */
+        internal fun normalizedShadowChoice(
+            titleId: String,
+            selected: Set<String>,
+            previous: Set<String> = emptySet(),
+        ): Set<String> {
+            if (!titleId.equals("PPSA02721", ignoreCase = true)) return selected
+            val variants = selected.intersect(setOf("shadow50", "shadow25"))
+            if (variants.size <= 1) return selected
+            val newlyEnabled = variants - previous
+            val keep = newlyEnabled.singleOrNull() ?: "shadow50"
+            return selected - (variants - keep)
+        }
 
         internal fun activePerformancePresets(titleId: String, shipped: List<GamePreset>): List<GamePreset> =
             shipped.asSequence()
@@ -47,11 +62,14 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
                 }.toList()
     }
 
-    fun isEnabled(preset: GamePreset): Boolean = preset.id in settings.enabledPresets(preset.titleId)
+    /** Keep the two alternative shadow sizes exclusive, including old saved choices. */
+    fun isEnabled(preset: GamePreset): Boolean =
+        preset.id in normalizedShadowChoice(preset.titleId, settings.enabledPresets(preset.titleId))
 
     /** Stores the choice for [titleId] and brings its folders in line right away. */
     fun setEnabled(titleId: String, enabledIds: Set<String>) {
-        settings.setEnabledPresets(titleId, enabledIds)
+        val previous = settings.enabledPresets(titleId)
+        settings.setEnabledPresets(titleId, normalizedShadowChoice(titleId, enabledIds, previous))
         reconcile(titleId)
     }
 
@@ -68,15 +86,33 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
         val titleId = TitleIds.resolve(paramTitleId, game) ?: return none
         val available = available(titleId)
         val applied = reconcile(titleId, available)?.applied?.toSet() ?: return none
-        val plan = PresetLaunchArgs.plan(
-            available.filter { it.id in applied && !it.launch.isEmpty }.map { preset ->
-                PresetLaunchArgs.Resolved(
-                    presetId = preset.id,
-                    launch = preset.launch,
-                    gamePatchPath = preset.launch.gamePatch?.let { installer.launchFile(titleId, preset.id, it).absolutePath },
-                )
-            },
-        )
+        val resolved = available.filter { it.id in applied && !it.launch.isEmpty }.map { preset ->
+            PresetLaunchArgs.Resolved(
+                presetId = preset.id,
+                launch = preset.launch,
+                gamePatchPath = preset.launch.gamePatch?.let {
+                    installer.launchFile(titleId, preset.id, it).absolutePath
+                },
+            )
+        }
+        // The emulator accepts only ONE --game-patch file. Merge independent
+        // shadow/DoF mods into one validated GoldHEN JSON before launch.
+        val patched = resolved.filter { it.gamePatchPath != null }
+        val effective = if (patched.size >= 2) {
+            val merged = try {
+                patchCombiner.combine(titleId, patched.map {
+                    it.presetId to File(requireNotNull(it.gamePatchPath))
+                }).absolutePath
+            } catch (e: Exception) {
+                Log.e(TAG, "$titleId: unsafe combined game patch rejected; applying none", e)
+                null
+            }
+            val owner = patched.first().presetId
+            resolved.map { item ->
+                item.copy(gamePatchPath = if (item.presetId == owner) merged else null)
+            }
+        } else resolved
+        val plan = PresetLaunchArgs.plan(effective)
         plan.conflicts.forEach { Log.w(TAG, "$titleId: $it") }
         if (!plan.isEmpty) Log.i(TAG, "$titleId: launch options ${plan.args}")
         return plan
@@ -87,7 +123,7 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
             installer.reconcile(
                 titleId,
                 available,
-                settings.enabledPresets(titleId),
+                normalizedShadowChoice(titleId, settings.enabledPresets(titleId)),
                 bytes = { preset, path -> catalog.fileBytes(preset, path) },
                 launchBytes = { preset, path -> catalog.launchFileBytes(preset, path) },
             ).also { report ->
