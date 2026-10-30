@@ -89,6 +89,7 @@ class LaunchArgsTest {
         assertEquals("KYTY_SHADOW_SCALE=match", match[match.indexOf("--env") + 1])
         assertEquals(ShadowScale.MATCH_RENDER, ShadowScale.fromStorage("match"))
         assertEquals(ShadowScale.MATCH_RENDER, ShadowScale.fromStorage("0.5"))
+        assertEquals(ShadowScale.MATCH_RENDER, GameSettings.fromJson("""{"shadowScale":"0.5"}""").shadowScale)
         assertEquals(GameSettings(shadowScale = ShadowScale.MATCH_RENDER),
             GameSettings.fromJson(GameSettings(shadowScale = ShadowScale.MATCH_RENDER).toJson()))
         val game = LaunchOptions.resolve(

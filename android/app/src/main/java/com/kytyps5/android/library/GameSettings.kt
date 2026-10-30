@@ -55,7 +55,8 @@ data class GameSettings(
                     hudMode = HudMode.entries.firstOrNull { it.storageValue == obj.stringOr("hudMode") },
                     touchControls = obj.optionalBoolean("touchControls"),
                     renderScale = RenderScale.entries.firstOrNull { it.storageValue == obj.stringOr("renderScale") },
-                    shadowScale = ShadowScale.entries.firstOrNull { it.storageValue == obj.stringOr("shadowScale") },
+                    shadowScale = ShadowScale.entries.firstOrNull { it.storageValue == obj.stringOr("shadowScale") }
+                        ?: if (obj.stringOr("shadowScale") == "0.5") ShadowScale.MATCH_RENDER else null,
                     gpuTurbo = obj.optionalBoolean("gpuTurbo"),
                 )
             } catch (e: JSONException) {
