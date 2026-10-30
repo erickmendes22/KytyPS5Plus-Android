@@ -54,6 +54,7 @@ class MainActivity : Activity() {
     private lateinit var folderPath: TextView
     private lateinit var resolutionGroup: RadioGroup
     private lateinit var renderScaleGroup: RadioGroup
+    private lateinit var shadowScaleGroup: RadioGroup
     private lateinit var message: TextView
     private lateinit var scanStatus: TextView
     private lateinit var covers: CoverLoader
@@ -149,6 +150,7 @@ class MainActivity : Activity() {
         }
         resolutionGroup = buildResolutionGroup()
         renderScaleGroup = buildRenderScaleGroup()
+        shadowScaleGroup = buildShadowScaleGroup()
         message = label("", sizeSp = 11f, secondary = true)
         scanStatus = label("Verificando jogos...", sizeSp = 11f, secondary = true)
 
@@ -271,7 +273,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             addView(dashboardPanel("VÍDEO", "Resolução de saída e escala de renderização.",
                 label("Resolução de saída", bold = true), resolutionGroup,
-                label("Escala interna", bold = true), renderScaleGroup,
+                label("Escala interna (Vulkan, sem patch por jogo)", bold = true), renderScaleGroup,
+                label("Sombras: resolução de atlas quadrados (experimental)", bold = true), shadowScaleGroup,
             ))
         }
 
@@ -467,6 +470,22 @@ class MainActivity : Activity() {
         return group
     }
 
+    private fun buildShadowScaleGroup(): RadioGroup {
+        val group = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        ShadowScale.entries.forEach { scale ->
+            group.addView(RadioButton(this).apply {
+                id = View.generateViewId()
+                text = scale.label
+                tag = scale
+                isChecked = scale == settings.shadowScale
+            })
+        }
+        group.setOnCheckedChangeListener { _, checkedId ->
+            (group.findViewById<View>(checkedId)?.tag as? ShadowScale)?.let { settings.shadowScale = it }
+        }
+        return group
+    }
+
     private fun onScanRequested() {
         if (!Environment.isExternalStorageManager()) {
             showMessage("Grant all-files access before scanning.")
@@ -600,12 +619,14 @@ class MainActivity : Activity() {
             globalTouch = settings.touchControlsEnabled,
             game = settings.gameSettings(game.path),
             globalRenderScale = settings.renderScale,
+            globalShadowScale = settings.shadowScale,
             globalGpuTurbo = settings.gpuTurbo,
             globalHudMode = settings.hudMode,
         )
         val args = LaunchArgs.forGame(
             game.path, options.resolution, drivers.driverDirFor(game.path), options.renderScale, options.gpuTurbo,
             titleId = game.titleId,
+            shadowScale = options.shadowScale,
         )
         startActivity(
             Intent(this, GameActivity::class.java)
