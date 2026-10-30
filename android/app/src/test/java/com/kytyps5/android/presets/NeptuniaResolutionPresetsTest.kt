@@ -26,7 +26,10 @@ class NeptuniaResolutionPresetsTest {
             "0x3f3916" to "48bb8007000038040000",
             "0x3f39d9" to "49bf8007000038040000",
         )
-        val modes = catalog.forTitle("PPSA02721")
+        // Keep auditing historical resolution assets even after adding
+        // independent, opt-in shadow and DoF patches to the same title.
+        // New effect patches are verified in NeptuniaEffectsPatchTest.
+        val modes = catalog.forTitle("PPSA02721").filter { it.id in expected.keys }
         assertEquals(expected.keys.toSet(), modes.map { it.id }.toSet())
         for (mode in modes) {
             assertEquals(emptyList<String>(), mode.files)
