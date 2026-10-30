@@ -29,6 +29,8 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
         activePerformancePresets(titleId, catalog.forTitle(titleId))
 
     companion object {
+        private const val TAG = "KytyPresets"
+
         internal fun activePerformancePresets(titleId: String, shipped: List<GamePreset>): List<GamePreset> =
             shipped.asSequence()
                 .filterNot { it.id.startsWith("res") ||
@@ -99,7 +101,4 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
             null
         }
 
-    private companion object {
-        const val TAG = "KytyPresets"
-    }
 }
