@@ -1,6 +1,8 @@
 #include "graphics/shader/shader.h"
 #include "graphics/shader/halfRateTiles.h"
 
+#include "common/alignment.h"
+
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -67,6 +69,20 @@ void ShaderInit() {
 	g_shader_map = std::make_unique<std::unordered_map<uint64_t, ShaderMapEntry>>();
 }
 
+// The code and the literal buffer determine shader compilation; trailing AGC metadata,
+// checksums and other footer fields do not. Keep whole-binary hashing for unknown layouts.
+static uint32_t ShaderProgramSize(const uint32_t* binary, uint32_t size) {
+	constexpr uint32_t FooterSize = 0x30;
+	if (size < FooterSize) return size;
+	const auto* footer = binary + (size - FooterSize) / 4;
+	const auto end = Common::AlignUp(uint64_t {footer[5]}, 16) + footer[6];
+	if (std::memcmp(footer, "barefoot", 8) != 0 || footer[4] != 1 ||
+	    footer[5] == 0 || end % 4 != 0 || end > size - FooterSize) {
+		return size;
+	}
+	return static_cast<uint32_t>(end);
+}
+
 void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 	EXIT_IF(g_shader_map == nullptr);
 
@@ -74,8 +90,10 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 		EXIT("ShaderMapUserData shader=0x%016" PRIx64 " has invalid AGC shader_size=0x%08" PRIx32 "\n",
 		     addr, data.code_size_bytes);
 	}
-	const auto hash = XXH3_64bits(reinterpret_cast<const void*>(addr), data.code_size_bytes);
+	const auto* binary = reinterpret_cast<const uint32_t*>(addr);
 	ShaderMapData mapped {data};
+	mapped.code_size_bytes = ShaderProgramSize(binary, data.code_size_bytes);
+	const auto hash = XXH3_64bits(binary, mapped.code_size_bytes);
 	mapped.vertex_error =
 	    ShaderReadVertexMetadata(data, HW::UserSgprInfo::SGPRS_MAX, mapped.vertex);
 	std::scoped_lock lock(g_shader_map_mutex);
