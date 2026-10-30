@@ -68,6 +68,37 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun capyScaleOptionsUseNativeRendererAndRemainPerGame() {
+        assertEquals("0.25", RenderScale.QUARTER.factor)
+        assertEquals("0.33333334", RenderScale.THIRD.factor)
+        for (scale in listOf(RenderScale.QUARTER, RenderScale.THIRD)) {
+            assertEquals(scale, RenderScale.fromStorage(scale.storageValue))
+            val args = LaunchArgs.forGame("/g", Resolution.HD_720, renderScale = scale)
+            assertEquals(scale.factor, args[args.indexOf("--render-scale") + 1])
+            assertEquals(-1, args.indexOf("--game-patch"))
+            assertEquals(GameSettings(renderScale = scale),
+                GameSettings.fromJson(GameSettings(renderScale = scale).toJson()))
+        }
+    }
+
+    @Test
+    fun shadowAtlasScaleUsesIndependentOptionalEnvironment() {
+        val native = LaunchArgs.forGame("/g", Resolution.HD_720)
+        assertEquals(-1, native.indexOf("KYTY_SHADOW_SCALE=0.5"))
+        val half = LaunchArgs.forGame("/g", Resolution.HD_720, shadowScale = ShadowScale.HALF)
+        assertEquals("KYTY_SHADOW_SCALE=0.5", half[half.indexOf("--env") + 1])
+        assertEquals(ShadowScale.HALF, ShadowScale.fromStorage("0.5"))
+        assertEquals(GameSettings(shadowScale = ShadowScale.HALF),
+            GameSettings.fromJson(GameSettings(shadowScale = ShadowScale.HALF).toJson()))
+        val game = LaunchOptions.resolve(
+            Resolution.HD_720, globalHud = false, globalTouch = true,
+            game = GameSettings(shadowScale = ShadowScale.NATIVE),
+            globalShadowScale = ShadowScale.HALF,
+        )
+        assertEquals(ShadowScale.NATIVE, game.shadowScale)
+    }
+
+    @Test
     fun renderScaleRoundTripsThroughStorageAndGameSettingsJson() {
         assertEquals(RenderScale.NATIVE, RenderScale.fromStorage(null))
         assertEquals(RenderScale.NATIVE, RenderScale.fromStorage("bogus"))

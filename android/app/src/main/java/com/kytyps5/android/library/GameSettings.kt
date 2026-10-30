@@ -1,6 +1,7 @@
 package com.kytyps5.android.library
 
 import com.kytyps5.android.RenderScale
+import com.kytyps5.android.ShadowScale
 import com.kytyps5.android.hud.HudMode
 import com.kytyps5.android.Resolution
 import com.kytyps5.android.stringAt
@@ -25,11 +26,13 @@ data class GameSettings(
     val hudMode: HudMode? = null,
     val touchControls: Boolean? = null,
     val renderScale: RenderScale? = null,
+    val shadowScale: ShadowScale? = null,
     val gpuTurbo: Boolean? = null,
 ) {
     fun toJson(): String = JSONObject()
         .put("resolution", resolution?.storageValue ?: JSONObject.NULL)
         .put("renderScale", renderScale?.storageValue ?: JSONObject.NULL)
+        .put("shadowScale", shadowScale?.storageValue ?: JSONObject.NULL)
         .put("env", JSONArray(envVars.map { it.toString() }))
         .put("hud", hud ?: JSONObject.NULL)
         .put("hudMode", hudMode?.storageValue ?: JSONObject.NULL)
@@ -52,6 +55,7 @@ data class GameSettings(
                     hudMode = HudMode.entries.firstOrNull { it.storageValue == obj.stringOr("hudMode") },
                     touchControls = obj.optionalBoolean("touchControls"),
                     renderScale = RenderScale.entries.firstOrNull { it.storageValue == obj.stringOr("renderScale") },
+                    shadowScale = ShadowScale.entries.firstOrNull { it.storageValue == obj.stringOr("shadowScale") },
                     gpuTurbo = obj.optionalBoolean("gpuTurbo"),
                 )
             } catch (e: JSONException) {

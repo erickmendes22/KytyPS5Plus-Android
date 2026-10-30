@@ -18,7 +18,34 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
 
     fun titleIdFor(game: GameEntry): String? = TitleIds.resolve(game.titleId, game.folder)
 
-    fun available(titleId: String): List<GamePreset> = catalog.forTitle(titleId)
+    /**
+     * Use host render scale instead of executable/UE configuration resolution patches.
+     * Keep the old manifests in assets for provenance, but never install, expose or launch
+     * them. The installer will also restore older preset-managed config files on next boot.
+     * Astro's half-rate lighting is a separate optimization and remains available without
+     * its executable resolution rewrite.
+     */
+    fun available(titleId: String): List<GamePreset> =
+        activePerformancePresets(titleId, catalog.forTitle(titleId))
+
+    companion object {
+        private const val TAG = "KytyPresets"
+
+        internal fun activePerformancePresets(titleId: String, shipped: List<GamePreset>): List<GamePreset> =
+            shipped.asSequence()
+                .filterNot { it.id.startsWith("res") ||
+                    (titleId.equals("PPSA24156", ignoreCase = true) && it.id == "native720") }
+                .map { preset ->
+                    if (titleId.equals("PPSA21567", ignoreCase = true) && preset.id == "perf720") {
+                        preset.copy(
+                            name = "Half-rate ray-traced lighting (no resolution patch)",
+                            description = "Reduces ray-traced lighting work without modifying the game executable. " +
+                                "Set the desired internal resolution using Render scale above.",
+                            launch = preset.launch.copy(gamePatch = null, renderScale = null),
+                        )
+                    } else preset
+                }.toList()
+    }
 
     fun isEnabled(preset: GamePreset): Boolean = preset.id in settings.enabledPresets(preset.titleId)
 
@@ -39,7 +66,7 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
         val game = File(gamePath)
         val paramTitleId = if (game.isDirectory) GameLibrary.readEntry(game).titleId else null
         val titleId = TitleIds.resolve(paramTitleId, game) ?: return none
-        val available = catalog.forTitle(titleId)
+        val available = available(titleId)
         val applied = reconcile(titleId, available)?.applied?.toSet() ?: return none
         val plan = PresetLaunchArgs.plan(
             available.filter { it.id in applied && !it.launch.isEmpty }.map { preset ->
@@ -55,7 +82,7 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
         return plan
     }
 
-    private fun reconcile(titleId: String, available: List<GamePreset> = catalog.forTitle(titleId)): PresetInstaller.Report? =
+    private fun reconcile(titleId: String, available: List<GamePreset> = this.available(titleId)): PresetInstaller.Report? =
         try {
             installer.reconcile(
                 titleId,
@@ -74,7 +101,4 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
             null
         }
 
-    private companion object {
-        const val TAG = "KytyPresets"
-    }
 }

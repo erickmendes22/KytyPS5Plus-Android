@@ -31,10 +31,23 @@ enum class RenderScale(
 ) {
     NATIVE(label = "Native", factor = "1.0", storageValue = "1.0"),
     THREE_QUARTER(label = "75%", factor = "0.75", storageValue = "0.75"),
-    HALF(label = "50%", factor = "0.5", storageValue = "0.5");
+    HALF(label = "50%", factor = "0.5", storageValue = "0.5"),
+    THIRD(label = "33%", factor = "0.33333334", storageValue = "0.33333334"),
+    QUARTER(label = "25%", factor = "0.25", storageValue = "0.25");
 
     companion object {
         fun fromStorage(value: String?): RenderScale =
+            entries.firstOrNull { it.storageValue == value } ?: NATIVE
+    }
+}
+
+/** Optional conservative shadow atlas downscale (square depth-only passes). */
+enum class ShadowScale(val label: String, val factor: String, val storageValue: String) {
+    NATIVE(label = "Native", factor = "1.0", storageValue = "1.0"),
+    HALF(label = "50% (experimental)", factor = "0.5", storageValue = "0.5");
+
+    companion object {
+        fun fromStorage(value: String?): ShadowScale =
             entries.firstOrNull { it.storageValue == value } ?: NATIVE
     }
 }
@@ -82,6 +95,7 @@ object LaunchArgs {
         renderScale: RenderScale = RenderScale.NATIVE,
         gpuTurbo: Boolean = false,
         titleId: String? = null,
+        shadowScale: ShadowScale = ShadowScale.NATIVE,
     ): Array<String> =
         arrayOf(
             FLAG_GAME, gamePath,
@@ -89,6 +103,7 @@ object LaunchArgs {
             FLAG_SCREEN_HEIGHT, resolution.height.toString(),
         ) + (gpuDriverDir?.let { arrayOf(FLAG_GPU_DRIVER, it) } ?: emptyArray()) +
             (if (renderScale == RenderScale.NATIVE) emptyArray() else arrayOf(FLAG_RENDER_SCALE, renderScale.factor)) +
+            (if (shadowScale == ShadowScale.NATIVE) emptyArray() else arrayOf("--env", "KYTY_SHADOW_SCALE=" + shadowScale.factor)) +
             (if (gpuTurbo) arrayOf(FLAG_GPU_TURBO) else emptyArray()) +
             // The same 32-MiB VMA-block experiment used for Silent Hill now runs
             // alongside GT's existing memory-collector experiment, not in a
@@ -123,6 +138,7 @@ data class LaunchOptions(
     val hudMode: HudMode = HudMode.COMPACT,
     val env: List<EnvVar>,
     val renderScale: RenderScale = RenderScale.NATIVE,
+    val shadowScale: ShadowScale = ShadowScale.NATIVE,
     val gpuTurbo: Boolean = LauncherSettings.DEFAULT_GPU_TURBO,
 ) {
     companion object {
@@ -132,6 +148,7 @@ data class LaunchOptions(
             globalTouch: Boolean,
             game: GameSettings,
             globalRenderScale: RenderScale = RenderScale.NATIVE,
+            globalShadowScale: ShadowScale = ShadowScale.NATIVE,
             globalGpuTurbo: Boolean = LauncherSettings.DEFAULT_GPU_TURBO,
             globalHudMode: HudMode = HudMode.COMPACT,
         ) =
@@ -142,6 +159,7 @@ data class LaunchOptions(
                 touchControls = game.touchControls ?: globalTouch,
                 env = game.envVars,
                 renderScale = game.renderScale ?: globalRenderScale,
+                shadowScale = game.shadowScale ?: globalShadowScale,
                 gpuTurbo = game.gpuTurbo ?: globalGpuTurbo,
             )
     }
