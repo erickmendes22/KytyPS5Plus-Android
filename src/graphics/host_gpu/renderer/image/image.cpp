@@ -33,27 +33,34 @@ namespace Libs::Graphics {
 
 namespace {
 
-// PPSA24156-only effect-memory experiment: large depth attachments may be
-// shadow atlases or other depth pre-passes. This changes *host image backing*
-// dimensions, not the game's binary or its visibility decisions. Keep the
-// override opt-in and do not apply it to color textures or video-out images.
-// A depth image that cannot safely support render-scale blitting remains native.
+// Optional Capy-style shadow-map scaling. Only square single-mip, single-sample depth
+// render targets are eligible; never scale presentation images, color targets or compressed
+// surfaces here. Retain the existing GT-specific large depth experiment as an independent
+// opt-in. Mixed color/depth passes are restored to full guest size in renderDraw.cpp.
 [[nodiscard]] float EffectiveGtDepthBackingScale(const ImageInfo& info) {
 	const float base = Config::GetRenderScale();
-	if (!info.IsDepth() || info.extent.width < 2048u ||
-	    info.extent.width != info.extent.height ||
-	    info.samples != 1 || info.resources.levels != 1) {
+	if (!info.IsDepth() || info.type != Prospero::ImageType::kColor2D ||
+	    info.extent.depth != 1u || info.extent.width != info.extent.height ||
+	    info.extent.width < 1024u || info.samples != 1 ||
+	    info.resources.levels != 1 || info.IsBlock()) {
 		return base;
 	}
+	// A quarter-resolution color pass followed by an eighth-resolution shadow atlas
+	// is too lossy on a phone. At 25% and 33% global resolution use unmodified shadows.
+	const char* shadow = std::getenv("KYTY_SHADOW_SCALE");
+	const bool shadow_half = base >= 0.5f && shadow != nullptr &&
+	                         std::strcmp(shadow, "0.5") == 0;
 	const char* setting = std::getenv("KYTY_GT_LARGE_DEPTH_HALF");
-	if (setting == nullptr || std::strcmp(setting, "1") != 0) return base;
-	static const bool is_gt = [] {
-		std::string title;
-		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
-		       title == "PPSA24156";
-	}();
-	if (!is_gt) return base;
-	return base * 0.5f;
+	bool gt_half = false;
+	if (info.extent.width >= 2048u && setting != nullptr && std::strcmp(setting, "1") == 0) {
+		static const bool is_gt = [] {
+			std::string title;
+			return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+			       title == "PPSA24156";
+		}();
+		gt_half = is_gt;
+	}
+	return shadow_half || gt_half ? base * 0.5f : base;
 }
 
 // Optional GT HDR intermediate test: half-size 16-bit-float color backing.
