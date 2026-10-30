@@ -80,7 +80,7 @@ class GamePresets(context: Context, private val settings: LauncherSettings) {
         return plan
     }
 
-    private fun reconcile(titleId: String, available: List<GamePreset> = available(titleId)): PresetInstaller.Report? =
+    private fun reconcile(titleId: String, available: List<GamePreset> = this.available(titleId)): PresetInstaller.Report? =
         try {
             installer.reconcile(
                 titleId,
