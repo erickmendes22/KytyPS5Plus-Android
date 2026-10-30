@@ -1621,13 +1621,6 @@ void PthreadStaticObjects::DeleteObjects(Loader::Program* program) {
 }
 
 Pthread PthreadPool::Create() {
-	// Some PS5 games (PPSA02721, MkPS_ParticleTh) create and finish more than
-	// twenty short-lived guest threads per second. Waiting for the ten-second
-	// background reaper retains hundreds of joinable host pthreads and their
-	// guest stacks in the meantime, even though they have already finished.
-	// Reap only completed DETACHED threads before searching the reusable pool.
-	// FreeDetachedThreads takes m_mutex itself; call it before acquiring m_mutex.
-	FreeDetachedThreads();
 	Common::LockGuard lock(m_mutex);
 
 	for (auto* p: m_threads) {
