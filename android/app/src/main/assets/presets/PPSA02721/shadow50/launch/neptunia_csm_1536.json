@@ -1,0 +1,18 @@
+{
+  "id": "PPSA02721",
+  "version": "01.000.000",
+  "process": "eboot.bin",
+  "mods": [
+    {
+      "name": "Neptunia CSM shadows 1536x1536 (50%, experimental)",
+      "enabled": true,
+      "memory": [
+        {
+          "offset": "0x3e9fb2",
+          "off": "49be000c0000000c0000",
+          "on": "49be0006000000060000"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "id": "shadow50",
+  "name": "Neptunia CSM shadows 1536x1536 (50%, experimental)",
+  "description": "PS5 PPSA02721 v01.000.000 only. One verified MOVABS supplies 3072x3072 to cascaded shadow-map and shadowmap_temporary resource setup; changes both dimensions to 1536. Screen resolution and host render scale remain unchanged. Requires on-device quality and FPS validation.",
+  "launch": {
+    "gamePatch": "neptunia_csm_1536.json"
+  }
+}

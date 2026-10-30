@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "id": "shadow25",
+  "name": "Neptunia CSM shadows 768x768 (25%, experimental)",
+  "description": "PS5 PPSA02721 v01.000.000 only. Reduces verified cascaded shadow-map allocation dimensions from 3072x3072 to 768x768, without changing screen resolution. May significantly degrade shadow detail; monitor artifacts, driver stability and FPS.",
+  "launch": {
+    "gamePatch": "neptunia_csm_768.json"
+  }
+}
