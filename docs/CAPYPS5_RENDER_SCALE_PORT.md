@@ -35,13 +35,15 @@ Do NOT paste CapyPS5's initial full synchronisation rewrite onto them.
   its native eboot resolution patch is neither installed nor passed to core.
 - Keep GT `depthhalf` and `hdrhalf` **effect-memory experiments** and all
   genuinely non-resolution performance/compatibility presets.
-- Optional shadow-map downscale using `KYTY_SHADOW_SCALE=0.5`, global and
-  per-title. Only square 2D single-mip single-sample depth images of at
-  least 1024px with a supported transfer format qualify, and only in depth-only
-  render passes. In mixed render passes, the existing host backing fallback
-  remains in force. With global scale below 50%, this extra reduction is skipped.
-  Default **Native** preserves existing shadow fidelity. On Mali/Adreno it
-  needs in-game checking for shadow corruption.
+- Shadow atlas opt-in is now `KYTY_SHADOW_SCALE=match`, globally and per title.
+  Only square 2D single-mip single-sample depth targets of at least 1024px
+  with a supported transfer format qualify. They use the SAME host/guest
+  scale as main color targets (50%, 33% or 25%), so per-draw shader push data
+  remains consistent. At Native (100%) this option is inert. An independent
+  shadow factor requires a shader ABI that can handle two different image
+  scales simultaneously; the original separate 50% experimental mode was
+  unsafe and has been retired. Old persisted 0.5 maps to match. Mixed render
+  passes keep their guest-size fallback.
 - Regression tests cover UI settings/arguments, retired game presets and
   independent RT/effect toggles. The ARM64 APK and native regressions rebuild
   in GitHub Actions.

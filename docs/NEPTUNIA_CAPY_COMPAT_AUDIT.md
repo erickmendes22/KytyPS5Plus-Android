@@ -37,8 +37,11 @@ The SELF also contains the shader/resource names `ShadowMap`,
 `hdr_ps_dof`, `ScrEff_RadialBlur`, `ScrEff_AntiAlias` and various
 `fog` and `non-fog` shaders. These are **resource names, not independently
 verified boolean settings or executable patch points**. No speculative
-shadow/bloom/DOF OFF patch is shipped. Existing host-side optional shadow
-atlas 50% scale is safer to trial per game, with a native option for rollback.
+shadow/bloom/DOF OFF patch is shipped. Existing host-side optional shadow atlas scaling is safer to trial per game:
+**follow internal render scale** reduces eligible square depth-only targets
+using the same 50%, 33% or 25% host factor; Native is the rollback option.
+Independent shadow scaling needs further shader infrastructure and is not
+currently supported. At 100% main scale the shadow setting has no effect.
 
 ## Tested against CapyPS5 differences
 
@@ -58,6 +61,8 @@ Backports in this branch (source commits in
 - `709aa2c7db`: decode `S_DCACHE_INV` in PS5 SMEM as a zero-operand
   no-op, instead of failing shader translation. Includes decode + SPIR-V test.
 - `ffa9c62` from KytyPS5 PR #857: clamp inverted sampler min/max LOD.
+- `36509273fd`: reuse dirty-range map nodes while merging ranges, avoiding
+  allocator churn on repeated BDA/memory updates; regression tested.
 
 Important Neptunia compatibility background:
 [KytyPS5 issue #317](https://github.com/KytyPS5/KytyPS5/issues/317)
@@ -85,7 +90,7 @@ LOD bias clamp, 565 format conversion); don't duplicate.
    resulting compute SPIR-V.
 2. Verify a title's eboot and param metadata are from the same version.
 3. Compare Neptunia native render scale vs 50%, 33%, 25%, with stable driver
-   and temperature. Shadows at native versus 50%; compare menus, gameplay,
+   and temperature. Shadows at Native versus follow-internal-scale; compare menus, gameplay,
    alpha blending, cutscenes, audio and save/load.
 4. Confirm no Vulkan depth-format or sampler validation errors. Check that
    compatibility fixes don't change previously working Astro Bot or GT7.
