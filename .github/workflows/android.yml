@@ -4,7 +4,7 @@ name: Android APK
 # No GitHub Releases are created. Signing uses the repository's KYTY_* secrets.
 on:
   push:
-    branches: [ experimental/neptunia-game-category-resolution, experimental/neptunia-fex-lookup-cache, android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64, investigate/mfgt-reference-port, investigate/mfgt-graphics-pipeline-crash, investigate/mfgt-spv-crash-capture, investigate/mfgt-vertex64-tess, recovery/mfgt-d43e258f-no-tess-workarounds, experiment/mfgt-written-image-reclaim, experiment/mfgt-memory-collector-v2 ]
+    branches: [ experiment/pc-fork-shader-performance, experimental/neptunia-game-category-resolution, experimental/neptunia-fex-lookup-cache, android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64, investigate/mfgt-reference-port, investigate/mfgt-graphics-pipeline-crash, investigate/mfgt-spv-crash-capture, investigate/mfgt-vertex64-tess, recovery/mfgt-d43e258f-no-tess-workarounds, experiment/mfgt-written-image-reclaim, experiment/mfgt-memory-collector-v2 ]
     paths-ignore: [ 'docs/**', '**.md' ]
   workflow_dispatch:
 
