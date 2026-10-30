@@ -160,9 +160,15 @@ struct ThreadPrivate {
 	ThreadPrivate(thread_func_t f, void* a): func(f), arg(a), m_thread(&Run, this) {}
 
 	static void Run(ThreadPrivate* t) {
+		// Detach() lets the owning Thread release ThreadPrivate as soon as
+		// started is set. Read everything needed by the callback BEFORE
+		// publishing started; never dereference t after that publication.
+		// Otherwise, a detached callback can access freed ThreadPrivate.
+		const thread_func_t callback = t->func;
+		void* const callback_arg = t->arg;
 		t->unique_id = Thread::GetThreadIdUnique();
-		t->started   = true;
-		t->func(t->arg);
+		t->started.store(true, std::memory_order_release);
+		callback(callback_arg);
 	}
 
 	thread_func_t    func;
