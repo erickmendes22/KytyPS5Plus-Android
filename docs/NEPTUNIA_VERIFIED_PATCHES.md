@@ -37,6 +37,11 @@ shader names.
 
 ## Safety and combinations
 
+Each shadow preset adds the emulator environment override
+`KYTY_SHADOW_SCALE=1.0` to **avoid compounding** the separate host-side
+shadow atlas scaling with this new native 1536/768 guest size. It does not
+override the host-side screen `--render-scale`.
+
 The two shadow resolutions write the **same** instructions; the Android
 frontend enforces exclusive selection. They can be combined with DoF OFF:
 `PresetGamePatchCombiner` constructs a single validated GoldHEN JSON for

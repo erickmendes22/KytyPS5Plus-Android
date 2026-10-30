@@ -22,6 +22,9 @@ class NeptuniaEffectsPatchTest {
         val exposed = GamePresets.activePerformancePresets(title, catalog.forTitle(title))
         assertEquals(setOf("nodof", "shadow25", "shadow50"), exposed.map { it.id }.toSet())
         assertTrue(exposed.none { it.launch.renderScale != null })
+        assertEquals("1.0", exposed.first { it.id == "shadow50" }.launch.env["KYTY_SHADOW_SCALE"])
+        assertEquals("1.0", exposed.first { it.id == "shadow25" }.launch.env["KYTY_SHADOW_SCALE"])
+        assertTrue(exposed.first { it.id == "nodof" }.launch.env.isEmpty())
         val expected = mapOf(
             "shadow50" to Triple("0x3e9fb2", "49be000c0000000c0000", "49be0006000000060000"),
             "shadow25" to Triple("0x3e9fb2", "49be000c0000000c0000", "49be0003000000030000"),
