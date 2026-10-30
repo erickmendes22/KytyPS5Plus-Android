@@ -1967,7 +1967,7 @@ void TestShaderProgramHash() {
     regs.cs_regs.data_addr = reinterpret_cast<uint64_t>(binary.data());
     ShaderMapUserData(regs.cs_regs.data_addr, mapped);
     ShaderComputeInputInfo input{};
-    return PrepareProgram(regs, input);
+    return PrepareProgram(regs, HW::ShaderRegisters{}, input);
   };
   Check(Map(Make(7, 1)).hash == Map(Make(7, 2)).hash,
         "metadata-only shader differences did not share a program hash");
