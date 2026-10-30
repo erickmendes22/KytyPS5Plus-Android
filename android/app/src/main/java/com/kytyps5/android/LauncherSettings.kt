@@ -33,6 +33,13 @@ class LauncherSettings(context: Context) {
             prefs.edit().putString(KEY_RENDER_SCALE, value.storageValue).apply()
         }
 
+    /** Optional shadow atlas scale; independent from the normal render scale. */
+    var shadowScale: ShadowScale
+        get() = ShadowScale.fromStorage(prefs.getString(KEY_SHADOW_SCALE, null))
+        set(value) {
+            prefs.edit().putString(KEY_SHADOW_SCALE, value.storageValue).apply()
+        }
+
     /** Global GPU driver: an imported driver id from [GpuDriverStore], or "" for the system driver. */
     var gpuDriverId: String
         get() = prefs.getString(KEY_GPU_DRIVER, SYSTEM_DRIVER) ?: SYSTEM_DRIVER
@@ -110,6 +117,7 @@ class LauncherSettings(context: Context) {
         private const val KEY_GAMES_ROOT = "games_root"
         private const val KEY_RESOLUTION = "resolution"
         private const val KEY_RENDER_SCALE = "render_scale"
+        private const val KEY_SHADOW_SCALE = "shadow_scale"
         private const val KEY_GPU_DRIVER = "gpu_driver"
         private const val KEY_GPU_DRIVER_GAME_PREFIX = "gpu_driver_game:"
         private const val KEY_BUNDLED_DRIVER_VERSION = "bundled_driver_version"
