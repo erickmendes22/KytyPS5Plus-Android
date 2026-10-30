@@ -32,8 +32,8 @@ enum class RenderScale(
     NATIVE(label = "Native", factor = "1.0", storageValue = "1.0"),
     THREE_QUARTER(label = "75%", factor = "0.75", storageValue = "0.75"),
     HALF(label = "50%", factor = "0.5", storageValue = "0.5"),
-    THIRD(label = "33% (4K → 720p)", factor = "0.33333334", storageValue = "0.33333334"),
-    QUARTER(label = "25% (4K → 540p)", factor = "0.25", storageValue = "0.25");
+    THIRD(label = "33%", factor = "0.33333334", storageValue = "0.33333334"),
+    QUARTER(label = "25%", factor = "0.25", storageValue = "0.25");
 
     companion object {
         fun fromStorage(value: String?): RenderScale =
