@@ -83,7 +83,7 @@ GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
     m_ds_frame_trace = m_strict_frame_order ||
                        (trace_frame != nullptr && std::strcmp(trace_frame, "1") == 0);
     if (m_ds_frame_trace) {
-        LOGF("[DS_SYNC] strict_cross_queue_frame=%d frames_in_flight=%u max_boundary_wait_ms=400\n",
+        ::printf("[DS_SYNC] strict_cross_queue_frame=%d frames_in_flight=%u max_boundary_wait_ms=400\n",
              m_strict_frame_order ? 1 : 0, Config::GetGpuFramesInFlight());
     }
 	if (const auto frames = Config::GetGpuFramesInFlight(); frames != 0) {
@@ -252,11 +252,11 @@ bool GuestGpu::DrainFrameQueuesForGuestBoundary() {
         static std::atomic<uint32_t> stalls {0};
         const auto sample = stalls.fetch_add(1, std::memory_order_relaxed);
         if (sample < 32 || sample % 64 == 0) {
-            LOGF("[DS_SYNC] frame_drain_timeout_ms=%lld pending=%u gfx_queue=%u blocked_queues=%u commands=%u processing=%d\n",
+            ::printf("[DS_SYNC] frame_drain_timeout_ms=%lld pending=%u gfx_queue=%u blocked_queues=%u commands=%u processing=%d\n",
                  static_cast<long long>(elapsed), remaining, depth0, blocked, commands, processing ? 1 : 0);
         }
     } else if (elapsed > 75 && m_ds_frame_trace) {
-        LOGF("[DS_SYNC] frame_drain_slow_ms=%lld completed_frames=%d\n",
+        ::printf("[DS_SYNC] frame_drain_slow_ms=%lld completed_frames=%d\n",
              static_cast<long long>(elapsed), m_done_num.load());
     }
     return complete;
@@ -281,7 +281,7 @@ void GuestGpu::SuspendPoint() {
                         if (!queue.empty() && queue.front().blocked) ++blocked;
                     }
                 }
-                LOGF("[DS_SYNC] gpu_completion_wait_over_2s frame=%d pending=%u blocked_queues=%u commands=%u processing=%d\n",
+                ::printf("[DS_SYNC] gpu_completion_wait_over_2s frame=%d pending=%u blocked_queues=%u commands=%u processing=%d\n",
                      m_done_num.load(), pending, blocked, pending_commands, processing ? 1 : 0);
             }
         } else {
