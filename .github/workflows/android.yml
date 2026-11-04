@@ -249,19 +249,3 @@ jobs:
           name: native-regression-results
           path: _Build/regressions/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
-
-          timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only
-          timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only-fast-paths
-      - name: Save native test compiler cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-native-tests-${{ github.sha }}
-      - name: Upload regression results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-regression-results
-          path: _Build/regressions/Testing/Temporary/LastTest.log
-          if-no-files-found: ignore
