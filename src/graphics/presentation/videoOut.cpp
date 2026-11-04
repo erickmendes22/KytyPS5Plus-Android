@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <chrono>
 #include <cstdlib>
 #include <fmt/format.h>
@@ -923,7 +924,7 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
         if (ds_trace) {
             const auto now = std::chrono::steady_clock::now();
             if (now - sample_start >= std::chrono::seconds(5)) {
-                LOGF("[DS_PRESENT] vblank_cycles=%llu completed_guest_flips=%llu without_new_flip=%llu guest_suspend_points=%d\n",
+                ::printf("[DS_PRESENT] vblank_cycles=%llu completed_guest_flips=%llu without_new_flip=%llu guest_suspend_points=%d\n",
                     static_cast<unsigned long long>(sample_vblanks),
                     static_cast<unsigned long long>(sample_guest_flips),
                     static_cast<unsigned long long>(sample_empty_vblanks),
