@@ -76,7 +76,16 @@ static bool GraphicsRunDebugDumpEnabled() {
 }
 
 GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
-	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+    EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
+    const char* strict_frame = std::getenv("KYTY_DS_STRICT_FRAME");
+    const char* trace_frame = std::getenv("KYTY_DS_FRAME_TRACE");
+    m_strict_frame_order = strict_frame != nullptr && std::strcmp(strict_frame, "1") == 0;
+    m_ds_frame_trace = m_strict_frame_order ||
+                       (trace_frame != nullptr && std::strcmp(trace_frame, "1") == 0);
+    if (m_ds_frame_trace) {
+        LOGF("[DS_SYNC] strict_cross_queue_frame=%d frames_in_flight=%u max_boundary_wait_ms=400\n",
+             m_strict_frame_order ? 1 : 0, Config::GetGpuFramesInFlight());
+    }
 	if (const auto frames = Config::GetGpuFramesInFlight(); frames != 0) {
 		m_suspend_point_ready = std::make_shared<SuspendSemaphore>(frames);
 	}
@@ -173,9 +182,11 @@ void GuestGpu::SendCommandSync(Common::UniqueFunction<void>&& command) {
 
 void GuestGpu::Submit(std::span<const uint32_t> draw_commands,
                       std::span<const uint32_t> constant_commands) {
-	if (draw_commands.empty()) {
-		return;
-	}
+    if (draw_commands.empty()) {
+        return;
+    }
+    std::unique_lock<std::mutex> frame_lock(m_frame_order_mutex, std::defer_lock);
+    if (m_strict_frame_order && !IsGpuThread()) frame_lock.lock();
 	Submission submission;
 	submission.type              = SubmissionType::Graphics;
 	submission.queue_id          = 0;
@@ -185,7 +196,9 @@ void GuestGpu::Submit(std::span<const uint32_t> draw_commands,
 }
 
 void GuestGpu::SubmitCompute(uint32_t queue, std::span<const uint32_t> commands) {
-	EXIT_IF(commands.empty());
+    EXIT_IF(commands.empty());
+    std::unique_lock<std::mutex> frame_lock(m_frame_order_mutex, std::defer_lock);
+    if (m_strict_frame_order && !IsGpuThread()) frame_lock.lock();
 
 	EXIT_NOT_IMPLEMENTED(queue < ComputeQueueBase || queue >= ComputeQueueBase + ComputeQueueCount);
 
@@ -198,25 +211,95 @@ void GuestGpu::SubmitCompute(uint32_t queue, std::span<const uint32_t> commands)
 }
 
 void GuestGpu::SubmitFlipPreparation(uint64_t request_id) {
-	Submission submission;
+    std::unique_lock<std::mutex> frame_lock(m_frame_order_mutex, std::defer_lock);
+    if (m_strict_frame_order && !IsGpuThread()) frame_lock.lock();
+    Submission submission;
 	submission.type            = SubmissionType::FlipPreparation;
 	submission.queue_id        = 0;
 	submission.flip_request_id = request_id;
 	Enqueue(std::move(submission));
 }
 
+// Restores the PC fork's guest-frame boundary on PPSA01341. Never holds the
+// producer-order mutex while waiting for a native GPU semaphore: that GPU work
+// may itself need other guest threads to publish submissions.
+bool GuestGpu::DrainFrameQueuesForGuestBoundary() {
+    using Clock = std::chrono::steady_clock;
+    const auto begin = Clock::now();
+    const auto deadline = begin + std::chrono::milliseconds(400);
+    bool complete = false;
+    uint32_t remaining = 0, blocked = 0, depth0 = 0, commands = 0;
+    bool processing = false;
+    {
+        Common::LockGuard lock(m_queue_mutex);
+        while (m_processing || !m_commands.empty() || m_submission_count != 0) {
+            if (Clock::now() >= deadline) break;
+            m_idle.WaitFor(&m_queue_mutex, 10000);
+        }
+        complete = !m_processing && m_commands.empty() && m_submission_count == 0;
+        if (!complete) {
+            remaining = m_submission_count;
+            depth0 = static_cast<uint32_t>(m_queues[0].size());
+            commands = static_cast<uint32_t>(m_commands.size());
+            processing = m_processing;
+            for (const auto& queue: m_queues) {
+                if (!queue.empty() && queue.front().blocked) blocked++;
+            }
+        }
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - begin).count();
+    if (!complete) {
+        static std::atomic<uint32_t> stalls {0};
+        const auto sample = stalls.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 32 || sample % 64 == 0) {
+            LOGF("[DS_SYNC] frame_drain_timeout_ms=%lld pending=%u gfx_queue=%u blocked_queues=%u commands=%u processing=%d\n",
+                 static_cast<long long>(elapsed), remaining, depth0, blocked, commands, processing ? 1 : 0);
+        }
+    } else if (elapsed > 75 && m_ds_frame_trace) {
+        LOGF("[DS_SYNC] frame_drain_slow_ms=%lld completed_frames=%d\n",
+             static_cast<long long>(elapsed), m_done_num.load());
+    }
+    return complete;
+}
+
 void GuestGpu::SuspendPoint() {
-	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
-	// Do not hold a queue lock while waiting: asynchronous work may be needed to
-	// finish the preceding graphics frame. The first point(s) return immediately.
-	if (m_suspend_point_ready != nullptr) {
-		const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GuestSuspendPoint);
-		m_suspend_point_ready->acquire();
-	}
-	Submission submission;
-	submission.type = SubmissionType::SuspendPoint;
-	Enqueue(std::move(submission));
-	m_done_num++;
+    EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
+    // The GPU completion wait must not hold the producer or command-queue locks.
+    // This preserves the existing semaphore and its exact number of permits.
+    if (m_suspend_point_ready != nullptr) {
+        const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GuestSuspendPoint);
+        if (m_ds_frame_trace) {
+            while (!m_suspend_point_ready->try_acquire_for(std::chrono::seconds(2))) {
+                uint32_t pending = 0, pending_commands = 0, blocked = 0;
+                bool processing = false;
+                {
+                    Common::LockGuard lock(m_queue_mutex);
+                    pending = m_submission_count;
+                    pending_commands = static_cast<uint32_t>(m_commands.size());
+                    processing = m_processing;
+                    for (const auto& queue: m_queues) {
+                        if (!queue.empty() && queue.front().blocked) ++blocked;
+                    }
+                }
+                LOGF("[DS_SYNC] gpu_completion_wait_over_2s frame=%d pending=%u blocked_queues=%u commands=%u processing=%d\n",
+                     m_done_num.load(), pending, blocked, pending_commands, processing ? 1 : 0);
+            }
+        } else {
+            m_suspend_point_ready->acquire();
+        }
+    }
+    std::unique_lock<std::mutex> frame_lock(m_frame_order_mutex, std::defer_lock);
+    if (m_strict_frame_order) {
+        frame_lock.lock();
+        // PC default waits until all graphics+compute guest queues drain before
+        // publishing the boundary. Cap the wait: a guest wait-reg-mem may depend
+        // on another CPU thread/frame and must not permanently deadlock boot.
+        DrainFrameQueuesForGuestBoundary();
+    }
+    Submission submission;
+    submission.type = SubmissionType::SuspendPoint;
+    Enqueue(std::move(submission));
+    m_done_num++;
 }
 
 int GuestGpu::GetFrameNum() const {
