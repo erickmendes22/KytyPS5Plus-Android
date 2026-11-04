@@ -1576,7 +1576,7 @@ void TestBranchOnWrittenBufferNotCaptured(bool unsigned_bound, bool written) {
     words[0] = *static_cast<uint32_t *>(data);
     return true;
   };
-  FakeGuestMemory fake(read, &count_value);
+  // The runtime read callback below supplies the synthetic guest buffer.
   const SrtRuntime runtime{.userdata = &count_value, .read_specialization_memory = read};
   ResourceSnapshot snapshot;
   ResourceSpecialization specialization;
