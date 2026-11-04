@@ -28,6 +28,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <list>
 #include <thread>
@@ -844,10 +846,13 @@ void VideoOutDriver::Impl::VblankEnd() {
 }
 
 void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
-	const auto frequency = Common::Timer::QueryPerformanceFrequency();
-	EXIT_IF(frequency == 0);
-
-	int64_t total_wait = 0;
+    const auto frequency = Common::Timer::QueryPerformanceFrequency();
+    EXIT_IF(frequency == 0);
+    const char* trace_env = std::getenv("KYTY_DS_FRAME_TRACE");
+    const bool ds_trace = trace_env != nullptr && trace_env[0] == '1';
+    auto sample_start = std::chrono::steady_clock::now();
+    uint64_t sample_vblanks = 0, sample_guest_flips = 0, sample_empty_vblanks = 0;
+    int64_t total_wait = 0;
 	while (!token.stop_requested()) {
 		const auto sleep_begin = Common::Timer::QueryPerformanceCounter();
 		if (total_wait > 0) {
@@ -874,8 +879,13 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 			continue;
 		}
 
-		VblankBegin();
-		bool presented = m_flip_queue.Flip(0);
+        VblankBegin();
+        bool presented = m_flip_queue.Flip(0);
+        if (ds_trace) {
+            ++sample_vblanks;
+            if (presented) ++sample_guest_flips;
+            else ++sample_empty_vblanks;
+        }
 		if (!presented && m_presenter.NeedsSystemOverlayRefresh()) {
 			if (m_presenter.PresentLastFrame()) {
 				presented = true;
@@ -909,9 +919,21 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 				m_presenter.Present(blank);
 			}
 		}
-		VblankEnd();
+        VblankEnd();
+        if (ds_trace) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - sample_start >= std::chrono::seconds(5)) {
+                LOGF("[DS_PRESENT] vblank_cycles=%llu completed_guest_flips=%llu without_new_flip=%llu guest_suspend_points=%d\n",
+                    static_cast<unsigned long long>(sample_vblanks),
+                    static_cast<unsigned long long>(sample_guest_flips),
+                    static_cast<unsigned long long>(sample_empty_vblanks),
+                    m_renderer.GetGpu().GetFrameNum());
+                sample_vblanks = sample_guest_flips = sample_empty_vblanks = 0;
+                sample_start = now;
+            }
+        }
 
-		const auto frame_end = Common::Timer::QueryPerformanceCounter();
+        const auto frame_end = Common::Timer::QueryPerformanceCounter();
 		total_wait += static_cast<int64_t>(period) - static_cast<int64_t>(frame_end - frame_begin);
 	}
 }
