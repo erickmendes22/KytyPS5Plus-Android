@@ -648,11 +648,16 @@ class MainActivity : Activity() {
             val prepared = DemonsSoulsFirstBootPatch.prepare(File(game.path), File(filesDir, "game-patches"))
             val patchPath = prepared.path
             if (patchPath == null) {
-                showMessage("Demon\'s Souls first-boot patch not applied: " + (prepared.error ?: "unknown error"))
-                return
+                // Never block boot when this optional, version-specific patch cannot be verified.
+                val reason = "Demon's Souls optional first-boot patch not applied: " +
+                    (prepared.error ?: "unknown error")
+                Log.w("KytyDSBoot", reason)
+                showMessage(reason)
+            } else {
+                args += arrayOf("--game-patch", patchPath.absolutePath)
+                Log.i("KytyDSBoot", "First-boot patch validated: " +
+                    (prepared.verifiedMapping ?: "(no mapping details)") + " " + patchPath.absolutePath)
             }
-            args += arrayOf("--game-patch", patchPath.absolutePath)
-            Log.i("KytyDSBoot", "Verified first-boot memory patch: " + patchPath.absolutePath)
         }
         startActivity(
             Intent(this, GameActivity::class.java)
