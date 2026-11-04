@@ -53,6 +53,8 @@ class GameSettingsDialog(
         hudMode.setSelection(current.hudMode?.let { HudMode.entries.indexOf(it) + 1 } ?: 0)
         val touch = triState("Touch controls", current.touchControls, settings.touchControlsEnabled)
         val gpuTurbo = triState(GPU_TURBO_LABEL, current.gpuTurbo, settings.gpuTurbo)
+        val asyncShaders = triState("Async shader compilation (boot test)", current.asyncShaders, true)
+        val submitThread = triState("Vulkan submit thread (boot test)", current.submitThread, true)
         val env = EditText(activity).apply {
             setText(EnvVars.format(current.envVars))
             hint = "TU_DEBUG=sysmem"
@@ -102,6 +104,12 @@ class GameSettingsDialog(
             addView(hudMode)
             addView(touch.first)
             addView(gpuTurbo.first)
+            if (titleId.equals("PPSA01341", ignoreCase = true)) {
+                addView(label("Demon\'s Souls: experimental graphics boot options", bold = true))
+                addView(label("Try Async shaders = Off first. Defaults retain existing behavior. Test the submit thread separately.", secondary = true))
+                addView(asyncShaders.first)
+                addView(submitThread.first)
+            }
             if (presetSwitches.isNotEmpty()) {
                 addView(label("Game presets", bold = true))
                 addView(label("Known-good config files for this game, written into its data folder before launch. Off removes them again.", secondary = true))
@@ -148,6 +156,8 @@ class GameSettingsDialog(
                         hudMode = hudMode.selectedItemPosition.takeIf { it > 0 }?.let { HudMode.entries[it - 1] },
                         touchControls = touch.second(),
                         gpuTurbo = gpuTurbo.second(),
+                        asyncShaders = if (titleId.equals("PPSA01341", ignoreCase = true)) asyncShaders.second() else null,
+                        submitThread = if (titleId.equals("PPSA01341", ignoreCase = true)) submitThread.second() else null,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
                     ),
