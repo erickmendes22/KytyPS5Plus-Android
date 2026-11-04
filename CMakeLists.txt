@@ -652,6 +652,10 @@ add_executable(shader_vertex_metadata_tests EXCLUDE_FROM_ALL
 )
 target_include_directories(shader_vertex_metadata_tests PRIVATE ${inc_headers})
 
+add_executable(demons_souls_idle_arm64_tests EXCLUDE_FROM_ALL
+    "${KYTY_TESTS_DIR}/DemonsSoulsIdleArm64Tests.cpp")
+target_include_directories(demons_souls_idle_arm64_tests PRIVATE ${inc_headers})
+
 add_executable(resource_materialization_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ResourceMaterializationTests.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
@@ -894,6 +898,7 @@ if(BUILD_TESTING)
 	add_test(NAME guest_abi COMMAND $<TARGET_FILE:guest_abi_tests>)
 	add_test(NAME shader_vertex_metadata COMMAND $<TARGET_FILE:shader_vertex_metadata_tests>)
 	add_test(NAME resource_materialization COMMAND $<TARGET_FILE:resource_materialization_tests>)
+	add_test(NAME demons_souls_idle_arm64 COMMAND $<TARGET_FILE:demons_souls_idle_arm64_tests>)
 	add_test(NAME resource_tracking COMMAND $<TARGET_FILE:resource_tracking_tests>)
 	add_test(NAME event_queue_lifetime COMMAND $<TARGET_FILE:event_queue_lifetime_tests>)
 	add_test(NAME kernel_file_system COMMAND $<TARGET_FILE:kernel_file_system_tests>)
