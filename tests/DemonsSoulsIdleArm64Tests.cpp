@@ -55,7 +55,10 @@ int main() {
     std::memcpy(page+0x300,call.data(),call.size());
     page[0x305]=0xc3; // the call site returns to the native test harness
     using Invoke=int(*)();
-    auto invoke=reinterpret_cast<Invoke>(page+0x300);
+    // Call the thunk with the same ABI stack alignment as the game's
+    // patched CALL instruction. A synthetic CALL at function entry would
+    // add an extra stack frame and falsely misalign FXSAVE64.
+    auto invoke=reinterpret_cast<Invoke>(page);
     page[0x200]=0x31; page[0x201]=0xc0; page[0x202]=0xc3; // xor eax,eax; ret
     waits.store(0);
     Expect(invoke()==0 && waits.load()==1,"no-job poll yields once, guest zero return preserved");
