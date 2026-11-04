@@ -33,6 +33,7 @@ import com.kytyps5.android.input.OverlayProfileStore
 import com.kytyps5.android.library.CoverLoader
 import com.kytyps5.android.library.GameGridAdapter
 import com.kytyps5.android.library.GameSettingsDialog
+import com.kytyps5.android.library.DemonsSoulsDemoFlow
 import com.kytyps5.android.presets.GamePresets
 import java.io.File
 import java.util.concurrent.ExecutorService
@@ -614,6 +615,19 @@ class MainActivity : Activity() {
     }
 
     private fun launch(game: GameEntry) {
+        val perGame = settings.gameSettings(game.path)
+        // Host graphics defaults remain unchanged. The only modification is a
+        // title-scoped, managed guest engine config block which is reversible.
+        if (game.titleId.equals("PPSA01341", ignoreCase = true)) {
+            val flow = DemonsSoulsDemoFlow.configure(File(game.path), perGame.demonsSoulsDemoFlow)
+            if (!flow.ok) {
+                showMessage(flow.message)
+                return
+            }
+            if (flow.changed) {
+                Log.i("KytyDSBoot", "DemoLoopA: " + if (perGame.demonsSoulsDemoFlow) "enabled" else "removed")
+            }
+        }
         val options = LaunchOptions.resolve(
             globalResolution = settings.resolution,
             globalHud = settings.hudEnabled,
