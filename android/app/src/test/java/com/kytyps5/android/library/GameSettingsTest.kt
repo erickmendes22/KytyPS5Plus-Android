@@ -1,12 +1,21 @@
 package com.kytyps5.android.library
 
 import com.kytyps5.android.Resolution
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GameSettingsTest {
+    @Test
+    fun demonsSoulsDemoFlowIsOptInAndRoundTrips() {
+        assertFalse(GameSettings.DEFAULT.demonsSoulsDemoFlow)
+        val enabled = GameSettings(demonsSoulsDemoFlow = true)
+        assertEquals(enabled, GameSettings.fromJson(enabled.toJson()))
+        assertFalse(GameSettings.fromJson(null).demonsSoulsDemoFlow)
+    }
+
 
     @Test
     fun parsesEnvLinesSkippingCommentsAndKeepingLastDuplicate() {
