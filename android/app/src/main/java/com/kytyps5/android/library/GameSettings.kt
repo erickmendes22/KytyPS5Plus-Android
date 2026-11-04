@@ -44,7 +44,8 @@ data class GameSettings(
         .put("gpuTurbo", gpuTurbo ?: JSONObject.NULL)
         .put("demonsSoulsDemoFlow", demonsSoulsDemoFlow)
         .put("demonsSoulsSkipPrompts", demonsSoulsSkipPrompts)
-        .put("demonsSoulsPcFrameSync", demonsSoulsPcFrameSync)
+        // V2 resets the previous unproven frame-fence experiment to OFF on upgrade.
+        .put("demonsSoulsPcFrameSyncV2", demonsSoulsPcFrameSync)
         .put("demonsSoulsIdleBackoff", demonsSoulsIdleBackoff)
         .toString()
 
@@ -68,7 +69,8 @@ data class GameSettings(
                     gpuTurbo = obj.optionalBoolean("gpuTurbo"),
                     demonsSoulsDemoFlow = obj.optBoolean("demonsSoulsDemoFlow", false),
                     demonsSoulsSkipPrompts = obj.optBoolean("demonsSoulsSkipPrompts", false),
-                    demonsSoulsPcFrameSync = obj.optBoolean("demonsSoulsPcFrameSync", false),
+                    // Ignore V1 saved default=true (Action #242); do not carry it into the new CPU-poll test.
+                    demonsSoulsPcFrameSync = obj.optBoolean("demonsSoulsPcFrameSyncV2", false),
                     demonsSoulsIdleBackoff = obj.optBoolean("demonsSoulsIdleBackoff", true),
                 )
             } catch (e: JSONException) {
