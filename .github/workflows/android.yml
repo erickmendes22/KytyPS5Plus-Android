@@ -233,7 +233,7 @@ jobs:
       - name: Run shader regressions
         run: |
           ulimit -c 0
-          ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_cfg|resource_materialization)
+          ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_cfg|resource_materialization)$'
           timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only
           timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only-fast-paths
       - name: Save native test compiler cache
