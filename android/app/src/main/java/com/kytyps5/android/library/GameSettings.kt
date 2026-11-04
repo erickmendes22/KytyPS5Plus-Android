@@ -28,6 +28,7 @@ data class GameSettings(
     val renderScale: RenderScale? = null,
     val shadowScale: ShadowScale? = null,
     val gpuTurbo: Boolean? = null,
+    val demonsSoulsDemoFlow: Boolean = false,
 ) {
     fun toJson(): String = JSONObject()
         .put("resolution", resolution?.storageValue ?: JSONObject.NULL)
@@ -38,6 +39,7 @@ data class GameSettings(
         .put("hudMode", hudMode?.storageValue ?: JSONObject.NULL)
         .put("touchControls", touchControls ?: JSONObject.NULL)
         .put("gpuTurbo", gpuTurbo ?: JSONObject.NULL)
+        .put("demonsSoulsDemoFlow", demonsSoulsDemoFlow)
         .toString()
 
     companion object {
@@ -58,6 +60,7 @@ data class GameSettings(
                     shadowScale = ShadowScale.entries.firstOrNull { it.storageValue == obj.stringOr("shadowScale") }
                         ?: if (obj.stringOr("shadowScale") == "0.5") ShadowScale.MATCH_RENDER else null,
                     gpuTurbo = obj.optionalBoolean("gpuTurbo"),
+                    demonsSoulsDemoFlow = obj.optBoolean("demonsSoulsDemoFlow", false),
                 )
             } catch (e: JSONException) {
                 DEFAULT
