@@ -2,6 +2,7 @@
 #include <cassert>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 
