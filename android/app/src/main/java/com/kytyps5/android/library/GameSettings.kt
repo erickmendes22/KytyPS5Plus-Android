@@ -29,6 +29,7 @@ data class GameSettings(
     val shadowScale: ShadowScale? = null,
     val gpuTurbo: Boolean? = null,
     val demonsSoulsDemoFlow: Boolean = false,
+    val demonsSoulsNexusRoute: Boolean = false,
     val demonsSoulsSkipPrompts: Boolean = false,
     val demonsSoulsPcFrameSync: Boolean = false,
     val demonsSoulsIdleBackoff: Boolean = true,
@@ -43,6 +44,7 @@ data class GameSettings(
         .put("touchControls", touchControls ?: JSONObject.NULL)
         .put("gpuTurbo", gpuTurbo ?: JSONObject.NULL)
         .put("demonsSoulsDemoFlow", demonsSoulsDemoFlow)
+        .put("demonsSoulsNexusRoute", demonsSoulsNexusRoute)
         .put("demonsSoulsSkipPrompts", demonsSoulsSkipPrompts)
         // V2 resets the previous unproven frame-fence experiment to OFF on upgrade.
         .put("demonsSoulsPcFrameSyncV2", demonsSoulsPcFrameSync)
@@ -68,6 +70,7 @@ data class GameSettings(
                         ?: if (obj.stringOr("shadowScale") == "0.5") ShadowScale.MATCH_RENDER else null,
                     gpuTurbo = obj.optionalBoolean("gpuTurbo"),
                     demonsSoulsDemoFlow = obj.optBoolean("demonsSoulsDemoFlow", false),
+                    demonsSoulsNexusRoute = obj.optBoolean("demonsSoulsNexusRoute", false),
                     demonsSoulsSkipPrompts = obj.optBoolean("demonsSoulsSkipPrompts", false),
                     // Ignore V1 saved default=true (Action #242); do not carry it into the new CPU-poll test.
                     demonsSoulsPcFrameSync = obj.optBoolean("demonsSoulsPcFrameSyncV2", false),
