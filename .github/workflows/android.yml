@@ -229,11 +229,27 @@ jobs:
       - name: Test audio, metadata and memory
         run: ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_vertex_metadata|audio_out2_port|gpu_memory_budget|image_readback_chunk|sh_performance_patches|mfgt_index_transform|mfgt_arena_fix|kernel_mutex_headless|address_fold|virtual_memory_allocation)$'
       - name: Build shader regressions
-        run: cmake --build _Build/regressions --target shader_cfg_tests shader_recompiler_compute_tests --parallel 2
+        run: cmake --build _Build/regressions --target shader_cfg_tests shader_recompiler_compute_tests resource_materialization_tests --parallel 2
       - name: Run shader regressions
         run: |
           ulimit -c 0
-          ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^shader_cfg$'
+          ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_cfg|resource_materialization)
+          timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only
+          timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only-fast-paths
+      - name: Save native test compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-native-tests-${{ github.sha }}
+      - name: Upload regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-regression-results
+          path: _Build/regressions/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+
           timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only
           timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only-fast-paths
       - name: Save native test compiler cache
