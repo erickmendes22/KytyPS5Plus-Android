@@ -34,6 +34,7 @@ import com.kytyps5.android.library.CoverLoader
 import com.kytyps5.android.library.GameGridAdapter
 import com.kytyps5.android.library.GameSettingsDialog
 import com.kytyps5.android.library.DemonsSoulsDemoFlow
+import com.kytyps5.android.library.DemonsSoulsFirstBootPatch
 import com.kytyps5.android.presets.GamePresets
 import java.io.File
 import java.util.concurrent.ExecutorService
@@ -638,11 +639,21 @@ class MainActivity : Activity() {
             globalGpuTurbo = settings.gpuTurbo,
             globalHudMode = settings.hudMode,
         )
-        val args = LaunchArgs.forGame(
+        var args = LaunchArgs.forGame(
             game.path, options.resolution, drivers.driverDirFor(game.path), options.renderScale, options.gpuTurbo,
             titleId = game.titleId,
             shadowScale = options.shadowScale,
         )
+        if (game.titleId.equals("PPSA01341", ignoreCase = true) && perGame.demonsSoulsSkipPrompts) {
+            val prepared = DemonsSoulsFirstBootPatch.prepare(File(game.path), File(filesDir, "game-patches"))
+            val patchPath = prepared.path
+            if (patchPath == null) {
+                showMessage("Demon\'s Souls first-boot patch not applied: " + (prepared.error ?: "unknown error"))
+                return
+            }
+            args += arrayOf("--game-patch", patchPath.absolutePath)
+            Log.i("KytyDSBoot", "Verified first-boot memory patch: " + patchPath.absolutePath)
+        }
         startActivity(
             Intent(this, GameActivity::class.java)
                 .putExtra(LaunchArgs.EXTRA_GAME_ARGS, args)
