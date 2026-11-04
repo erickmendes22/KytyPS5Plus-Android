@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -26,7 +27,13 @@ std::atomic_uint64_t g_idle_sleeps{0};
 // Do NOT use a native ARM64 function address in the x86 stub!
 static void KYTY_SYSV_ABI NativeIdleBackoff() {
     std::this_thread::sleep_for(std::chrono::microseconds(50));
-    g_idle_sleeps.fetch_add(1,std::memory_order_relaxed);
+    const auto total = g_idle_sleeps.fetch_add(1,std::memory_order_relaxed) + 1;
+    if (total == 1 || (total % 100000) == 0) {
+        // Log only at the first successful ARM64 HLE callback, then sparsely.
+        // Unlike LOGF, stdout is captured even when printf_direction=Silent.
+        std::printf("[DS_IDLE] host_hle_yields=%llu (empty Bluepoint jobs slept 50 us)\\n",
+                    static_cast<unsigned long long>(total));
+    }
 }
 void Note(const char* message) {
     Log::WriteToConsoleAndLog(std::string("[DS_IDLE] ")+message+"\n");
