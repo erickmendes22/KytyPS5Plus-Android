@@ -40,11 +40,16 @@ jobs:
           set -euxo pipefail
           python3 scripts/pkg-extractor-ps5/patch_sources.py app-source rust-source
           python3 scripts/pkg-extractor-ps5/patch_picker.py app-source
+          python3 scripts/pkg-extractor-ps5/patch_large_fpkg.py rust-source
           echo y | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "cmake;3.22.1" "ndk;27.2.12479018"
           NDK="$ANDROID_HOME/ndk/27.2.12479018"
           echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang" >> "$GITHUB_ENV"
+      - name: Regression test large PS5 FPKG metadata scanner
+        run: |
+          cd rust-source
+          cargo test --lib metadata_scan_handles_a_last_file_larger_than_one_gib
       - name: Build PS5 ARM64 native extractor
         shell: bash
         run: |
