@@ -648,6 +648,9 @@ class MainActivity : Activity() {
             // Enable very low-rate per-5-second vblank/guest-flip diagnostics even
             // if the ordering experiment is disabled. Only this title gets it.
             args += arrayOf("--env", "KYTY_DS_FRAME_TRACE=1")
+            if (perGame.demonsSoulsIdleBackoff) {
+                args += arrayOf("--env", "KYTY_DS_IDLE_BACKOFF=1")
+            }
             if (perGame.demonsSoulsPcFrameSync) {
                 // Match the tested PC fork's synchronous guest-frame boundary:
                 // drain all queues before the boundary, without the Android
