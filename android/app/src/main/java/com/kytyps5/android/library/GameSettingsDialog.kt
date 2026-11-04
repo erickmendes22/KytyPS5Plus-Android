@@ -58,10 +58,25 @@ class GameSettingsDialog(
             textSize = 14f
             isChecked = current.demonsSoulsDemoFlow
         }
+        val nexusRoute = Switch(activity).apply {
+            text = "FullGame: offer Skip Journey to Nexus (PC working route)"
+            textSize = 14f
+            isChecked = current.demonsSoulsNexusRoute
+        }
+        // FullGame and DemoLoopA cannot both be active on launch.
         val firstBoot = Switch(activity).apply {
             text = "Skip first-boot prompts (PC verified, version 1.07)"
             textSize = 14f
-            isChecked = current.demonsSoulsSkipPrompts
+            isChecked = current.demonsSoulsSkipPrompts && !current.demonsSoulsNexusRoute
+        }
+        nexusRoute.setOnCheckedChangeListener { _, enabled ->
+            if (enabled) {
+                demoFlow.isChecked = false
+                firstBoot.isChecked = false
+            }
+        }
+        demoFlow.setOnCheckedChangeListener { _, enabled ->
+            if (enabled) nexusRoute.isChecked = false
         }
         val pcFrameSync = Switch(activity).apply {
             text = "GPU: ordered frame barrier (PC compatibility)"
@@ -126,6 +141,8 @@ class GameSettingsDialog(
                 addView(label("Demon\'s Souls: experimental game flow bypass", bold = true))
                 addView(label("Optional and reversible. Uses PackageCmdLineArgs.txt without changing eboot.bin or saves.", secondary = true))
                 addView(demoFlow)
+                addView(label("PC issue #1461: the Tutorial fog freezes, but skipping Journey to the Nexus loads the Nexus. This option uses the original FullGame menu. At the Journey prompt choose No; do not enable first-boot prompt skipping.", secondary = true))
+                addView(nexusRoute)
                 addView(label("Additional code patch skips profile language, brightness and character creation. Requires decrypted eboot.bin signature match; never edits it.", secondary = true))
                 addView(firstBoot)
                 addView(label("Tests cross-queue CPU/GPU synchronization. Automatically logs guest flips and blocked GPU waits every 5 seconds.", secondary = true))
@@ -179,8 +196,9 @@ class GameSettingsDialog(
                         hudMode = hudMode.selectedItemPosition.takeIf { it > 0 }?.let { HudMode.entries[it - 1] },
                         touchControls = touch.second(),
                         gpuTurbo = gpuTurbo.second(),
-                        demonsSoulsDemoFlow = titleId.equals("PPSA01341", ignoreCase = true) && demoFlow.isChecked,
-                        demonsSoulsSkipPrompts = titleId.equals("PPSA01341", ignoreCase = true) && firstBoot.isChecked,
+                        demonsSoulsDemoFlow = titleId.equals("PPSA01341", ignoreCase = true) && demoFlow.isChecked && !nexusRoute.isChecked,
+                        demonsSoulsNexusRoute = titleId.equals("PPSA01341", ignoreCase = true) && nexusRoute.isChecked,
+                        demonsSoulsSkipPrompts = titleId.equals("PPSA01341", ignoreCase = true) && firstBoot.isChecked && !nexusRoute.isChecked,
                         demonsSoulsPcFrameSync = titleId.equals("PPSA01341", ignoreCase = true) && pcFrameSync.isChecked,
                         demonsSoulsIdleBackoff = titleId.equals("PPSA01341", ignoreCase = true) && idleBackoff.isChecked,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
