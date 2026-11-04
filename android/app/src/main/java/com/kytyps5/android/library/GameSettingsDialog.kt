@@ -68,6 +68,11 @@ class GameSettingsDialog(
             textSize = 14f
             isChecked = current.demonsSoulsPcFrameSync
         }
+        val idleBackoff = Switch(activity).apply {
+            text = "Bluepoint job workers: real idle sleep (50 us, verified EBOOT)"
+            textSize = 14f
+            isChecked = current.demonsSoulsIdleBackoff
+        }
         val env = EditText(activity).apply {
             setText(EnvVars.format(current.envVars))
             hint = "TU_DEBUG=sysmem"
@@ -125,6 +130,8 @@ class GameSettingsDialog(
                 addView(firstBoot)
                 addView(label("Tests cross-queue CPU/GPU synchronization. Automatically logs guest flips and blocked GPU waits every 5 seconds.", secondary = true))
                 addView(pcFrameSync)
+                addView(label("Bluepoint worker fix: preserves the original empty-job poll and sleeps only when no work is available. Reversible; ARM64 FEX HLE host trap.", secondary = true))
+                addView(idleBackoff)
             }
             if (presetSwitches.isNotEmpty()) {
                 addView(label("Game presets", bold = true))
@@ -175,6 +182,7 @@ class GameSettingsDialog(
                         demonsSoulsDemoFlow = titleId.equals("PPSA01341", ignoreCase = true) && demoFlow.isChecked,
                         demonsSoulsSkipPrompts = titleId.equals("PPSA01341", ignoreCase = true) && firstBoot.isChecked,
                         demonsSoulsPcFrameSync = titleId.equals("PPSA01341", ignoreCase = true) && pcFrameSync.isChecked,
+                        demonsSoulsIdleBackoff = titleId.equals("PPSA01341", ignoreCase = true) && idleBackoff.isChecked,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
                     ),
