@@ -150,4 +150,10 @@ replace_once(
         }
         if (uri.authority == "com.android.externalstorage.documents") {''',
 )
+# Pin Gradle to the NDK installed by the workflow; avoid auto-downloading NDK 28.
+replace_once(
+    root / "app/build.gradle.kts",
+    '    compileSdk = 34',
+    '    compileSdk = 34\n    ndkVersion = "27.2.12479018"',
+)
 print("Android .pkg direct browser, 64-bit file size and file:// native routing patched.")
