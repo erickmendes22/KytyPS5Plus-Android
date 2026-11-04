@@ -649,7 +649,12 @@ class MainActivity : Activity() {
             // if the ordering experiment is disabled. Only this title gets it.
             args += arrayOf("--env", "KYTY_DS_FRAME_TRACE=1")
             if (perGame.demonsSoulsPcFrameSync) {
-                args += arrayOf("--env", "KYTY_DS_STRICT_FRAME=1")
+                // Match the tested PC fork's synchronous guest-frame boundary:
+                // drain all queues before the boundary, without the Android
+                // ahead-of-GPU semaphore (which can wait forever on an unretired
+                // end-of-pipe completion after a cutscene).
+                args += arrayOf("--env", "KYTY_DS_STRICT_FRAME=1",
+                                "--gpu-frames-in-flight", "0")
             }
         }
         if (game.titleId.equals("PPSA01341", ignoreCase = true) && perGame.demonsSoulsSkipPrompts) {
