@@ -58,6 +58,11 @@ class GameSettingsDialog(
             textSize = 14f
             isChecked = current.demonsSoulsDemoFlow
         }
+        val firstBoot = Switch(activity).apply {
+            text = "Skip first-boot prompts (PC verified, version 1.07)"
+            textSize = 14f
+            isChecked = current.demonsSoulsSkipPrompts
+        }
         val env = EditText(activity).apply {
             setText(EnvVars.format(current.envVars))
             hint = "TU_DEBUG=sysmem"
@@ -111,6 +116,8 @@ class GameSettingsDialog(
                 addView(label("Demon\'s Souls: experimental game flow bypass", bold = true))
                 addView(label("Optional and reversible. Uses PackageCmdLineArgs.txt without changing eboot.bin or saves.", secondary = true))
                 addView(demoFlow)
+                addView(label("Additional code patch skips profile language, brightness and character creation. Requires decrypted eboot.bin signature match; never edits it.", secondary = true))
+                addView(firstBoot)
             }
             if (presetSwitches.isNotEmpty()) {
                 addView(label("Game presets", bold = true))
@@ -159,6 +166,7 @@ class GameSettingsDialog(
                         touchControls = touch.second(),
                         gpuTurbo = gpuTurbo.second(),
                         demonsSoulsDemoFlow = titleId.equals("PPSA01341", ignoreCase = true) && demoFlow.isChecked,
+                        demonsSoulsSkipPrompts = titleId.equals("PPSA01341", ignoreCase = true) && firstBoot.isChecked,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
                     ),
