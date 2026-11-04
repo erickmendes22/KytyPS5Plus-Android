@@ -9,6 +9,30 @@ import org.junit.Test
 class LaunchArgsTest {
 
     @Test
+    fun demonsSoulsBootExperimentsAreOptionalAndScoped() {
+        val unchanged = LaunchArgs.forGame("/g", Resolution.HD_720, titleId = "PPSA01341")
+        assertEquals(-1, unchanged.indexOf(LaunchArgs.FLAG_ASYNC_SHADERS))
+        assertEquals(-1, unchanged.indexOf(LaunchArgs.FLAG_SUBMIT_THREAD))
+
+        val toggles = GameSettings(asyncShaders = false, submitThread = false)
+        assertEquals(toggles, GameSettings.fromJson(toggles.toJson()))
+        val resolved = LaunchOptions.resolve(Resolution.HD_720, globalHud = false,
+            globalTouch = true, game = toggles)
+        assertEquals(false, resolved.asyncShaders)
+        assertEquals(false, resolved.submitThread)
+
+        val args = LaunchArgs.forGame("/g", Resolution.HD_720, titleId = "PPSA01341",
+            asyncShaders = resolved.asyncShaders, submitThread = resolved.submitThread)
+        assertEquals("0", args[args.indexOf(LaunchArgs.FLAG_ASYNC_SHADERS) + 1])
+        assertEquals("0", args[args.indexOf(LaunchArgs.FLAG_SUBMIT_THREAD) + 1])
+        val other = LaunchArgs.forGame("/g", Resolution.HD_720, titleId = "PPSA21564",
+            asyncShaders = false, submitThread = false)
+        assertEquals(-1, other.indexOf(LaunchArgs.FLAG_ASYNC_SHADERS))
+        assertEquals(-1, other.indexOf(LaunchArgs.FLAG_SUBMIT_THREAD))
+    }
+
+
+    @Test
     fun writtenImageCleanupIsScopedToConfirmedTitleMetadata() {
         val silentHill = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = "PPSA10112")
         val index = silentHill.indexOf(LaunchArgs.FLAG_GPU_EVICT_WRITTEN)
