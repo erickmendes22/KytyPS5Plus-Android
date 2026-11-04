@@ -30,7 +30,8 @@ object DemonsSoulsDemoFlow {
 
     data class Outcome(val ok: Boolean, val message: String = "", val changed: Boolean = false)
 
-    fun configure(gameDir: File, enabled: Boolean): Outcome = try {
+    fun configure(gameDir: File, enabled: Boolean): Outcome {
+        return try {
         if (!gameDir.isDirectory) return Outcome(false, "Game directory not found: " + gameDir.path)
         val file = File(gameDir, ARGS_NAME)
         if (!enabled && !file.exists()) return Outcome(true)
@@ -65,5 +66,6 @@ object DemonsSoulsDemoFlow {
         Outcome(true, changed = true)
     } catch (e: Exception) {
         Outcome(false, "DemoLoopA: " + e.javaClass.simpleName + ": " + (e.message ?: "file error"))
+        }
     }
 }
