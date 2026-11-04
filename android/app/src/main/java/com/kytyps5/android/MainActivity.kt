@@ -644,6 +644,14 @@ class MainActivity : Activity() {
             titleId = game.titleId,
             shadowScale = options.shadowScale,
         )
+        if (game.titleId.equals("PPSA01341", ignoreCase = true)) {
+            // Enable very low-rate per-5-second vblank/guest-flip diagnostics even
+            // if the ordering experiment is disabled. Only this title gets it.
+            args += arrayOf("--env", "KYTY_DS_FRAME_TRACE=1")
+            if (perGame.demonsSoulsPcFrameSync) {
+                args += arrayOf("--env", "KYTY_DS_STRICT_FRAME=1")
+            }
+        }
         if (game.titleId.equals("PPSA01341", ignoreCase = true) && perGame.demonsSoulsSkipPrompts) {
             val prepared = DemonsSoulsFirstBootPatch.prepare(File(game.path), File(filesDir, "game-patches"))
             val patchPath = prepared.path
