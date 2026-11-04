@@ -137,7 +137,7 @@ browser = '''    // Direct-storage file explorer: avoids DocumentsUI's per-provi
 
 '''
 # The two spellings below intentionally use normal Kotlin template interpolation.
-browser = browser.replace("\\\${", "\${")
+browser = browser.replace(chr(92) + chr(36) + "{", chr(36) + "{")
 replace_once(activity, hook, browser + hook)
 
 replace_once(
