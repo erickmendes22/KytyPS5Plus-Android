@@ -35,7 +35,7 @@ static void KYTY_SYSV_ABI NativeIdleBackoff() {
                     static_cast<unsigned long long>(total));
     }
 }
-void Note(const char* message) {
+void Note(const std::string& message) {
     Log::WriteToConsoleAndLog(std::string("[DS_IDLE] ")+message+"\n");
 }
 bool Enabled() {
