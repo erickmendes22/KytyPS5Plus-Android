@@ -9,6 +9,14 @@ import org.junit.Test
 
 class GameSettingsTest {
     @Test
+    fun nexusRouteIsOffByDefaultAndCanBeRestored() {
+        assertFalse(GameSettings.DEFAULT.demonsSoulsNexusRoute)
+        val enabled = GameSettings(demonsSoulsNexusRoute = true)
+        assertEquals(enabled, GameSettings.fromJson(enabled.toJson()))
+        assertFalse(GameSettings.fromJson(null).demonsSoulsNexusRoute)
+    }
+
+    @Test
     fun demonsSoulsDemoFlowIsOptInAndRoundTrips() {
         assertFalse(GameSettings.DEFAULT.demonsSoulsDemoFlow)
         assertFalse(GameSettings.DEFAULT.demonsSoulsSkipPrompts)
