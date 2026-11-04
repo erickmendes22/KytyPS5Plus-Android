@@ -1437,6 +1437,30 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 		bool complete = false;
 	};
 	std::unordered_map<const Inst*, ControlValue> predicates;
+
+	// KytyPS5 PR #1630 (Nawid3333): A predicate that reads a buffer written
+	// by the same dispatch is not a draw-time constant. This exact regression
+	// is verified in Demon's Souls PPSA01341: projecting a branch on
+	// BUFFER_LOAD_DWORD+BUFFER_ATOMIC_ADD captured an invalid specialization read.
+	const auto reads_written_buffer = [&](Value value) {
+		std::vector<Value>              pending {value};
+		std::unordered_set<const Inst*> visited;
+		while (!pending.empty()) {
+			const auto* inst = pending.back().Resolve().TryInstruction();
+			pending.pop_back();
+			if (inst == nullptr || !visited.insert(inst).second) continue;
+			if (inst->GetOpcode() == ValueOpcode::LoadBufferU32) {
+				const auto& memory = program.memory_info.at(inst->Flags<MemoryFlags>().index);
+				if (memory.kind == ResourceKind::Buffer &&
+				    memory.resource < program.info.buffers.size() &&
+				    program.info.buffers[memory.resource].written)
+					return true;
+			}
+			for (size_t index = 0; index < inst->NumArgs(); ++index)
+				pending.push_back(inst->Arg(index));
+		}
+		return false;
+	};
 	std::function<Value(Value)> ClonePredicate = [&](Value value) -> Value {
 		value = value.Resolve();
 		if (value.IsEmpty()) return {};
@@ -1459,7 +1483,8 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 			entry.complete = true;
 			return result = projected;
 		};
-		if (ValidateRuntimeValue(program, value, RuntimeValueType::Integer)) {
+		if (ValidateRuntimeValue(program, value, RuntimeValueType::Integer) &&
+		    !reads_written_buffer(value)) {
 			uniform_control = true;
 			capture_control_reads |=
 			    !ValidateRuntimeValue(program, value, RuntimeValueType::ImmutableInteger);
