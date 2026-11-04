@@ -97,6 +97,12 @@ private:
 	bool                                           m_accepting         = true;
 	bool                                           m_stopping          = false;
 	bool                                           m_shutdown_complete = false;
+    // For Demon's Souls, restore the ordered cross-queue guest-frame boundary
+    // of the PC fork without imposing it on other games.
+    std::mutex m_frame_order_mutex;
+    bool m_strict_frame_order = false;
+    bool m_ds_frame_trace = false;
+    bool DrainFrameQueuesForGuestBoundary();
 	// Completion callbacks can outlive GuestGpu during renderer shutdown. Holds one permit per
 	// frame the guest may run ahead of GPU completion (--gpu-frames-in-flight); null when the
 	// suspend point never waits.
