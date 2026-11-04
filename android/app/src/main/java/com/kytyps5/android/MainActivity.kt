@@ -628,6 +628,8 @@ class MainActivity : Activity() {
             game.path, options.resolution, drivers.driverDirFor(game.path), options.renderScale, options.gpuTurbo,
             titleId = game.titleId,
             shadowScale = options.shadowScale,
+            asyncShaders = options.asyncShaders,
+            submitThread = options.submitThread,
         )
         startActivity(
             Intent(this, GameActivity::class.java)
