@@ -18,7 +18,6 @@ import java.nio.file.StandardCopyOption
  * TITLE_ID, APP_VER and process before patching guest memory at boot.
  */
 object DemonsSoulsFirstBootPatch {
-    private const val DELTA = 0x4000L
     private const val VERSION = "01.007.000"
     private const val TITLE = "PPSA01341"
     private const val OUT = "demons-souls-first-boot-1.07.json"
@@ -36,7 +35,7 @@ object DemonsSoulsFirstBootPatch {
              ByteArray(5) { 0x90.toByte() }),
     )
 
-    data class Result(val path: File? = null, val error: String? = null)
+    data class Result(val path: File? = null, val error: String? = null, val verifiedMapping: String? = null)
 
     fun prepare(gameDir: File, outputDir: File): Result {
         val candidates = listOf(File(gameDir, "decrypted/eboot.bin"), File(gameDir, "eboot.bin"))
@@ -45,9 +44,15 @@ object DemonsSoulsFirstBootPatch {
             if (!eboot.isFile || !eboot.canRead()) continue
             try {
                 val patches = JSONArray()
+                var verifiedMapping = ""
                 RandomAccessFile(eboot, "r").use { raf ->
+                    val mapping = Ps5ExecutableMapping.locate(
+                        raf, sites.map { Ps5ExecutableMapping.Probe(it.va, hexBytes(it.signature)) }
+                    )
+                    verifiedMapping = mapping.format + ", executable file base 0x" +
+                        mapping.fileBase.toString(16) + " (three verified signatures)"
                     for (site in sites) {
-                        val offset = site.va + DELTA
+                        val offset = mapping.fileOffset(site.va)
                         if (offset + site.length > raf.length()) {
                             throw IllegalArgumentException("short eboot at 0x" + offset.toString(16))
                         }
@@ -81,7 +86,7 @@ object DemonsSoulsFirstBootPatch {
                     }
                     Files.move(temp.toPath(), output.toPath(), StandardCopyOption.REPLACE_EXISTING)
                 } finally { temp.delete() }
-                return Result(path = output)
+                return Result(path = output, verifiedMapping = verifiedMapping)
             } catch (error: Exception) {
                 errors.add(eboot.name + ": " + (error.message ?: error.javaClass.simpleName))
             }
