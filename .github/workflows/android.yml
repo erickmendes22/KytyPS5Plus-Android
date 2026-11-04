@@ -4,7 +4,7 @@ name: Android APK
 # No GitHub Releases are created. Signing uses the repository's KYTY_* secrets.
 on:
   push:
-    branches: [ experiment/demons-souls-written-buffer-fix, experiment/demons-souls-gpu-frame-fence, experiment/demons-souls-self-verified-android, experiment/demons-souls-first-boot-skip-android, experiment/demons-souls-demo-flow-android, experiment/neptunia-capy-compat, experiment/capy-global-render-scale, experiment/pc-fork-shader-performance, experimental/neptunia-game-category-resolution, experimental/neptunia-fex-lookup-cache, android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64, investigate/mfgt-reference-port, investigate/mfgt-graphics-pipeline-crash, investigate/mfgt-spv-crash-capture, investigate/mfgt-vertex64-tess, recovery/mfgt-d43e258f-no-tess-workarounds, experiment/mfgt-written-image-reclaim, experiment/mfgt-memory-collector-v2 ]
+    branches: [ experiment/demons-souls-idle-poll-arm64, experiment/demons-souls-written-buffer-fix, experiment/demons-souls-gpu-frame-fence, experiment/demons-souls-self-verified-android, experiment/demons-souls-first-boot-skip-android, experiment/demons-souls-demo-flow-android, experiment/neptunia-capy-compat, experiment/capy-global-render-scale, experiment/pc-fork-shader-performance, experimental/neptunia-game-category-resolution, experimental/neptunia-fex-lookup-cache, android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64, investigate/mfgt-reference-port, investigate/mfgt-graphics-pipeline-crash, investigate/mfgt-spv-crash-capture, investigate/mfgt-vertex64-tess, recovery/mfgt-d43e258f-no-tess-workarounds, experiment/mfgt-written-image-reclaim, experiment/mfgt-memory-collector-v2 ]
     paths-ignore: [ 'docs/**', '**.md' ]
   workflow_dispatch:
 
@@ -229,11 +229,11 @@ jobs:
       - name: Test audio, metadata and memory
         run: ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_vertex_metadata|audio_out2_port|gpu_memory_budget|image_readback_chunk|sh_performance_patches|mfgt_index_transform|mfgt_arena_fix|kernel_mutex_headless|address_fold|virtual_memory_allocation)$'
       - name: Build shader regressions
-        run: cmake --build _Build/regressions --target shader_cfg_tests shader_recompiler_compute_tests resource_materialization_tests --parallel 2
+        run: cmake --build _Build/regressions --target shader_cfg_tests shader_recompiler_compute_tests resource_materialization_tests demons_souls_idle_arm64_tests --parallel 2
       - name: Run shader regressions
         run: |
           ulimit -c 0
-          ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_cfg|resource_materialization)$'
+          ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_cfg|resource_materialization|demons_souls_idle_arm64)$'
           timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only
           timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only-fast-paths
       - name: Save native test compiler cache
