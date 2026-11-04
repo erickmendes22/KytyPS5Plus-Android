@@ -23,6 +23,7 @@
 #include "kernel/pthread.h"
 #include "loader/elf.h"
 #include "loader/gamePatch.h"
+#include "loader/demonsSoulsIdle.h"
 #include "loader/guestCall.h"
 #include "loader/guestHostFunction.h"
 #include "loader/guestInstructionPatcher.h"
@@ -1685,6 +1686,9 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 			EXIT("Failed to apply game cheat\n");
 		}
 	}
+	// Install only when the on-disk EBOOT code signatures match the audited
+	// Bluepoint worker-poll. This hook invokes the host via FEX HLE on ARM64.
+	DemonsSoulsIdle::Install(m_programs.empty() ? nullptr : m_programs.front());
 	if (libc != nullptr && libc->dynamic_info->init_vaddr != 0) {
 		StartModule(libc, 0, nullptr, nullptr);
 	}
@@ -1715,6 +1719,7 @@ void RuntimeLinker::Clear() {
 
 	Common::LockGuard lock(m_mutex);
 	GamePatch::Clear();
+	DemonsSoulsIdle::Clear();
 #if KYTY_HOST_ARM64
 	if (g_mfgt_transform_page) {
 		EXIT_IF(!Libs::LibKernel::Memory::FreeGuestMemory(g_mfgt_transform_page,
