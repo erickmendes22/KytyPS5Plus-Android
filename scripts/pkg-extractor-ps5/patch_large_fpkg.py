@@ -124,4 +124,16 @@ test='''    #[test]
 assert text.count(mark)==1
 text=text.replace(mark,test+mark,1)
 src.write_text(text)
-print("Large PS5 FPKG metadata scanner integrated")
+# Android's extra 'raw' option also needs a default in the original
+# upstream directory-mode unit-test fixtures (cargo build excludes tests).
+import re
+lib = Path(sys.argv[1]) / "src/lib.rs"
+lib_text = lib.read_text()
+lib_text, count = re.subn(
+    r'(?m)^([ \t]*)verbose: false,\n(?![ \t]*raw:)',
+    lambda m: m.group(0) + m.group(1) + "raw: false,\n",
+    lib_text,
+)
+assert count >= 4, f"Expected 4 upstream Options test fixtures, found {count}"
+lib.write_text(lib_text)
+print("Large PS5 FPKG metadata scanner integrated; Rust test fixtures updated")
