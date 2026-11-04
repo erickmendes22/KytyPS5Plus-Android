@@ -92,7 +92,8 @@ object Ps5ExecutableMapping {
         }
         require(candidates.size == 1) {
             "Could not uniquely map all three first-boot signatures to one executable segment " +
-                "(format=" + if (self) "PS5 SELF" else "ELF" + ", matches=" + candidates.size + ")"
+                "(format=" + (if (self) "PS5 SELF" else "ELF") +
+                ", matches=" + candidates.size + ")"
         }
         return candidates.single()
     }
