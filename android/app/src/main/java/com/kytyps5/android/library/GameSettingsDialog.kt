@@ -53,6 +53,11 @@ class GameSettingsDialog(
         hudMode.setSelection(current.hudMode?.let { HudMode.entries.indexOf(it) + 1 } ?: 0)
         val touch = triState("Touch controls", current.touchControls, settings.touchControlsEnabled)
         val gpuTurbo = triState(GPU_TURBO_LABEL, current.gpuTurbo, settings.gpuTurbo)
+        val demoFlow = Switch(activity).apply {
+            text = "DemoLoopA: skip logos/cinematic and boot tutorial (PC reference)"
+            textSize = 14f
+            isChecked = current.demonsSoulsDemoFlow
+        }
         val env = EditText(activity).apply {
             setText(EnvVars.format(current.envVars))
             hint = "TU_DEBUG=sysmem"
@@ -102,6 +107,11 @@ class GameSettingsDialog(
             addView(hudMode)
             addView(touch.first)
             addView(gpuTurbo.first)
+            if (titleId.equals("PPSA01341", ignoreCase = true)) {
+                addView(label("Demon\'s Souls: experimental game flow bypass", bold = true))
+                addView(label("Optional and reversible. Uses PackageCmdLineArgs.txt without changing eboot.bin or saves.", secondary = true))
+                addView(demoFlow)
+            }
             if (presetSwitches.isNotEmpty()) {
                 addView(label("Game presets", bold = true))
                 addView(label("Known-good config files for this game, written into its data folder before launch. Off removes them again.", secondary = true))
@@ -148,6 +158,7 @@ class GameSettingsDialog(
                         hudMode = hudMode.selectedItemPosition.takeIf { it > 0 }?.let { HudMode.entries[it - 1] },
                         touchControls = touch.second(),
                         gpuTurbo = gpuTurbo.second(),
+                        demonsSoulsDemoFlow = titleId.equals("PPSA01341", ignoreCase = true) && demoFlow.isChecked,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
                     ),
