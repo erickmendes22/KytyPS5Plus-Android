@@ -34,6 +34,7 @@ import com.kytyps5.android.library.CoverLoader
 import com.kytyps5.android.library.GameGridAdapter
 import com.kytyps5.android.library.GameSettingsDialog
 import com.kytyps5.android.library.DemonsSoulsDemoFlow
+import com.kytyps5.android.library.DemonsSoulsNexusFlow
 import com.kytyps5.android.library.DemonsSoulsFirstBootPatch
 import com.kytyps5.android.presets.GamePresets
 import java.io.File
@@ -620,13 +621,28 @@ class MainActivity : Activity() {
         // Host graphics defaults remain unchanged. The only modification is a
         // title-scoped, managed guest engine config block which is reversible.
         if (game.titleId.equals("PPSA01341", ignoreCase = true)) {
-            val flow = DemonsSoulsDemoFlow.configure(File(game.path), perGame.demonsSoulsDemoFlow)
+            // The exact PC workaround for fog freeze is to decline the
+            // Tutorial journey, NOT to force DemoLoopA (which enters it).
+            // Remove the conflicting managed block before writing the new one.
+            val flow = DemonsSoulsDemoFlow.configure(
+                File(game.path), perGame.demonsSoulsDemoFlow && !perGame.demonsSoulsNexusRoute
+            )
             if (!flow.ok) {
                 showMessage(flow.message)
                 return
             }
-            if (flow.changed) {
-                Log.i("KytyDSBoot", "DemoLoopA: " + if (perGame.demonsSoulsDemoFlow) "enabled" else "removed")
+            val nexus = DemonsSoulsNexusFlow.configure(
+                File(game.path), perGame.demonsSoulsNexusRoute
+            )
+            if (!nexus.ok) {
+                showMessage(nexus.message)
+                return
+            }
+            if (flow.changed || nexus.changed) {
+                Log.i("KytyDSBoot", if (perGame.demonsSoulsNexusRoute)
+                    "PC Nexus route active: FullGame + force skip-tutorial option"
+                    else if (perGame.demonsSoulsDemoFlow)
+                    "DemoLoopA tutorial enabled" else "Managed tutorial/Nexus blocks removed")
             }
         }
         val options = LaunchOptions.resolve(
@@ -648,10 +664,10 @@ class MainActivity : Activity() {
             // Enable very low-rate per-5-second vblank/guest-flip diagnostics even
             // if the ordering experiment is disabled. Only this title gets it.
             args += arrayOf("--env", "KYTY_DS_FRAME_TRACE=1")
-            if (perGame.demonsSoulsIdleBackoff) {
+            if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsIdleBackoff) {
                 args += arrayOf("--env", "KYTY_DS_IDLE_BACKOFF=1")
             }
-            if (perGame.demonsSoulsPcFrameSync) {
+            if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsPcFrameSync) {
                 // Match the tested PC fork's synchronous guest-frame boundary:
                 // drain all queues before the boundary, without the Android
                 // ahead-of-GPU semaphore (which can wait forever on an unretired
@@ -660,7 +676,8 @@ class MainActivity : Activity() {
                                 "--gpu-frames-in-flight", "0")
             }
         }
-        if (game.titleId.equals("PPSA01341", ignoreCase = true) && perGame.demonsSoulsSkipPrompts) {
+        if (game.titleId.equals("PPSA01341", ignoreCase = true) &&
+            perGame.demonsSoulsSkipPrompts && !perGame.demonsSoulsNexusRoute) {
             val prepared = DemonsSoulsFirstBootPatch.prepare(File(game.path), File(filesDir, "game-patches"))
             val patchPath = prepared.path
             if (patchPath == null) {
