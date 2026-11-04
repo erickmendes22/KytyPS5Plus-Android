@@ -13,6 +13,9 @@ class GameSettingsTest {
         assertFalse(GameSettings.DEFAULT.demonsSoulsDemoFlow)
         assertFalse(GameSettings.DEFAULT.demonsSoulsSkipPrompts)
         assertFalse(GameSettings.DEFAULT.demonsSoulsPcFrameSync)
+        assertTrue(GameSettings.DEFAULT.demonsSoulsIdleBackoff)
+        // Migrate Action #242, where the experimental frame fence was saved as true by default.
+        assertFalse(GameSettings.fromJson("""{"demonsSoulsPcFrameSync":true}""").demonsSoulsPcFrameSync)
         val enabled = GameSettings(demonsSoulsDemoFlow = true)
         assertEquals(enabled, GameSettings.fromJson(enabled.toJson()))
         assertFalse(GameSettings.fromJson(null).demonsSoulsDemoFlow)
@@ -20,6 +23,8 @@ class GameSettingsTest {
         assertEquals(skip, GameSettings.fromJson(skip.toJson()))
         val relaxed = GameSettings(demonsSoulsPcFrameSync = false)
         assertEquals(relaxed, GameSettings.fromJson(relaxed.toJson()))
+        val backoffOff = GameSettings(demonsSoulsIdleBackoff = false)
+        assertEquals(backoffOff, GameSettings.fromJson(backoffOff.toJson()))
     }
 
 
