@@ -12,11 +12,14 @@ class GameSettingsTest {
     fun demonsSoulsDemoFlowIsOptInAndRoundTrips() {
         assertFalse(GameSettings.DEFAULT.demonsSoulsDemoFlow)
         assertFalse(GameSettings.DEFAULT.demonsSoulsSkipPrompts)
+        assertTrue(GameSettings.DEFAULT.demonsSoulsPcFrameSync)
         val enabled = GameSettings(demonsSoulsDemoFlow = true)
         assertEquals(enabled, GameSettings.fromJson(enabled.toJson()))
         assertFalse(GameSettings.fromJson(null).demonsSoulsDemoFlow)
         val skip = GameSettings(demonsSoulsDemoFlow = true, demonsSoulsSkipPrompts = true)
         assertEquals(skip, GameSettings.fromJson(skip.toJson()))
+        val relaxed = GameSettings(demonsSoulsPcFrameSync = false)
+        assertEquals(relaxed, GameSettings.fromJson(relaxed.toJson()))
     }
 
 
