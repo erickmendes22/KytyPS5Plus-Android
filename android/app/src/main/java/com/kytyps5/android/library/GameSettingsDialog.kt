@@ -63,6 +63,11 @@ class GameSettingsDialog(
             textSize = 14f
             isChecked = current.demonsSoulsSkipPrompts
         }
+        val pcFrameSync = Switch(activity).apply {
+            text = "GPU: ordered frame barrier (PC compatibility)"
+            textSize = 14f
+            isChecked = current.demonsSoulsPcFrameSync
+        }
         val env = EditText(activity).apply {
             setText(EnvVars.format(current.envVars))
             hint = "TU_DEBUG=sysmem"
@@ -118,6 +123,8 @@ class GameSettingsDialog(
                 addView(demoFlow)
                 addView(label("Additional code patch skips profile language, brightness and character creation. Requires decrypted eboot.bin signature match; never edits it.", secondary = true))
                 addView(firstBoot)
+                addView(label("Tests cross-queue CPU/GPU synchronization. Automatically logs guest flips and blocked GPU waits every 5 seconds.", secondary = true))
+                addView(pcFrameSync)
             }
             if (presetSwitches.isNotEmpty()) {
                 addView(label("Game presets", bold = true))
@@ -167,6 +174,7 @@ class GameSettingsDialog(
                         gpuTurbo = gpuTurbo.second(),
                         demonsSoulsDemoFlow = titleId.equals("PPSA01341", ignoreCase = true) && demoFlow.isChecked,
                         demonsSoulsSkipPrompts = titleId.equals("PPSA01341", ignoreCase = true) && firstBoot.isChecked,
+                        demonsSoulsPcFrameSync = titleId.equals("PPSA01341", ignoreCase = true) && pcFrameSync.isChecked,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
                     ),
