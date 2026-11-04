@@ -74,6 +74,8 @@ object LaunchArgs {
     const val FLAG_GPU_EVICT_WRITTEN = "--gpu-evict-written"
     const val FLAG_VMA_BLOCK_SIZE = "--vma-block-size"
     const val FLAG_TESSELLATION = "--tessellation"
+    const val FLAG_ASYNC_SHADERS = "--async-shaders"
+    const val FLAG_SUBMIT_THREAD = "--submit-thread"
 
     /** Launcher-only extras read by GameActivity (not emulator flags). */
     const val EXTRA_GAME_PATH = "com.kytyps5.android.extra.GAME_PATH"
@@ -97,6 +99,8 @@ object LaunchArgs {
         gpuTurbo: Boolean = false,
         titleId: String? = null,
         shadowScale: ShadowScale = ShadowScale.NATIVE,
+        asyncShaders: Boolean? = null,
+        submitThread: Boolean? = null,
     ): Array<String> =
         arrayOf(
             FLAG_GAME, gamePath,
@@ -116,7 +120,13 @@ object LaunchArgs {
                 arrayOf(FLAG_GPU_EVICT_WRITTEN, "1", FLAG_VMA_BLOCK_SIZE, "32") else emptyArray()) +
             // The GT reference fork enables LS/HS/TES explicitly. Keep it title-scoped.
             (if (titleId.equals("PPSA24156", ignoreCase = true))
-                arrayOf(FLAG_TESSELLATION) else emptyArray())
+                arrayOf(FLAG_TESSELLATION) else emptyArray()) +
+            // Tests are opt-in and specific to Demon\'s Souls (PPSA01341).
+            // Absent arguments keep the existing Android defaults unchanged.
+            (if (titleId.equals("PPSA01341", ignoreCase = true) && asyncShaders != null)
+                arrayOf(FLAG_ASYNC_SHADERS, if (asyncShaders) "1" else "0") else emptyArray()) +
+            (if (titleId.equals("PPSA01341", ignoreCase = true) && submitThread != null)
+                arrayOf(FLAG_SUBMIT_THREAD, if (submitThread) "1" else "0") else emptyArray())
 }
 
 /** Which GPU driver a launch uses: a per-game override wins over the global choice. */
@@ -141,6 +151,8 @@ data class LaunchOptions(
     val renderScale: RenderScale = RenderScale.NATIVE,
     val shadowScale: ShadowScale = ShadowScale.NATIVE,
     val gpuTurbo: Boolean = LauncherSettings.DEFAULT_GPU_TURBO,
+    val asyncShaders: Boolean? = null,
+    val submitThread: Boolean? = null,
 ) {
     companion object {
         fun resolve(
@@ -162,6 +174,8 @@ data class LaunchOptions(
                 renderScale = game.renderScale ?: globalRenderScale,
                 shadowScale = game.shadowScale ?: globalShadowScale,
                 gpuTurbo = game.gpuTurbo ?: globalGpuTurbo,
+                asyncShaders = game.asyncShaders,
+                submitThread = game.submitThread,
             )
     }
 }
