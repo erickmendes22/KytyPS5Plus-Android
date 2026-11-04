@@ -31,7 +31,7 @@ static void KYTY_SYSV_ABI NativeIdleBackoff() {
     if (total == 1 || (total % 100000) == 0) {
         // Log only at the first successful ARM64 HLE callback, then sparsely.
         // Unlike LOGF, stdout is captured even when printf_direction=Silent.
-        std::printf("[DS_IDLE] host_hle_yields=%llu (empty Bluepoint jobs slept 50 us)\\n",
+        std::printf("[DS_IDLE] host_hle_yields=%llu (empty Bluepoint jobs slept 50 us)\n",
                     static_cast<unsigned long long>(total));
     }
 }
