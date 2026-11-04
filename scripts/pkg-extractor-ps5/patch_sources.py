@@ -137,3 +137,128 @@ swap(app/'app/build.gradle.kts',
 '    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt") } }',
 '    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt") } }\n    packaging { jniLibs { useLegacyPackaging = true } }')
 print('PS5 FPKG JNI integration installed')
+
+# ---------------------------------------------------------------
+# Per-package transaction isolation.  The PS5 Rust extractor always
+# creates "app0" below the output root; passing the common output root
+# was destructive when extracting more than one package.  PS4 packages
+# also stage separately before their TITLE_ID directory is published.
+# ---------------------------------------------------------------
+engine = app/'app/src/main/java/com/example/pkgextractor/Engine.kt'
+s = engine.read_text()
+assert s.count('import java.io.FileInputStream\n') == 1
+s = s.replace(
+    'import java.io.FileInputStream\n',
+    'import java.io.FileInputStream\nimport java.nio.file.Files\nimport org.json.JSONObject\n',
+    1,
+)
+start = s.index('    private fun extractRouted(')
+end = s.index('\n    fun start(', start)
+safe_routing = r"""    private fun safeGameFolder(input: String): String {
+        val cleaned = input.replace(Regex("[^A-Za-z0-9 ._()-]"), "_")
+            .trim().trim('.').take(100)
+        return cleaned.ifEmpty { "game" }
+    }
+
+    // mkdir() reserves a name atomically. Never use an existing directory,
+    // even if its app0 is empty or the same TITLE_ID is extracted again.
+    private fun reserveGameFolder(root: File, label: String): File {
+        val stem = safeGameFolder(label)
+        for (n in 0..9999) {
+            val candidate = File(root, if (n == 0) stem else stem + " (" + n + ")")
+            if (candidate.mkdir()) return candidate
+            if (!candidate.exists()) throw java.io.IOException("Cannot create " + candidate.absolutePath)
+        }
+        throw java.io.IOException("No free game folder for " + stem)
+    }
+
+    private fun gameSourceAndName(stage: File, ps5: Boolean, packageName: String): Pair<File, String> {
+        val packageStem = packageName.substringBeforeLast('.', packageName)
+        if (ps5) {
+            val app0 = File(stage, "app0")
+            if (!app0.isDirectory) throw java.io.IOException("PS5 extractor did not produce app0")
+            val param = File(app0, "sce_sys/param.json")
+            val gameId = try {
+                JSONObject(param.readText()).optString("titleId", "")
+            } catch (_: Exception) { "" }
+            val label = if (gameId.matches(Regex("[A-Za-z0-9_-]{4,24}")))
+                gameId else packageStem
+            return Pair(stage, label)
+        }
+        val entries = stage.listFiles() ?: throw java.io.IOException("Cannot list PS4 extraction directory")
+        val gameDir = entries.singleOrNull()?.takeIf { it.isDirectory } ?: stage
+        return Pair(gameDir, if (gameDir === stage) packageStem else gameDir.name)
+    }
+
+    // Only publish to a *new* reserved directory.  A failure leaves
+    // incomplete data in the newly created folder, never in an older game.
+    private fun publishGame(source: File, root: File, name: String): File {
+        val files = source.listFiles() ?: throw java.io.IOException("Cannot list completed extraction")
+        if (files.isEmpty()) throw java.io.IOException("PKG extraction produced no files")
+        val target = reserveGameFolder(root, name)
+        try {
+            for (entry in files) {
+                val destination = File(target, entry.name)
+                if (destination.exists() || !entry.renameTo(destination)) {
+                    throw java.io.IOException("Cannot move " + entry.name + " into " + target.absolutePath)
+                }
+            }
+        } catch (t: Exception) {
+            throw java.io.IOException("Publication incomplete in NEW folder " + target.absolutePath +
+                "; existing games were not touched. " + t.message, t)
+        }
+        return target
+    }
+
+    private fun extractRouted(path: String, dest: String, packageName: String,
+                              progress: NativeBridge.Progress): String {
+        val root = File(dest)
+        // Isolate BOTH the PS4 native output and the PS5 hardcoded app0.
+        val stage = try {
+            Files.createTempDirectory(root.toPath(), ".pkg-incomplete-").toFile()
+        } catch (t: Exception) {
+            return "Cannot create private extraction folder: " + t.message
+        }
+        val ps5 = isPs5(path)
+        phase = if (ps5) "PS5: extracting to isolated temporary folder" else
+            "PS4: extracting to isolated temporary folder"
+        fire()
+        val failure = try {
+            if (ps5) NativeBridge.extractPs5(path, stage.absolutePath)
+            else NativeBridge.extract(path, stage.absolutePath, progress)
+        } catch (t: Throwable) {
+            t.javaClass.simpleName + ": " + t.message
+        }
+        if (failure.isNotEmpty() || cancelled) {
+            return (if (cancelled) "Cancelled" else failure) +
+                ". Partial files preserved at " + stage.absolutePath
+        }
+        return try {
+            if (cancelled) return "Cancelled. Partial files preserved at " + stage.absolutePath
+            val (source, label) = gameSourceAndName(stage, ps5, packageName)
+            val published = publishGame(source, root, label)
+            resultPath = published.absolutePath
+            // No pre-existing game folder is ever recursively removed.
+            stage.deleteRecursively()
+            fire()
+            ""
+        } catch (t: Throwable) {
+            "Cannot finalize PKG: " + t.message +
+                ". Partial files preserved at " + stage.absolutePath
+        }
+    }
+"""
+s = s[:start] + safe_routing + s[end:]
+for old, new in [
+    ('extractRouted(direct, out.absolutePath, progress)',
+     'extractRouted(direct, out.absolutePath, name, progress)'),
+    ('extractRouted("/proc/self/fd/${pfd.fd}", out.absolutePath, progress)',
+     'extractRouted("/proc/self/fd/${pfd.fd}", out.absolutePath, name, progress)')
+]:
+    assert s.count(old) == 1, "PS4/PS5 Engine callsite changed: " + old
+    s = s.replace(old, new, 1)
+assert 'resultPath = "$dest/app0"' not in s, "Unsafe shared app0 target still present"
+assert s.count('Files.createTempDirectory(') == 1
+assert s.count('reserveGameFolder(root, name)') == 1
+engine.write_text(s)
+print("Per-game isolated staging and collision-proof publication installed for PS4 and PS5.")
