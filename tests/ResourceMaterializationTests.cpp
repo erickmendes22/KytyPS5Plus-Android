@@ -1566,7 +1566,7 @@ void TestBranchOnWrittenBufferNotCaptured(bool unsigned_bound, bool written) {
   auto plan = ExtractResourcePlan(program);
   uint32_t count_value = 0;
   const auto read = +[](void *data, uint64_t address, std::span<uint32_t> words) {
-    constexpr std::array<uint32_t, 4> descriptor{0x8000u, 16u << 16u, 4u, 0x14facu};
+    constexpr std::array<uint32_t, 4> descriptor{0x8000u, 1u << 16u, 16u, (3u << 28u) | 0x4dfacu};
     if (address % 4u || words.size() != 1) return false;
     if (address >= 0x2000u && address < 0x2010u) {
       words[0] = descriptor[(address - 0x2000u) / 4u];
@@ -1577,7 +1577,8 @@ void TestBranchOnWrittenBufferNotCaptured(bool unsigned_bound, bool written) {
     return true;
   };
   // The runtime read callback below supplies the synthetic guest buffer.
-  const SrtRuntime runtime{.userdata = &count_value, .read_specialization_memory = read};
+  // Ordinary descriptor reads and strict control-predicate reads use distinct runtime APIs.
+  const SrtRuntime runtime{.read_memory = read, .userdata = &count_value, .read_specialization_memory = read};
   ResourceSnapshot snapshot;
   ResourceSpecialization specialization;
   for (const uint32_t value : {0u, 3u}) {
