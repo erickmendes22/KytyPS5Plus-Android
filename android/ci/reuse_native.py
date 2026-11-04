@@ -1,10 +1,10 @@
 """Reuse an audited APK's native core only when all native sources/build commands are unchanged."""
 import hashlib,io,json,os,re,subprocess,tempfile,zipfile
 from pathlib import Path
-BASE='e2f5a7022800690dd5f80dfdfd73de3698022350'
+BASE='772b32480ed33d421a66baaf5525594b8c48314d'
 REPO='erickmendes22/KytyPS5Plus-Android'
-ARTIFACT=12857473936
-DIGEST='a09b36ee8d5d5c5f2a1a5f82ff4c311a29564f097149a783db1cb98b6abce9b9'
+ARTIFACT=12994187910
+DIGEST='b1b4c67eed30593eab08649e59fbe32a5c8fe34f46e78e7eca9408207ce299b8'
 def git(*args):return subprocess.check_output(['git',*args],text=True)
 def unchanged():
     paths=git('diff','--name-only',BASE,'HEAD').splitlines()
