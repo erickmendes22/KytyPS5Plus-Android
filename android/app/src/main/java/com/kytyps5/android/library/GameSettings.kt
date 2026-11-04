@@ -30,7 +30,7 @@ data class GameSettings(
     val gpuTurbo: Boolean? = null,
     val demonsSoulsDemoFlow: Boolean = false,
     val demonsSoulsSkipPrompts: Boolean = false,
-    val demonsSoulsPcFrameSync: Boolean = true,
+    val demonsSoulsPcFrameSync: Boolean = false,
 ) {
     fun toJson(): String = JSONObject()
         .put("resolution", resolution?.storageValue ?: JSONObject.NULL)
@@ -66,7 +66,7 @@ data class GameSettings(
                     gpuTurbo = obj.optionalBoolean("gpuTurbo"),
                     demonsSoulsDemoFlow = obj.optBoolean("demonsSoulsDemoFlow", false),
                     demonsSoulsSkipPrompts = obj.optBoolean("demonsSoulsSkipPrompts", false),
-                    demonsSoulsPcFrameSync = obj.optBoolean("demonsSoulsPcFrameSync", true),
+                    demonsSoulsPcFrameSync = obj.optBoolean("demonsSoulsPcFrameSync", false),
                 )
             } catch (e: JSONException) {
                 DEFAULT
