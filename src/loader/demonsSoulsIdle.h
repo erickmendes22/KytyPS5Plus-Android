@@ -2,6 +2,7 @@
 // Title- and byte-signature-verified idle Bluepoint worker poll adapter.
 // The guest x86 thunk calls the original poll, and only on "no work" calls
 // an ARM64-safe guest HLE trap to yield the host worker for 50 us.
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
