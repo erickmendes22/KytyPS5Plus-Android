@@ -131,8 +131,14 @@ void DescriptorHeap::CreateDescriptorPool(const DescriptorPoolPolicy::Counts& re
     create.maxSets       = DescriptorHeapCount;
     create.poolSizeCount = static_cast<uint32_t>(sizes.size());
     create.pPoolSizes    = sizes.data();
-    EXIT_IF(m_graphics.device.createDescriptorPool(&create, nullptr, &m_current_pool) !=
-            vk::Result::eSuccess);
+    const auto result = m_graphics.device.createDescriptorPool(&create, nullptr, &m_current_pool);
+    if (result != vk::Result::eSuccess) {
+        m_current_pool = nullptr;
+        // Some Android drivers cap aggregate pool sizes below the nominal
+        // Vulkan limits. A single-layout pool is still conformant, and unlike
+        // reducing descriptor counts it keeps every requested binding valid.
+        CreateDescriptorPoolExact(requirements);
+    }
 }
 
 void DescriptorHeap::CreateDescriptorPoolExact(const DescriptorPoolPolicy::Counts& requirements) {
