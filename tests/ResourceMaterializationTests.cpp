@@ -1949,7 +1949,7 @@ void TestBindlessImageTableDoesNotEnumerate2497Descriptors() {
   DescriptorSource root;
   root.dword_count = 8u;
   root.dwords.fill(Value(0u));
-  root.indirect_descriptor.emplace();
+  root.indirect_descriptor.emplace(DescriptorSource::IndirectDescriptor{});
   root.indirect_descriptor->bindless = true;
   root.indirect_descriptor->table_source = 0u;
   root.indirect_descriptor->table_offset = 64u; // begin at second texture
