@@ -1428,6 +1428,22 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			    shader_stages, vk::DependencyFlags {}, 0, nullptr, 1, &barrier, 0, nullptr);
 		}
 
+        // A resident bindless image persists beyond any one draw's regular
+        // binding list. Revalidate its Vulkan layout before sampling from set1
+        // instead of assuming the image never became an attachment later.
+        for (auto* heap: descriptors.bindless_heaps) {
+            for (const auto id: heap->resolved) {
+                auto* image = m_context.GetTextureCache().m_slot_images.try_get(id);
+                if (!image || !image->registered || image->info.data.Empty() ||
+                    image->binding.is_target) continue;
+                const auto layout = image->info.IsDepth()
+                    ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
+                    : vk::ImageLayout::eShaderReadOnlyOptimal;
+                if (image->backing.state.layout != layout) {
+                    image->Transit(layout, vk::AccessFlagBits2::eShaderRead, {}, vk_buffer);
+                }
+            }
+        }
 		for (uint32_t i = 0; i < program.info.images.size(); i++) {
             if (program.info.images[i].bindless) continue;
 			auto& binding = descriptors.images[i];
