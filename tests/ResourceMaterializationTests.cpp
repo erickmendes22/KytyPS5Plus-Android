@@ -1926,6 +1926,60 @@ void TestIndirectImageSamplerClasses(bool mixed) {
 // k4_4_4_4UNorm = 136 and the FMASK range = 156) names no format at all: the guest left
 // garbage in a texture-table slot it never samples. It must bind a null image and keep
 // materializing instead of failing specialization (KytyPS5 #1019, Demon's Souls).
+// Synthetic Wolverine-sized sampled texture table: the host must defer
+// 2,497 image descriptors to one GPU-indexed heap instead of materializing
+// them all into a shader-local Vulkan descriptor layout.
+void TestBindlessImageTableDoesNotEnumerate2497Descriptors() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  Program program;
+  program.stage = Libs::Graphics::ShaderType::Compute;
+  program.srt_plan_complete = true;
+  program.resource_tracking_complete = true;
+  program.bindless_images = true;
+  AddValueBlock(program);
+  DescriptorSource table;
+  table.dword_count = 4u;
+  table.dwords.fill(Value(0u));
+  constexpr uint64_t base = 0x300000u;
+  constexpr uint32_t image_count = 2497u;
+  table.dwords[0] = Value(static_cast<uint32_t>(base));
+  table.dwords[1] = Value(32u << 16u); // buffer stride 32 bytes, type=0
+  table.dwords[2] = Value(image_count); // one 32-byte T# entry per texture
+  program.descriptor_sources.push_back(table);
+  DescriptorSource root;
+  root.dword_count = 8u;
+  root.dwords.fill(Value(0u));
+  root.indirect_descriptor.emplace();
+  root.indirect_descriptor->bindless = true;
+  root.indirect_descriptor->table_source = 0u;
+  root.indirect_descriptor->table_offset = 64u; // begin at second texture
+  program.descriptor_sources.push_back(root);
+  program.info.images.push_back({
+      .source = 1u,
+      .resource_class = ImageResourceClass::Sampled,
+      .numeric_class = Libs::Graphics::Prospero::TextureNumericClass::Float,
+      .dimension = Libs::Graphics::ShaderRecompiler::Decoder::ImageDimension::Dim2D});
+  const auto plan = ExtractResourcePlan(program);
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization;
+  Check(MaterializeResources(plan, {}, snapshot, specialization),
+        "GPU bindless sampled-image table failed resource materialization");
+  Check(snapshot.bindless_heaps.size() == 1u &&
+            snapshot.images.size() == 1u &&
+            specialization.images.size() == 1u &&
+            snapshot.flattened_srt.size() == 2u,
+        "2,497 sampled textures were expanded instead of one bindless heap");
+  const auto& use = snapshot.bindless_heaps.front();
+  Check(use.base == base && use.size == uint64_t {image_count} * 32u &&
+            use.table_offset == 64u && use.image == 0u &&
+            use.mapping_offset + 1u < snapshot.flattened_srt.size() &&
+            specialization.images[0].bindless &&
+            specialization.images[0].indirect_mapping_offset == use.mapping_offset,
+        "bindless heap address, count or GPU SRT mapping is wrong");
+  Check(snapshot.images.front().dword_count == 8u,
+        "bindless images must carry a placeholder descriptor, not 2,497 descriptors");
+}
+
 void TestUndefinedImageFormatBindsNullImage() {
   using namespace Libs::Graphics::ShaderRecompiler::IR;
   Check(!Libs::Graphics::Prospero::IsDefinedBufferFormat(
@@ -2009,6 +2063,7 @@ int main() {
   TestSignedStorageSpecialization();
   for (const bool mixed : {false, true}) TestIndirectImageSamplerClasses(mixed);
   TestUndefinedImageFormatBindsNullImage();
+  TestBindlessImageTableDoesNotEnumerate2497Descriptors();
   TestResourceMemoRereadsMemory();
   TestResourceMemoKeysOnReadUserData();
   TestResourceMemoRebasesValueWords();
