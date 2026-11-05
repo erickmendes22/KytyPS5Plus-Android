@@ -28,5 +28,13 @@ assert not missing, "Shader requests types not supported by the heap: " + ", ".j
 assert pools["eUniformBuffer"] >= 32, "Wolverine uniform descriptor allocation would exhaust new pool"
 assert all(v >= 32 for v in pools.values()), "Too few descriptors for a full batch"
 assert "m_sets.clear()" in heap, "Old descriptor sets must be invalidated at pool rollover"
-assert "m_master_semaphore.IsFree(tick)" in heap, "Pool recycling must wait for GPU completion"
+assert "m_master_semaphore.IsFree(pending.tick)" in heap, "Pool recycling must wait for GPU completion"
+assert "DescriptorPoolPolicy::Fits(pending.capacities, requirements)" in heap, "Only reuse pools that fit new layouts"
+assert "DescriptorPoolPolicy::Capacity(" in heap, "Large shader layouts must expand per-type capacity"
+shaders = (ROOT / "src/graphics/host_gpu/renderer/pipeline/shaders.cpp").read_text()
+pipeline = (ROOT / "src/graphics/host_gpu/renderer/pipeline/pipelineCache.h").read_text()
+assert "pipeline.descriptor_pool_requirements[slot]" in shaders, "Missing per-layout descriptor accounting"
+assert "descriptor_pool_requirements" in pipeline, "Per-layout requirements not saved with compiled pipeline"
+assert "pipeline.descriptor_pool_requirements" in descriptors, "Descriptor heap never receives layout demand"
+assert "descriptor allocation still failed on fresh pool" in heap, "Keep exact failure if driver refuses a correctly sized pool"
 print("Descriptor contract OK:", pools, "required =", sorted(required))
