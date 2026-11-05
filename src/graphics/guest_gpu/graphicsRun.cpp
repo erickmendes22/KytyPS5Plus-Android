@@ -285,7 +285,13 @@ void GuestGpu::SuspendPoint() {
         // SFO may not be populated on the first frame; only latch a
         // successful lookup. Failure leaves subsequent frames free to retry.
         if (Loader::SystemContentParamSfoGetString("TITLE_ID", &title)) {
-            if (title == "PPSA01341") {
+            // On the 09:12:20 device test, PC prefix ordering moved the last
+            // suspend point 78 -> 80 but did not restore any flips after the
+            // cutscene. Do not combine this ineffective experimental policy
+            // with the new Bluepoint idle worker path by default.
+            const char* pc_boundary = std::getenv("KYTY_DS_PC_BOUNDARY");
+            if (title == "PPSA01341" && pc_boundary != nullptr &&
+                pc_boundary[0] == '1' && pc_boundary[1] == '\0') {
                 m_ds_prefix_mode.store(true, std::memory_order_release);
                 ::printf("[DS_BOUNDARY] PPSA01341: PC bounded submission-prefix ordering active; "
                          "reset graphics at next submission, not inside suspend point\\n");
