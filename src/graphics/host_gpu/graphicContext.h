@@ -69,6 +69,7 @@ struct GraphicContext {
     // the shader emitter and host descriptor table are fully integrated.
     BindlessCapability bindless_capability {};
     bool bindless_capable = false;
+    bool bindless_enabled = false; // remains OFF until all host/guest paths validated
     uint32_t bindless_max_sampled_images = 0;
     uint32_t bindless_max_samplers = 0;
     vk::DescriptorSetLayout bindless_layout = nullptr;
