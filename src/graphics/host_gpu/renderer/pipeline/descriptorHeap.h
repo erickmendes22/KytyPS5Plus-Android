@@ -34,6 +34,7 @@ private:
 
 	[[nodiscard]] bool Allocate(vk::DescriptorSetLayout layout, Batch& batch);
 	void               CreateDescriptorPool(const DescriptorPoolPolicy::Counts& requirements = {});
+    void               CreateDescriptorPoolExact(const DescriptorPoolPolicy::Counts& requirements);
 
 	GraphicContext&                                     m_graphics;
 	MasterSemaphore&                                    m_master_semaphore;
