@@ -4,7 +4,7 @@ name: Android APK
 # No GitHub Releases are created. Signing uses the repository's KYTY_* secrets.
 on:
   push:
-    branches: [ experiment/demons-souls-nexus-route, experiment/demons-souls-idle-poll-arm64, experiment/demons-souls-written-buffer-fix, experiment/demons-souls-gpu-frame-fence, experiment/demons-souls-self-verified-android, experiment/demons-souls-first-boot-skip-android, experiment/demons-souls-demo-flow-android, experiment/neptunia-capy-compat, experiment/capy-global-render-scale, experiment/pc-fork-shader-performance, experimental/neptunia-game-category-resolution, experimental/neptunia-fex-lookup-cache, android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64, investigate/mfgt-reference-port, investigate/mfgt-graphics-pipeline-crash, investigate/mfgt-spv-crash-capture, investigate/mfgt-vertex64-tess, recovery/mfgt-d43e258f-no-tess-workarounds, experiment/mfgt-written-image-reclaim, experiment/mfgt-memory-collector-v2 ]
+    branches: [ experiment/demons-souls-nexus-route, fix/wolverine-ds-validated-20261105, experiment/demons-souls-idle-poll-arm64, experiment/demons-souls-written-buffer-fix, experiment/demons-souls-gpu-frame-fence, experiment/demons-souls-self-verified-android, experiment/demons-souls-first-boot-skip-android, experiment/demons-souls-demo-flow-android, experiment/neptunia-capy-compat, experiment/capy-global-render-scale, experiment/pc-fork-shader-performance, experimental/neptunia-game-category-resolution, experimental/neptunia-fex-lookup-cache, android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64, investigate/mfgt-reference-port, investigate/mfgt-graphics-pipeline-crash, investigate/mfgt-spv-crash-capture, investigate/mfgt-vertex64-tess, recovery/mfgt-d43e258f-no-tess-workarounds, experiment/mfgt-written-image-reclaim, experiment/mfgt-memory-collector-v2 ]
     paths-ignore: [ 'docs/**', '**.md' ]
   workflow_dispatch:
 
@@ -211,6 +211,30 @@ jobs:
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/sampler_minmax_policy_test.cpp -o /tmp/sampler-minmax-policy-test
           /tmp/sampler-minmax-policy-test
+      - name: Test exact Vulkan descriptor demand and bounded Demon frame-order policy
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/descriptor_pool_policy_test.cpp -o /tmp/descriptor-pool-policy
+          /tmp/descriptor-pool-policy
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_souls_frame_boundary_test.cpp -o /tmp/demons-frame-boundary
+          /tmp/demons-frame-boundary
+      - name: Verify Demon PC-parity integration without weakening fence dependencies
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path("src/graphics/guest_gpu/graphicsRun.cpp").read_text()
+          h=Path("src/graphics/guest_gpu/graphicsRun.h").read_text()
+          p=Path("src/graphics/guest_gpu/guestFramePolicy.h").read_text()
+          assert 'title == "PPSA01341"' in s
+          assert "m_ds_frame_policy.EndFrame()" in s
+          assert "submission.reset_processor" in s and "if (submission.reset_processor) cp.Reset()" in s
+          assert "m_ds_in_flight.insert" in s and "m_ds_in_flight.erase" in s
+          assert "m_done_progress.SignalAll()" in s and "m_done_progress.WaitFor(" in s
+          assert "m_submission_mutex" in h
+          assert "return m_last_boundary;" not in p
+          assert "m_last_boundary = m_next_sequence - 1;" in p
+          assert "if (!m_ds_prefix_mode.load(std::memory_order_acquire)) cp.Reset();" in s
+          print("Demon frame-order integration assertions: OK")
+          PY
       - name: Host build dependencies
         run: |
           sudo apt-get update
