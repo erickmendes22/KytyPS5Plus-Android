@@ -564,8 +564,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
         supported_features12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
         supported_features12.descriptorBindingPartiallyBound == VK_TRUE &&
         supported_features12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE &&
-        supported_features12.descriptorBindingUpdateUnusedWhilePending == VK_TRUE &&
-        true; // Vulkan 1.2 uses descriptorBindingSampledImageUpdateAfterBind for samplers
+        supported_features12.descriptorBindingUpdateUnusedWhilePending == VK_TRUE;
     if (bindless_requested && bindless_supported) {
         features12.runtimeDescriptorArray = VK_TRUE;
         features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;

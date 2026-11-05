@@ -1098,8 +1098,9 @@ struct PipelineCache::ProgramCache {
             f.constant_lane_broadcast, f.subgroup_size_min,
             f.compute_required_subgroup_min, f.compute_required_subgroup_max,
             f.first_lane_value_sets, f.bvh_emulation) + fmt::format(" ftz32={} pslive={} rswz={} fud={}", f.ftz32_ops, f.pixel_live_election, f.relative_swizzle, f.fold_user_depth) +
-            fmt::format(" loopguard={}/{}", LoopGuard::Spec() != nullptr ? LoopGuard::Spec() : "",
-                        LoopGuard::Limit());
+            fmt::format(" loopguard={}/{} bindless_images={}",
+                        LoopGuard::Spec() != nullptr ? LoopGuard::Spec() : "",
+                        LoopGuard::Limit(), options.bindless_images);
 		return XXH3_64bits(text.data(), text.size());
 	}
 
