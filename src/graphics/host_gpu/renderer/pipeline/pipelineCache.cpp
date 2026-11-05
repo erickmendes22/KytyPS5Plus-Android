@@ -561,6 +561,7 @@ struct PipelineCache::ProgramCache {
 		// KYTY_UBO_CONSTANTS=cs leaves the graphics stages on storage buffers.
 		const bool ubo_stage = !fast_paths.uniform_constants_compute_only || stage == ShaderType::Compute;
 		options.maintenance8_enabled = graphics.maintenance8_enabled;
+        options.bindless_images = graphics.bindless_enabled;
 		options.device_features      = {
 		         .fragment_shader_barycentric = graphics.optional_features.fragment_shader_barycentric,
 		         .geometry_varying_locations  = graphics.optional_features.geometry_varying_locations,

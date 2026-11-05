@@ -122,6 +122,7 @@ public:
 		vk::DescriptorSetLayout descriptor_set_layout = nullptr;
 		std::array<uint32_t, 5> descriptor_pool_requirements {}; // native types, counted per set
 		bool                    uses_push_descriptors = false;
+        bool                    uses_bindless = false; // GPU-resident image heap in Vulkan set1
 		uint64_t                last_used             = 0;
 		vk::ShaderStageFlags    push_constant_stages  = {};
 	};

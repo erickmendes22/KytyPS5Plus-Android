@@ -1409,6 +1409,12 @@ void RenderExecutor::RecordBindings(vk::CommandBuffer              target,
 			                          nullptr);
 		}
 	}
+    if (pipeline.uses_bindless) {
+        const auto set = m_context.GetGraphics().bindless_set;
+        EXIT_IF(set == nullptr);
+        target.bindDescriptorSets(pipeline_bind_point, pipeline.pipeline_layout,
+                                  1, 1, &set, 0, nullptr);
+    }
 }
 
 } // namespace Libs::Graphics
