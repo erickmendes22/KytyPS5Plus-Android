@@ -24,6 +24,8 @@ struct CompileOptions {
 	bool                        early_dump                 = false;
 	bool                        emit_debug_info            = false;
 	bool                        maintenance8_enabled       = false;
+	// Off until Vulkan descriptor indexing and shader/host binder are integrated.
+	bool                        bindless_images            = false;
 	ShaderDeviceFeatures        device_features {};
 	ShaderDeviceQuirks          device_quirks {};
 	const char*                 dump_label                 = nullptr;

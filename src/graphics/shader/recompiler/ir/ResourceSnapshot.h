@@ -30,9 +30,21 @@ struct UniformFill {
 	bool operator==(const UniformFill&) const = default;
 };
 
+// Per-draw guest descriptor heap with GPU dynamic key; host binder maps keys
+// to persistent descriptor slots and safely invalidates rewritten textures.
+struct BindlessHeapUse {
+    uint64_t base = 0;
+    uint64_t size = 0;
+    uint32_t table_offset = 0;
+    uint32_t image = 0;
+    uint32_t mapping_offset = 0;
+    bool operator==(const BindlessHeapUse&) const = default;
+};
+
 struct ResourceSnapshot {
 	std::vector<DescriptorValue> buffers;
 	std::vector<DescriptorValue> images;
+	std::vector<BindlessHeapUse> bindless_heaps;
 	std::vector<DescriptorValue> samplers;
 	std::vector<uint32_t>        flattened_srt;
 	std::vector<uint32_t>        user_data;

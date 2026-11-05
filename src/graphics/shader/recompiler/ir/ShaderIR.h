@@ -181,6 +181,8 @@ struct ImageResource {
 	bool                          texel_access      = false;
 	bool                          depth_compare     = false;
 	bool                          cube              = false;
+	// PC bindless path: the dynamic guest descriptor heap owns this sampled image.
+	bool                          bindless          = false;
 	bool                          r128              = false;
 	uint32_t                      indirect_root     = NoIndirectImage;
 	uint32_t                      indirect_mapping_offset   = 0;
@@ -216,6 +218,8 @@ struct SamplerResource {
 	bool     depth_compare         = false;
 	bool     integer_border        = false;
 	bool     gather_lod            = false;
+	bool     bindless              = false;
+	uint32_t bindless_mapping_offset = 0;
 
 	bool operator==(const SamplerResource& other) const = default;
 };
@@ -738,6 +742,7 @@ struct DescriptorSource {
 		uint32_t table_record_bytes = 0;
 		bool     table_scalar = false;
 		bool     indexed = false;
+		bool     bindless = false; // direct GPU lookup, no finite host enumeration
 		bool     signed_count = false;
 		uint32_t workgroup_axis  = UINT32_MAX;
 		Value    key_count;
@@ -858,6 +863,7 @@ struct ResourcePlan {
 	bool                                requires_specialization_memory = false;
 	std::vector<std::pair<uint64_t, uint64_t>> source_reads;
 	bool                                capture_specialization_reads = false;
+	bool                                bindless_images             = false;
 	bool                                srt_plan_complete          = false;
 	bool                                resource_tracking_complete = false;
 	// ShaderDeviceFeatures::uniform_constant_buffer_bytes: read-only scalar buffers up to this
