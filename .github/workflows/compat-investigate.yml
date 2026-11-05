@@ -79,6 +79,29 @@ jobs:
             libwayland-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev \
             libxi-dev libxkbcommon-dev libxrandr-dev libxss-dev libxtst-dev \
             pkg-config wayland-protocols
+      - name: Restore pinned FFmpeg host archive
+        uses: actions/cache@v4
+        with:
+          path: _Build/compat/externals/9ac4cfd195f1-ffmpeg-linux-x64.zip
+          key: kyty-ffmpeg-host-9ac4cfd195f1-x64
+      - name: Fetch FFmpeg through authenticated GitHub releases API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _Build/compat/externals
+          output=_Build/compat/externals/9ac4cfd195f1-ffmpeg-linux-x64.zip
+          if ! test -s "$output"; then
+            gh release download 9ac4cfd195f1 \
+              --repo KytyPS5/ext-ffmpeg-core \
+              --pattern ffmpeg-linux-x64.zip \
+              --output "$output"
+          fi
+          test -s "$output"
+      - name: Verify descriptor indexing hardware thresholds without Vulkan device
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+            tests/manual/bindless_capability_test.cpp -o /tmp/bindless-capability
+          /tmp/bindless-capability
       - name: Compile and test real shader resource specialization plus Bluepoint HLE
         run: |
           cmake -S . -B _Build/compat -G Ninja \

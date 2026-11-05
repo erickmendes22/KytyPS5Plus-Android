@@ -666,10 +666,17 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
             supported_features12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE,
         .update_unused_while_pending =
             supported_features12.descriptorBindingUpdateUnusedWhilePending == VK_TRUE,
-        .update_after_bind_sampled_limit = properties12.maxDescriptorSetUpdateAfterBindSampledImages,
-        .update_after_bind_sampler_limit = properties12.maxDescriptorSetUpdateAfterBindSamplers,
+        .update_after_bind_sampled_limit = std::min(
+            properties12.maxDescriptorSetUpdateAfterBindSampledImages,
+            properties12.maxPerStageDescriptorUpdateAfterBindSampledImages),
+        .update_after_bind_sampler_limit = std::min(
+            properties12.maxDescriptorSetUpdateAfterBindSamplers,
+            properties12.maxPerStageDescriptorUpdateAfterBindSamplers),
     };
-    graphics.bindless_capable = graphics.bindless_capability.Usable();
+    // Set 1 contains two live storage buffers in every shader stage.
+    graphics.bindless_capable = graphics.bindless_capability.Usable() &&
+        properties12.maxDescriptorSetUpdateAfterBindStorageBuffers >= 2u &&
+        properties12.maxPerStageDescriptorUpdateAfterBindStorageBuffers >= 2u;
     if (!graphics.bindless_capable) {
         graphics.bindless_enabled = false;
         // Clear all feature bits if limits are inadequate, to avoid a feature
@@ -685,9 +692,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
          bindless_requested ? 1 : 0, graphics.bindless_enabled ? 1 : 0,
          graphics.bindless_capable ? 1 : 0);
     graphics.bindless_max_sampled_images = graphics.bindless_capable
-        ? properties12.maxDescriptorSetUpdateAfterBindSampledImages : 0;
+        ? graphics.bindless_capability.update_after_bind_sampled_limit : 0;
     graphics.bindless_max_samplers = graphics.bindless_capable
-        ? properties12.maxDescriptorSetUpdateAfterBindSamplers : 0;
+        ? graphics.bindless_capability.update_after_bind_sampler_limit : 0;
     LOGF("Vulkan bindless: hardware=%d sampled_limit=%u sampler_limit=%u "
          "(emulator backend disabled until full host+shader path)\\n",
          graphics.bindless_capable ? 1 : 0, graphics.bindless_max_sampled_images,

@@ -16,7 +16,7 @@ struct BindlessCapability {
     [[nodiscard]] constexpr bool Usable() const noexcept {
         return runtime_array && non_uniform_sampled_image_indexing && partially_bound &&
                sampled_image_update_after_bind && update_unused_while_pending &&
-               update_after_bind_sampled_limit >= 64;
+               update_after_bind_sampled_limit >= 64 && update_after_bind_sampler_limit >= 1;
     }
 };
 } // namespace Libs::Graphics

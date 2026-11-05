@@ -13,5 +13,7 @@ int main() {
     static_assert(!no_update.Usable());
     static_assert(!no_pending.Usable());
     static_assert(!small.Usable());
+    constexpr BindlessCapability no_samplers{true,true,true,true,true,65536,0};
+    static_assert(!no_samplers.Usable());
     std::puts("Bindless Vulkan capability predicate: OK");
 }
