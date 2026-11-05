@@ -149,103 +149,73 @@ s = engine.read_text()
 assert s.count('import java.io.FileInputStream\n') == 1
 s = s.replace(
     'import java.io.FileInputStream\n',
-    'import java.io.FileInputStream\nimport java.nio.file.Files\nimport org.json.JSONObject\n',
+    'import java.io.FileInputStream\n',
     1,
 )
 start = s.index('    private fun extractRouted(')
 end = s.index('\n    fun start(', start)
 safe_routing = r"""    private fun safeGameFolder(input: String): String {
+        // Names are used only as individual *new* subfolders under the user's
+        // selected extraction destination. Never interpret PKG file names as paths.
         val cleaned = input.replace(Regex("[^A-Za-z0-9 ._()-]"), "_")
-            .trim().trim('.').take(100)
+            .trim().trim('.').take(100).trim().trim('.')
         return cleaned.ifEmpty { "game" }
     }
 
-    // mkdir() reserves a name atomically. Never use an existing directory,
-    // even if its app0 is empty or the same TITLE_ID is extracted again.
+    // File.mkdir() reserves a new directory. Collisions always get a suffix;
+    // existing content is never deleted, cleared, or reused.
     private fun reserveGameFolder(root: File, label: String): File {
         val stem = safeGameFolder(label)
         for (n in 0..9999) {
             val candidate = File(root, if (n == 0) stem else stem + " (" + n + ")")
             if (candidate.mkdir()) return candidate
-            if (!candidate.exists()) throw java.io.IOException("Cannot create " + candidate.absolutePath)
-        }
-        throw java.io.IOException("No free game folder for " + stem)
-    }
-
-    private fun gameSourceAndName(stage: File, ps5: Boolean, packageName: String): Pair<File, String> {
-        val packageStem = packageName.substringBeforeLast('.', packageName)
-        if (ps5) {
-            val app0 = File(stage, "app0")
-            if (!app0.isDirectory) throw java.io.IOException("PS5 extractor did not produce app0")
-            val param = File(app0, "sce_sys/param.json")
-            val gameId = try {
-                JSONObject(param.readText()).optString("titleId", "")
-            } catch (_: Exception) { "" }
-            val label = if (gameId.matches(Regex("[A-Za-z0-9_-]{4,24}")))
-                gameId else packageStem
-            return Pair(stage, label)
-        }
-        val entries = stage.listFiles() ?: throw java.io.IOException("Cannot list PS4 extraction directory")
-        val gameDir = entries.singleOrNull()?.takeIf { it.isDirectory } ?: stage
-        return Pair(gameDir, if (gameDir === stage) packageStem else gameDir.name)
-    }
-
-    // Only publish to a *new* reserved directory.  A failure leaves
-    // incomplete data in the newly created folder, never in an older game.
-    private fun publishGame(source: File, root: File, name: String): File {
-        val files = source.listFiles() ?: throw java.io.IOException("Cannot list completed extraction")
-        if (files.isEmpty()) throw java.io.IOException("PKG extraction produced no files")
-        val target = reserveGameFolder(root, name)
-        try {
-            for (entry in files) {
-                val destination = File(target, entry.name)
-                if (destination.exists() || !entry.renameTo(destination)) {
-                    throw java.io.IOException("Cannot move " + entry.name + " into " + target.absolutePath)
-                }
+            if (!candidate.exists()) {
+                throw java.io.IOException("Cannot create " + candidate.absolutePath)
             }
-        } catch (t: Exception) {
-            throw java.io.IOException("Publication incomplete in NEW folder " + target.absolutePath +
-                "; existing games were not touched. " + t.message, t)
         }
-        return target
+        throw java.io.IOException("No free game directory for " + stem)
     }
 
     private fun extractRouted(path: String, dest: String, packageName: String,
                               progress: NativeBridge.Progress): String {
+        // PS5 always generates "app0" inside the supplied destination.
+        // Extract DIRECTLY under a fresh, reserved game folder. On some
+        // Android /storage/emulated FUSE implementations, renaming a complete
+        // app0 directory fails even on the same storage device. Do not move it.
         val root = File(dest)
-        // Isolate BOTH the PS4 native output and the PS5 hardcoded app0.
-        val stage = try {
-            Files.createTempDirectory(root.toPath(), ".pkg-incomplete-").toFile()
-        } catch (t: Exception) {
-            return "Cannot create private extraction folder: " + t.message
+        val stem = packageName.substringBeforeLast('.', packageName)
+        val gameRoot = try {
+            reserveGameFolder(root, stem)
+        } catch (t: Throwable) {
+            return "Cannot reserve separate game folder: " + t.message
         }
         val ps5 = isPs5(path)
-        phase = if (ps5) "PS5: extracting to isolated temporary folder" else
-            "PS4: extracting to isolated temporary folder"
+        phase = if (ps5) "PS5: extracting directly to individual game folder" else
+            "PS4: extracting directly to individual game folder"
+        resultPath = gameRoot.absolutePath
         fire()
         val failure = try {
-            if (ps5) NativeBridge.extractPs5(path, stage.absolutePath)
-            else NativeBridge.extract(path, stage.absolutePath, progress)
+            if (ps5) NativeBridge.extractPs5(path, gameRoot.absolutePath)
+            else NativeBridge.extract(path, gameRoot.absolutePath, progress)
         } catch (t: Throwable) {
             t.javaClass.simpleName + ": " + t.message
         }
         if (failure.isNotEmpty() || cancelled) {
             return (if (cancelled) "Cancelled" else failure) +
-                ". Partial files preserved at " + stage.absolutePath
+                ". Files retained in " + gameRoot.absolutePath
         }
-        return try {
-            if (cancelled) return "Cancelled. Partial files preserved at " + stage.absolutePath
-            val (source, label) = gameSourceAndName(stage, ps5, packageName)
-            val published = publishGame(source, root, label)
-            resultPath = published.absolutePath
-            // No pre-existing game folder is ever recursively removed.
-            stage.deleteRecursively()
-            fire()
-            ""
-        } catch (t: Throwable) {
-            "Cannot finalize PKG: " + t.message +
-                ". Partial files preserved at " + stage.absolutePath
+        if (ps5) {
+            val app0 = File(gameRoot, "app0")
+            if (!app0.isDirectory || app0.listFiles().isNullOrEmpty()) {
+                return "PS5 completed without a populated app0. Check " + gameRoot.absolutePath
+            }
         }
+        // PS4 creates its own TITLE_ID subfolder under gameRoot;
+        // PS5 produces app0 directly under gameRoot. Both stay where written.
+        // No renameTo(), Files.move(), copying, or second publication pass.
+        if (ps5) resultPath = gameRoot.absolutePath
+        fire()
+        return ""
     }
 """
 s = s[:start] + safe_routing + s[end:]
@@ -258,7 +228,10 @@ for old, new in [
     assert s.count(old) == 1, "PS4/PS5 Engine callsite changed: " + old
     s = s.replace(old, new, 1)
 assert 'resultPath = "$dest/app0"' not in s, "Unsafe shared app0 target still present"
-assert s.count('Files.createTempDirectory(') == 1
-assert s.count('reserveGameFolder(root, name)') == 1
+assert s.count('reserveGameFolder(root, stem)') == 1
+assert 'NativeBridge.extractPs5(path, gameRoot.absolutePath)' in s
+assert 'NativeBridge.extract(path, gameRoot.absolutePath, progress)' in s
+assert 'renameTo(' not in s and 'Files.move(' not in s
+assert 'NativeBridge.extractPs5(path, dest)' not in s
 engine.write_text(s)
-print("Per-game isolated staging and collision-proof publication installed for PS4 and PS5.")
+print("PS4/PS5 direct per-game extraction installed: no shared app0, moves or copying.")
