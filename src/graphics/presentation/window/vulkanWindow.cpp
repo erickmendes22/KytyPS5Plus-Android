@@ -565,14 +565,14 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
         supported_features12.descriptorBindingPartiallyBound == VK_TRUE &&
         supported_features12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE &&
         supported_features12.descriptorBindingUpdateUnusedWhilePending == VK_TRUE &&
-        supported_features12.descriptorBindingSamplerUpdateAfterBind == VK_TRUE;
+        true; // Vulkan 1.2 uses descriptorBindingSampledImageUpdateAfterBind for samplers
     if (bindless_requested && bindless_supported) {
         features12.runtimeDescriptorArray = VK_TRUE;
         features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
         features12.descriptorBindingPartiallyBound = VK_TRUE;
         features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
         features12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
-        features12.descriptorBindingSamplerUpdateAfterBind = VK_TRUE;
+        true; // Vulkan 1.2 uses descriptorBindingSampledImageUpdateAfterBind for samplers
         graphics.bindless_enabled = true;
     } else if (bindless_requested) {
         LOGF("Vulkan bindless request rejected: driver missing mandatory descriptor-indexing features\\n");
@@ -680,7 +680,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
         features12.descriptorBindingPartiallyBound = VK_FALSE;
         features12.descriptorBindingSampledImageUpdateAfterBind = VK_FALSE;
         features12.descriptorBindingUpdateUnusedWhilePending = VK_FALSE;
-        features12.descriptorBindingSamplerUpdateAfterBind = VK_FALSE;
+
     }
     LOGF("Vulkan bindless: requested=%d enabled=%d driver_capable=%d\\n",
          bindless_requested ? 1 : 0, graphics.bindless_enabled ? 1 : 0,
