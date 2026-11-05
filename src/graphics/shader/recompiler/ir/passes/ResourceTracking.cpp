@@ -413,6 +413,14 @@ public:
 		}
 		std::vector<std::pair<const IndirectDescriptorPlan*, Value>> buffer_selections;
 		for (const auto& plan: m_indirect_descriptors) {
+            if (m_sources[plan.source].indirect_descriptor->bindless) {
+                // A GPU slot lookup needs the original selector key in Arg(0),
+                // not the host's finite candidate ordinal or descriptor DWORDs.
+                plan.handle->SetArg(0, plan.key);
+                for (uint32_t dword = 1; dword < plan.handle->NumArgs(); ++dword)
+                    plan.handle->SetArg(dword, Value(0u));
+                continue;
+            }
 			auto key = plan.key;
 			if (m_sources[plan.source].indirect_descriptor->table_maximum &&
 			    plan.handle->GetOpcode() != ValueOpcode::GetBufferResource) {
@@ -1012,7 +1020,7 @@ private:
 				    (a.table_record_bytes != 0u || b.table_record_bytes != 0u);
 				if (a.selector != b.selector || a.table_maximum != b.table_maximum ||
 				    a.pointer_table != b.pointer_table ||
-				    a.table_source != b.table_source ||
+				    a.bindless != b.bindless || a.table_source != b.table_source ||
 				    (!shared_image_heap && (a.table_offset != b.table_offset ||
 				                           a.table_immediate != b.table_immediate ||
 				                           a.table_stride != b.table_stride)) || a.indexed != b.indexed ||
@@ -2994,8 +3002,35 @@ private:
 		                          table_stride, table_immediate) ||
 		    !MakeRuntimeTableSource(*plan.reads[0], table_source)) return false;
 		DescriptorSource material_source;
-		DescriptorSource::IndirectDescriptor indirect;
-		indirect.table_offset = table_offset;
+        DescriptorSource::IndirectDescriptor indirect;
+        indirect.table_offset = table_offset;
+        // Wolverine PC fork: do not enumerate thousands of material textures
+        // for a sampled-only image heap. The on-GPU key is carried by the
+        // GetImageResource handle, with a shared translation table in set 1.
+        // Safe only for 32-byte T# records with a proven descriptor source,
+        // and only when the complete host and SPIR-V bindless backend is on.
+        const bool sampled_only = !sampler && std::ranges::all_of(handle.Uses(), [&](const Use& use) {
+            const auto& consumer = *use.user;
+            return ImageOpcodeInfoOf(consumer.GetOpcode()).needs_sampler;
+        });
+        if (m_program.bindless_images && sampled_only && !plan.table_indexed &&
+            !plan.split_offsets && table_source.dword_count == 4u &&
+            table_stride == 32u && (table_offset & 31u) == 0u &&
+            table_immediate == 0u) {
+            indirect.bindless = true;
+            indirect.table_source = InternSource(table_source);
+            DescriptorSource source;
+            source.dword_count = 8u;
+            source.dwords.fill(Value(0u));
+            std::copy_n(table_source.dwords.begin(), 4u, source.dwords.begin() + 4u);
+            source.indirect_descriptor = indirect;
+            plan.handle = &handle;
+            plan.source = InternSource(source);
+            plan.key = key;
+            plan.roots = source.dwords;
+            plan.retain_reads = true; // descriptor DWORDs may be used by other arithmetic.
+            return true;
+        }
 		indirect.table_immediate = table_immediate;
 		indirect.table_stride = table_stride;
 		indirect.workgroup_axis = WorkgroupAxis(key);
