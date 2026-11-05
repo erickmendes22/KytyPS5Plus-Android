@@ -119,6 +119,7 @@ public:
 		vk::PipelineLayout      pipeline_layout       = nullptr;
 		vk::Pipeline            pipeline              = nullptr;
 		vk::DescriptorSetLayout descriptor_set_layout = nullptr;
+		std::array<uint32_t, 5> descriptor_pool_requirements {}; // native types, counted per set
 		bool                    uses_push_descriptors = false;
 		uint64_t                last_used             = 0;
 		vk::ShaderStageFlags    push_constant_stages  = {};
