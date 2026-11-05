@@ -206,6 +206,10 @@ jobs:
           submodules: recursive
       - name: Validate Vulkan descriptor pool contract
         run: python3 scripts/android/check_descriptor_pool_contract.py
+      - name: Check Vulkan sampler min/max capability-gated policy
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/sampler_minmax_policy_test.cpp -o /tmp/sampler-minmax-policy-test
+          /tmp/sampler-minmax-policy-test
       - name: Host build dependencies
         run: |
           sudo apt-get update

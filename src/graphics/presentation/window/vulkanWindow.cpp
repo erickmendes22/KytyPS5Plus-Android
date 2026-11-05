@@ -549,6 +549,10 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 
 	auto features12 = WindowContext::RequiredVulkan12Features();
 	features12.shaderSharedInt64Atomics = supported_features12.shaderSharedInt64Atomics;
+	// PC parity: enable only when this Vulkan device advertises the core 1.2 feature.
+	// On unsupported Mali/Turnip drivers samplers remain on ordinary weighted filtering.
+	features12.samplerFilterMinmax = supported_features12.samplerFilterMinmax;
+	optional.sampler_filter_minmax = features12.samplerFilterMinmax == VK_TRUE;
 	// GPU-selected storage images fall back to plain dynamic indexing without it.
 	features12.shaderStorageImageArrayNonUniformIndexing =
 	    VulkanFeatureDisabled("storageImageArrayNonUniformIndexing")

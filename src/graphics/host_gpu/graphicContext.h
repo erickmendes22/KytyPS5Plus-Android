@@ -26,6 +26,7 @@ struct OptionalDeviceFeatures {
 	bool fragment_shader_barycentric = false; // VK_KHR_fragment_shader_barycentric
 	bool depth_bounds                = false; // core depthBounds
 	bool image_view_min_lod          = false; // VK_EXT_image_view_min_lod: minLod
+	bool sampler_filter_minmax      = false; // Vulkan 1.2 samplerFilterMinmax
 	bool shader_float64              = false; // core shaderFloat64 (enabled with FP64 signed zero)
 	// Vulkan 1.2 shaderSharedInt64Atomics plus workgroupMemoryExplicitLayout.
 	bool shader_shared_int64_atomics             = false;

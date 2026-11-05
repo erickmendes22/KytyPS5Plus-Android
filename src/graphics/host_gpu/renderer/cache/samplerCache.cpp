@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/samplerCache.h"
+#include "graphics/host_gpu/renderer/cache/samplerReductionPolicy.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -154,6 +155,15 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
 		sampler_info.maxAnisotropy    = 1.0f;
 		sampler_info.compareEnable    = VK_FALSE;
 		sampler_info.mipLodBias       = 0.0f;
+	}
+
+	// FILTER_MODE 0: weighted average (native default), 1: min, 2: max,
+	// 3: reserved. Comparison samplers must retain weighted average.
+	vk::SamplerReductionModeCreateInfo reduction {};
+	if (UseSamplerMinMaxReduction(m_graphics.optional_features.sampler_filter_minmax,
+	                              sampler_info.compareEnable == VK_TRUE, r.FilterMode())) {
+		reduction.reductionMode = static_cast<vk::SamplerReductionMode>(r.FilterMode());
+		sampler_info.pNext = &reduction;
 	}
 
 	vk::Sampler vk_sampler = nullptr;
