@@ -172,6 +172,19 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun wolverineUsesVulkanBindlessOnlyWhenTitleIdIsConfirmed() {
+        for (title in listOf("PPSA03671", "ppsa03671")) {
+            val args = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = title)
+            val env = args.indices.filter { args[it] == "--env" }.map { args[it + 1] }
+            assertEquals(1, env.count { it == "KYTY_BINDLESS_IMAGES=1" })
+        }
+        for (title in listOf("PPSA01341", "PPSA21564", "PPSA24156", null)) {
+            val args = LaunchArgs.forGame("/games/PPSA03671", Resolution.HD_720, titleId = title)
+            assertEquals(-1, args.indexOf("KYTY_BINDLESS_IMAGES=1"))
+        }
+    }
+
+    @Test
     fun gpuTurboDefaultsOnAndFollowsGlobalUnlessTheGameOverrides() {
         val byDefault = LaunchOptions.resolve(Resolution.HD_720, globalHud = false, globalTouch = true, game = GameSettings.DEFAULT)
         assertEquals(true, byDefault.gpuTurbo)

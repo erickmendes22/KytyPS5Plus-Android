@@ -114,6 +114,12 @@ object LaunchArgs {
             (if (titleId.equals("PPSA10112", ignoreCase = true) ||
                  titleId.equals("PPSA24156", ignoreCase = true))
                 arrayOf(FLAG_GPU_EVICT_WRITTEN, "1", FLAG_VMA_BLOCK_SIZE, "32") else emptyArray()) +
+            // PPSA03671 needs GPU-keyed bindless texture tables (the old fixed
+            // shader layout expanded 2,497 images and failed allocation on Turnip).
+            // The Vulkan backend still checks device features/limits and
+            // rejects unsupported drivers; never enable this for other games.
+            (if (titleId.equals("PPSA03671", ignoreCase = true))
+                arrayOf("--env", "KYTY_BINDLESS_IMAGES=1") else emptyArray()) +
             // The GT reference fork enables LS/HS/TES explicitly. Keep it title-scoped.
             (if (titleId.equals("PPSA24156", ignoreCase = true))
                 arrayOf(FLAG_TESSELLATION) else emptyArray())
