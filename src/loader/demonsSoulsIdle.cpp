@@ -39,16 +39,10 @@ void Note(const std::string& message) {
     Log::WriteToConsoleAndLog(std::string("[DS_IDLE] ")+message+"\n");
 }
 bool Enabled() {
-    const char* env = std::getenv("KYTY_DS_IDLE_BACKOFF");
-    if (env && env[0]=='0' && env[1]=='\0') return false;
-    if (env && env[0]=='1' && env[1]=='\0') return true;
 #if defined(__ANDROID__) && defined(__aarch64__)
-    // ARM64 FEX workers can starve host scheduling when the original poll
-    // returns "no job". The exact EBOOT 48-byte signature and PPSA01341 title
-    // gates below prevent any injection into other game versions/titles.
-    return true;
+    return UseIdleBackoff(true, true, std::getenv("KYTY_DS_IDLE_BACKOFF"));
 #else
-    return false;
+    return UseIdleBackoff(false, false, std::getenv("KYTY_DS_IDLE_BACKOFF"));
 #endif
 }
 bool IsSupportedGame() {

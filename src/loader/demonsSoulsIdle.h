@@ -13,6 +13,13 @@ namespace Loader { struct Program; namespace DemonsSoulsIdle {
 void Install(Program* program);
 void Clear();
 
+// Pure policy kept separate from the FEX code cave to permit synthetic tests.
+// A version string is not executable identity: signatures gate actual patching.
+inline constexpr bool UseIdleBackoff(bool android, bool arm64, const char* env) {
+    if (env != nullptr && env[0]=='0' && env[1]=='\0') return false;
+    if (env != nullptr && env[0]=='1' && env[1]=='\0') return true;
+    return android && arm64;
+}
 inline constexpr uint64_t CallOffset=0x83b59b, PollOffset=0x83b880;
 inline constexpr uint64_t CaveOffset=0x8000000, CaveSize=0x4000;
 inline constexpr std::array<uint8_t,24> CallBytes{

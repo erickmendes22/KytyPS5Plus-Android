@@ -20,6 +20,13 @@ void Expect(bool condition,const char* why) {
 }
 
 int main() {
+    static_assert(UseIdleBackoff(true, true, nullptr));
+    static_assert(!UseIdleBackoff(true, false, nullptr));
+    static_assert(!UseIdleBackoff(false, true, nullptr));
+    static_assert(!UseIdleBackoff(false, false, nullptr));
+    static_assert(!UseIdleBackoff(true, true, "0"));
+    static_assert(UseIdleBackoff(true, true, "1"));
+    static_assert(UseIdleBackoff(false, false, "1"));
     Expect(Matches(CallBytes,PollBytes),"verified Bluepoint byte signatures");
     auto bad=CallBytes;
     bad[20]^=1;
