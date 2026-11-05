@@ -6,6 +6,7 @@
 #include "common/threads.h"
 #include "common/uniqueFunction.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
+#include "graphics/guest_gpu/guestFramePolicy.h"
 
 #include <array>
 #include <atomic>
@@ -14,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <semaphore>
+#include <set>
 #include <span>
 #include <pthread.h>
 #include <thread>
@@ -70,6 +72,8 @@ private:
 		bool                      constant_complete = false;
 		bool                      blocked           = false;
 		uint64_t                  flip_request_id   = 0;
+        uint64_t                  sequence          = 0;
+        bool                      reset_processor   = false;
 	};
 
 	void              Enqueue(Submission submission);
@@ -88,9 +92,11 @@ private:
 	std::mutex                                     m_shutdown_mutex;
 	Common::CondVar                                m_work_available;
 	Common::CondVar                                m_idle;
+    Common::CondVar                                m_done_progress;
 	std::array<std::deque<Submission>, QueueCount> m_queues;
 	std::deque<Common::UniqueFunction<void>>       m_commands;
 	std::atomic_uint32_t                           m_pending_commands {0};
+    std::set<uint64_t>                             m_ds_in_flight;
 	uint32_t                                       m_next_queue        = 0;
 	uint32_t                                       m_submission_count  = 0;
 	bool                                           m_processing        = false;
@@ -102,6 +108,12 @@ private:
     std::mutex m_frame_order_mutex;
     bool m_strict_frame_order = false;
     bool m_ds_frame_trace = false;
+    // Title-limited PC parity: the next graphics submission owns the frame reset,
+    // and Done waits for the previous submission prefix across ALL queues.
+    std::once_flag m_ds_detect_once;
+    std::atomic_bool m_ds_prefix_mode {false};
+    std::mutex m_submission_mutex;
+    GuestFramePolicy m_ds_frame_policy;
     bool DrainFrameQueuesForGuestBoundary();
 	// Completion callbacks can outlive GuestGpu during renderer shutdown. Holds one permit per
 	// frame the guest may run ahead of GPU completion (--gpu-frames-in-flight); null when the
