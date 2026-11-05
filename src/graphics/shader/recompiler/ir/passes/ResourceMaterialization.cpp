@@ -558,6 +558,38 @@ bool ResolveSelectorKeys(const DescriptorSource::IndirectDescriptor& indirect,
 	return true;
 }
 
+// Deferred GPU-indexed guest texture heap (Wolverine PC parity). Never
+// enumerate all material candidates into one Vulkan descriptor-set layout.
+bool MaterializeBindlessImage(const DescriptorSource::IndirectDescriptor& indirect,
+                              uint32_t index, SrtWalker& walker, ResourceSnapshot& snapshot,
+                              ResourceSpecialization& specialization) {
+    DescriptorValue table_value;
+    if (!walker.EvaluateDescriptor(indirect.table_source, table_value)) return false;
+    ShaderBufferResource heap;
+    if (table_value.dword_count != 4u || !DecodeBufferDescriptor(table_value, heap) ||
+        heap.Type() != 0u) return SpecializationFail("bindless image heap has invalid table descriptor");
+    const uint64_t size = heap.GetSize();
+    if (size == 0 || indirect.table_offset > size) return SpecializationFail(
+        "bindless image heap is outside the guest descriptor table");
+
+    const auto offset = static_cast<uint32_t>(snapshot.flattened_srt.size());
+    snapshot.flattened_srt.resize(offset + 2u, 0u);
+    snapshot.images[index] = {.dword_count = 8u};
+    snapshot.bindless_heaps.push_back({
+        .base = heap.Base48(),
+        .size = size,
+        .table_offset = indirect.table_offset,
+        .image = index,
+        .mapping_offset = offset,
+    });
+    auto& image = specialization.images[index];
+    image.indirect_root = index;
+    image.indirect_mapping_offset = offset;
+    image.indirect_search_iterations = 0u;
+    image.bindless = true;
+    return true;
+}
+
 template <typename Specialization, typename Normalize>
 bool MaterializeIndirectDescriptor(const ResourcePlan&                         program,
                                    uint32_t source_index,
@@ -874,6 +906,14 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		    (base.atomic && base.resource_class != ImageResourceClass::Storage)) {
 			return SpecializationFail(fmt::format("image resource {} has an invalid class", i));
 		}
+		if (image.bindless) {
+            // A GPU key, not any one enumerated image, supplies type/descriptor at draw time.
+            image.numeric_class = Prospero::TextureNumericClass::Float;
+            image.dimension = base.dimension;
+            image.cube = base.cube;
+            image.mip_count = 1u;
+            continue;
+        }
 		image.mip_count = ImageMipCount(base, descriptor);
 		if (NullImageDescriptor(descriptor)) {
 			image.numeric_class = base.atomic ? Prospero::TextureNumericClass::Uint
@@ -981,7 +1021,7 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 	}
 	for (uint32_t root_index = 0; root_index < specialization.images.size(); root_index++) {
 		auto& root = specialization.images[root_index];
-		if (root.indirect_root != root_index) {
+		if (root.indirect_root != root_index || root.bindless) {
 			continue;
 		}
 		const auto key_count = root.indirect_mapping_offset < snapshot.flattened_srt.size()
@@ -1336,6 +1376,7 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 	plan.source_reads               = program.source_reads;
 	plan.srt_plan_complete          = program.srt_plan_complete;
 	plan.resource_tracking_complete = program.resource_tracking_complete;
+	plan.bindless_images           = program.bindless_images;
 	plan.uniform_buffer_limit       = program.uniform_buffer_limit;
 
 	std::unordered_map<const Inst*, Inst*> cloned;
@@ -1716,6 +1757,7 @@ bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& sc
 		buffer.uniform            = i < program.info.buffers.size() &&
 		                            UniformConstantBuffer(program, base, descriptor);
 	}
+	snapshot.bindless_heaps.clear();
 	snapshot.images.resize(program.info.images.size());
 	specialization.images.resize(program.info.images.size());
 	for (uint32_t i = 0; i < program.info.images.size(); ++i) {
@@ -1730,6 +1772,7 @@ bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& sc
 		    .indirect_mapping_offset = image.indirect_mapping_offset,
 		    .indirect_search_iterations = image.indirect_search_iterations,
 		    .cube = image.cube,
+		    .bindless = image.bindless,
 		};
 		const auto* source = Source(program, image.source);
 		if (source == nullptr) {
@@ -1741,6 +1784,11 @@ bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& sc
 				continue;
 			}
 			const auto& indirect = *source->indirect_descriptor;
+            if (indirect.bindless) {
+                if (!MaterializeBindlessImage(indirect, i, clean, snapshot, specialization))
+                    return resource_failed("bindless image", i, image.source, snapshot.images.size(), UINT32_MAX);
+                continue;
+            }
 			const bool bounded_table = IsBoundedDescriptorTable(program, indirect);
 			if (!MaterializeIndirectDescriptor(
 			        program, image.source, i, 8u, image.r128 ? 4u : 8u, observed, clean, snapshot, snapshot.images,
@@ -1857,6 +1905,7 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 		image.indirect_mapping_offset    = source.indirect_mapping_offset;
 		image.indirect_search_iterations = source.indirect_search_iterations;
 		image.cube                       = source.cube;
+		image.bindless                   = source.bindless;
 		image.indirect_resources.clear();
 	}
 	for (uint32_t index = 0; index < images.size(); index++) {
