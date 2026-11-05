@@ -110,7 +110,7 @@ private:
     bool m_ds_frame_trace = false;
     // Title-limited PC parity: the next graphics submission owns the frame reset,
     // and Done waits for the previous submission prefix across ALL queues.
-    std::once_flag m_ds_detect_once;
+    std::atomic_bool m_ds_title_checked {false};
     std::atomic_bool m_ds_prefix_mode {false};
     std::mutex m_submission_mutex;
     GuestFramePolicy m_ds_frame_policy;
