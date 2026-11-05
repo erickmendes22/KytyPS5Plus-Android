@@ -12,6 +12,11 @@ on:
       - ".github/workflows/compat-investigate.yml"
   workflow_dispatch:
 
+# Only the newest source state needs expensive native compilation.
+concurrency:
+  group: compat-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -78,3 +83,5 @@ jobs:
           ctest --test-dir _Build/compat --output-on-failure --timeout 180 \
             -R '^(resource_materialization|demons_souls_idle_arm64)$'
           timeout 600 _Build/compat/shader_recompiler_compute_tests --compile-only
+      - name: Compile complete Kyty emulator host so bindless Vulkan additions are type-checked
+        run: cmake --build _Build/compat --target kyty_emulator --parallel 2
