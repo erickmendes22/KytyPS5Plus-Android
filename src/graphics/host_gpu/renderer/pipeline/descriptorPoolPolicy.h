@@ -3,6 +3,7 @@
 // merely contain the descriptor type. Tested independently of Vulkan/Turnip.
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
@@ -10,7 +11,7 @@ namespace Libs::Graphics::DescriptorPoolPolicy {
 using Counts = std::array<uint32_t, 5>; // storage buffer, uniform buffer, sampled image, storage image, sampler
 
 constexpr bool Fits(const Counts& capacity, const Counts& needs) {
-    for (size_t i = 0; i < capacity.size(); ++i) {
+    for (std::size_t i = 0; i < capacity.size(); ++i) {
         if (capacity[i] < needs[i]) return false;
     }
     return true;
