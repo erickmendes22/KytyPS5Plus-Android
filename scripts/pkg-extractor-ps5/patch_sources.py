@@ -212,7 +212,7 @@ safe_routing = r"""    private fun safeGameFolder(input: String): String {
         }
         // PS4 creates its own TITLE_ID subfolder under gameRoot;
         // PS5 produces app0 directly under gameRoot. Both stay where written.
-        // No renameTo(), Files.move(), copying, or second publication pass.
+        // Never relocate or copy these large extracted directories after extraction.
         if (ps5) resultPath = gameRoot.absolutePath
         fire()
         return ""
