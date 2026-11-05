@@ -1962,7 +1962,15 @@ void TestBindlessImageTableDoesNotEnumerate2497Descriptors() {
   const auto plan = ExtractResourcePlan(program);
   ResourceSnapshot snapshot;
   ResourceSpecialization specialization;
-  Check(MaterializeResources(plan, {}, snapshot, specialization),
+  // ExtractResourcePlan marks all indirect descriptors as requiring a
+  // specialization-memory callback even when their V# table source is
+  // constant. Production always supplies one; this synthetic test must too.
+  // The callback rejects reads so we also prove no guest memory was fetched.
+  uint32_t memory_reads = 0;
+  const SrtRuntime runtime{.userdata = &memory_reads,
+                           .read_specialization_memory = RejectSpecializationRead};
+  Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
+            memory_reads == 0,
         "GPU bindless sampled-image table failed resource materialization");
   Check(snapshot.bindless_heaps.size() == 1u &&
             snapshot.images.size() == 1u &&
