@@ -1000,6 +1000,10 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	                  ? m_texture_desc_memo.SlotsFor(&program, program.info.images.size()).data()
 	                  : nullptr;
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
+        if (program.info.images[i].bindless) {
+            prepared.images[i] = {}; // no static descriptor: shared dynamic set1
+            continue;
+        }
 		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i],
 		                              slots != nullptr ? &slots[i] : nullptr);
 		BindImage(binding.image_id, binding.desc.type == TextureCache::BindingType::Storage);
@@ -1012,6 +1016,7 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 		prepared.samplers.push_back(NativeSampler(
 		    m_context, program, i, snapshot.samplers[program.info.samplers[i].snapshot_index]));
 	}
+	PrepareBindlessHeaps(runtime, prepared);
 	prepared.shader_data.reserve(program.bindings.ShaderDataDwords());
 	for (const auto reg: program.info.user_data_registers) {
 		prepared.shader_data.push_back(snapshot.user_data[reg - program.user_data_base]);
@@ -1109,7 +1114,19 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		pack_memory_offset(index, buffer_offset);
 	}
 	if (layout.descriptor_counts[static_cast<size_t>(BindingKind::FlattenedSrt)] != 0) {
-		prepared.flattened_srt = NativeUpload(m_context, snapshot.flattened_srt);
+        if (prepared.bindless_patches.empty()) {
+            prepared.flattened_srt = NativeUpload(m_context, snapshot.flattened_srt);
+        } else {
+            m_bindless_srt.assign(snapshot.flattened_srt.begin(), snapshot.flattened_srt.end());
+            for (const auto& patch: prepared.bindless_patches) {
+                if (size_t {patch.mapping_offset} + 1u >= m_bindless_srt.size()) {
+                    EXIT("bindless heap mapping exceeds flattened SRT size\\n");
+                }
+                m_bindless_srt[patch.mapping_offset] = patch.region;
+                m_bindless_srt[patch.mapping_offset + 1u] = patch.count;
+            }
+            prepared.flattened_srt = NativeUpload(m_context, m_bindless_srt);
+        }
 	}
 	if (layout.descriptor_counts[static_cast<size_t>(BindingKind::ShaderData)] != 0) {
 		prepared.shader_data_buffer = NativeUpload(m_context, prepared.shader_data);
@@ -1126,6 +1143,7 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	auto& texture_cache = m_context.GetTextureCache();
 	// Acquire each view before a later overlapping descriptor can replace its image.
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
+        if (program.info.images[i].bindless) continue;
 		if (!images[i].image_id) continue;
 		const auto old_image = texture_cache.m_slot_images.try_get(images[i].image_id);
 		if (old_image == nullptr || (!old_image->registered && !old_image->info.data.Empty()) ||
@@ -1411,6 +1429,7 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 		}
 
 		for (uint32_t i = 0; i < program.info.images.size(); i++) {
+            if (program.info.images[i].bindless) continue;
 			auto& binding = descriptors.images[i];
 			if (!binding.image_id) continue;
 			auto& image = m_context.GetTextureCache().GetImage(binding.image_id);
@@ -1529,6 +1548,7 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			m_descriptor_writes.push_back(write);
 		}
 		for (uint32_t i = 0; i < program.info.images.size(); ++i) {
+            if (program.info.images[i].bindless) continue;
 			const auto& resource = program.info.images[i];
 			const auto& texture = descriptors.images[i];
 			EXIT_IF(texture.image_id && !texture.placeholder &&
