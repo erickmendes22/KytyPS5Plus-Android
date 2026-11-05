@@ -1,5 +1,6 @@
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
+#include "graphics/shader/recompiler/ir/BindlessBindings.h"
 #include "graphics/shader/recompiler/frontend/decode/ImageOps.h"
 
 #include <algorithm>
@@ -839,6 +840,55 @@ std::array<ImageSampler, 2> LoadImageSamplers(ValueEmitContext& ctx, const IR::I
 
 } // namespace
 
+// Resolve the guest GPU image key through the shared bindless translation table
+// rather than allocating thousands of descriptors in a set for one shader.
+// A missing key samples the resident placeholder and asks the host to load it.
+uint32_t BindlessSlot(ValueEmitContext& ctx, const IR::ImageResource& image, IR::Value image_arg) {
+    auto& state = ctx.state;
+    const auto* handle = image_arg.ResolveInstruction();
+    EXIT_IF(handle == nullptr || handle->NumArgs() == 0u ||
+            state.flattened_srt_variable == 0u ||
+            state.bindless_translation_variable == 0u);
+    const auto key = ctx.Def(handle->Arg(0));
+    const auto Load = [&](uint32_t variable, uint32_t index) {
+        const auto pointer = state.builder.AllocateId();
+        state.builder.AddFunction(spv::OpAccessChain,
+            TypeStorageBufferElementPointer(state, 32u),
+            pointer, variable, ConstantU32(state, 0u), index);
+        const auto value = state.builder.AllocateId();
+        state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, pointer);
+        return value;
+    };
+    const auto base = Load(state.flattened_srt_variable,
+                           ConstantU32(state, image.indirect_mapping_offset));
+    const auto count = Load(state.flattened_srt_variable,
+                           ConstantU32(state, image.indirect_mapping_offset + 1u));
+    const auto inside = Binary(state, spv::OpULessThan, TypeBool(state), key, count);
+    const auto offset = Binary(state, spv::OpIAdd, TypeU32(state), base, key);
+    const auto translation_index = state.builder.AllocateId();
+    state.builder.AddFunction(spv::OpSelect, TypeU32(state), translation_index,
+                              inside, offset, ConstantU32(state, 0u));
+    const auto raw = Load(state.bindless_translation_variable, translation_index);
+    const auto pending = Binary(state, spv::OpIEqual, TypeBool(state),
+                                raw, ConstantU32(state, IR::BindlessPending));
+    if (state.bindless_feedback_variable != 0u) {
+        const auto value = state.builder.AllocateId();
+        state.builder.AddFunction(spv::OpSelect, TypeU32(state), value, pending,
+                                  ConstantU32(state, IR::BindlessFlagPending),
+                                  ConstantU32(state, IR::BindlessFlagUsed));
+        const auto pointer = state.builder.AllocateId();
+        state.builder.AddFunction(spv::OpAccessChain,
+            TypeStorageBufferElementPointer(state, 32u), pointer,
+            state.bindless_feedback_variable, ConstantU32(state, 0u), translation_index);
+        state.builder.AddFunction(spv::OpStore, pointer, value);
+    }
+    const auto slot = state.builder.AllocateId();
+    state.builder.AddFunction(spv::OpSelect, TypeU32(state), slot, pending,
+                              ConstantU32(state, 2u), raw);
+    state.builder.AddAnnotation(spv::OpDecorate, slot, spv::DecorationNonUniform);
+    return slot;
+}
+
 void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto op         = inst.GetOpcode();
 	const auto image_info = IR::ImageOpcodeInfoOf(op);
@@ -847,6 +897,7 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto  image_arg = inst.Arg(0);
 	ctx.ResourceIndex(image_arg, IR::ValueOpcode::GetImageResource);
 	const auto& image   = state.program.info.images.at(mem.resource);
+    state.bindless_slot = image.bindless ? BindlessSlot(ctx, image, image_arg) : 0u;
 	const auto* address = ctx.ImageAddress(inst.Arg(image_info.needs_sampler ? 2 : 1));
 	if (op == IR::ValueOpcode::ImageQueryDimensions) {
 		state.builder.RequireCapability(spv::CapabilityImageQuery);

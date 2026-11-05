@@ -156,6 +156,7 @@ struct EmitterState {
     uint32_t bindless_translation_variable = 0;
     uint32_t bindless_feedback_variable = 0;
     uint32_t bindless_sampler_variable = 0;
+    uint32_t bindless_slot = 0; // GPU-selected sampled-image array slot for current instruction
 	uint32_t                   sampler_variable                      = 0;
 	uint32_t                   sampler_type                          = 0;
 	uint32_t                   sampler_pointer_type                  = 0;
