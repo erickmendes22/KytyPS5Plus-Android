@@ -614,8 +614,10 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 
 	vk::PhysicalDeviceSubgroupSizeControlProperties subgroup_size_control {};
 
-	vk::PhysicalDeviceVulkan11Properties properties11 {};
-	properties11.pNext = &subgroup_size_control;
+	vk::PhysicalDeviceVulkan12Properties properties12 {};
+    properties12.pNext = &subgroup_size_control;
+    vk::PhysicalDeviceVulkan11Properties properties11 {};
+	properties11.pNext = &properties12;
 
 	vk::PhysicalDeviceFloatControlsProperties float_controls {};
 	float_controls.pNext = &properties11;
@@ -626,6 +628,32 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		subgroup_size_control.pNext = &graphics.mesh_shader_properties;
 	}
 	physical_device.getProperties2(&properties2);
+
+    // The base Turnip feature set is probed at the physical-device layer.
+    // No VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT is requested here:
+    // selecting a backend must be transactional with the SPIR-V and host
+    // bindless descriptor implementation; unsupported GPUs keep old path.
+    graphics.bindless_capability = {
+        .runtime_array = supported_features12.runtimeDescriptorArray == VK_TRUE,
+        .non_uniform_sampled_image_indexing =
+            supported_features12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE,
+        .partially_bound = supported_features12.descriptorBindingPartiallyBound == VK_TRUE,
+        .sampled_image_update_after_bind =
+            supported_features12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE,
+        .update_unused_while_pending =
+            supported_features12.descriptorBindingUpdateUnusedWhilePending == VK_TRUE,
+        .update_after_bind_sampled_limit = properties12.maxDescriptorSetUpdateAfterBindSampledImages,
+        .update_after_bind_sampler_limit = properties12.maxDescriptorSetUpdateAfterBindSamplers,
+    };
+    graphics.bindless_capable = graphics.bindless_capability.Usable();
+    graphics.bindless_max_sampled_images = graphics.bindless_capable
+        ? properties12.maxDescriptorSetUpdateAfterBindSampledImages : 0;
+    graphics.bindless_max_samplers = graphics.bindless_capable
+        ? properties12.maxDescriptorSetUpdateAfterBindSamplers : 0;
+    LOGF("Vulkan bindless: hardware=%d sampled_limit=%u sampler_limit=%u "
+         "(emulator backend disabled until full host+shader path)\\n",
+         graphics.bindless_capable ? 1 : 0, graphics.bindless_max_sampled_images,
+         graphics.bindless_max_samplers);
 
 	graphics.subgroup_size                 = properties11.subgroupSize;
 	graphics.min_subgroup_size             = subgroup_size_control.minSubgroupSize;

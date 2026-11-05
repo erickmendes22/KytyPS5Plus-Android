@@ -4,7 +4,8 @@
 #include "common/abi.h"
 #include "common/common.h"
 #include "common/threads.h"
-#include "graphics/host_gpu/vulkanCommon.h" // IWYU pragma: export
+#include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/host_gpu/renderer/pipeline/bindlessCapability.h" // IWYU pragma: export
 
 #include <map>
 #include <mutex>
@@ -63,6 +64,15 @@ struct GraphicContext {
 	vk::Device                         device                                = nullptr;
 	VmaAllocator                       allocator                             = nullptr;
 	bool                               memory_budget_ext_enabled             = false;
+    // PC Wolverine bindless requires five Vulkan 1.2 indexing features.
+    // Capability discovery is passive: do NOT mark feature enabled before
+    // the shader emitter and host descriptor table are fully integrated.
+    BindlessCapability bindless_capability {};
+    bool bindless_capable = false;
+    uint32_t bindless_max_sampled_images = 0;
+    uint32_t bindless_max_samplers = 0;
+    vk::DescriptorSetLayout bindless_layout = nullptr;
+    vk::DescriptorSet bindless_set = nullptr;
 	bool                               compute_subgroup_size_control_enabled = false;
 	bool                               sample_rate_shading_enabled           = false;
 	bool                               sampler_anisotropy_enabled            = false;
