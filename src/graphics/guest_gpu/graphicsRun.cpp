@@ -280,14 +280,19 @@ void GuestGpu::SuspendPoint() {
     // The title SFO is not available in the GuestGpu constructor. Detect at
     // the first actual guest frame boundary; this is a one-way mode switch.
     // Limit the PC parity fix to Demon's Souls rather than changing other titles.
-    std::call_once(m_ds_detect_once, [this] {
+    if (!m_ds_title_checked.load(std::memory_order_acquire)) {
         std::string title;
-        if (Loader::SystemContentParamSfoGetString("TITLE_ID", &title) && title == "PPSA01341") {
-            m_ds_prefix_mode.store(true, std::memory_order_release);
-            ::printf("[DS_BOUNDARY] PPSA01341: PC bounded submission-prefix ordering active; "
-                     "reset graphics at next submission, not inside suspend point\\n");
+        // SFO may not be populated on the first frame; only latch a
+        // successful lookup. Failure leaves subsequent frames free to retry.
+        if (Loader::SystemContentParamSfoGetString("TITLE_ID", &title)) {
+            if (title == "PPSA01341") {
+                m_ds_prefix_mode.store(true, std::memory_order_release);
+                ::printf("[DS_BOUNDARY] PPSA01341: PC bounded submission-prefix ordering active; "
+                         "reset graphics at next submission, not inside suspend point\\n");
+            }
+            m_ds_title_checked.store(true, std::memory_order_release);
         }
-    });
+    }
     if (m_ds_prefix_mode.load(std::memory_order_acquire)) {
         uint64_t wait_target = 0;
         {
