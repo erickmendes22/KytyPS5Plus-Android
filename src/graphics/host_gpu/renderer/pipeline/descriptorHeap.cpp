@@ -11,6 +11,10 @@ namespace {
 constexpr uint32_t   DescriptorHeapCount = 1024;
 constexpr std::array DescriptorPoolSizes = {
     vk::DescriptorPoolSize {vk::DescriptorType::eStorageBuffer, 8192},
+    // Required by NativeDescriptorType(UniformBuffers); absent in the prior
+    // Android pool and the Vulkan driver rejects even a single such set.
+    // Ported from Jetsku/KytyPS5, without PC-only pool scaling on Android.
+    vk::DescriptorPoolSize {vk::DescriptorType::eUniformBuffer, 4096},
     vk::DescriptorPoolSize {vk::DescriptorType::eSampledImage, 8192},
     vk::DescriptorPoolSize {vk::DescriptorType::eStorageImage, 1024},
     vk::DescriptorPoolSize {vk::DescriptorType::eSampler, 1024},
