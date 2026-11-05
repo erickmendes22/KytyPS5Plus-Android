@@ -357,8 +357,12 @@ void TextureCache::UnregisterImage(ImageId id) {
 	if (m_written_window.image == id) m_written_window = {};
 	auto& image = m_slot_images[id];
 	if (!image.registered) {
-		return;
-	}
+        return;
+    }
+    if (image.bindless_pinned) {
+        image.bindless_pinned = false;
+        if (on_bindless_unregister) on_bindless_unregister(id);
+    }
 	UntrackImage(id);
 	ImagePageTable::PageRange pages {};
 	if (!ImagePageTable::TryGetPageRange(image.info.data.address, image.info.data.size, pages)) {
@@ -2609,7 +2613,7 @@ void TextureCache::RunGarbageCollector() {
 		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
 			const auto owner = m_slot_images.try_get(id);
 			// Protected entries must not consume every pass's candidate budget.
-			if (owner != nullptr && owner->registered && !owner->depth_id &&
+			if (owner != nullptr && owner->registered && !owner->bindless_pinned && !owner->depth_id &&
 			    owner->SafeToDownload() && (owner->info.IsTiled() || !pressured)) return false;
 			candidates.push_back(id);
 			return candidates.size() == deletions;
@@ -2620,7 +2624,7 @@ void TextureCache::RunGarbageCollector() {
 			}
 			--deletions;
 			auto owner = m_slot_images.try_get(id);
-			if (owner == nullptr || !owner->registered || owner->depth_id) {
+			if (owner == nullptr || !owner->registered || owner->depth_id || owner->bindless_pinned) {
 				continue;
 			}
 			if (owner->IsGpuModified()) {
@@ -2671,7 +2675,7 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 	uint64_t             downloaded = 0;
 	m_lru_cache.ForEachItemBelow(m_gc_tick - 2, [&](ImageId id) {
 		const auto* image = m_slot_images.try_get(id);
-		if (image == nullptr || !image->registered || image->depth_id || id == keep ||
+		if (image == nullptr || !image->registered || image->depth_id || image->bindless_pinned || id == keep ||
 		    image->binding.is_bound || image->binding.is_target) {
 			return false;
 		}
@@ -2696,7 +2700,7 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
         // destruction, and Finish below waits before the next allocation.
         m_lru_cache.ForEachItemBelow(m_gc_tick, [&](ImageId id) {
             const auto* image = m_slot_images.try_get(id);
-            if (image == nullptr || !image->registered || id == keep ||
+            if (image == nullptr || !image->registered || image->bindless_pinned || id == keep ||
                 image->binding.is_bound || image->binding.is_target ||
                 image->IsGpuModified() || image->IsBufferModified() ||
                 image->usage.video_out || image->usage.render_target || image->usage.storage ||

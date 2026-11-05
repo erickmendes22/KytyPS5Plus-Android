@@ -13,6 +13,7 @@
 #include "graphics/host_gpu/renderer/image/tiler.h"
 
 #include <bitset>
+#include <functional>
 #include <map>
 #include <type_traits>
 #include <unordered_map>
@@ -64,6 +65,7 @@ public:
 		return image;
 	}
 	void MarkGpuWritten(ImageId id);
+    std::function<void(ImageId)> on_bindless_unregister;
 
 	[[nodiscard]] bool ClearImageFromBuffer(CommandBuffer& command, uint64_t address, uint64_t size,
 	                                        uint32_t packed_clear);

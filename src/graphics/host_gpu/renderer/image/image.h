@@ -191,6 +191,7 @@ public:
 	ImageUsage       usage;
 	ImageBinding     binding;
 	bool             registered     = false;
+    bool             bindless_pinned = false; // host bindless set may still reference this image
 	bool                         allocation_failed = false;
 	mutable uint32_t query_epoch    = 0;
 	uint64_t         track_addr     = 0;
