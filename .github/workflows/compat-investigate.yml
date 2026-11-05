@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Compile and run actual Bluepoint poll thunk on x86 synthetic guest memory
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -O2 -Isrc \
