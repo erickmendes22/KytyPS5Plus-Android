@@ -22,6 +22,7 @@ env:
 jobs:
   apk:
     name: Build APK
+    needs: native-regressions  # Reject C++/shader/sampler regressions before expensive APK build
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
