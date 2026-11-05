@@ -33,6 +33,7 @@
 #include "graphics/host_gpu/renderer/submitStats.h"
 #include "libs/agc.h"
 #include "libs/errno.h"
+#include "loader/systemContent.h"
 
 #include <algorithm>
 #include <array>
@@ -45,6 +46,7 @@
 #include <memory>
 #include <mutex>
 #include <semaphore>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -119,6 +121,7 @@ void GuestGpu::Shutdown() {
 		m_accepting = false;
 		m_stopping  = true;
 		m_work_available.SignalAll();
+        m_done_progress.SignalAll();
 	}
 	if (m_thread_started) {
 		m_thread_started = false;
@@ -187,7 +190,11 @@ void GuestGpu::Submit(std::span<const uint32_t> draw_commands,
     }
     std::unique_lock<std::mutex> frame_lock(m_frame_order_mutex, std::defer_lock);
     if (m_strict_frame_order && !IsGpuThread()) frame_lock.lock();
+    const bool pc_parity = m_ds_prefix_mode.load(std::memory_order_acquire);
+    std::unique_lock<std::mutex> producer_lock(m_submission_mutex, std::defer_lock);
+    if (pc_parity) producer_lock.lock();
 	Submission submission;
+    submission.reset_processor = pc_parity && m_ds_frame_policy.ConsumeGraphicsReset();
 	submission.type              = SubmissionType::Graphics;
 	submission.queue_id          = 0;
 	submission.commands          = draw_commands;
@@ -199,6 +206,8 @@ void GuestGpu::SubmitCompute(uint32_t queue, std::span<const uint32_t> commands)
     EXIT_IF(commands.empty());
     std::unique_lock<std::mutex> frame_lock(m_frame_order_mutex, std::defer_lock);
     if (m_strict_frame_order && !IsGpuThread()) frame_lock.lock();
+    std::unique_lock<std::mutex> producer_lock(m_submission_mutex, std::defer_lock);
+    if (m_ds_prefix_mode.load(std::memory_order_acquire)) producer_lock.lock();
 
 	EXIT_NOT_IMPLEMENTED(queue < ComputeQueueBase || queue >= ComputeQueueBase + ComputeQueueCount);
 
@@ -213,7 +222,11 @@ void GuestGpu::SubmitCompute(uint32_t queue, std::span<const uint32_t> commands)
 void GuestGpu::SubmitFlipPreparation(uint64_t request_id) {
     std::unique_lock<std::mutex> frame_lock(m_frame_order_mutex, std::defer_lock);
     if (m_strict_frame_order && !IsGpuThread()) frame_lock.lock();
+    const bool pc_parity = m_ds_prefix_mode.load(std::memory_order_acquire);
+    std::unique_lock<std::mutex> producer_lock(m_submission_mutex, std::defer_lock);
+    if (pc_parity) producer_lock.lock();
     Submission submission;
+    submission.reset_processor = pc_parity && m_ds_frame_policy.ConsumeGraphicsReset();
 	submission.type            = SubmissionType::FlipPreparation;
 	submission.queue_id        = 0;
 	submission.flip_request_id = request_id;
@@ -264,6 +277,53 @@ bool GuestGpu::DrainFrameQueuesForGuestBoundary() {
 
 void GuestGpu::SuspendPoint() {
     EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
+    // The title SFO is not available in the GuestGpu constructor. Detect at
+    // the first actual guest frame boundary; this is a one-way mode switch.
+    // Limit the PC parity fix to Demon's Souls rather than changing other titles.
+    std::call_once(m_ds_detect_once, [this] {
+        std::string title;
+        if (Loader::SystemContentParamSfoGetString("TITLE_ID", &title) && title == "PPSA01341") {
+            m_ds_prefix_mode.store(true, std::memory_order_release);
+            ::printf("[DS_BOUNDARY] PPSA01341: PC bounded submission-prefix ordering active; "
+                     "reset graphics at next submission, not inside suspend point\\n");
+        }
+    });
+    if (m_ds_prefix_mode.load(std::memory_order_acquire)) {
+        uint64_t wait_target = 0;
+        {
+            // All graphics/compute/flip producers take this admission lock.
+            // The GPU thread continues processing without holding it.
+            std::lock_guard<std::mutex> admission(m_submission_mutex);
+            {
+                Common::LockGuard lock(m_queue_mutex);
+                wait_target = m_ds_frame_policy.EndFrame();
+            }
+            Submission boundary;
+            boundary.type = SubmissionType::SuspendPoint;
+            Enqueue(std::move(boundary));
+            m_done_num++;
+        }
+        if (wait_target != 0) {
+            Common::LockGuard lock(m_queue_mutex);
+            // Waiting for the *previous* boundary allows a full next frame to
+            // supply dependencies, just like Jetsku/KytyPS5's bounded Done().
+            auto previous_done = [this, wait_target] {
+                return m_stopping || m_ds_in_flight.empty() ||
+                       *m_ds_in_flight.begin() > wait_target;
+            };
+            while (!previous_done()) {
+                m_done_progress.WaitFor(&m_queue_mutex, 2000000);
+                if (!previous_done()) {
+                    ::printf("[DS_BOUNDARY] waiting for earlier submission <=%llu; "
+                             "oldest=%llu pending=%zu\\n",
+                             static_cast<unsigned long long>(wait_target),
+                             static_cast<unsigned long long>(*m_ds_in_flight.begin()),
+                             m_ds_in_flight.size());
+                }
+            }
+        }
+        return;
+    }
     // The GPU completion wait must not hold the producer or command-queue locks.
     // This preserves the existing semaphore and its exact number of permits.
     if (m_suspend_point_ready != nullptr) {
@@ -551,6 +611,10 @@ void GuestGpu::Enqueue(Submission submission) {
 	EXIT_IF(submission.queue_id >= QueueCount);
 	Common::LockGuard lock(m_queue_mutex);
 	EXIT_IF(!m_accepting);
+    if (m_ds_prefix_mode.load(std::memory_order_acquire)) {
+        submission.sequence = m_ds_frame_policy.Admit();
+        m_ds_in_flight.insert(submission.sequence);
+    }
 	m_queues[submission.queue_id].push_back(std::move(submission));
 	m_submission_count++;
 	m_work_available.Signal();
@@ -777,6 +841,10 @@ void GuestGpu::ThreadRun(void* data) {
 			gpu->m_queues[submission.queue_id].push_front(std::move(submission));
 			gpu->m_submission_count++;
 		} else {
+            if (submission.sequence != 0) {
+                EXIT_IF(gpu->m_ds_in_flight.erase(submission.sequence) != 1);
+                gpu->m_done_progress.SignalAll();
+            }
 			for (auto& queue: gpu->m_queues) {
 				if (!queue.empty()) {
 					queue.front().blocked = false;
@@ -796,6 +864,7 @@ bool GuestGpu::Process(Submission& submission) {
 
 	if (first_slice) {
 		submission.started = true;
+        if (submission.reset_processor) cp.Reset();
 		cp.SetSubmitId(++m_submit_id);
 		cp.ResetDeCe();
 		cp.SetFlip({});
@@ -863,12 +932,14 @@ bool GuestGpu::Process(Submission& submission) {
 		case SubmissionType::SuspendPoint:
 			// Age caches at the frame boundary, not once per command list.
 			m_renderer.RunGarbageCollector();
-			if (m_suspend_point_ready != nullptr) {
+			if (m_suspend_point_ready != nullptr &&
+                !m_ds_prefix_mode.load(std::memory_order_acquire)) {
 				m_renderer.GetCommandScheduler().DeferPriorityOperation(
 				    [ready = m_suspend_point_ready] { ready->release(); });
 			}
 			cp.BufferFlush();
-			cp.Reset();
+            // The PC model resets only at the *next* graphics/flip admission.
+            if (!m_ds_prefix_mode.load(std::memory_order_acquire)) cp.Reset();
 			break;
 	}
 
