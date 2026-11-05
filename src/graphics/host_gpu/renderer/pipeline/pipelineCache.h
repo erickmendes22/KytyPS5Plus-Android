@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/shader.h"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
