@@ -36,5 +36,6 @@ pipeline = (ROOT / "src/graphics/host_gpu/renderer/pipeline/pipelineCache.h").re
 assert "pipeline.descriptor_pool_requirements[slot]" in shaders, "Missing per-layout descriptor accounting"
 assert "descriptor_pool_requirements" in pipeline, "Per-layout requirements not saved with compiled pipeline"
 assert "pipeline.descriptor_pool_requirements" in descriptors, "Descriptor heap never receives layout demand"
-assert "descriptor allocation still failed on fresh pool" in heap, "Keep exact failure if driver refuses a correctly sized pool"
+assert "CreateDescriptorPoolExact(requirements)" in heap, "A fresh pool failure needs the one-layout fallback"
+assert "descriptor allocation failed even on an exact-layout pool" in heap, "Keep exact error if driver rejects the one-layout fallback"
 print("Descriptor contract OK:", pools, "required =", sorted(required))
