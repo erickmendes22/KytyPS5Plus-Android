@@ -39,16 +39,24 @@ void Note(const std::string& message) {
     Log::WriteToConsoleAndLog(std::string("[DS_IDLE] ")+message+"\n");
 }
 bool Enabled() {
-    const char* env=std::getenv("KYTY_DS_IDLE_BACKOFF");
-    return env && env[0]=='1' && env[1]=='\0';
+    const char* env = std::getenv("KYTY_DS_IDLE_BACKOFF");
+    if (env && env[0]=='0' && env[1]=='\0') return false;
+    if (env && env[0]=='1' && env[1]=='\0') return true;
+#if defined(__ANDROID__) && defined(__aarch64__)
+    // ARM64 FEX workers can starve host scheduling when the original poll
+    // returns "no job". The exact EBOOT 48-byte signature and PPSA01341 title
+    // gates below prevent any injection into other game versions/titles.
+    return true;
+#else
+    return false;
+#endif
 }
 bool IsSupportedGame() {
-    std::string title,version;
-    const bool hasTitle=SystemContentParamSfoGetString("TITLE_ID",&title);
-    const bool hasVersion=SystemContentParamSfoGetString("APP_VER",&version);
-    if (!hasTitle || !hasVersion || title!="PPSA01341" ||
-        (version!="01.007.000" && version!="01.007")) return false;
-    return true;
+    std::string title;
+    // APP_VER can be written as 01.07, 01.007 or 01.007.000; do not use
+    // its textual spelling as an executable identity. Install checks both
+    // actual EBOOT instruction signatures before changing anything.
+    return SystemContentParamSfoGetString("TITLE_ID", &title) && title=="PPSA01341";
 }
 } // namespace
 
