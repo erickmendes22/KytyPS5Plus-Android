@@ -828,6 +828,9 @@ bool RenderExecutor::ResolveBindlessKey(BindlessTable::Heap& heap, uint32_t key)
 	auto& texture_cache = m_context.GetTextureCache();
 	auto* image = texture_cache.m_slot_images.try_get(binding.image_id);
 	if (image == nullptr || image->info.data.Empty()) {
+		// A valid guest T# may be ready before its host texture. Revisit it on
+		// the next revalidation pass instead of locking an unchanged T# to null.
+		heap.descriptors[key] = {};
 		table.SetTranslation(heap, key, 0u);
 		return false;
 	}
@@ -836,6 +839,9 @@ bool RenderExecutor::ResolveBindlessKey(BindlessTable::Heap& heap, uint32_t key)
 	image           = texture_cache.m_slot_images.try_get(binding.image_id);
 	const auto slot = table.AllocateSlot(heap.binding);
 	if (image == nullptr || view == nullptr || slot == 0) {
+		// Host view creation/slot availability can fail transiently; a future
+		// revalidation pass must retry without requiring a guest descriptor rewrite.
+		heap.descriptors[key] = {};
 		table.SetTranslation(heap, key, 0u);
 		return false;
 	}
