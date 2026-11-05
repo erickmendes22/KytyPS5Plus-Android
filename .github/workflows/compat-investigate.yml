@@ -57,3 +57,22 @@ jobs:
           assert 'bool                          bindless          = false;' in ir
           print("Bindless descriptor metadata staged (feature OFF, shader and host binder pending)")
           PY
+      - name: Install host build dependencies for shader regression
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld ninja-build glslang-tools ccache \
+            libasound2-dev libdbus-1-dev libgl1-mesa-dev libpulse-dev libudev-dev \
+            libwayland-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev \
+            libxi-dev libxkbcommon-dev libxrandr-dev libxss-dev libxtst-dev \
+            pkg-config wayland-protocols
+      - name: Compile and test real shader resource specialization plus Bluepoint HLE
+        run: |
+          cmake -S . -B _Build/compat -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DKYTY_BUILD_LAUNCHER=OFF \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build _Build/compat --target \
+            shader_recompiler_compute_tests resource_materialization_tests \
+            demons_souls_idle_arm64_tests --parallel 2
+          ctest --test-dir _Build/compat --output-on-failure --timeout 180 \
+            -R '^(resource_materialization|demons_souls_idle_arm64)$'
+          timeout 600 _Build/compat/shader_recompiler_compute_tests --compile-only
