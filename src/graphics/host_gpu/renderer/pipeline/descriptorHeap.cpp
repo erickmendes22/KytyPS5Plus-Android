@@ -74,18 +74,26 @@ vk::DescriptorSet DescriptorHeap::Commit(
 
     m_sets.clear();
     auto& fresh_batch = m_sets[layout];
-    if (!Allocate(layout, fresh_batch)) {
-        // A fresh, correctly dimensioned pool still failed. This must not
-        // become another opaque EXIT_IF in Wolverine's diagnostics.
-        EXIT("descriptor allocation still failed on fresh pool: "
-             "layout=%p storage=%u uniform=%u sampled=%u storage_image=%u sampler=%u "
-             "caps=%u/%u/%u/%u/%u\\n",
-             static_cast<void*>(layout), requirements[0], requirements[1],
-             requirements[2], requirements[3], requirements[4],
-             m_current_capacities[0], m_current_capacities[1],
-             m_current_capacities[2], m_current_capacities[3], m_current_capacities[4]);
+    if (Allocate(layout, fresh_batch)) {
+        return fresh_batch.sets[--fresh_batch.size];
     }
-    return fresh_batch.sets[--fresh_batch.size];
+
+    // Some mobile drivers reject a large pool whose descriptor-count totals
+    // exceed an internal allocation cap. Since no set was allocated from this
+    // newly created or reset pool, destroy it safely and allocate a single
+    // exact-layout pool. A successfully populated pool is NEVER destroyed.
+    m_graphics.device.destroyDescriptorPool(m_current_pool, nullptr);
+    m_current_pool = nullptr;
+    CreateDescriptorPoolExact(requirements);
+    m_sets.clear();
+    auto& exact_batch = m_sets[layout];
+    if (!Allocate(layout, exact_batch)) {
+        EXIT("descriptor allocation failed even on an exact-layout pool: "
+             "layout=%p storage=%u uniform=%u sampled=%u storage_image=%u sampler=%u\\n",
+             static_cast<void*>(layout), requirements[0], requirements[1],
+             requirements[2], requirements[3], requirements[4]);
+    }
+    return exact_batch.sets[--exact_batch.size];
 }
 
 bool DescriptorHeap::Allocate(vk::DescriptorSetLayout layout, Batch& batch) {
@@ -123,6 +131,26 @@ void DescriptorHeap::CreateDescriptorPool(const DescriptorPoolPolicy::Counts& re
     create.maxSets       = DescriptorHeapCount;
     create.poolSizeCount = static_cast<uint32_t>(sizes.size());
     create.pPoolSizes    = sizes.data();
+    EXIT_IF(m_graphics.device.createDescriptorPool(&create, nullptr, &m_current_pool) !=
+            vk::Result::eSuccess);
+}
+
+void DescriptorHeap::CreateDescriptorPoolExact(const DescriptorPoolPolicy::Counts& requirements) {
+    std::array<vk::DescriptorPoolSize, DescriptorPoolSizes.size()> sizes {};
+    uint32_t count = 0;
+    for (size_t i = 0; i < requirements.size(); ++i) {
+        m_current_capacities[i] = requirements[i];
+        if (requirements[i] == 0) continue;
+        sizes[count++] = {DescriptorPoolSizes[i].type, requirements[i]};
+    }
+    if (count == 0) {
+        sizes[count++] = {vk::DescriptorType::eStorageBuffer, 1};
+        m_current_capacities[0] = 1;
+    }
+    vk::DescriptorPoolCreateInfo create {};
+    create.maxSets = 1;
+    create.poolSizeCount = count;
+    create.pPoolSizes = sizes.data();
     EXIT_IF(m_graphics.device.createDescriptorPool(&create, nullptr, &m_current_pool) !=
             vk::Result::eSuccess);
 }
