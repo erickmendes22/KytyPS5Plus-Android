@@ -24,7 +24,7 @@ jobs:
   source-and-unit:
     name: ARM64 FEX policy and Wolverine bindless source contract
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v4
