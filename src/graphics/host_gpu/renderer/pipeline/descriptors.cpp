@@ -845,7 +845,8 @@ bool RenderExecutor::ResolveBindlessKey(BindlessTable::Heap& heap, uint32_t key)
 	heap.slots[key]         = slot;
 	heap.images[key]        = binding.image_id;
 	image->bindless_pinned  = true;
-	image->usage.texture    = true;
+	// On Android plain sampled images have no ImageUsage::texture bit;
+	// bindless_pinned guards their lifetime and the revalidation refreshes LRU.
 	heap.resolved.push_back(binding.image_id);
 	table.AddImageReference(binding.image_id, heap, key);
 	table.SetTranslation(heap, key, slot);
