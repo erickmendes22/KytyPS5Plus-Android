@@ -427,6 +427,24 @@ static void AddLayoutBindings(std::vector<vk::DescriptorSetLayoutBinding>& descr
 
 static void CreateDescriptorLayout(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                                    std::span<const vk::DescriptorSetLayoutBinding> bindings) {
+    // Vulkan pools are bounded by descriptor counts PER TYPE and per set.
+    // Wolverine PPSA03671 exposed a layout which exhausted a fresh fixed-size
+    // pool. Record its actual counts instead of guessing a global pool scale.
+    pipeline.descriptor_pool_requirements.fill(0);
+    for (const auto& binding : bindings) {
+        size_t slot = 0;
+        switch (binding.descriptorType) {
+            case vk::DescriptorType::eStorageBuffer: slot = 0; break;
+            case vk::DescriptorType::eUniformBuffer: slot = 1; break;
+            case vk::DescriptorType::eSampledImage: slot = 2; break;
+            case vk::DescriptorType::eStorageImage: slot = 3; break;
+            case vk::DescriptorType::eSampler: slot = 4; break;
+            default: EXIT("unsupported descriptor pool type=%u\\n", static_cast<uint32_t>(binding.descriptorType));
+        }
+        auto& needed = pipeline.descriptor_pool_requirements[slot];
+        EXIT_IF(binding.descriptorCount > UINT32_MAX - needed);
+        needed += binding.descriptorCount;
+    }
 	const auto& limits = graphics.GetPhysicalDeviceProperties().limits;
 	uint64_t descriptor_count = 0;
 	uint64_t storage_buffers = 0;
