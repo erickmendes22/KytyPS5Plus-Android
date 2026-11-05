@@ -1,4 +1,5 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
+#include "graphics/shader/recompiler/ir/BindlessBindings.h"
 
 #include "common/logging/log.h"
 #include "graphics/shader/halfRateTiles.h"
@@ -226,7 +227,56 @@ uint32_t F32ArrayType(EmitterState& state, uint32_t count) {
 	return state.builder.Type(spv::OpTypeArray, TypeF32(state), ConstantU32(state, count));
 }
 
+void DefineBindlessImages(EmitterState& state) {
+    for (const auto& image : state.program.info.images) {
+        if (!image.bindless) continue;
+        const auto type = ImageType(state, image);
+        if (state.bindless_image_variables.contains(type)) continue;
+        uint32_t binding = IR::BindlessImages2D;
+        if (image.cube) binding = IR::BindlessImagesCube;
+        else if (image.dimension == ImageDimension::Dim3D) binding = IR::BindlessImages3D;
+        else if (image.dimension == ImageDimension::Dim2DArray ||
+                 image.dimension == ImageDimension::Dim2DMsaaArray)
+            binding = IR::BindlessImages2DArray;
+        const auto array = state.builder.Type(spv::OpTypeRuntimeArray, type);
+        const auto variable = state.builder.DefineGlobalVariable(
+            TypePointer(state, spv::StorageClassUniformConstant, array),
+            spv::StorageClassUniformConstant);
+        state.builder.AddName(variable, "bindless_images");
+        state.builder.AddAnnotation(spv::OpDecorate, variable,
+                                    spv::DecorationDescriptorSet, IR::BindlessDescriptorSet);
+        state.builder.AddAnnotation(spv::OpDecorate, variable,
+                                    spv::DecorationBinding, binding);
+        state.bindless_image_variables[type] = variable;
+        state.builder.RequireCapability(spv::CapabilityRuntimeDescriptorArray);
+        state.builder.RequireCapability(spv::CapabilitySampledImageArrayNonUniformIndexing);
+        state.builder.RequireCapability(spv::CapabilityShaderNonUniform);
+        state.builder.RequireVersion(0x00010500u);
+    }
+    if (state.bindless_image_variables.empty()) return;
+    // Buffer descriptors in set 1: the key -> slot translation and shader
+    // feedback flags are both visible to all shader stages.
+    auto& buffer = state.storage_buffers[2];
+    const auto type = StorageBufferType(state, buffer);
+    const auto DefineBuffer = [&](const char* name, uint32_t binding, bool read_only) {
+        const auto variable = state.builder.DefineGlobalVariable(
+            TypePointer(state, spv::StorageClassStorageBuffer, type),
+            spv::StorageClassStorageBuffer);
+        state.builder.AddName(variable, name);
+        state.builder.AddAnnotation(spv::OpDecorate, variable,
+                                    spv::DecorationDescriptorSet, IR::BindlessDescriptorSet);
+        state.builder.AddAnnotation(spv::OpDecorate, variable,
+                                    spv::DecorationBinding, binding);
+        if (read_only) state.builder.AddAnnotation(spv::OpDecorate, variable,
+                                                    spv::DecorationNonWritable);
+        return variable;
+    };
+    state.bindless_translation_variable = DefineBuffer("bindless_translation", IR::BindlessTranslation, true);
+    state.bindless_feedback_variable = DefineBuffer("bindless_feedback", IR::BindlessFeedback, false);
+}
+
 void DefineDescriptors(EmitterState& state) {
+    DefineBindlessImages(state);
 	using Kind = IR::DescriptorBindingKind;
 	auto& info = state.program.info;
 	auto& bindings = state.program.bindings;
@@ -255,6 +305,7 @@ void DefineDescriptors(EmitterState& state) {
 	}
 	std::array<const IR::ImageResource*, IR::ImageBindingCount> image_types {};
 	for (auto& image: info.images) {
+        if (image.bindless) continue; // descriptor set 1 is shared by host BindlessTable
 		const auto kind = IR::DescriptorBindingForImage(image);
 		if (!kind.has_value() || image.mip_count == 0u ||
 		    (image.mip_mode != IR::ImageMipMode::Dynamic && image.mip_count != 1u)) {
