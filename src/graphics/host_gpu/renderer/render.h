@@ -260,6 +260,10 @@ public:
 	                                   GpuPipeline::PreparedDrawShaders& out);
 
 	void PrepareBindings(const ShaderStageRuntime& runtime, PreparedBindings& prepared);
+    void PrepareBindlessHeaps(const ShaderStageRuntime& runtime, PreparedBindings& prepared);
+    void ResolveBindlessRequests();
+    uint32_t RevalidateBindlessKeys(uint32_t budget);
+    bool ResolveBindlessKey(BindlessTable::Heap& heap, uint32_t key);
 	// rt_half=2 pass 2 (shader/halfRateTiles.h), recorded right after pass 1.
 	void DispatchRetracePass(CommandBuffer& buffer, const HW::ComputeShaderInfo& cs_regs,
 	                         ShaderComputeInputInfo input_info, uint64_t args_addr, Buffer& retrace);
@@ -404,6 +408,11 @@ private:
 	std::vector<uint64_t>                 m_written_max_end;
 	std::vector<vk::DescriptorImageInfo>  m_descriptor_images;
 	std::vector<vk::WriteDescriptorSet>   m_descriptor_writes;
+    int64_t m_bindless_frame = -1;
+    std::vector<uint32_t> m_bindless_requests;
+    std::vector<ImageId> m_bindless_used;
+    std::vector<std::array<uint32_t, 8>> m_bindless_window;
+    std::vector<uint32_t> m_bindless_srt;
 	std::array<vk::DescriptorBufferInfo, 2> m_address_buffers {};
 	ShaderRecompiler::IR::PushData        m_pending_push_data {};
 	vk::ShaderStageFlags                  m_pending_push_stages {};

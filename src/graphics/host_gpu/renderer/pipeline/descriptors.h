@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/pipeline/bindlessTable.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
@@ -48,6 +49,11 @@ struct PreparedBindings {
 	vk::DescriptorBufferInfo              shader_data_buffer;
 	vk::DescriptorBufferInfo              shared_memory;
 	std::vector<uint32_t>                 shader_data;
+    struct BindlessPatch {
+        uint32_t mapping_offset = 0, region = 0, count = 0;
+    };
+    std::vector<BindlessPatch> bindless_patches;
+    std::vector<BindlessTable::Heap*> bindless_heaps;
 };
 
 [[nodiscard]] vk::DescriptorType
