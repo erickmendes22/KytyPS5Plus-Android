@@ -1,0 +1,59 @@
+name: Compatibility investigation — native only
+
+# Do not build or publish an APK until BOTH title fixes have working backend
+# implementations and device-test acceptance evidence. This workflow validates
+# a focused source branch and never executes Gradle/NDK packaging.
+on:
+  push:
+    branches: [investigate/wolverine-bindless-demons-jobs]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - ".github/workflows/compat-investigate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-and-unit:
+    name: ARM64 FEX policy and Wolverine bindless source contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Compile and run actual Bluepoint poll thunk on x86 synthetic guest memory
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -O2 -Isrc \
+            tests/DemonsSoulsIdleArm64Tests.cpp -o /tmp/ds-idle
+          timeout 20 /tmp/ds-idle
+      - name: Confirm old forced guest prefix mode is not silently enabled
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          cp=Path("src/graphics/guest_gpu/graphicsRun.cpp").read_text()
+          idle=Path("src/loader/demonsSoulsIdle.cpp").read_text()
+          assert 'std::getenv("KYTY_DS_PC_BOUNDARY")' in cp
+          assert 'pc_boundary[0] == \'1\'' in cp
+          assert 'UseIdleBackoff(true, true' in idle
+          assert 'SystemContentParamSfoGetString("TITLE_ID", &title)' in idle
+          assert 'Matches(call,pollCode)' in idle
+          print("Title- and signature-gated Bluepoint HLE policy: OK")
+          PY
+      - name: Compile source-level descriptor data policy; do NOT claim GPU correctness
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+            tests/manual/descriptor_pool_policy_test.cpp -o /tmp/descriptor-policy
+          /tmp/descriptor-policy
+      - name: Verify bindless port remains disabled until host and shader are both wired
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          header=Path("src/graphics/shader/recompiler/ShaderRecompiler.h").read_text()
+          ir=Path("src/graphics/shader/recompiler/ir/ShaderIR.h").read_text()
+          assert 'bool                        bindless_images            = false;' in header
+          assert 'bindless_images' in ir
+          assert 'bool                          bindless          = false;' in ir
+          print("Bindless descriptor metadata staged (feature OFF, shader and host binder pending)")
+          PY
