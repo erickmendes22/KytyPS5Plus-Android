@@ -552,6 +552,31 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	// PC parity: enable only when this Vulkan device advertises the core 1.2 feature.
 	// On unsupported Mali/Turnip drivers samplers remain on ordinary weighted filtering.
 	features12.samplerFilterMinmax = supported_features12.samplerFilterMinmax;
+    // Vulkan descriptor indexing must be ENABLED at device creation, not
+    // merely reported by vkGetPhysicalDeviceFeatures2. Keep it opt-in and
+    // require the device to advertise every feature the bindless table uses.
+    const char* requested_bindless = std::getenv("KYTY_BINDLESS_IMAGES");
+    const bool bindless_requested =
+        requested_bindless != nullptr && requested_bindless[0] == '1' &&
+        requested_bindless[1] == '\0';
+    const bool bindless_supported =
+        supported_features12.runtimeDescriptorArray == VK_TRUE &&
+        supported_features12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
+        supported_features12.descriptorBindingPartiallyBound == VK_TRUE &&
+        supported_features12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE &&
+        supported_features12.descriptorBindingUpdateUnusedWhilePending == VK_TRUE &&
+        supported_features12.descriptorBindingSamplerUpdateAfterBind == VK_TRUE;
+    if (bindless_requested && bindless_supported) {
+        features12.runtimeDescriptorArray = VK_TRUE;
+        features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        features12.descriptorBindingPartiallyBound = VK_TRUE;
+        features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        features12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+        features12.descriptorBindingSamplerUpdateAfterBind = VK_TRUE;
+        graphics.bindless_enabled = true;
+    } else if (bindless_requested) {
+        LOGF("Vulkan bindless request rejected: driver missing mandatory descriptor-indexing features\\n");
+    }
 	optional.sampler_filter_minmax = features12.samplerFilterMinmax == VK_TRUE;
 	// GPU-selected storage images fall back to plain dynamic indexing without it.
 	features12.shaderStorageImageArrayNonUniformIndexing =
@@ -646,6 +671,20 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
         .update_after_bind_sampler_limit = properties12.maxDescriptorSetUpdateAfterBindSamplers,
     };
     graphics.bindless_capable = graphics.bindless_capability.Usable();
+    if (!graphics.bindless_capable) {
+        graphics.bindless_enabled = false;
+        // Clear all feature bits if limits are inadequate, to avoid a feature
+        // without a valid table backend on drivers with small sampled limits.
+        features12.runtimeDescriptorArray = VK_FALSE;
+        features12.shaderSampledImageArrayNonUniformIndexing = VK_FALSE;
+        features12.descriptorBindingPartiallyBound = VK_FALSE;
+        features12.descriptorBindingSampledImageUpdateAfterBind = VK_FALSE;
+        features12.descriptorBindingUpdateUnusedWhilePending = VK_FALSE;
+        features12.descriptorBindingSamplerUpdateAfterBind = VK_FALSE;
+    }
+    LOGF("Vulkan bindless: requested=%d enabled=%d driver_capable=%d\\n",
+         bindless_requested ? 1 : 0, graphics.bindless_enabled ? 1 : 0,
+         graphics.bindless_capable ? 1 : 0);
     graphics.bindless_max_sampled_images = graphics.bindless_capable
         ? properties12.maxDescriptorSetUpdateAfterBindSampledImages : 0;
     graphics.bindless_max_samplers = graphics.bindless_capable
