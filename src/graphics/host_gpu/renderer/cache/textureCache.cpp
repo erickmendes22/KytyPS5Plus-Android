@@ -2580,6 +2580,29 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 
 void TextureCache::RunGarbageCollector() {
 	std::scoped_lock lock {m_lock};
+	// The title is not reliably available in the texture-cache constructor.
+	// On the first successful title lookup enable the already-tested, bounded
+	// GPU-written image readback policy for Demon's Souls too. The collector
+	// only reclaims unbound, cold images that CanDownload supports; depth and
+	// video-out contents remain protected. Preserve the existing opt-out.
+	if (m_budget_mode) {
+		static bool ds_title_checked = false;
+		if (!ds_title_checked) {
+			std::string title;
+			if (Loader::SystemContentParamSfoGetString("TITLE_ID", &title)) {
+				ds_title_checked = true;
+				if (title == "PPSA01341") {
+					const char* disabled = std::getenv("KYTY_DS_DISABLE_WRITTEN_RECLAIM");
+					if (disabled == nullptr || std::strcmp(disabled, "1") != 0) {
+						m_evict_written = true;
+					}
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "DS written image reclaim: enabled={} (cold/downloadable only)\\n",
+					    m_evict_written ? 1 : 0));
+				}
+			}
+		}
+	}
 	const uint64_t   tick = m_gc_tick++;
 	if (m_budget_mode) {
 		ApplyBudgetThresholds(m_graphics.UpdateMemoryBudget());
