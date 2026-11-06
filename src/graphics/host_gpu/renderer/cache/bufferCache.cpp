@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/cache/bufferUploadPolicy.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cache/streamDefaults.h"
 #include "graphics/host_gpu/renderer/uploadStats.h"
@@ -1018,48 +1019,66 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 
 bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t size, bool is_written,
                                     bool is_texel_buffer) {
-	std::vector<vk::BufferCopy> copies;
-	uint64_t                    total_size = 0;
-	vk::Buffer                  source;
-	m_memory_tracker.ForEachUploadRange(
-	    vaddr, size, is_written,
-	    [&](uint64_t address, uint64_t bytes) noexcept {
-		    copies.emplace_back(total_size, buffer.Offset(address), bytes);
-		    total_size += bytes;
-	    },
-	    [&]() noexcept { source = UploadCopies(buffer, copies, total_size); });
-	if (source) {
-		auto& command = m_scheduler.Current();
-		command.EndRendering(PassEnd::Buffer);
-		const auto native = command.Handle();
-		vk::BufferMemoryBarrier before {};
-		before.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite |
-		                       vk::AccessFlagBits::eTransferRead |
-		                       vk::AccessFlagBits::eTransferWrite;
-		before.dstAccessMask       = vk::AccessFlagBits::eTransferWrite;
-		before.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		before.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		before.buffer              = buffer.Handle();
-		before.offset              = 0;
-		before.size                = buffer.Size();
-		native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-		                       vk::PipelineStageFlagBits::eTransfer,
-		                       vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &before, 0, nullptr);
-		native.copyBuffer(source, buffer.Handle(), static_cast<uint32_t>(copies.size()),
-		                  copies.data());
-		Common::PerfStats::Count(Common::PerfStats::Counter::UploadBytes, total_size);
-		UploadStats::NoteSync(total_size);
-		auto after          = before;
-		after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-		after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
-		native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-		                       vk::PipelineStageFlagBits::eAllCommands,
-		                       vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &after, 0, nullptr);
-	}
-	if (is_texel_buffer && !is_written) {
-		return SynchronizeBufferFromImage(buffer, vaddr, size);
-	}
-	return false;
+    const auto limit = Common::AlignDown(std::min<uint64_t>(
+        BufferUploadPolicy::MaxWindowBytes, m_staging_buffer.Size() / 2u), TRACKER_PAGE_SIZE);
+    EXIT_IF(limit == 0);
+    if (size > limit) {
+        static std::atomic<uint32_t> reports {0};
+        if (reports.fetch_add(1, std::memory_order_relaxed) < 8)
+            std::printf("Kyty bounded buffer upload: view=%" PRIu64 " window=%" PRIu64
+                        " staging=%" PRIu64 "\n", size, limit, m_staging_buffer.Size());
+    }
+    uint64_t upload_address = vaddr;
+    uint64_t remaining = size;
+    while (remaining != 0) {
+        const auto window_size = BufferUploadPolicy::WindowSize(
+            upload_address, remaining, limit, TRACKER_PAGE_SIZE);
+        EXIT_IF(window_size == 0);
+        std::vector<vk::BufferCopy> copies;
+        uint64_t                    total_size = 0;
+        vk::Buffer                  source;
+        m_memory_tracker.ForEachUploadRange(
+            upload_address, window_size, is_written,
+            [&](uint64_t address, uint64_t bytes) noexcept {
+                copies.emplace_back(total_size, buffer.Offset(address), bytes);
+                total_size += bytes;
+            },
+            [&]() noexcept { source = UploadCopies(buffer, copies, total_size); });
+        if (source) {
+            auto& command = m_scheduler.Current();
+            command.EndRendering(PassEnd::Buffer);
+            const auto native = command.Handle();
+            vk::BufferMemoryBarrier before {};
+            before.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite |
+                                   vk::AccessFlagBits::eTransferRead |
+                                   vk::AccessFlagBits::eTransferWrite;
+            before.dstAccessMask       = vk::AccessFlagBits::eTransferWrite;
+            before.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            before.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            before.buffer              = buffer.Handle();
+            before.offset              = 0;
+            before.size                = buffer.Size();
+            native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                   vk::PipelineStageFlagBits::eTransfer,
+                                   vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &before, 0, nullptr);
+            native.copyBuffer(source, buffer.Handle(), static_cast<uint32_t>(copies.size()),
+                              copies.data());
+            Common::PerfStats::Count(Common::PerfStats::Counter::UploadBytes, total_size);
+            UploadStats::NoteSync(total_size);
+            auto after          = before;
+            after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+            after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+            native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                   vk::PipelineStageFlagBits::eAllCommands,
+                                   vk::DependencyFlagBits::eByRegion, 0, nullptr, 1, &after, 0, nullptr);
+        }
+        upload_address += window_size;
+        remaining -= window_size;
+    }
+    if (is_texel_buffer && !is_written) {
+        return SynchronizeBufferFromImage(buffer, vaddr, size);
+    }
+    return false;
 }
 
 vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> copies,

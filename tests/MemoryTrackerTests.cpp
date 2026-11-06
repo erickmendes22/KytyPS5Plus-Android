@@ -2,6 +2,7 @@
 #include "common/hostException.h"
 #include "common/virtualMemory.h"
 #include "graphics/host_gpu/memoryTracker.h"
+#include "graphics/host_gpu/renderer/cache/bufferUploadPolicy.h"
 #include "graphics/host_gpu/rangeSet.h"
 
 #include <atomic>
@@ -407,6 +408,60 @@ void TestConcurrentRegionPublication() {
   Release(memory);
   Check(cpu_dirty_results.load(std::memory_order_relaxed) == 2,
         "concurrent region publication lost initial CPU ownership");
+}
+
+void TestBoundedUploadWindows() {
+  using Libs::Graphics::BufferUploadPolicy::WindowSize;
+  constexpr auto page = Libs::Graphics::TRACKER_PAGE_SIZE;
+  for (const bool written: {false, true}) {
+    for (const uint64_t prefix: {uint64_t{0}, uint64_t{1}, uint64_t{37}, uint64_t{page - 1}}) {
+      TrackerHarness harness;
+      auto& tracker = harness.tracker;
+      auto* memory = Allocate(harness.page_manager, 32);
+      const auto base = reinterpret_cast<uint64_t>(memory);
+      std::vector<uint8_t> expected(32 * page), captured(32 * page);
+      for (size_t i = 0; i < expected.size(); ++i) expected[i] = static_cast<uint8_t>(i * 13 + i / page);
+      std::memcpy(memory, expected.data(), expected.size());
+      std::vector<uint32_t> seen(32);
+      auto address = base + prefix;
+      uint64_t remaining = expected.size() - prefix - 13;
+      uint64_t uploaded = 0;
+      while (remaining != 0) {
+        const auto window = WindowSize(address, remaining, 8 * page, page);
+        Check(window != 0, "bounded upload failed to advance");
+        uint64_t batch = 0;
+        tracker.ForEachUploadRange(address, window, written,
+          [&](uint64_t start, uint64_t bytes) noexcept {
+            Check(start >= base && start + bytes <= base + expected.size(), "upload escaped backing range");
+            std::memcpy(captured.data() + start - base, reinterpret_cast<void*>(start), bytes);
+            for (auto at = start; at < start + bytes; at += page) ++seen[(at - base) / page];
+            batch += bytes;
+          }, []() noexcept {});
+        Check(batch <= 8 * page, "tracker page rounding exceeded the staging cap");
+        uploaded += batch;
+        address += window;
+        remaining -= window;
+      }
+      Check(captured == expected && uploaded == expected.size(), "bounded upload lost or duplicated payload bytes");
+      Check(std::all_of(seen.begin(), seen.end(), [](auto n) { return n == 1; }),
+            "a dirty tracker page was split across upload windows");
+      Check(!tracker.IsRegionCpuModified(base, expected.size()), "upload left CPU-dirty bytes behind");
+      Check(tracker.IsRegionGpuModified(base, expected.size()) == written,
+            "bounded upload changed GPU ownership semantics");
+      tracker.UntrackMemory(base, expected.size());
+      Release(memory);
+    }
+  }
+  // The captured Wolverine arena is planned without allocating a multi-GiB test buffer.
+  uint64_t address = 0x100000003ull, remaining = 2868903936ull, total = 0;
+  while (remaining) {
+    const auto bytes = WindowSize(address, remaining, 32ull * 1024 * 1024, page);
+    Check(bytes != 0 && bytes <= 32ull * 1024 * 1024, "Wolverine upload exceeded 32 MiB");
+    address += bytes; remaining -= bytes; total += bytes;
+    Check(remaining == 0 || address % page == 0, "Wolverine upload split a tracker page");
+  }
+  Check(total == 2868903936ull, "Wolverine upload range truncated");
+  std::puts("MemoryTrackerTests: bounded 2.67-GiB upload, partial pages and ownership passed");
 }
 
 void TestCpuDirtyUpload() {
@@ -1315,6 +1370,7 @@ int main(int argc, char **argv) {
   TestRangeSet();
   TestQueriesDoNotRequireMappedOwnership();
   TestConcurrentRegionPublication();
+  TestBoundedUploadWindows();
   TestCpuDirtyUpload();
   TestBdaSyncDirtiness();
   TestBdaSyncConcurrentDrain();
