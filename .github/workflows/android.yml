@@ -209,6 +209,10 @@ jobs:
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -pthread -Isrc tests/manual/hle_thread_diagnostics_test.cpp -o /tmp/hle-thread-diagnostics-test
           /tmp/hle-thread-diagnostics-test
+      - name: Test guest and kernel TSC unit agreement
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/guest_tsc_policy_test.cpp -o /tmp/guest-tsc-policy-test
+          /tmp/guest-tsc-policy-test
       - name: Validate Vulkan descriptor pool contract
         run: python3 scripts/android/check_descriptor_pool_contract.py
       - name: Check Vulkan sampler min/max capability-gated policy

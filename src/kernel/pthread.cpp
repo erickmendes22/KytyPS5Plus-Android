@@ -16,6 +16,7 @@
 #include "common/threads.h"
 #include "common/timer.h"
 #include "cpu/guestCpu.h"
+#include "cpu/guestTscPolicy.h"
 #include "kernel/memory.h"
 #include "kernel/threadPlacement.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
@@ -4008,14 +4009,14 @@ uint64_t KYTY_SYSV_ABI KernelGetProcessTimeCounter() {
 // counter KernelReadTscNative reads, shifted left so it ticks at 1 GHz or more (its SmallTSCScale
 // default); the guest code shifts it back.
 static uint8_t FexTscScale() {
-	uint8_t  scale     = 0;
-	uint64_t frequency = KernelGetTscFrequencyNative();
-	constexpr uint64_t kFexTscMinimum = 1'000'000'000; // FEXCore::Context::TSC_SCALE_MAXIMUM
-	while (frequency != 0 && frequency < kFexTscMinimum) {
-		frequency <<= 1u;
-		scale++;
-	}
-	return scale;
+    const auto frequency = KernelGetTscFrequencyNative();
+    const auto scale = Cpu::GuestTscPolicy::Scale(frequency,
+        Cpu::GuestTscPolicy::NativeCounterRequested());
+    if (Cpu::GuestTscPolicy::NativeCounterRequested()) {
+        std::printf("[DS_TSC] kernel_frequency_hz=%llu imported_counter_shift=%u\n",
+            static_cast<unsigned long long>(frequency), static_cast<unsigned>(scale));
+    }
+    return scale;
 }
 
 static uint64_t MakeGuestReadTsc(bool since_start) {

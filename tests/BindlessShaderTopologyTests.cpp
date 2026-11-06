@@ -115,7 +115,6 @@ void CheckBindlessImageTopology() {
     CollectShaderInfo(program, {.compute = &compute});
     const auto spirv = ShaderRecompiler::Spirv::EmitProgram(program, {.compute = &compute});
     ValidateSpirv(name, spirv);
-    using Kind = DescriptorBindingKind;
     const auto kind = DescriptorBindingForImage(program.info.images[1]);
     Require(name, "local image count", kind.has_value() &&
         program.bindings.descriptor_counts[static_cast<size_t>(*kind)] ==

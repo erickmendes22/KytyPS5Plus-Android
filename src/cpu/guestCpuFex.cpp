@@ -2,6 +2,7 @@
 // minus the ELF loader, so it runs without a RootFS: guest code here is raw x86-64 bytes.
 
 #include "cpu/guestCpuFex.h"
+#include "cpu/guestTscPolicy.h"
 
 #include "common/hostFaultAccess.h"
 #include "common/signalOrigin.h"
@@ -153,6 +154,11 @@ void SetupTranslatorConfig() {
 	FEX::Config::LoadConfig("kyty-guest", environ, FEX::ReadPortabilityInformation());
 	FEXCore::Config::ReloadMetaLayer();
 	FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
+    if (Cpu::GuestTscPolicy::NativeCounterRequested()) {
+        // Raw guest RDTSC and the imported kernel clock must share CNTFRQ units.
+        FEXCore::Config::Set(FEXCore::Config::CONFIG_SMALLTSCSCALE, "0");
+        std::printf("[DS_TSC] FEX SmallTSCScale=0; direct RDTSC and kernel counters use native units\n");
+    }
 	// Page-tracking SMC checks write-protect every translated code page, so host code writing a new stub
 	// into an already-executed page (AllocateGuestCode) would fault. Kyty patches guest code before it runs
 	// and never writes it afterwards, so the checks are turned off.

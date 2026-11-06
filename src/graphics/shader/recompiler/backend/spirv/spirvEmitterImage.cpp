@@ -682,7 +682,9 @@ auto EmitImageAccess(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t resul
 	auto& state = ctx.state;
 	const auto& mem = ctx.Memory(inst);
 	const auto& image = state.program.info.images.at(mem.resource);
-	if (image.indirect_root != mem.resource) return emit(mem.resource, 0u);
+    // BindlessSlot already resolves the GPU key through the shared set-1 table.
+    // Do not require/expand the old per-shader list of indirect descriptors.
+    if (image.bindless || image.indirect_root != mem.resource) return emit(mem.resource, 0u);
 	const auto* handle = inst.Arg(0).ResolveInstruction();
 	const auto* source = image.source < state.program.descriptor_sources.size()
 	                         ? &state.program.descriptor_sources[image.source]

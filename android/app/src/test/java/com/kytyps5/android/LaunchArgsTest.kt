@@ -172,6 +172,18 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun demonsSoulsUsesNativeCounterUnitsOnlyForConfirmedTitle() {
+        for (title in listOf("PPSA01341", "ppsa01341")) {
+            val args = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = title)
+            assertEquals(1, args.count { it == "KYTY_DS_NATIVE_TSC=1" })
+        }
+        for (title in listOf("PPSA03671", "PPSA21564", "PPSA24156", null)) {
+            val args = LaunchArgs.forGame("/games/PPSA01341", Resolution.HD_720, titleId = title)
+            assertEquals(-1, args.indexOf("KYTY_DS_NATIVE_TSC=1"))
+        }
+    }
+
+    @Test
     fun wolverineUsesVulkanBindlessOnlyWhenTitleIdIsConfirmed() {
         for (title in listOf("PPSA03671", "ppsa03671")) {
             val args = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = title)
