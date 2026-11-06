@@ -25,6 +25,9 @@ jobs:
     needs: native-regressions  # Reject C++/shader/sampler regressions before expensive APK build
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    env:
+      # Compare NDK compiler bytes, independent of fresh-runner install timestamps.
+      CCACHE_COMPILERCHECK: content
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -148,6 +151,10 @@ jobs:
             -DFFMPEG_PREBUILT_DIR="$PWD/_Build/ffmpeg-android/install" \
             -DKYTY_BUILD_ORIGIN=Fork -DKYTY_BUILD_REPOSITORY="$GITHUB_REPOSITORY" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Reset compiler cache counters for this build
+        if: steps.native.outputs.reused != 'true'
+        run: ccache --zero-stats
 
       - name: Build native libraries
         if: steps.native.outputs.reused != 'true'
