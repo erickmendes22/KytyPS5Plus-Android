@@ -15,6 +15,7 @@
 #include "common/threads.h"
 #include "common/virtualMemory.h"
 #include "cpu/guestCpu.h"
+#include "cpu/guestCpuSelfTest.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "kernel/addressFold.h"
 #include "kernel/addressLayout.h"
@@ -575,6 +576,12 @@ static KYTY_SYSV_ABI void RunEntry(uint64_t addr, EntryParams* params, atexit_fu
 			std::fprintf(stderr, "RunEntry: guest CPU attach failed\n");
 			std::abort();
 		}
+        const char* monitor_check = std::getenv("KYTY_MONITORWAITX_CHECK");
+        if (monitor_check && std::strcmp(monitor_check, "1") == 0 &&
+            !Cpu::GuestCpu::RunMonitorWaitXCheck()) {
+            std::fprintf(stderr, "MONITORX/MWAITX guest compatibility check failed\n");
+            std::abort();
+        }
 		Cpu::GuestCpu::CallGuestOnStack(top, addr, args);
 	} else {
 		Cpu::GuestCpu::CallGuest(addr, args);

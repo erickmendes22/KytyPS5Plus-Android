@@ -213,6 +213,10 @@ jobs:
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/guest_tsc_policy_test.cpp -o /tmp/guest-tsc-policy-test
           /tmp/guest-tsc-policy-test
+      - name: Test safe FEX decode and thread-sample capture
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -pthread -Isrc tests/manual/fex_monitor_diagnostics_test.cpp -o /tmp/fex-monitor-diagnostics-test
+          /tmp/fex-monitor-diagnostics-test
       - name: Validate Vulkan descriptor pool contract
         run: python3 scripts/android/check_descriptor_pool_contract.py
       - name: Check Vulkan sampler min/max capability-gated policy

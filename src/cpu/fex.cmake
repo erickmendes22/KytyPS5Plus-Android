@@ -32,20 +32,22 @@ if(KYTY_GUEST_CPU_FEX)
 		set(kyty_fex_fetch)
 	else()
 		set(kyty_fex_fetch GIT_REPOSITORY "${KYTY_FEX_GIT_REPOSITORY}" GIT_TAG "${KYTY_FEX_GIT_TAG}" GIT_SHALLOW OFF)
-		# The Android port is applied to our own clone only; a KYTY_FEX_SOURCE_DIR checkout is taken as patched.
-		# applyFexPatch.cmake is idempotent (it skips the patch when it is already applied).
-		# fex-addressfold.patch (guest address folding, see src/kernel/addressFold.h) applies on top of it.
-		if(ANDROID)
-			list(APPEND kyty_fex_fetch PATCH_COMMAND ${CMAKE_COMMAND}
-				"-DFEX_SOURCE_DIR=${kyty_fex_src}"
-				"-DFEX_PATCH=${KYTY_SOURCE_DIR}/cpu/patches/fex-android.patch"
-				-P "${KYTY_SOURCE_DIR}/cpu/patches/applyFexPatch.cmake"
-				COMMAND ${CMAKE_COMMAND}
-				"-DFEX_SOURCE_DIR=${kyty_fex_src}"
-				"-DFEX_PATCH=${KYTY_SOURCE_DIR}/cpu/patches/fex-addressfold.patch"
-				-P "${KYTY_SOURCE_DIR}/cpu/patches/applyFexPatch.cmake")
-		endif()
-	endif()
+        # User-mode MONITORX/MWAITX also applies on Linux ARM64 test hosts.
+        list(APPEND kyty_fex_fetch PATCH_COMMAND ${CMAKE_COMMAND}
+            "-DFEX_SOURCE_DIR=${kyty_fex_src}"
+            "-DFEX_PATCH=${KYTY_SOURCE_DIR}/cpu/patches/fex-monitorwaitx.patch"
+            -P "${KYTY_SOURCE_DIR}/cpu/patches/applyFexPatch.cmake")
+        if(ANDROID)
+            list(APPEND kyty_fex_fetch COMMAND ${CMAKE_COMMAND}
+                "-DFEX_SOURCE_DIR=${kyty_fex_src}"
+                "-DFEX_PATCH=${KYTY_SOURCE_DIR}/cpu/patches/fex-android.patch"
+                -P "${KYTY_SOURCE_DIR}/cpu/patches/applyFexPatch.cmake"
+                COMMAND ${CMAKE_COMMAND}
+                "-DFEX_SOURCE_DIR=${kyty_fex_src}"
+                "-DFEX_PATCH=${KYTY_SOURCE_DIR}/cpu/patches/fex-addressfold.patch"
+                -P "${KYTY_SOURCE_DIR}/cpu/patches/applyFexPatch.cmake")
+        endif()
+    endif()
 
 	# Android: FEX is cross-compiled with the same NDK toolchain and ABI as Kyty. Its static archives are linked
 	# into the shared libmain.so, so they must be position-independent (ExternalProject does not inherit this).

@@ -5,6 +5,7 @@
 #include "cpu/guestCpuSelfTest.h"
 
 #include "cpu/guestCpu.h"
+#include "cpu/monitorWaitXProbe.h"
 
 #include <sys/mman.h>
 
@@ -176,6 +177,14 @@ void TestHostFaultHandler(Tally& tally) {
 }
 
 } // namespace
+
+bool RunMonitorWaitXCheck() {
+    const auto code = AllocateGuestCode(MonitorWaitXProbeCode);
+    const auto result = CallGuest(code, {});
+    std::printf("[FEX_MONITORWAITX] %s registers_and_flags_preserved=%llu\n",
+        result == 1 ? "PASS" : "FAIL", static_cast<unsigned long long>(result));
+    return result == 1;
+}
 
 bool RunGuestCpuSelfTest() {
 	Tally tally;

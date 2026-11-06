@@ -1,5 +1,7 @@
 #include "cpu/hleThreadDiagnostics.h"
 #include <cassert>
+std::atomic<int> probes{0};
+void Request(uint64_t) { probes.fetch_add(1); }
 int main() {
     setenv("KYTY_DS_FRAME_TRACE", "1", 1);
     using namespace Cpu::HleDiagnostics;
@@ -15,6 +17,11 @@ int main() {
         assert(slot->state.active && slot->state.id == 17 && slot->state.caller == 0x1234);
     }
     assert(!CurrentSlot()->state.active && CurrentSlot()->state.id == 17);
+    CurrentSlot()->state.since -= std::chrono::seconds(3);
+    Cpu::ThreadProbe::request.store(Request);
+    Dump();
+    assert(probes.load() == 1);
+    Cpu::ThreadProbe::request.store(nullptr);
     std::thread worker([] { Scope scope(19, "worker", 0x9999, 0, 0, 0); });
     worker.join();
     assert(next_slot.load() == 2);

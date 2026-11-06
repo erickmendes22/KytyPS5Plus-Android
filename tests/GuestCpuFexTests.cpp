@@ -2,6 +2,7 @@
 // memory (no guest ELF, no RootFS). Ported from the phase-0 spike: T1, T3, T4, T5, T7.
 
 #include "cpu/guestCpu.h"
+#include "cpu/guestCpuSelfTest.h"
 #include "libs/libs.h"
 #include "loader/guestCall.h"
 #include "loader/guestHostFunction.h"
@@ -351,6 +352,7 @@ void TestRootFrameRecord() {
 int main() {
   Check(Init(), "translator init");
   Check(AttachCurrentThread(MapStack()), "attach main thread");
+  Check(RunMonitorWaitXCheck(), "MONITORX/MWAITX guest registers and RFLAGS");
 
   RegisterHle(kAdd5, Add5Thunk);
   RegisterHle(kCallback, CallbackThunk);

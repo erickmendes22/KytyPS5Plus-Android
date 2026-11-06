@@ -9,6 +9,9 @@ namespace Cpu::GuestCpu {
 // Intended for debug builds that need to prove FEXCore works inside the app process.
 bool RunGuestCpuSelfTest();
 
+// Requires an attached guest thread; executes MONITORX/MWAITX through FEX.
+bool RunMonitorWaitXCheck();
+
 } // namespace Cpu::GuestCpu
 
 #endif /* KYTY_CPU_GUEST_CPU_SELF_TEST_H_ */

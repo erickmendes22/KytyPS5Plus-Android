@@ -3,6 +3,13 @@
 
 #include "cpu/guestCpuFex.h"
 #include "cpu/guestTscPolicy.h"
+#include "cpu/fexDecodeDiagnostics.h"
+#include "cpu/hleThreadDiagnostics.h"
+#include <dlfcn.h>
+#include <algorithm>
+#include <cerrno>
+#include <sys/syscall.h>
+#include <ucontext.h>
 
 #include "common/hostFaultAccess.h"
 #include "common/signalOrigin.h"
@@ -112,12 +119,57 @@ bool HostSigsegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/, vo
 }
 
 void FexMsgHandler(LogMan::DebugLevels /*level*/, const char* message) {
-	std::fputs(message, stderr);
+    std::fputs(message, stderr);
+    uint64_t rip = 0;
+    if (Cpu::DecodeDiagnostics::AddressFromMessage(message, rip)) {
+        Cpu::DecodeDiagnostics::Log(rip);
+    }
 }
 
 void FexAssertHandler(const char* message) {
 	std::fprintf(stderr, "FEX assert: %s\n", message);
 	std::abort();
+}
+
+constexpr int kProbeMarker = 0x4b595054;
+uint64_t g_probe_module_base = 0;
+void RequestGuestProbe(uint64_t tid) {
+    siginfo_t info{};
+    info.si_signo = SIGURG;
+    info.si_code = SI_QUEUE;
+    info.si_pid = getpid();
+    info.si_uid = getuid();
+    info.si_value.sival_int = kProbeMarker;
+    const auto result = syscall(SYS_rt_tgsigqueueinfo, getpid(), tid, SIGURG, &info);
+    if (result != 0) {
+        std::printf("[DS_SAMPLE] tid=%llu signal_not_delivered=%d\n",
+            static_cast<unsigned long long>(tid), errno);
+    }
+}
+bool SampleGuestThread(FEXCore::Core::InternalThreadState* thread, int sig,
+                       void* raw_info, void* context) {
+    const auto* info = static_cast<siginfo_t*>(raw_info);
+    if (sig != SIGURG || !info || info->si_code != SI_QUEUE ||
+        info->si_pid != getpid() || info->si_value.sival_int != kProbeMarker) return false;
+    auto* slot = Cpu::HleDiagnostics::registered_slot;
+    if (!slot || !context) return true;
+    Cpu::ThreadProbe::Snapshot sample;
+    sample.module_base = g_probe_module_base;
+    sample.host_pc = FEX::ArchHelpers::Context::GetPc(context);
+    sample.host_lr = FEX::ArchHelpers::Context::GetArmReg(context, 30);
+    GuestRegisters registers{};
+    sample.exact = CaptureFaultingGuestRegisters(context, &registers);
+    if (sample.exact) {
+        sample.rip = registers.rip;
+        std::copy(std::begin(registers.gpr), std::end(registers.gpr), sample.gpr.begin());
+    } else if (thread && thread->CurrentFrame) {
+        // Not a JIT PC: preserve FEX's saved state, labelled non-exact.
+        const auto& state = thread->CurrentFrame->State;
+        sample.rip = state.rip;
+        std::copy(std::begin(state.gregs), std::end(state.gregs), sample.gpr.begin());
+    }
+    Cpu::ThreadProbe::Publish(static_cast<size_t>(slot - Cpu::HleDiagnostics::slots.data()), sample);
+    return true;
 }
 
 class KytyCodeLoader final : public FEX::CodeLoader {
@@ -243,6 +295,14 @@ bool BringUpTranslator() {
 	g_runtime.signals  = signals.get();
 	g_runtime.syscalls = syscalls.get();
 	g_runtime.thunks   = thunks.get();
+    if (Cpu::HleDiagnostics::Enabled()) {
+        Dl_info module{};
+        if (dladdr(reinterpret_cast<void*>(&RequestGuestProbe), &module))
+            g_probe_module_base = reinterpret_cast<uint64_t>(module.dli_fbase);
+        signals->RegisterHostSignalHandlerFirst(SIGURG, SampleGuestThread, true);
+        Cpu::ThreadProbe::request.store(RequestGuestProbe, std::memory_order_release);
+        std::printf("[DS_SAMPLE] marked SIGURG sampler installed; stale guest threads only\n");
+    }
 	return true;
 }
 

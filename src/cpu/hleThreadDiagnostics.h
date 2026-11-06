@@ -1,4 +1,5 @@
 #pragma once
+#include "cpu/guestThreadProbe.h"
 // Per-thread HLE state survives ring wrap. Enabled only by the existing DS trace.
 // Observations never release a guest wait or alter command ordering.
 #include <array>
@@ -39,6 +40,7 @@ struct Slot {
 };
 inline std::array<Slot, 256> slots;
 inline std::atomic<size_t> next_slot{0};
+inline thread_local Slot* registered_slot = nullptr;
 inline Slot* CurrentSlot() {
     static thread_local Slot* slot = []() -> Slot* {
         const auto index = next_slot.fetch_add(1, std::memory_order_relaxed);
@@ -53,6 +55,7 @@ inline Slot* CurrentSlot() {
         pthread_getname_np(pthread_self(), entry.name, sizeof(entry.name));
         return &entry;
     }();
+    registered_slot = slot;
     return slot;
 }
 class Scope {
@@ -95,6 +98,14 @@ inline void Dump() {
             static_cast<unsigned long long>(state.args[0]),
             static_cast<unsigned long long>(state.args[1]),
             static_cast<unsigned long long>(state.args[2]));
+        const auto tid = entry.tid;
+        const bool stale_guest = !state.active && age >= 2000;
+        const auto index = static_cast<size_t>(&entry - slots.data());
+        lock.unlock();
+        Cpu::ThreadProbe::Dump(index, tid);
+        if (stale_guest) {
+            if (auto probe = Cpu::ThreadProbe::request.load(std::memory_order_acquire)) probe(tid);
+        }
     }
 }
 } // namespace Cpu::HleDiagnostics

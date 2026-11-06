@@ -1,0 +1,64 @@
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+index 8dc605c..fc24f1e 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp
+@@ -5025,6 +5025,18 @@ void OpDispatchBuilder::StoreFenceOrCLFlush(OpcodeArgs) {
+   }
+ }
+ 
++// Kyty's PS5 guest uses AMD monitored waits in user-mode lock contention.
++// Match the native-x86 Kyty fallback: a monitor need not track host stores,
++// and the wait may wake spuriously. Preserve all guest GPRs and flags; the
++// guest's lock cmpxchg/retry/timeout path remains authoritative.
++void OpDispatchBuilder::MonitorXOp(OpcodeArgs) {
++  // No persistent monitor state is required when MWAITX immediately wakes.
++}
++
++void OpDispatchBuilder::MWaitXOp(OpcodeArgs) {
++  _Yield();
++}
++
+ void OpDispatchBuilder::UMonitorOrCLRSSBSY(OpcodeArgs) {
+   if (DestIsMem(Op) || !CTX->HostFeatures.SupportsWFXT) {
+     // CLRSSBSY
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+index 71766e0..5eb059f 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher.h
+@@ -828,6 +828,8 @@ public:
+   void LoadFenceOrXRSTOR(OpcodeArgs);
+   void MemFenceOrXSAVEOPT(OpcodeArgs);
+   void StoreFenceOrCLFlush(OpcodeArgs);
++  void MonitorXOp(OpcodeArgs);
++  void MWaitXOp(OpcodeArgs);
+   void UMonitorOrCLRSSBSY(OpcodeArgs);
+   void UMWaitOp(OpcodeArgs);
+   void CLZeroOp(OpcodeArgs);
+diff --git a/FEXCore/Source/Interface/Core/OpcodeDispatcher/SecondaryModRMTables.h b/FEXCore/Source/Interface/Core/OpcodeDispatcher/SecondaryModRMTables.h
+index 7386847..89be6a8 100644
+--- a/FEXCore/Source/Interface/Core/OpcodeDispatcher/SecondaryModRMTables.h
++++ b/FEXCore/Source/Interface/Core/OpcodeDispatcher/SecondaryModRMTables.h
+@@ -17,6 +17,8 @@ constexpr DispatchTableEntry OpDispatch_SecondaryModRMTables[] = {
+   // REG /7
+   {((3 << 3) | 0), 1, &OpDispatchBuilder::PermissionRestrictedOp},
+   {((3 << 3) | 1), 1, &OpDispatchBuilder::RDTSCPOp},
++  {((3 << 3) | 2), 1, &OpDispatchBuilder::MonitorXOp},
++  {((3 << 3) | 3), 1, &OpDispatchBuilder::MWaitXOp},
+   {((3 << 3) | 4), 1, &OpDispatchBuilder::CLZeroOp},
+ };
+ 
+diff --git a/FEXCore/Source/Interface/Core/X86Tables/SecondaryModRMTables.cpp b/FEXCore/Source/Interface/Core/X86Tables/SecondaryModRMTables.cpp
+index 48417f9..39d5289 100644
+--- a/FEXCore/Source/Interface/Core/X86Tables/SecondaryModRMTables.cpp
++++ b/FEXCore/Source/Interface/Core/X86Tables/SecondaryModRMTables.cpp
+@@ -48,8 +48,8 @@ constexpr std::array<X86InstInfo, MAX_SECOND_MODRM_TABLE_SIZE> SecondModRMTableO
+     // REG /7
+     {((3 << 3) | 0), 1, X86InstInfo{"SWAPGS",   TYPE_INST,    FLAGS_NONE, 0}},
+     {((3 << 3) | 1), 1, X86InstInfo{"RDTSCP",   TYPE_INST,    FLAGS_NONE, 0}},
+-    {((3 << 3) | 2), 1, X86InstInfo{"MONITORX", TYPE_PRIV,    FLAGS_NONE, 0}},
+-    {((3 << 3) | 3), 1, X86InstInfo{"MWAITX",   TYPE_PRIV,    FLAGS_NONE, 0}},
++    {((3 << 3) | 2), 1, X86InstInfo{"MONITORX", TYPE_INST,    FLAGS_NONE, 0}},
++    {((3 << 3) | 3), 1, X86InstInfo{"MWAITX",   TYPE_INST,    FLAGS_NONE, 0}},
+     {((3 << 3) | 4), 1, X86InstInfo{"CLZERO",   TYPE_INST,    GenFlagsSameSize(SIZE_64BITDEF) | FLAGS_DEBUG_MEM_ACCESS, 0}},
+     {((3 << 3) | 5), 1, X86InstInfo{"",         TYPE_INVALID, FLAGS_NONE, 0}},
+     {((3 << 3) | 6), 1, X86InstInfo{"",         TYPE_INVALID, FLAGS_NONE, 0}},
