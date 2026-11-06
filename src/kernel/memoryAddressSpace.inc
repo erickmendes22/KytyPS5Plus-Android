@@ -321,6 +321,10 @@ public:
 			                // uploads must read holes as zeros without populating a second arena.
 			                // pread observes MAP_SHARED writes and leaves sparse holes unallocated.
 			                if (size >= 1024 * 1024) {
+#if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
+				                std::fprintf(stderr, "[sparse-file-read] request=%" PRIu64
+				                             " span=%" PRIu64 " offset=%" PRIu64 "\n", size, bytes, offset);
+#endif
 				                auto file_offset = offset;
 				                while (bytes != 0 && copied) {
 					                const auto count = pread(m_fd, output,

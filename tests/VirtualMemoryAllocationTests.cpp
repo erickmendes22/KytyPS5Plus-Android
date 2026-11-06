@@ -1209,6 +1209,7 @@ void TestLargeSparseUploadDoesNotPopulateBacking() {
 	std::vector<uint8_t> output(size + 2, 0x55);
 	Check(test, CopySparseMemory(base, output.data() + 1, size), "large upload copy failed");
 	const auto after = TestGuestBackingAllocatedBytes();
+	std::fprintf(stderr, "[sparse-upload-residency] before=%" PRIu64 " after=%" PRIu64 "\n", before, after);
 	Check(test, after == before, "upload populated untouched tmpfs backing pages");
 	Check(test, output.front() == 0x55 && output.back() == 0x55, "upload overwrote canaries");
 	for (size_t k = 0; k < positions.size(); ++k) {
