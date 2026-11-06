@@ -1,3 +1,4 @@
+#include <bit>
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
@@ -123,7 +124,7 @@ uint32_t SharedIndirectBufferResource(const EmitterState& state, uint32_t resour
 	uint32_t next_child_slot = UINT32_MAX;
 	for (uint32_t ordinal = first; ordinal < root.indirect_resources.size(); ++ordinal) {
 		const auto& candidate = buffers[root.indirect_resources[ordinal]];
-		if (candidate.packed_stride != shared.packed_stride ||
+		if (candidate.chunk_bytes != 0 || candidate.packed_stride != shared.packed_stride ||
 		    candidate.descriptor_format != shared.descriptor_format ||
 		    candidate.descriptor_swizzle != shared.descriptor_swizzle ||
 		    candidate.descriptor_index == UINT32_MAX ||
@@ -249,6 +250,21 @@ MemoryResourceAccess PrepareStorageBufferResourceAccess(EmitterState& state,
 	} else {
 		access.byte_offset = state.memory_byte_offsets[static_index];
 	}
+    const auto& metadata = state.program.info.buffers.at(mem.resource);
+    if (metadata.chunk_bytes != 0) {
+        EXIT_IF(non_uniform); // Indirect segmented resources use the existing case dispatch.
+        access.chunk_bytes = metadata.chunk_bytes;
+        access.buffer_variable = buffer.variable;
+        access.buffer_pointer_type = buffer.pointer_type;
+        access.element_bits = &buffer == &state.storage_buffers[0] ? 8u :
+                              &buffer == &state.storage_buffers[1] ? 16u :
+                              &buffer == &state.storage_buffers[3] ? 64u : 32u;
+        const auto bytes = EmitShaderDataDwordLoad(state,
+            state.program.bindings.BufferLengthDword() + static_index);
+        access.length = Binary(state, spv::OpShiftRightLogical, TypeU32(state), bytes,
+            ConstantU32(state, std::countr_zero(access.element_bits / 8u)));
+        return access;
+    }
 	access.length      = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpArrayLength, TypeU32(state), access.length,
 	                          access.object_pointer, 0);
@@ -338,10 +354,26 @@ uint32_t EmitMemoryElementPointer(EmitterState& state, const MemoryResourceAcces
 uint32_t EmitStorageBufferElementPointer(EmitterState& state,
                                          const MemoryResourceAccess& access, uint32_t index,
                                          uint32_t pointer_type) {
+    auto object = access.object_pointer;
+    if (access.chunk_bytes != 0) {
+        const auto elements = access.chunk_bytes / (access.element_bits / 8u);
+        const auto chunk = Binary(state, spv::OpShiftRightLogical, TypeU32(state), index,
+                                  ConstantU32(state, std::countr_zero(elements)));
+        const auto slot = EmitAddU32(state, access.descriptor_index, chunk);
+        object = state.builder.AllocateId();
+        state.builder.RequireExtension("SPV_EXT_descriptor_indexing");
+        state.builder.RequireCapability(spv::CapabilityShaderNonUniform);
+        state.builder.RequireCapability(spv::CapabilityStorageBufferArrayNonUniformIndexing);
+        state.builder.AddAnnotation(spv::OpDecorate, slot, spv::DecorationNonUniform);
+        state.builder.AddFunction(spv::OpAccessChain, access.buffer_pointer_type, object,
+                                  access.buffer_variable, slot);
+        state.builder.AddAnnotation(spv::OpDecorate, object, spv::DecorationNonUniform);
+        index = Binary(state, spv::OpBitwiseAnd, TypeU32(state), index, ConstantU32(state, elements - 1u));
+    }
 	const auto pointer = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpAccessChain, pointer_type, pointer, access.object_pointer,
+	state.builder.AddFunction(spv::OpAccessChain, pointer_type, pointer, object,
 	                          ConstantU32(state, 0), index);
-	if (access.non_uniform) {
+	if (access.non_uniform || access.chunk_bytes != 0) {
 		state.builder.AddAnnotation(spv::OpDecorate, pointer, spv::DecorationNonUniform);
 	}
 	return pointer;

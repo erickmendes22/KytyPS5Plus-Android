@@ -392,7 +392,7 @@ uint32_t BufferIndexInBounds(ValueEmitContext& ctx, const IR::Inst& inst,
 
 // ShaderDeviceFeatures::robust_buffer_loads: the driver already reads zero past the binding.
 bool RobustBufferLoad(const EmitterState& state, const MemoryResourceAccess& resource) {
-	return state.device_features.robust_buffer_loads && resource.object_pointer != 0 &&
+	return resource.chunk_bytes == 0 && state.device_features.robust_buffer_loads && resource.object_pointer != 0 &&
 	       resource.element_bits == 32u &&
 	       (resource.kind == IR::ResourceKind::Buffer ||
 	        resource.kind == IR::ResourceKind::ScalarBuffer);

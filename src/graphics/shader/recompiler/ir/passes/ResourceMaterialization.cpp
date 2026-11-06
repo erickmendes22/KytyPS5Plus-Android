@@ -1378,6 +1378,7 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 	plan.resource_tracking_complete = program.resource_tracking_complete;
 	plan.bindless_images           = program.bindless_images;
 	plan.uniform_buffer_limit       = program.uniform_buffer_limit;
+	plan.storage_buffer_chunk_bytes = program.storage_buffer_chunk_bytes;
 
 	std::unordered_map<const Inst*, Inst*> cloned;
 	std::function<Value(Value)>            Clone = [&](Value value) -> Value {
@@ -1749,6 +1750,18 @@ bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& sc
 		}
 		auto& buffer         = specialization.buffers[i];
 		buffer.packed_stride = packed_stride;
+        // Each Vulkan descriptor is bounded by the device limit. Reserve enough
+        // slices for any cache-buffer alignment prefix (the packed offset is a byte).
+        auto bytes = std::max(descriptor.GetSize(), uint64_t {base.max_byte_extent});
+        if (descriptor.NumRecords() == UINT32_MAX)
+            bytes = std::min(bytes, uint64_t {256} * 1024 * 1024);
+        const uint64_t chunk = program.storage_buffer_chunk_bytes;
+        if (chunk != 0 && bytes + 255u > chunk) {
+            if (bytes > UINT32_MAX - 255u)
+                return SpecializationFail("segmented storage buffer exceeds 32-bit byte addressing");
+            buffer.chunk_bytes = static_cast<uint32_t>(chunk);
+            buffer.chunk_count = static_cast<uint32_t>((bytes + 255u + chunk - 1u) / chunk);
+        }
 		buffer.descriptor_format =
 		    base.formatted ? descriptor.Format() : Prospero::BufferFormat::kInvalid;
 		buffer.descriptor_swizzle = base.formatted ? descriptor.DstSelXYZW() : DstSel(4, 5, 6, 7);
@@ -1870,6 +1883,8 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 			buffers.push_back(buffers[source.indirect_root]);
 		}
 		auto& buffer                      = buffers[index];
+		buffer.chunk_bytes = source.chunk_bytes;
+		buffer.chunk_count = source.chunk_count;
 		buffer.packed_stride              = source.packed_stride;
 		buffer.descriptor_format          = source.descriptor_format;
 		buffer.descriptor_swizzle         = source.descriptor_swizzle;

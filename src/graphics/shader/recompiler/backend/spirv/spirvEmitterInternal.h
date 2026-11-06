@@ -545,6 +545,9 @@ struct MemoryResourceAccess {
 	uint32_t              length           = 0;
 	uint32_t              byte_offset      = 0;
 	uint32_t              element_bits     = 32;
+	uint32_t chunk_bytes = 0;
+    uint32_t buffer_variable = 0;
+    uint32_t buffer_pointer_type = 0;
 	bool                  non_uniform      = false;
 	spv::MemoryAccessMask memory_access    = spv::MemoryAccessMaskNone;
 };

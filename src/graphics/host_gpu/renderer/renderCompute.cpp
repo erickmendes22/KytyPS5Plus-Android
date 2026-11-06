@@ -36,6 +36,7 @@
 #include "libs/errno.h"
 
 #include <algorithm>
+#include <tuple>
 #include <array>
 #include <atomic>
 #include <cinttypes>
@@ -602,7 +603,16 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	RebindImages(bindings);
 	BindSharedMemory(m_context, input_info, bindings);
+	m_rebind_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	RebindBuffers(bindings);
+	if (RebindAfterJoinEnabled()) {
+		auto& cache = m_context.GetBufferCache();
+		for (uint32_t pass = 0; pass < 4 && cache.UnregisterEpoch() != m_rebind_epoch; ++pass) {
+			NoteRebindAfterJoin("dispatch", nullptr);
+			m_rebind_epoch = cache.UnregisterEpoch();
+			RebindBuffers(bindings);
+		}
+	}
 
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
@@ -772,10 +782,23 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	BindSharedMemory(m_context, input_info, bindings, args_addr);
 	RebindImages(bindings);
 	// Acquiring arguments can merge cache buffers; finalize shader bindings afterward.
-	const auto [args_buffer, args_offset] = m_context.GetBufferCache().ObtainBuffer(
+	const auto args_epoch = m_context.GetBufferCache().UnregisterEpoch();
+	auto [args_buffer, args_offset] = m_context.GetBufferCache().ObtainBuffer(
 	    args_addr, sizeof(vk::DispatchIndirectCommand), false);
 	EXIT_IF(args_buffer == nullptr || (args_offset & 3u) != 0);
+	m_rebind_epoch = args_epoch;
 	RebindBuffers(bindings);
+	if (RebindAfterJoinEnabled()) {
+		auto& cache = m_context.GetBufferCache();
+		for (uint32_t pass = 0; pass < 4 && cache.UnregisterEpoch() != m_rebind_epoch; ++pass) {
+			NoteRebindAfterJoin("dispatch", nullptr);
+			m_rebind_epoch = cache.UnregisterEpoch();
+			std::tie(args_buffer, args_offset) = cache.ObtainBuffer(
+			    args_addr, sizeof(vk::DispatchIndirectCommand), false);
+			EXIT_IF(args_buffer == nullptr || (args_offset & 3u) != 0);
+			RebindBuffers(bindings);
+		}
+	}
 	vk::Buffer indirect_buffer = args_buffer->Handle();
 	uint64_t   indirect_offset = args_offset;
 	if (!cpu_args && IndirectDispatchClampEnabled()) {
@@ -854,7 +877,16 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 	}
 	BindSharedMemory(m_context, input_info, bindings, args_addr);
 	RebindImages(bindings);
+	m_rebind_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	RebindBuffers(bindings);
+	if (RebindAfterJoinEnabled()) {
+		auto& cache = m_context.GetBufferCache();
+		for (uint32_t pass = 0; pass < 4 && cache.UnregisterEpoch() != m_rebind_epoch; ++pass) {
+			NoteRebindAfterJoin("dispatch", nullptr);
+			m_rebind_epoch = cache.UnregisterEpoch();
+			RebindBuffers(bindings);
+		}
+	}
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline, std::span {&descriptor_stage, 1u});
 	ShaderWriteHazardBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);

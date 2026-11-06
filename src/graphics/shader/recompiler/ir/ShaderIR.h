@@ -130,6 +130,8 @@ struct BufferResource {
 	uint32_t               packed_stride      = 0;
 	Prospero::BufferFormat descriptor_format  = Prospero::BufferFormat::kInvalid;
 	uint32_t               descriptor_swizzle = DstSel(4, 5, 6, 7);
+	uint32_t               chunk_bytes = 0;
+	uint32_t               chunk_count = 1;
 	uint32_t               image_alias        = NoImageAlias;
 	bool                   read               = false;
 	bool                   written            = false;
@@ -625,6 +627,10 @@ struct Bindings {
 	// (0 unless the renderer splits a dispatch past maxComputeWorkGroupCount into pieces).
 	uint32_t group_base_dword = PushData::NoStart;
 	uint32_t memory_offset_dword = 0;
+	bool segmented_buffers = false;
+	[[nodiscard]] uint32_t BufferLengthDword() const {
+		return memory_offset_dword + (BufferSlotCount() + 3u) / 4u;
+	}
 
 	// Buffer slots: storage buffers [0, Buffers), then uniform buffers. Each slot has one
 	// memory-offset byte in shader data.
@@ -633,7 +639,7 @@ struct Bindings {
 		       descriptor_counts[static_cast<size_t>(DescriptorBindingKind::UniformBuffers)];
 	}
 	[[nodiscard]] uint32_t ShaderDataDwords() const {
-		return memory_offset_dword + (BufferSlotCount() + 3u) / 4u;
+		return BufferLengthDword() + (segmented_buffers ? BufferSlotCount() : 0u);
 	}
 	[[nodiscard]] bool UsesPushData() const {
 		return push_data_start_dword != PushData::NoStart;
@@ -869,6 +875,7 @@ struct ResourcePlan {
 	// ShaderDeviceFeatures::uniform_constant_buffer_bytes: read-only scalar buffers up to this
 	// size are specialized as uniform buffers (0: never).
 	uint32_t                            uniform_buffer_limit       = 0;
+	uint32_t storage_buffer_chunk_bytes = 0;
 	// ShaderDeviceFeatures::single_mode_alias_slots: a pixel parameter slot with flat and smooth
 	// aliases stays native while only one interpolation mode of it is in use (KYTY_ALIAS_SLOTS).
 	bool                                single_mode_alias_slots    = false;

@@ -291,7 +291,11 @@ void DefineDescriptors(EmitterState& state) {
 		} else if (buffer.uniform) {
 			++uniform_count;
 		}
-		buffer.descriptor_index = buffer.live && !buffer.uniform ? buffer_count++ : UINT32_MAX;
+		buffer.descriptor_index = buffer.live && !buffer.uniform ? buffer_count : UINT32_MAX;
+        if (buffer.live && !buffer.uniform) {
+            buffer_count += buffer.chunk_count;
+            bindings.segmented_buffers |= buffer.chunk_bytes != 0;
+        }
 	}
 	for (uint32_t i = 0, uniform_slot = buffer_count; i < info.buffers.size(); ++i) {
 		if (info.buffers[i].uniform) info.buffers[i].descriptor_index = uniform_slot++;

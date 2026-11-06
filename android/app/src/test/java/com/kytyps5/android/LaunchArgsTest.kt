@@ -176,10 +176,14 @@ class LaunchArgsTest {
         for (title in listOf("PPSA01341", "ppsa01341")) {
             val args = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = title)
             assertEquals(1, args.count { it == "KYTY_DS_NATIVE_TSC=1" })
+            assertEquals("0", args[args.indexOf("--async-shaders") + 1])
+            assertEquals(1, args.count { it == "KYTY_REBIND_AFTER_JOIN=1" })
         }
         for (title in listOf("PPSA03671", "PPSA21564", "PPSA24156", null)) {
             val args = LaunchArgs.forGame("/games/PPSA01341", Resolution.HD_720, titleId = title)
             assertEquals(-1, args.indexOf("KYTY_DS_NATIVE_TSC=1"))
+            assertEquals(-1, args.indexOf("--async-shaders"))
+            assertEquals(-1, args.indexOf("KYTY_REBIND_AFTER_JOIN=1"))
         }
     }
 
@@ -192,6 +196,8 @@ class LaunchArgsTest {
             assertEquals(1, env.count { it == "KYTY_MONITORWAITX_CHECK=1" })
             assertEquals(1, env.count { it == "KYTY_GUEST_FRAME_TRACE=1" })
             assertEquals(-1, args.indexOf("KYTY_DS_NATIVE_TSC=1"))
+            assertEquals(-1, args.indexOf("--async-shaders"))
+            assertEquals(-1, args.indexOf("KYTY_REBIND_AFTER_JOIN=1"))
             assertEquals(-1, args.indexOf("KYTY_DS_STRICT_FRAME=1"))
         }
         for (title in listOf("PPSA01341", "PPSA21564", "PPSA24156", null)) {

@@ -1667,6 +1667,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (indirect != nullptr) {
 		indirect_sources = GetIndirectDrawFixup().AcquireSources(*indirect);
 	}
+	if (RebindAfterJoinEnabled()) {
+		auto& cache = m_context.GetBufferCache();
+		for (uint32_t pass = 0; pass < 4 && cache.UnregisterEpoch() != m_rebind_epoch; ++pass) {
+			NoteRebindAfterJoin("draw", draw.Name());
+			m_rebind_epoch = cache.UnregisterEpoch();
+			for (auto* stage: stages) RebindBuffers(*stage);
+			if (!mesh_active) {
+				vertex_bindings = AcquireVertexBuffers(buffer, state.vertex_info[0]);
+				index_binding = PrepareIndexBuffer(buffer, index_source);
+			}
+			if (indirect != nullptr) indirect_sources = GetIndirectDrawFixup().AcquireSources(*indirect);
+		}
+	}
 	if (draw.IsIndexed()) {
 		LogDrawPhase(draw.Name(), "CreatePipeline");
 	}

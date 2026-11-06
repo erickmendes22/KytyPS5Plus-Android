@@ -9,6 +9,8 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 // ResourceSnapshot and therefore do not create shader permutations.
 struct ResourceSpecialization {
 	struct Buffer {
+		uint32_t chunk_bytes = 0;
+		uint32_t chunk_count = 1;
 		uint32_t               packed_stride                   = 0;
 		Prospero::BufferFormat descriptor_format               = Prospero::BufferFormat::kInvalid;
 		uint32_t               descriptor_swizzle              = DstSel(4, 5, 6, 7);

@@ -946,6 +946,7 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	IR::TrackResources(ir, decoded, native_cfg, options.input_info);
 	pass_done("TrackResources");
 	ir.uniform_buffer_limit = options.device_features.uniform_constant_buffer_bytes;
+	ir.storage_buffer_chunk_bytes = options.device_features.storage_buffer_chunk_bytes;
 	TranslateResult result;
 	result.program = std::move(ir);
 	if (options.dump_ir || mfgt_fp64_capture) {

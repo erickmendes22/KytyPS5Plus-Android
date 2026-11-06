@@ -124,7 +124,8 @@ object LaunchArgs {
             // BPE mixes raw RDTSC with sceKernelGetTscFrequency. Disable FEX's
             // minimum-1GHz scaling only for this title; native APIs use CNTFRQ.
             (if (titleId.equals("PPSA01341", ignoreCase = true))
-                arrayOf("--env", "KYTY_DS_NATIVE_TSC=1") else emptyArray()) +
+                arrayOf("--env", "KYTY_DS_NATIVE_TSC=1",
+                    "--async-shaders", "0", "--env", "KYTY_REBIND_AFTER_JOIN=1") else emptyArray()) +
             // The GT reference fork enables LS/HS/TES explicitly. Keep it title-scoped.
             (if (titleId.equals("PPSA24156", ignoreCase = true))
                 arrayOf(FLAG_TESSELLATION) else emptyArray())

@@ -139,7 +139,7 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	                            ? std::max<vk::DeviceSize>(limits.minUniformBufferOffsetAlignment, 1)
 	                            : graphics.StorageMinAlignment();
 	const auto  max_range = resource.uniform ? limits.maxUniformBufferRange : limits.maxStorageBufferRange;
-	if (size > max_range) {
+	if (resource.chunk_bytes == 0 && size > max_range) {
 		EXIT("%s buffer range is unsupported\n", resource.uniform ? "uniform" : "storage");
 	}
 	auto [buffer, offset] = context.GetBufferCache().ObtainBuffer(
@@ -147,7 +147,7 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	    resource.formatted || (resource.read && Config::SyncRawImageBuffersEnabled()), id);
 	const auto aligned_offset = Common::AlignDown(offset, alignment);
 	const auto adjustment     = offset - aligned_offset;
-	if (adjustment >= 256 || size > max_range - adjustment) {
+	if (adjustment >= 256 || (resource.chunk_bytes == 0 && size > max_range - adjustment)) {
 		EXIT("%s buffer offset adjustment is unsupported\n", resource.uniform ? "uniform" : "storage");
 	}
 	buffer_offset = static_cast<uint32_t>(adjustment);
@@ -1116,8 +1116,31 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		const auto index = resource.descriptor_index;
 		if (index == UINT32_MAX) continue;
 		uint32_t buffer_offset = 0;
-		prepared.buffers[index] = NativeStorageBuffer(m_context, prepared.buffer_sources[index],
-		                                              resource, buffer_offset);
+        const auto native = NativeStorageBuffer(m_context, prepared.buffer_sources[index],
+                                                resource, buffer_offset);
+        if (resource.chunk_bytes == 0) {
+            prepared.buffers[index] = native;
+        } else {
+            EXIT_IF(native.range > UINT32_MAX ||
+                    native.range > uint64_t {resource.chunk_bytes} * resource.chunk_count);
+            prepared.shader_data[layout.BufferLengthDword() + index] =
+                prepared.buffer_sources[index].size == 0 ? 0u : static_cast<uint32_t>(native.range);
+            for (uint32_t chunk = 0; chunk < resource.chunk_count; ++chunk) {
+                const uint64_t begin = uint64_t {chunk} * resource.chunk_bytes;
+                if (begin < native.range) {
+                    prepared.buffers[index + chunk] = {native.buffer, native.offset + begin,
+                        std::min<uint64_t>(resource.chunk_bytes, native.range - begin)};
+                } else {
+                    prepared.buffers[index + chunk] = {
+                        m_context.GetBufferCache().GetBuffer(NULL_BUFFER_ID).Handle(), 0, 16};
+                }
+            }
+            static std::atomic<uint32_t> logged {0};
+            if (logged.fetch_add(1, std::memory_order_relaxed) < 8)
+                std::printf("Kyty segmented SSBO: hash=0x%016" PRIx64 " bytes=%" PRIu64
+                            " chunks=%u chunk_bytes=%u\n", program.shader_hash,
+                            static_cast<uint64_t>(native.range), resource.chunk_count, resource.chunk_bytes);
+        }
 		pack_memory_offset(index, buffer_offset);
 	}
 	if (layout.descriptor_counts[static_cast<size_t>(BindingKind::FlattenedSrt)] != 0) {
@@ -1242,6 +1265,22 @@ void RenderExecutor::RefreshBindingViews(std::span<PreparedBindings* const> stag
 	}
 }
 
+// Re-resolve bindings retired by overlapping buffer joins before recording work.
+// Adapted from Jetsku/KytyPS5 d93c804e (chenxiao07 ed6f063e1).
+bool RebindAfterJoinEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("KYTY_REBIND_AFTER_JOIN");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+}
+void NoteRebindAfterJoin(const char* kind, const char* name) {
+    static std::atomic<uint32_t> count {0};
+    const auto n = count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 16 || (n & (n - 1)) == 0)
+        std::printf("Kyty rebind after join: %s (%s; %u)\n", kind, name ? name : "-", n);
+}
+
 void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
                                              std::span<RenderColorInfo> colors) {
 	bool uses_dma = false;
@@ -1272,6 +1311,7 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 	}
 	// Discovery can read back PS5 metadata and submit the scheduler. Reserve draw buffers only
 	// after image identities are final; attachment layout transitions follow buffer alias copies.
+	m_rebind_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	for (auto* stage: stages) {
 		RebindBuffers(*stage);
 	}

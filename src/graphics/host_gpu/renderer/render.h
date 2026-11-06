@@ -240,6 +240,9 @@ enum class Prefetch : uint8_t {
 };
 } // namespace GpuPipeline
 
+[[nodiscard]] bool RebindAfterJoinEnabled();
+void NoteRebindAfterJoin(const char* kind, const char* name);
+
 class RenderExecutor {
 public:
 	explicit RenderExecutor(RenderContext& context);
@@ -392,6 +395,7 @@ private:
 	                                              CommandBuffer& command, uint32_t group_x,
 	                                              uint32_t group_y, uint32_t group_z, uint32_t mode);
 
+	uint64_t                              m_rebind_epoch = 0;
 	RenderContext&                        m_context;
 	GraphicsBindings                     m_graphics_bindings;
 	PreparedBindings                     m_compute_bindings;

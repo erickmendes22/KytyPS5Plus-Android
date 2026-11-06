@@ -114,6 +114,7 @@ public:
 	[[nodiscard]] bool HasGpuDirtyBytes(uint64_t vaddr, uint64_t size);
 	// Bumped whenever bytes become GPU-written (GPU thread): a page seen without GPU-written
 	// bytes stays so while this is unchanged.
+	[[nodiscard]] uint64_t UnregisterEpoch() const noexcept { return m_unregister_epoch; }
 	[[nodiscard]] uint64_t GpuDirtyGeneration() const {
 		return m_gpu_dirty_generation.load(std::memory_order_acquire);
 	}
@@ -236,6 +237,7 @@ private:
 	std::atomic<uint64_t>                             m_bda_mapped_pages {0};
 	Common::SlotVector<Buffer>                        m_slot_buffers;
 	Common::LeastRecentlyUsedCache<BufferId, uint64_t> m_lru_cache;
+	uint64_t                                          m_unregister_epoch = 0;
 	BufferMap                                         m_buffers;
 	PageTable                                         m_page_table;
 	// KYTY_GPU_PIPELINE: the front's SRT walk queries these while the record thread adds to them;

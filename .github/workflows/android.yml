@@ -282,10 +282,11 @@ jobs:
       - name: Test audio, metadata and memory
         run: ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_vertex_metadata|audio_out2_port|gpu_memory_budget|image_readback_chunk|sh_performance_patches|mfgt_index_transform|mfgt_arena_fix|kernel_mutex_headless|address_fold|virtual_memory_allocation)$'
       - name: Build shader regressions
-        run: cmake --build _Build/regressions --target realtime_clock_tests bindless_shader_topology_tests shader_cfg_tests shader_recompiler_compute_tests resource_materialization_tests demons_souls_idle_arm64_tests --parallel 2
+        run: cmake --build _Build/regressions --target segmented_buffer_tests realtime_clock_tests bindless_shader_topology_tests shader_cfg_tests shader_recompiler_compute_tests resource_materialization_tests demons_souls_idle_arm64_tests --parallel 2
       - name: Run shader regressions
         run: |
           ulimit -c 0
+          _Build/regressions/segmented_buffer_tests
           _Build/regressions/bindless_shader_topology_tests
           _Build/regressions/realtime_clock_tests
           ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_cfg|resource_materialization|demons_souls_idle_arm64)$'

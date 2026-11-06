@@ -173,7 +173,8 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 			Fail(program, "native uniform buffer is not live");
 		}
 		uniform_count += buffer.uniform;
-		const auto slot = live_buffers[index] && !buffer.uniform ? buffer_count++ : UINT32_MAX;
+		const auto slot = live_buffers[index] && !buffer.uniform ? buffer_count : UINT32_MAX;
+        if (live_buffers[index] && !buffer.uniform) buffer_count += buffer.chunk_count;
 		if (buffer.live != live_buffers[index] || (!buffer.uniform && buffer.descriptor_index != slot)) {
 			Fail(program, "native buffer descriptor index does not match shader topology");
 		}
