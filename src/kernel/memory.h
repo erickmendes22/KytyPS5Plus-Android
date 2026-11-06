@@ -221,6 +221,9 @@ bool     TestPlaceholderRangeIsFree(uint64_t vaddr, uint64_t size);
 bool     TestGuestAddressRangeIsOwned(uint64_t vaddr, uint64_t size);
 bool     TestGuestBackingOutsideAddressSpace();
 uint64_t TestGuestBackingSize();
+#if defined(__linux__)
+uint64_t TestGuestBackingAllocatedBytes();
+#endif
 bool     TestGuestFreeRangeBounds();
 #endif
 

@@ -1192,6 +1192,46 @@ void TestRuntimeMemoryOwnerLifecycle() {
 	std::printf("[host]    %-48s ok\n", test);
 }
 
+void TestLargeSparseUploadDoesNotPopulateBacking() {
+#if defined(__linux__)
+	using namespace Libs::LibKernel::Memory;
+	const char* test = "LargeSparseUploadDoesNotPopulateBacking";
+	constexpr uint64_t size = 64ull * 1024 * 1024;
+	void* arena = nullptr;
+	CheckOk(test, KernelMapNamedFlexibleMemory(&arena, size, SceKernelProtCpuRw, 0,
+	                                           "sparse_upload_residency"), "map sparse arena");
+	const auto base = reinterpret_cast<uint64_t>(arena);
+	constexpr std::array<uint64_t, 3> positions {0, 16ull * 1024 * 1024 + 17, size - 1};
+	constexpr std::array<uint8_t, 3> values {0x39, 0x72, 0xa5};
+	for (size_t i = 0; i < positions.size(); ++i)
+		*(reinterpret_cast<uint8_t*>(arena) + positions[i]) = values[i];
+	const auto before = TestGuestBackingAllocatedBytes();
+	std::vector<uint8_t> output(size + 2, 0x55);
+	Check(test, CopySparseMemory(base, output.data() + 1, size), "large upload copy failed");
+	const auto after = TestGuestBackingAllocatedBytes();
+	Check(test, after == before, "upload populated untouched tmpfs backing pages");
+	Check(test, output.front() == 0x55 && output.back() == 0x55, "upload overwrote canaries");
+	for (size_t k = 0; k < positions.size(); ++k) {
+		Check(test, output[positions[k] + 1] == values[k], "upload changed written bytes");
+		output[positions[k] + 1] = 0;
+	}
+	Check(test, std::all_of(output.begin() + 1, output.end() - 1,
+	                       [](uint8_t value) { return value == 0; }),
+	      "upload changed zero holes");
+	// Repeated, unaligned reads must use the correct file offset on every pread chunk.
+	constexpr uint64_t prefix = 37, suffix = 23;
+	std::fill(output.begin(), output.end(), 0x55);
+	Check(test, TryReadSparseBacking(base + prefix, output.data() + 1, size - prefix - suffix),
+	      "unaligned large backing copy failed");
+	Check(test, output[1 + positions[1] - prefix] == values[1] &&
+	                output.front() == 0x55 && output[1 + size - prefix - suffix] == 0x55,
+	      "unaligned upload misplaced data or overwrote canaries");
+	Check(test, TestGuestBackingAllocatedBytes() == before, "repeated upload populated backing");
+	CheckOk(test, KernelMunmap(base, size), "unmap sparse arena");
+	std::printf("[host]    %-48s ok (64 MiB read, zero additional backing blocks)\n", test);
+#endif
+}
+
 void TestCopySparseMemoryMappings() {
 	using namespace Libs::LibKernel::Memory;
 	const char* test = "CopySparseMemoryMappings";
@@ -5076,6 +5116,7 @@ int main(int argc, char** argv) {
 		RunTest(TestBackingReadExcludesWritesAndUnmap);
 		RunTest(TestSparseBackingReadPreservesResidency);
 		RunTest(TestCopySparseMemoryMappings);
+		RunTest(TestLargeSparseUploadDoesNotPopulateBacking);
 		RunTest(TestSparseReadDuringDirectCommit);
 		RunTest(TestDirectMapQueryOffsetAndPartialMunmap);
 		RunTest(TestFlexibleMemoryUsesSharedBacking);
@@ -5130,6 +5171,7 @@ int main(int argc, char** argv) {
 	RunTest(TestGuestAddressSpaceOwnsReservationsBeforeBacking);
 	RunTest(TestSparseBackingReadPreservesResidency);
 	RunTest(TestCopySparseMemoryMappings);
+	RunTest(TestLargeSparseUploadDoesNotPopulateBacking);
 	RunTest(TestSparseReadDuringDirectCommit);
 	RunTest(TestConcurrentBackingReads);
 	RunTest(TestBackingReadExcludesWritesAndUnmap);

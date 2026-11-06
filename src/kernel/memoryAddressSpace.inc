@@ -25,7 +25,7 @@ static bool CoalescePlaceholders(uint64_t vaddr, uint64_t size) {
 
 template <typename Regions, typename Source, typename Gap>
 static void CopySparseRange(const Regions& regions, uint64_t vaddr, void* data, uint64_t size,
-                            Source&& source, Gap&& gap) {
+                            Source&& copy, Gap&& gap) {
 	const auto end     = vaddr + size;
 	auto       mapping = regions.lower_bound(vaddr);
 	if (mapping != regions.begin()) {
@@ -44,7 +44,7 @@ static void CopySparseRange(const Regions& regions, uint64_t vaddr, void* data, 
 		if (cursor < start) {
 			gap(cursor, destination + (cursor - vaddr), start - cursor);
 		}
-		std::memcpy(destination + (start - vaddr), source(entry, start), bytes);
+		copy(entry, start, destination + (start - vaddr), bytes);
 		cursor = start + bytes;
 	}
 	if (cursor < end) {
@@ -180,6 +180,14 @@ public:
 	}
 
 	[[nodiscard]] uint64_t GetBackingSize() const { return m_size; }
+#if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS) && defined(__linux__)
+	uint64_t AllocatedBytesForTest() const {
+		struct stat st {};
+		EXIT_IF(fstat(m_fd, &st) != 0);
+		return static_cast<uint64_t>(st.st_blocks) * 512u;
+	}
+#endif
+
 
 	bool ZeroRange(uint64_t backing_offset, uint64_t size) {
 		if (!IsAvailable() || !RangeOk(backing_offset, size)) {
@@ -296,12 +304,41 @@ public:
 			g_test_backing_read(vaddr, size);
 		}
 #endif
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+		if (size >= 1024 * 1024) {
+			static std::atomic<uint32_t> reports {0};
+			if (reports.fetch_add(1, std::memory_order_relaxed) < 8)
+				LOGF("Kyty sparse backing upload: pread bytes=%" PRIu64
+				     " (untouched tmpfs pages stay sparse)\n", size);
+		}
+#endif
+		bool copied = true;
 		CopySparseRange(m_maps, vaddr, data, size,
-		                [this](const auto& entry, uint64_t start) {
-			                return m_backing_base + (entry.backing_offset + start - entry.vaddr);
+		                [&](const auto& entry, uint64_t start, uint8_t* output, uint64_t bytes) {
+			                const auto offset = entry.backing_offset + start - entry.vaddr;
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+			                // mmap reads of untouched tmpfs pages allocate those pages. Large GPU
+			                // uploads must read holes as zeros without populating a second arena.
+			                // pread observes MAP_SHARED writes and leaves sparse holes unallocated.
+			                if (size >= 1024 * 1024) {
+				                auto file_offset = offset;
+				                while (bytes != 0 && copied) {
+					                const auto count = pread(m_fd, output,
+					                    static_cast<size_t>(std::min<uint64_t>(bytes, 1024 * 1024)),
+					                    static_cast<off_t>(file_offset));
+					                if (count < 0 && errno == EINTR) continue;
+					                if (count <= 0) { copied = false; break; }
+					                output += count;
+					                file_offset += static_cast<uint64_t>(count);
+					                bytes -= static_cast<uint64_t>(count);
+				                }
+				                return;
+			                }
+#endif
+			                std::memcpy(output, m_backing_base + offset, bytes);
 		                },
 		                gap);
-		return true;
+		return copied;
 	}
 
 	bool MapFixed(uint64_t vaddr, uint64_t size, uint64_t backing_offset,
@@ -783,6 +820,10 @@ public:
 	[[nodiscard]] uint64_t GetGranularity() const { return m_granularity; }
 	[[nodiscard]] uint64_t GetBackingBase() const { return m_backing->GetBackingBase(); }
 	[[nodiscard]] uint64_t GetBackingSize() const { return m_backing->GetBackingSize(); }
+#if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS) && defined(__linux__)
+	uint64_t AllocatedBytesForTest() const { return m_backing->AllocatedBytesForTest(); }
+#endif
+
 
 	bool ZeroBacking(uint64_t backing_offset, uint64_t size) {
 		return m_backing->ZeroRange(backing_offset, size);
@@ -849,9 +890,9 @@ public:
 			    if constexpr (copy_private) {
 				    // Backing gaps can contain private mappings or reservations only.
 				    CopySparseRange(m_mapped, start, destination, bytes,
-				                    [](const auto& region, uint64_t address) {
+				                    [](const auto& region, uint64_t address, uint8_t* output, uint64_t length) {
 					                    EXIT_IF(region.type != MappingType::Private);
-					                    return reinterpret_cast<const void*>(address);
+					                    std::memcpy(output, reinterpret_cast<const void*>(address), length);
 				                    },
 				                    zero);
 			    } else {
