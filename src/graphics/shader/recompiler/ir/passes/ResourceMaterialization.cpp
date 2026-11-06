@@ -1752,15 +1752,23 @@ bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& sc
 		buffer.packed_stride = packed_stride;
         // Each Vulkan descriptor is bounded by the device limit. Reserve enough
         // slices for any cache-buffer alignment prefix (the packed offset is a byte).
-        auto bytes = std::max(descriptor.GetSize(), uint64_t {base.max_byte_extent});
+        auto bytes = descriptor.GetSize();
+        // Match FindBuffers: only OOB_SELECT=2 zero-stride vector accesses
+        // need a payload larger than NumRecords. A large instruction offset
+        // on a strided descriptor must remain an OOB access, not enlarge its view.
+        if (bytes != 0 && descriptor.Stride() == 0 && descriptor.OutOfBounds() == 2 && !base.scalar)
+            bytes = std::max(bytes, uint64_t {base.max_byte_extent});
         if (descriptor.NumRecords() == UINT32_MAX)
             bytes = std::min(bytes, uint64_t {256} * 1024 * 1024);
         const uint64_t chunk = program.storage_buffer_chunk_bytes;
         if (chunk != 0 && bytes + 255u > chunk) {
-            if (bytes > UINT32_MAX - 255u)
-                return SpecializationFail("segmented storage buffer exceeds 32-bit byte addressing");
+            // Native buffer byte offsets are 32-bit. Reserve every addressable
+            // slice, even for a huge raw record-count product. FindBuffers may
+            // reduce such a view to its mapped extent; do not reject it before
+            // that existing mapping check or alter the guest descriptor here.
+            const auto addressable = std::min(bytes, uint64_t {1} << 32u);
             buffer.chunk_bytes = static_cast<uint32_t>(chunk);
-            buffer.chunk_count = static_cast<uint32_t>((bytes + 255u + chunk - 1u) / chunk);
+            buffer.chunk_count = static_cast<uint32_t>((addressable + 255u + chunk - 1u) / chunk);
         }
 		buffer.descriptor_format =
 		    base.formatted ? descriptor.Format() : Prospero::BufferFormat::kInvalid;

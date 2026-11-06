@@ -1121,8 +1121,12 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
         if (resource.chunk_bytes == 0) {
             prepared.buffers[index] = native;
         } else {
-            EXIT_IF(native.range > UINT32_MAX ||
-                    native.range > uint64_t {resource.chunk_bytes} * resource.chunk_count);
+            if (native.range > UINT32_MAX ||
+                native.range > uint64_t {resource.chunk_bytes} * resource.chunk_count) {
+                EXIT("segmented storage buffer view unsupported: hash=0x%016" PRIx64
+                     " bytes=%" PRIu64 " chunks=%u chunk_bytes=%u\n", program.shader_hash,
+                     static_cast<uint64_t>(native.range), resource.chunk_count, resource.chunk_bytes);
+            }
             prepared.shader_data[layout.BufferLengthDword() + index] =
                 prepared.buffer_sources[index].size == 0 ? 0u : static_cast<uint32_t>(native.range);
             for (uint32_t chunk = 0; chunk < resource.chunk_count; ++chunk) {

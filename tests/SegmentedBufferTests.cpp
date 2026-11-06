@@ -9,6 +9,8 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include <spirv-tools/libspirv.hpp>
 #include <spirv/unified1/spirv.hpp>
+#include <array>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -75,6 +77,10 @@ void Check(uint32_t bits, bool scalar, bool robust) {
         std::fprintf(stderr, "%s\n", message);
     });
     Require(tools.Validate(spirv), "invalid segmented SPIR-V");
+    static std::array<std::vector<uint32_t>, 5> guarded_modules;
+    auto& guarded = guarded_modules[scalar ? 4u : std::countr_zero(bits) - 3u];
+    if (!robust) guarded = spirv;
+    else Require(spirv == guarded, "driver robustness changed logical segmented access guards");
     Require(program.bindings.BufferSlotCount() == 5, "segmented slots missing");
     Require(program.bindings.segmented_buffers, "logical buffer length omitted");
     std::string disassembly;
@@ -103,7 +109,10 @@ void CheckSpecialization() {
         source.dwords[word] = Value(&values->AppendNewInst(ValueOpcode::GetUserData,
                                                         {Value(static_cast<ScalarReg>(word))}));
     program.descriptor_sources.push_back(source);
-    program.info.buffers.push_back({.source = 0, .read = true, .written = true});
+    // A strided access can carry a wrapped immediate offset. It must not
+    // inflate a small descriptor to 4 GiB during specialization.
+    program.info.buffers.push_back({.source = 0, .max_byte_extent = UINT32_MAX,
+                                    .read = true, .written = true});
     auto plan = ExtractResourcePlan(program);
     Require(plan.storage_buffer_chunk_bytes == program.storage_buffer_chunk_bytes,
             "cached resource plan lost the physical descriptor limit");
@@ -124,6 +133,14 @@ void CheckSpecialization() {
         Require(program.info.buffers[0].chunk_count == expected, "shader lost segmented specialization");
         Require(snapshot.buffers[0].dwords[2] == records, "guest descriptor was truncated");
     }
+    // A huge finite record-count product may describe a much smaller mapped
+    // arena. It must reach the renderer's mapping check with its raw words intact.
+    words[1] = 16u << 16u;
+    words[2] = 0xfffffffeu;
+    Require(MaterializeResources(plan, runtime, snapshot, specialization),
+            "large raw descriptor rejected before mapped-range resolution");
+    Require(specialization.buffers[0].chunk_count == 33u && snapshot.buffers[0].dwords[2] == words[2],
+            "large raw descriptor lost addressable slices or original record count");
     std::puts("SegmentedBufferTests: finite descriptors and cached plan passed");
 }
 int main() {
