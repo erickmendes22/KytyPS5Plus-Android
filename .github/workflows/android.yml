@@ -66,10 +66,18 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Verify the Gradle wrapper used by this APK
+        run: |
+          # This checksum was accepted by Gradle's official wrapper validator.
+          # SDL3's vendored Android example is not an executed build entrypoint.
+          echo "3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98  android/gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
+
       - name: Reuse Gradle dependencies and compiled scripts
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
+          # The active wrapper is pinned and checked immediately above.
+          validate-wrappers: false
 
       - name: Android NDK
         if: steps.native.outputs.reused != 'true'
