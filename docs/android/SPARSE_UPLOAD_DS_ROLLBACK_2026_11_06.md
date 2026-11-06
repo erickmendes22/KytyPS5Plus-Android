@@ -12,10 +12,12 @@ written page grew backing allocation from 4 KiB to 128 MiB with mapped reads;
 pread retained 4 KiB and returned identical zero-filled holes.
 
 For sparse transfers >=1 MiB, GuestBackingStore now reads each mapped backing span
-with pread, handles EINTR/short reads, and reports read errors rather than falling
+using SEEK_DATA/SEEK_HOLE extents and pread only for actual data, handles EINTR/short
+reads, and reports read errors rather than falling
 back to mapped reads. Written MAP_SHARED bytes and physical aliases retain their
 file offsets. Reserved holes remain zero; private mappings retain the original
-copy path. Smaller reads and Windows retain memcpy. This preserves full shader
+copy path. Smaller reads and Windows retain memcpy. Kernels without extent seeks fall back
+to pread. No hole map is cached across transfers, so later guest writes remain visible. This preserves full shader
 buffer bounds and the existing 32 MiB staging window; it does not eliminate the
 Vulkan mirror or guarantee the game fits the device’s memory.
 
@@ -35,3 +37,11 @@ shader compilation, and rebind-after-join remain.
 Incremental GitHub caching remains enabled. Native memory changes must invalidate
 the complete core cache; unchanged FEX integration and dependencies can be reused.
 Android runtime outcomes still require testing the APK on the affected device.
+
+The first full-emulator run (83b16fe5) failed the block-count assertion; a follow-up
+with additional host diagnostics (603bf392) passed the entire memory and shader
+suites. The cause of that difference was not established. The final path explicitly
+skips file holes instead of depending only on pread behavior, and adds a standalone
+production-header test for complete content, offsets beyond 4 GiB, unaligned
+transfers, concurrent readers, invalid ranges and later MAP_SHARED writes. The
+full-emulator allocation assertion remains unchanged and must pass before APK build.

@@ -317,6 +317,11 @@ jobs:
           path: ~/.cache/ccache
           key: ccache-native-tests-${{ github.sha }}
           restore-keys: ccache-native-tests-
+      - name: Test sparse backing reads preserve holes and aliases
+        run: |
+          g++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread -Isrc tests/manual/sparse_backing_read_test.cpp -o /tmp/kyty-sparse-backing-test
+          /tmp/kyty-sparse-backing-test
+
       - name: Test native cache compatibility and integrity guards
         run: python3 -m unittest discover -s android/ci -p 'test_native_cache.py' -v
 

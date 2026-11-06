@@ -59,6 +59,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include "kernel/sparseBackingRead.h"
 #endif
 
 namespace Libs::LibKernel::Memory {

@@ -308,7 +308,7 @@ public:
 		if (size >= 1024 * 1024) {
 			static std::atomic<uint32_t> reports {0};
 			if (reports.fetch_add(1, std::memory_order_relaxed) < 8)
-				LOGF("Kyty sparse backing upload: pread bytes=%" PRIu64
+				LOGF("Kyty sparse backing upload: file extents bytes=%" PRIu64
 				     " (untouched tmpfs pages stay sparse)\n", size);
 		}
 #endif
@@ -321,21 +321,7 @@ public:
 			                // uploads must read holes as zeros without populating a second arena.
 			                // pread observes MAP_SHARED writes and leaves sparse holes unallocated.
 			                if (size >= 1024 * 1024) {
-#if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
-				                std::fprintf(stderr, "[sparse-file-read] request=%" PRIu64
-				                             " span=%" PRIu64 " offset=%" PRIu64 "\n", size, bytes, offset);
-#endif
-				                auto file_offset = offset;
-				                while (bytes != 0 && copied) {
-					                const auto count = pread(m_fd, output,
-					                    static_cast<size_t>(std::min<uint64_t>(bytes, 1024 * 1024)),
-					                    static_cast<off_t>(file_offset));
-					                if (count < 0 && errno == EINTR) continue;
-					                if (count <= 0) { copied = false; break; }
-					                output += count;
-					                file_offset += static_cast<uint64_t>(count);
-					                bytes -= static_cast<uint64_t>(count);
-				                }
+				                copied = copied && SparseBackingRead::Read(m_fd, output, offset, bytes, m_size);
 				                return;
 			                }
 #endif
