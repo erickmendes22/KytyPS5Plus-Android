@@ -301,7 +301,7 @@ bool BringUpTranslator() {
             g_probe_module_base = reinterpret_cast<uint64_t>(module.dli_fbase);
         signals->RegisterHostSignalHandlerFirst(SIGURG, SampleGuestThread, true);
         Cpu::ThreadProbe::request.store(RequestGuestProbe, std::memory_order_release);
-        std::printf("[DS_SAMPLE] marked SIGURG sampler installed; stale guest threads only\n");
+        std::printf("[DS_SAMPLE] marked SIGURG sampler installed; stale guest execution and HLE waits; bounded frame-chain reporting\n");
     }
 	return true;
 }
