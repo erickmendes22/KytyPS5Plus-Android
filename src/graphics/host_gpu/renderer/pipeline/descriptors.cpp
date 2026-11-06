@@ -1090,7 +1090,15 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			if (size >= (uint64_t {1} << 30u) || descriptor.NumRecords() == UINT32_MAX) {
 				size = Libs::LibKernel::Memory::ClampRangeSize(address, size);
 			}
-			source = {address, size, cache.FindBuffer(address, size)};
+			// A segmented shader needs distinct descriptor bindings, not a single multi-GiB
+			// GPU allocation. Defer lookup for page-aligned large ranges: RebindBuffers
+			// materializes each already-declared chunk separately, preserving the exact
+			// shader-visible address range and allowing the cache to retire chunks.
+			const bool split_chunks =
+			    metadata.chunk_count > 1 && metadata.chunk_bytes >= BufferCache::CACHING_PAGESIZE &&
+			    metadata.chunk_bytes % BufferCache::CACHING_PAGESIZE == 0 &&
+			    address % BufferCache::CACHING_PAGESIZE == 0 && size > metadata.chunk_bytes;
+			source = {address, size, split_chunks ? BufferId {} : cache.FindBuffer(address, size)};
 		}
 	}
 }
@@ -1115,8 +1123,53 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	for (const auto& resource: program.info.buffers) {
 		const auto index = resource.descriptor_index;
 		if (index == UINT32_MAX) continue;
+		const auto& source = prepared.buffer_sources[index];
+		// This path avoids creating one 2.67-GiB VkBuffer for Wolverine's three
+		// 1-GiB SSBO descriptor slots. It is restricted to page-aligned chunks:
+		// the page-granularity cache would otherwise merge adjacent, overlapping
+		// allocations back into one giant buffer. All shader-visible bytes remain
+		// bound; this is not a blind clamp or a skipped draw.
+		const bool split_chunks =
+		    source.address != 0 && source.size > resource.chunk_bytes &&
+		    resource.chunk_count > 1 &&
+		    resource.chunk_bytes >= BufferCache::CACHING_PAGESIZE &&
+		    resource.chunk_bytes % BufferCache::CACHING_PAGESIZE == 0 &&
+		    source.address % BufferCache::CACHING_PAGESIZE == 0;
+		if (split_chunks) {
+			if (source.size > UINT32_MAX ||
+			    source.size > uint64_t {resource.chunk_bytes} * resource.chunk_count) {
+				EXIT("segmented storage buffer range exceeds declared shader chunks\\n");
+			}
+			prepared.shader_data[layout.BufferLengthDword() + index] =
+			    static_cast<uint32_t>(source.size);
+			auto& cache = m_context.GetBufferCache();
+			for (uint32_t chunk = 0; chunk < resource.chunk_count; ++chunk) {
+				const uint64_t begin = uint64_t {chunk} * resource.chunk_bytes;
+				if (begin >= source.size) {
+					prepared.buffers[index + chunk] = {
+					    cache.GetBuffer(NULL_BUFFER_ID).Handle(), 0, 16};
+					continue;
+				}
+				const uint64_t address = source.address + begin;
+				const uint64_t bytes = std::min<uint64_t>(resource.chunk_bytes, source.size - begin);
+				PreparedBindings::BufferSource slice {address, bytes, cache.FindBuffer(address, bytes)};
+				uint32_t adjustment = 0;
+				const auto native_chunk = NativeStorageBuffer(m_context, slice, resource, adjustment);
+				if (adjustment != 0 || native_chunk.range != bytes) {
+					EXIT("segmented storage buffer chunk alignment changed unexpectedly\\n");
+				}
+				prepared.buffers[index + chunk] = native_chunk;
+			}
+			static std::atomic<uint32_t> reported {0};
+			if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+				std::printf("Kyty split segmented SSBO: hash=0x%016" PRIx64
+				            " bytes=%" PRIu64 " chunks=%u chunk_bytes=%u\\n",
+				            program.shader_hash, source.size, resource.chunk_count, resource.chunk_bytes);
+			}
+			continue;
+		}
 		uint32_t buffer_offset = 0;
-        const auto native = NativeStorageBuffer(m_context, prepared.buffer_sources[index],
+        const auto native = NativeStorageBuffer(m_context, source,
                                                 resource, buffer_offset);
         if (resource.chunk_bytes == 0) {
             prepared.buffers[index] = native;
