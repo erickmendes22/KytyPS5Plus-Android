@@ -32,11 +32,19 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Reuse audited native core for Android-only changes
+      - name: Compute native compatibility key
+        id: native_key
+        run: python3 android/ci/native_cache.py key
+
+      - name: Restore verified native core
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/native
+          key: kyty-native-arm64-v1-${{ runner.os }}-${{ steps.native_key.outputs.key }}
+
+      - name: Verify cached native core
         id: native
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 android/ci/reuse_native.py
+        run: python3 android/ci/native_cache.py verify
 
       - name: Free disk space
         run: |
@@ -57,6 +65,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+
+      - name: Reuse Gradle dependencies and compiled scripts
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
 
       - name: Android NDK
         if: steps.native.outputs.reused != 'true'
@@ -101,6 +114,22 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK }}
         run: bash scripts/android/build-ffmpeg-android.sh "$PWD/_Build/ffmpeg-android"
 
+      - name: Restore FEX source and compiled dependencies
+        if: steps.native.outputs.reused != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            _Build/android/fex
+            _Build/android/kyty_fex-prefix
+          key: kyty-fex-arm64-v1-${{ runner.os }}-${{ env.NDK_VERSION }}-${{ hashFiles('CMakeLists.txt', 'src/cpu/fex.cmake', 'src/cpu/fexSymbolPrefix.h', 'src/cpu/patches/**') }}
+
+      - name: Restore pinned dependency sources
+        if: steps.native.outputs.reused != 'true'
+        uses: actions/cache@v4
+        with:
+          path: _Build/android/_deps/*-src
+          key: kyty-deps-arm64-v1-${{ hashFiles('3rdparty/CMakeLists.txt', '3rdparty/patches/**', '.gitmodules') }}
+
       - name: Configure
         if: steps.native.outputs.reused != 'true'
         run: |
@@ -129,6 +158,7 @@ jobs:
           cp _Build/android/3rdparty/SDL3/libSDL3.so $ST/3rdparty/SDL3/
           cp _Build/android/3rdparty/libadrenotools/src/hook/*.so $ST/3rdparty/libadrenotools/src/hook/
           ls -la $ST $ST/3rdparty/SDL3 $ST/3rdparty/libadrenotools/src/hook
+          python3 android/ci/native_cache.py seal
 
       - name: Version
         id: version
@@ -193,6 +223,13 @@ jobs:
         run: |
           python3 scripts/android/audit-apk.py KytyPS5-Plus-*.apk
           python3 android/ci/check_guest_pointer_abi.py KytyPS5-Plus-*.apk
+
+      - name: Save audited native core for matching future builds
+        if: steps.native.outputs.reused != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/native
+          key: kyty-native-arm64-v1-${{ runner.os }}-${{ steps.native_key.outputs.key }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -272,6 +309,15 @@ jobs:
           path: ~/.cache/ccache
           key: ccache-native-tests-${{ github.sha }}
           restore-keys: ccache-native-tests-
+      - name: Test native cache compatibility and integrity guards
+        run: python3 -m unittest discover -s android/ci -p 'test_native_cache.py' -v
+
+      - name: Restore pinned host dependency sources
+        uses: actions/cache@v4
+        with:
+          path: _Build/regressions/_deps/*-src
+          key: kyty-deps-host-v1-${{ runner.os }}-${{ hashFiles('3rdparty/CMakeLists.txt', '3rdparty/patches/**', '.gitmodules') }}
+
       - name: Verify SIGKILL provenance filter
         run: |
           g++ -std=c++20 -pthread -Isrc tests/manual/signal_origin_probe.cpp -o /tmp/signal-origin-test

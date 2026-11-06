@@ -448,6 +448,8 @@ void TestBoundedUploadWindows() {
       Check(!tracker.IsRegionCpuModified(base, expected.size()), "upload left CPU-dirty bytes behind");
       Check(tracker.IsRegionGpuModified(base, expected.size()) == written,
             "bounded upload changed GPU ownership semantics");
+      // The simulated GPU writer has completed; release its claim before unmapping.
+      if (written) tracker.UnmarkRegionAsGpuModified(base, expected.size());
       tracker.UntrackMemory(base, expected.size());
       Release(memory);
     }
