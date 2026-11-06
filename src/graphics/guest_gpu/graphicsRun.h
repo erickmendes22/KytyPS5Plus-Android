@@ -45,6 +45,7 @@ public:
 	// Wait for guest command processing, including all compute queues (not native GPU completion).
 	void              WaitForIdle();
 	[[nodiscard]] int GetFrameNum() const;
+    void DumpQueueDiagnostics();
 
 	[[nodiscard]] static bool IsGpuThread() noexcept;
 	// KYTY_GPU_PIPELINE's record thread runs renderer work for the GPU thread: it is a GPU thread

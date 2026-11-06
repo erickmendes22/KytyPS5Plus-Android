@@ -205,6 +205,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Test per-thread HLE diagnostics and nested callbacks
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -pthread -Isrc tests/manual/hle_thread_diagnostics_test.cpp -o /tmp/hle-thread-diagnostics-test
+          /tmp/hle-thread-diagnostics-test
       - name: Validate Vulkan descriptor pool contract
         run: python3 scripts/android/check_descriptor_pool_contract.py
       - name: Check Vulkan sampler min/max capability-gated policy
@@ -260,10 +264,11 @@ jobs:
       - name: Test audio, metadata and memory
         run: ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_vertex_metadata|audio_out2_port|gpu_memory_budget|image_readback_chunk|sh_performance_patches|mfgt_index_transform|mfgt_arena_fix|kernel_mutex_headless|address_fold|virtual_memory_allocation)$'
       - name: Build shader regressions
-        run: cmake --build _Build/regressions --target shader_cfg_tests shader_recompiler_compute_tests resource_materialization_tests demons_souls_idle_arm64_tests --parallel 2
+        run: cmake --build _Build/regressions --target bindless_shader_topology_tests shader_cfg_tests shader_recompiler_compute_tests resource_materialization_tests demons_souls_idle_arm64_tests --parallel 2
       - name: Run shader regressions
         run: |
           ulimit -c 0
+          _Build/regressions/bindless_shader_topology_tests
           ctest --test-dir _Build/regressions --output-on-failure --timeout 180 -R '^(shader_cfg|resource_materialization|demons_souls_idle_arm64)$'
           timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only
           timeout 600 _Build/regressions/shader_recompiler_compute_tests --compile-only-fast-paths

@@ -2,6 +2,7 @@
 // CallFrame that exposes the trapped guest call to native thunks.
 
 #include "cpu/guestCpuFex.h"
+#include "cpu/hleThreadDiagnostics.h"
 
 #include "common/perfStats.h"
 #include "loader/guestHostFunction.h"
@@ -41,6 +42,7 @@ std::atomic<uint64_t> g_boot_ring_sequence {0};
 // Sample successful lock/unlock transitions; preserve every other HLE call and all mutex errors.
 std::atomic<uint64_t> g_mutex_calls {0};
 constexpr uint64_t kMutexSampleMask = 4095;
+std::atomic<uint64_t> g_idle_calls {0};
 std::atomic<bool>     g_boot_ring_enabled {false};
 char*                 g_boot_ring = nullptr;
 std::once_flag        g_boot_ring_once;
@@ -226,13 +228,16 @@ uint64_t HleSyscall(FEXCore::Core::CpuStateFrame* frame, uint64_t arg0, uint64_t
 	const bool is_mutex = name == "LibKernel::PthreadMutexLock" ||
 	                      name == "LibKernel::PthreadMutexUnlock";
 	const bool enabled = g_boot_ring_enabled.load(std::memory_order_acquire);
-	const bool sampled = enabled && (!is_mutex ||
+	const bool is_idle = name == "Demon's Souls idle worker host backoff";
+	const bool sampled = enabled && (!is_idle ||
+	    (g_idle_calls.fetch_add(1, std::memory_order_relaxed) & kMutexSampleMask) == 0) && (!is_mutex ||
 	    (g_mutex_calls.fetch_add(1, std::memory_order_relaxed) & kMutexSampleMask) == 0);
 	uint64_t caller = 0;
-	if (enabled) {
+	if (enabled || Cpu::HleDiagnostics::Enabled()) {
 		std::memcpy(&caller, reinterpret_cast<const void*>(guest_rsp + 8), sizeof(caller));
 		if (sampled) RecordBootHle("ENTER", id, name, caller, arg0, arg1, arg2);
 	}
+	Cpu::HleDiagnostics::Scope diagnostic(id, name, caller, arg0, arg1, arg2);
 	FexCallFrame call_frame(frame, {arg0, arg1, arg2, arg3, arg4, arg5}, guest_rsp + kStackSlotOffset, sve256);
 	thunk(call_frame);
 	if (enabled) {

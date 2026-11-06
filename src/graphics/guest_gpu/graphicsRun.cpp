@@ -373,6 +373,24 @@ void GuestGpu::SuspendPoint() {
     m_done_num++;
 }
 
+void GuestGpu::DumpQueueDiagnostics() {
+    if (!m_queue_mutex.TryLock()) {
+        ::printf("[DS_QUEUE] queue mutex busy\n");
+        return;
+    }
+    ::printf("[DS_QUEUE] pending=%u host_commands=%zu processing=%d frame=%d\n",
+        m_submission_count, m_commands.size(), m_processing ? 1 : 0, m_done_num.load());
+    for (uint32_t i = 0; i < m_queues.size(); ++i) {
+        if (m_queues[i].empty()) continue;
+        const auto& front = m_queues[i].front();
+        ::printf("[DS_QUEUE] queue=%u depth=%zu type=%u started=%d blocked=%d graphics_done=%d constant_done=%d words=%zu flip=%llu\n",
+            i, m_queues[i].size(), static_cast<unsigned>(front.type), front.started,
+            front.blocked, front.command_complete, front.constant_complete,
+            front.commands.size(), static_cast<unsigned long long>(front.flip_request_id));
+    }
+    m_queue_mutex.Unlock();
+}
+
 int GuestGpu::GetFrameNum() const {
 	return m_done_num;
 }

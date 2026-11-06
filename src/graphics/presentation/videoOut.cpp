@@ -1,6 +1,7 @@
 #include "graphics/presentation/videoOut.h"
 
 #include "common/abi.h"
+#include "cpu/hleThreadDiagnostics.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -221,6 +222,7 @@ public:
 	void Complete(uint64_t request_id);
 	void WaitForSubmitSlot(VideoOutConfig& cfg);
 	bool Flip(uint32_t micros);
+    void DumpDiagnostics();
 	void GetFlipStatus(VideoOutConfig& cfg, VideoOutFlipStatus& out);
 	void Wait(VideoOutConfig& cfg, int index);
 
@@ -929,6 +931,11 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
                     static_cast<unsigned long long>(sample_guest_flips),
                     static_cast<unsigned long long>(sample_empty_vblanks),
                     m_renderer.GetGpu().GetFrameNum());
+                if (sample_guest_flips == 0 && m_renderer.GetGpu().GetFrameNum() > 0) {
+                    m_renderer.GetGpu().DumpQueueDiagnostics();
+                    m_flip_queue.DumpDiagnostics();
+                    Cpu::HleDiagnostics::Dump();
+                }
                 sample_vblanks = sample_guest_flips = sample_empty_vblanks = 0;
                 sample_start = now;
             }
@@ -1217,6 +1224,22 @@ void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
 	while (has_request()) {
 		m_done_cond_var.Wait(&m_mutex);
 	}
+}
+
+void FlipQueue::DumpDiagnostics() {
+    if (!m_mutex.TryLock()) {
+        ::printf("[DS_FLIP] queue mutex busy\n");
+        return;
+    }
+    ::printf("[DS_FLIP] gpu_requests=%zu cpu_requests=%zu cancelled=%zu processing=%d\n",
+        m_requests.size(), m_cpu_requests.size(), m_cancelled_requests.size(), m_processing);
+    for (const auto& request : m_requests) {
+        ::printf("[DS_FLIP] id=%llu group=%llu state=%u index=%d frame=%d\n",
+            static_cast<unsigned long long>(request.id),
+            static_cast<unsigned long long>(request.group),
+            static_cast<unsigned>(request.state), request.index, request.frame != nullptr);
+    }
+    m_mutex.Unlock();
 }
 
 bool FlipQueue::Flip(uint32_t micros) {

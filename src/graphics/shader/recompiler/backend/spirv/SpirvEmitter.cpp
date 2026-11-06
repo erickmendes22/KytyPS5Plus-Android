@@ -192,6 +192,16 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 		    (image.mip_mode != IR::ImageMipMode::Dynamic && image.mip_count != 1u)) {
 			Fail(program, "native shader plan has an invalid image mip descriptor count");
 		}
+        // Bindless images live in the shared set 1 table, not the stage-local
+        // set 0 arrays. Match DefineResources without weakening native slots.
+        if (image.bindless) {
+            if (!program.bindless_images ||
+                image.resource_class != IR::ImageResourceClass::Sampled ||
+                image.indirect_root == IR::ImageResource::NoIndirectImage) {
+                Fail(program, "invalid bindless image topology");
+            }
+            continue;
+        }
 		auto& count = expected[static_cast<size_t>(*kind)];
 		if (image.descriptor_index != count) {
 			Fail(program, "native image descriptor index does not match shader topology");
