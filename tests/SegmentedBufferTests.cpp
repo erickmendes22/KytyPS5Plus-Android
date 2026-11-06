@@ -6,6 +6,7 @@
 #include "graphics/shader/shader.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/ir/passes/ShaderInfoCollection.h"
+#include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include <spirv-tools/libspirv.hpp>
 #include <spirv/unified1/spirv.hpp>
 #include <cstdio>
@@ -41,11 +42,16 @@ void Check(uint32_t bits, bool scalar, bool robust) {
     resource.scalar = scalar;
     program.info.buffers.push_back(resource);
     program.memory_info.push_back({.kind = scalar ? ResourceKind::ScalarBuffer : ResourceKind::Buffer,
-                                   .data_bits = bits, .offen = true});
+                                   .data_dwords = bits == 64 ? 2u : 1u,
+                                   .data_bits = bits == 64 ? 32u : bits, .offen = true});
     if (scalar) {
         auto& load = block->AppendNewInst(ValueOpcode::ReadConstBuffer, {Value(&handle), Value(&offset)});
         load.SetFlags(MemoryFlags{0u, 0u});
         block->AppendNewInst(ValueOpcode::ReferenceU32, {Value(&load)});
+    } else if (bits == 64) {
+        auto& atomic = block->AppendNewInst(ValueOpcode::BufferAtomicIAdd64,
+            {Value(&handle), Value(0u), Value(&offset), Value(0u), Value(uint64_t {1}), Value(true)});
+        atomic.SetFlags(MemoryFlags{0u, 0u});
     } else {
         const auto load_op = bits == 8 ? ValueOpcode::LoadBufferU8 :
                              bits == 16 ? ValueOpcode::LoadBufferU16 : ValueOpcode::LoadBufferU32;
@@ -77,20 +83,48 @@ void Check(uint32_t bits, bool scalar, bool robust) {
             "no dynamic slice selection");
     Require(disassembly.find("OpULessThan") != std::string::npos,
             "logical bounds bypassed by robust-buffer optimization");
-    // Check exact reconstruction around each slice boundary for every alignment prefix.
-    for (uint32_t prefix = 0; prefix < 256; ++prefix) {
-        const uint32_t bytes = 333 + prefix;
-        for (uint32_t byte = prefix; byte < bytes; byte += bits / 8) {
-            const auto element = byte / (bits / 8);
-            const auto elements_per_chunk = 128 / (bits / 8);
-            const auto chunk = element / elements_per_chunk;
-            const auto local = element % elements_per_chunk;
-            Require(chunk * 128 + local * (bits / 8) == byte / (bits / 8) * (bits / 8),
-                    "upper slice address changed");
-            Require(chunk < 5, "slice selection exceeds reserved descriptors");
-        }
-    }
+    Require(disassembly.find("OpArrayLength") == std::string::npos,
+            "bounds use the first slice instead of the full logical buffer");
     std::printf("SegmentedBufferTests: bits=%u scalar=%u robust=%u passed\n", bits, scalar, robust);
+}
+void CheckSpecialization() {
+    using namespace ShaderRecompiler::IR;
+    Program program;
+    program.stage = ShaderType::Compute;
+    program.srt_plan_complete = program.resource_tracking_complete = true;
+    program.storage_buffer_chunk_bytes = 128u * 1024 * 1024;
+    auto block = std::make_unique<Block>();
+    auto* values = block.get();
+    program.blocks.push_back(values);
+    program.block_storage.push_back(std::move(block));
+    DescriptorSource source;
+    source.dword_count = 4;
+    for (uint32_t word = 0; word < 4; ++word)
+        source.dwords[word] = Value(&values->AppendNewInst(ValueOpcode::GetUserData,
+                                                        {Value(static_cast<ScalarReg>(word))}));
+    program.descriptor_sources.push_back(source);
+    program.info.buffers.push_back({.source = 0, .read = true, .written = true});
+    auto plan = ExtractResourcePlan(program);
+    Require(plan.storage_buffer_chunk_bytes == program.storage_buffer_chunk_bytes,
+            "cached resource plan lost the physical descriptor limit");
+    std::array<uint32_t, 4> words {0x1000u, 1u << 16u, 0u, 3u << 28u};
+    SrtRuntime runtime {.user_data = words};
+    ResourceSnapshot snapshot;
+    ResourceSpecialization specialization;
+    for (const auto records: {4096u, 128u * 1024 * 1024 - 255u,
+                              128u * 1024 * 1024, 192u * 1024 * 1024,
+                              300u * 1024 * 1024}) {
+        words[2] = records;
+        Require(MaterializeResources(plan, runtime, snapshot, specialization),
+                "finite oversized descriptor rejected by resource materialization");
+        const auto expected = records <= 128u * 1024 * 1024 - 255u ? 1u :
+                              records <= 256u * 1024 * 1024 - 255u ? 2u : 3u;
+        Require(specialization.buffers[0].chunk_count == expected, "wrong descriptor slice count");
+        ApplyResourceSpecialization(program, specialization);
+        Require(program.info.buffers[0].chunk_count == expected, "shader lost segmented specialization");
+        Require(snapshot.buffers[0].dwords[2] == records, "guest descriptor was truncated");
+    }
+    std::puts("SegmentedBufferTests: finite descriptors and cached plan passed");
 }
 int main() {
     Common::InitializeThreads();
@@ -102,8 +136,9 @@ int main() {
     subsystems.Initialize<Log::Lifecycle>();
     subsystems.Initialize<Libs::LibKernel::Memory::Lifecycle>();
     ShaderInit();
+    CheckSpecialization();
     for (bool robust: {false, true}) {
-        for (uint32_t bits: {8u, 16u, 32u}) Check(bits, false, robust);
+        for (uint32_t bits: {8u, 16u, 32u, 64u}) Check(bits, false, robust);
         Check(32u, true, robust);
     }
 }

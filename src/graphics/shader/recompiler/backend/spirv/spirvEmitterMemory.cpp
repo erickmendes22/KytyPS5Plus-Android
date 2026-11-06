@@ -1513,7 +1513,7 @@ uint32_t EmitBufferAtomic64(ValueEmitContext& ctx, const IR::Inst& inst) {
 	    state, ctx.Arg(inst, inst.NumArgs() - 1), TypeU64(state), ConstantU64(state, 0), [&]() {
 		    const auto resource =
 		        PrepareStorageBufferResourceAccess(state, mem, state.storage_buffers[3]);
-		    const auto byte_address = ByteAddress(ctx, inst, mem);
+		    const auto byte_address = ByteAddress(ctx, inst, mem, resource.byte_offset);
 		    const auto index = Binary(state, spv::OpShiftRightLogical, TypeU32(state), byte_address,
 		                              ConstantU32(state, 3u));
 		    return EmitValueOrDefaultIfCondition(
