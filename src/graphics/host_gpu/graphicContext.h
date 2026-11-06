@@ -97,6 +97,7 @@ struct GraphicContext {
 	uint32_t                           min_subgroup_size                     = 0;
 	uint32_t                           max_subgroup_size                     = 0;
 	uint32_t                           max_push_descriptors                  = 0;
+	uint32_t                           device_clock_period_ps                = 0;
 	vk::ShaderStageFlags               required_subgroup_size_stages         = {};
 	vk::ShaderStageFlags               subgroup_supported_stages             = {};
 	vk::SubgroupFeatureFlags           subgroup_supported_operations         = {};

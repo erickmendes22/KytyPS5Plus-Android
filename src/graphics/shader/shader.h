@@ -452,6 +452,8 @@ struct ShaderDeviceFeatures {
 	// Diagnostics (--render-scale-flags): leave gl_FragCoord / texel coordinates untouched.
 	bool render_scale_keep_fragcoord = false;
 	bool render_scale_keep_texels    = false;
+	// Enabled VK_KHR_shader_clock device-clock tick; zero retains the old fallback.
+	uint32_t device_clock_period_ps = 0;
 };
 
 // ShaderDeviceFeatures::bvh_emulation bits.

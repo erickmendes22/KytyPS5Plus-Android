@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 #include "common/logging/log.h"
+#include "graphics/shader/realtimeClockPolicy.h"
 
 #include <algorithm>
 #include <array>
@@ -1288,6 +1289,24 @@ uint32_t EmitGetShaderBase(ValueEmitContext& ctx) {
 	// Guest S_GETPC values stay shader-relative in SPIR-V, matching the runtime ABI. The
 	// runtime descriptor evaluator supplies the mapped shader base for host-side planning.
 	return ctx.Def(IR::Value(uint64_t {0}));
+}
+
+uint32_t EmitReadRealtimeClock(ValueEmitContext& ctx, const IR::Inst& /*inst*/) {
+	auto& state = ctx.state;
+	const auto period = state.device_features.device_clock_period_ps;
+	if (!period) {
+		// Preserve the prior unsupported-device behavior; never emit a clock
+		// capability unless it was queried and enabled on the logical device.
+		static std::atomic_flag warned = ATOMIC_FLAG_INIT;
+		if (!warned.test_and_set(std::memory_order_relaxed))
+			Log::WriteToConsoleAndLog("Warning: S_MEMREALTIME retains UINT64_MAX fallback: shaderDeviceClock unavailable.\n");
+		return ctx.Def(IR::Value(UINT64_MAX));
+	}
+	state.builder.RequireExtension("SPV_KHR_shader_clock");
+	state.builder.RequireCapability(spv::CapabilityShaderClockKHR);
+	const auto clock = Unary(state, spv::OpReadClockKHR, TypeU64(state),
+	                         ConstantU32(state, spv::ScopeDevice));
+	return EmitShiftRightLogical64(ctx, clock, IR::Value(RealtimeClock::Shift(period)));
 }
 
 void EmitUnreachable(ValueEmitContext& ctx, const IR::Inst& inst) {

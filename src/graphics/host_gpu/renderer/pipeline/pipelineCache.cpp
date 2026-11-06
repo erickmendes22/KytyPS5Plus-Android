@@ -621,6 +621,7 @@ struct PipelineCache::ProgramCache {
 		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_FRAGCOORD) != 0,
 		         .render_scale_keep_texels =
 		             (Config::GetRenderScaleFlags() & Config::RENDER_SCALE_FLAG_KEEP_TEXELS) != 0,
+		         .device_clock_period_ps = graphics.device_clock_period_ps,
 		};
 		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
 			if ((input_info.bvh_live & 0x80u) != 0u) {
@@ -1098,7 +1099,7 @@ struct PipelineCache::ProgramCache {
             f.constant_lane_broadcast, f.subgroup_size_min,
             f.compute_required_subgroup_min, f.compute_required_subgroup_max,
             f.first_lane_value_sets, f.bvh_emulation) + fmt::format(" ftz32={} pslive={} rswz={} fud={}", f.ftz32_ops, f.pixel_live_election, f.relative_swizzle, f.fold_user_depth) +
-            fmt::format(" loopguard={}/{} bindless_images={}",
+            fmt::format(" clock_ps={} loopguard={}/{} bindless_images={}", f.device_clock_period_ps,
                         LoopGuard::Spec() != nullptr ? LoopGuard::Spec() : "",
                         LoopGuard::Limit(), options.bindless_images);
 		return XXH3_64bits(text.data(), text.size());

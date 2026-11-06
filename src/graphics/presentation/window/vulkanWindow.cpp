@@ -12,6 +12,7 @@
 #include "common/timer.h"
 #include "graphics/host_gpu/gpuFatal.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/shader/realtimeClockPolicy.h"
 #include "graphics/host_gpu/renderer/image/ubwcProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -493,6 +494,12 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	}
 	const bool image_atomic_int64_extension =
 	    HasExtension(device_extensions, VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME);
+	const bool shader_clock_extension = HasExtension(device_extensions, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
+	vk::PhysicalDeviceShaderClockFeaturesKHR shader_clock {};
+	if (shader_clock_extension) {
+		shader_clock.pNext = supported_features2.pNext;
+		supported_features2.pNext = &shader_clock;
+	}
 	vk::PhysicalDeviceShaderImageAtomicInt64FeaturesEXT image_atomic_int64 {};
 	if (image_atomic_int64_extension) {
 		image_atomic_int64.pNext = supported_features2.pNext;
@@ -734,6 +741,12 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	    feedback_extensions && feedback_layout.attachmentFeedbackLoopLayout &&
 	    feedback_dynamic.attachmentFeedbackLoopDynamicState;
 	graphics.maintenance8_enabled = maintenance8_extension && maintenance8.maintenance8;
+	graphics.device_clock_period_ps = RealtimeClock::PeriodPs(
+	    shader_clock_extension, shader_clock.shaderDeviceClock == VK_TRUE,
+	    graphics.physical_device_properties.limits.timestampPeriod);
+	std::printf("[SHADER_CLOCK] shader_device_clock=%d period_ps=%u shift=%u\n",
+	            graphics.device_clock_period_ps != 0, graphics.device_clock_period_ps,
+	            RealtimeClock::Shift(graphics.device_clock_period_ps));
 	LOGF("Vulkan maintenance8 support: %s\n",
 	     graphics.maintenance8_enabled ? "true" : "false");
 	LOGF("Vulkan depth feedback support: %s\n",
@@ -914,6 +927,11 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	if (graphics.maintenance8_enabled) {
 		maintenance8.pNext = const_cast<void*>(create_info.pNext);
 		create_info.pNext = &maintenance8;
+	}
+	if (graphics.device_clock_period_ps != 0u) {
+		shader_clock.shaderSubgroupClock = VK_FALSE;
+		shader_clock.pNext = const_cast<void*>(create_info.pNext);
+		create_info.pNext = &shader_clock;
 	}
 	if (executable_info_extension && executable_info.pipelineExecutableInfo == VK_TRUE) {
 		executable_info.pNext = const_cast<void*>(create_info.pNext);
@@ -1337,6 +1355,7 @@ void WindowContext::CreateVulkan() {
 		}
 		for (const auto* extension: {VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
 		                             VK_KHR_MAINTENANCE_8_EXTENSION_NAME,
+		                             VK_KHR_SHADER_CLOCK_EXTENSION_NAME,
 		                             VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME,
 		                             VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME,
 		                             VK_EXT_MESH_SHADER_EXTENSION_NAME,

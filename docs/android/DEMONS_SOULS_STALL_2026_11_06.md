@@ -44,3 +44,22 @@ path through KYTY_GUEST_FRAME_TRACE=1. The existing DS-prefixed record format is
 retained for parser compatibility; the launch header identifies the title.
 The generic trace does not enable any Demon-specific execution policy. Launch
 tests check both the positive title match and isolation of the clock/frame flags.
+
+## Wolverine: independent GPU clock correction
+
+The device log emits the old S_MEMREALTIME constant-placeholder warning before
+CS41. PC commit [77a8f307](https://github.com/KytyPS5/KytyPS5/commit/77a8f307585933b944ffb67d24af8fb730130389)
+implements this instruction with the Vulkan device clock. Port the IR opcode,
+OpReadClockKHR Device emission and PC clock-shift policy to the Android fork's
+ShaderDeviceFeatures interface. Reuse one scalar result across emulated wave64
+halves. Query and enable VK_KHR_shader_clock/shaderDeviceClock, and include the
+period in the shader disk-cache options signature.
+
+The Android port preserves its previous UINT64_MAX fallback on unsupported
+devices instead of adding an unsupported capability or a new abort. It logs
+SHADER_CLOCK support, period and shift even with silent printf settings. The
+new path is verified through captured instruction translation, SPIR-V validation,
+multiple read counts, wave32/wave64 and clock periods including Adreno's 19.2 MHz
+counter. None of those host checks establishes that Wolverine's black screen is
+caused by this instruction or is fixed on the device. Demon’s Souls still needs
+the blocked-task capture described above.

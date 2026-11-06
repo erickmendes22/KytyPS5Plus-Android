@@ -1,12 +1,10 @@
 #include "common/assert.h"
-#include "common/logging/log.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 #include "graphics/shader/recompiler/frontend/decode/ImageOps.h"
 #include "graphics/shader/recompiler/frontend/translate/LaneElection.h"
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 
 namespace Libs::Graphics::ShaderRecompiler::Frontend {
 
@@ -968,17 +966,9 @@ void Translator::EmitMemory(const Decoder::Instruction& inst) {
 		case Decoder::Opcode::S_BUFFER_LOAD_DWORDX16: return S_LOAD(inst, false);
 		// No extra host-side scalar cache exists in the translated shader.
 		case Decoder::Opcode::S_DCACHE_INV: return;
-		case Decoder::Opcode::S_MEMREALTIME: {
-			static std::atomic_flag warned = ATOMIC_FLAG_INIT;
-			if (!warned.test_and_set(std::memory_order_relaxed)) {
-				Log::WriteToConsoleAndLog(
-				    "Warning: S_MEMREALTIME uses placeholder UINT64_MAX; real-time clock not implemented.\n");
-			}
-			for (uint32_t component = 0; component < 2; component++) {
-				WriteOperand(ScalarDestinationOperand(inst.dst, component), IR::Value(UINT32_MAX));
-			}
-			return;
-		}
+		case Decoder::Opcode::S_MEMREALTIME:
+			return WriteU32Pair(inst.dst,
+			                    ExtractU64(IR::U64(ir.Emit(IR::ValueOpcode::ReadRealtimeClock))));
 
 		case Decoder::Opcode::BUFFER_LOAD_UBYTE:
 		case Decoder::Opcode::BUFFER_LOAD_UBYTE_D16:

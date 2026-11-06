@@ -255,6 +255,7 @@ uint32_t              EmitGetInterpolationParameter(ValueEmitContext& ctx, const
 uint32_t              EmitGetPackedVarying(ValueEmitContext& ctx, const IR::Inst& inst);
 void                  EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst);
 uint32_t              EmitGetShaderBase(ValueEmitContext& ctx);
+uint32_t              EmitReadRealtimeClock(ValueEmitContext& ctx, const IR::Inst& inst);
 inline constexpr auto EmitGetSrtResource     = EmitVoid;
 inline constexpr auto EmitGetBufferResource  = EmitGetSrtResource;
 uint32_t              EmitGetBufferResourceIndex(ValueEmitContext& ctx, const IR::Inst& inst);
