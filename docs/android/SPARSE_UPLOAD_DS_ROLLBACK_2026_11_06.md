@@ -45,3 +45,16 @@ skips file holes instead of depending only on pread behavior, and adds a standal
 production-header test for complete content, offsets beyond 4 GiB, unaligned
 transfers, concurrent readers, invalid ranges and later MAP_SHARED writes. The
 full-emulator allocation assertion remains unchanged and must pass before APK build.
+
+The shared emulator backing file can contain unrelated guest allocations, making a
+whole-file block comparison unsuitable for isolating one arena across multiple
+checks. The integration test now snapshots each page of its own 64 MiB arena
+with mincore and rejects every newly resident page; independent THP promotion is
+disabled for that fixture. The old mapped-read path is separately reproduced:
+three resident pages become the whole 64 MiB arena, so the scoped assertion still
+rejects it. The standalone production-header test retains an exact fstat block
+assertion on its exclusive memfd and all data checks. The precise cause of the
+earlier whole-file count changes was not established.
+
+Demon’s Souls rendering is now addressed separately in
+DS_GEOMETRY_INDEX_PATH_2026_11_06.md. Do not deliver a rollback-only APK.

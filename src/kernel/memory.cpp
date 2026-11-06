@@ -56,7 +56,6 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include "kernel/sparseBackingRead.h"
@@ -4079,11 +4078,6 @@ bool TestGuestBackingOutsideAddressSpace() {
 uint64_t TestGuestBackingSize() {
 	return g_guest_address_space->GetBackingSize();
 }
-#if defined(__linux__)
-uint64_t TestGuestBackingAllocatedBytes() {
-	return g_guest_address_space->AllocatedBytesForTest();
-}
-#endif
 
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS

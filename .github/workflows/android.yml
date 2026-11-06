@@ -317,6 +317,11 @@ jobs:
           path: ~/.cache/ccache
           key: ccache-native-tests-${{ github.sha }}
           restore-keys: ccache-native-tests-
+      - name: Verify Demon's Souls original geometry fallback branch
+        run: |
+          g++ -std=c++20 -O2 -Wall -Wextra -Werror tests/manual/demons_geometry_branch_test.cpp -o /tmp/demons-geometry-branch-test
+          /tmp/demons-geometry-branch-test
+
       - name: Test sparse backing reads preserve holes and aliases
         run: |
           g++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread -Isrc tests/manual/sparse_backing_read_test.cpp -o /tmp/kyty-sparse-backing-test

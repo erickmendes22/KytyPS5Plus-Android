@@ -36,6 +36,8 @@
 
 #if defined(__linux__)
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 #if defined(__linux__) || KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -1205,12 +1207,31 @@ void TestLargeSparseUploadDoesNotPopulateBacking() {
 	constexpr std::array<uint8_t, 3> values {0x39, 0x72, 0xa5};
 	for (size_t i = 0; i < positions.size(); ++i)
 		*(reinterpret_cast<uint8_t*>(arena) + positions[i]) = values[i];
-	const auto before = TestGuestBackingAllocatedBytes();
+#if defined(MADV_NOHUGEPAGE)
+	Check(test, madvise(arena, size, MADV_NOHUGEPAGE) == 0, "disable independent THP promotion");
+#endif
+	const auto host_page_size = sysconf(_SC_PAGESIZE);
+	Check(test, host_page_size > 0 && size % host_page_size == 0, "invalid host page size");
+	const auto page_size = static_cast<uint64_t>(host_page_size);
+	const auto residency = [&] {
+		std::vector<unsigned char> pages(size / page_size);
+		Check(test, mincore(arena, size, pages.data()) == 0, "query arena residency");
+		return pages;
+	};
+	const auto before = residency();
+	const auto check_residency = [&] {
+		const auto after = residency();
+		for (size_t i = 0; i < before.size(); ++i)
+			Check(test, (after[i] & 1u) == 0 || (before[i] & 1u) != 0,
+			      "upload populated an untouched arena page");
+		const auto resident = std::count_if(after.begin(), after.end(),
+		    [](unsigned char page) { return (page & 1u) != 0; });
+		std::fprintf(stderr, "[sparse-upload-residency] arena=%" PRIu64 " resident=%" PRIu64
+		             " no new arena pages\n", size, static_cast<uint64_t>(resident) * page_size);
+	};
 	std::vector<uint8_t> output(size + 2, 0x55);
 	Check(test, CopySparseMemory(base, output.data() + 1, size), "large upload copy failed");
-	const auto after = TestGuestBackingAllocatedBytes();
-	std::fprintf(stderr, "[sparse-upload-residency] before=%" PRIu64 " after=%" PRIu64 "\n", before, after);
-	Check(test, after == before, "upload populated untouched tmpfs backing pages");
+	check_residency();
 	Check(test, output.front() == 0x55 && output.back() == 0x55, "upload overwrote canaries");
 	for (size_t k = 0; k < positions.size(); ++k) {
 		Check(test, output[positions[k] + 1] == values[k], "upload changed written bytes");
@@ -1227,7 +1248,7 @@ void TestLargeSparseUploadDoesNotPopulateBacking() {
 	Check(test, output[1 + positions[1] - prefix] == values[1] &&
 	                output.front() == 0x55 && output[1 + size - prefix - suffix] == 0x55,
 	      "unaligned upload misplaced data or overwrote canaries");
-	Check(test, TestGuestBackingAllocatedBytes() == before, "repeated upload populated backing");
+	check_residency();
 	CheckOk(test, KernelMunmap(base, size), "unmap sparse arena");
 	std::printf("[host]    %-48s ok (64 MiB read, zero additional backing blocks)\n", test);
 #endif

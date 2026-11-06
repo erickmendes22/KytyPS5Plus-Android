@@ -35,6 +35,7 @@ import com.kytyps5.android.library.GameGridAdapter
 import com.kytyps5.android.library.GameSettingsDialog
 import com.kytyps5.android.library.DemonsSoulsDemoFlow
 import com.kytyps5.android.library.DemonsSoulsNexusFlow
+import com.kytyps5.android.library.DemonsSoulsGeometryFlow
 import com.kytyps5.android.library.DemonsSoulsFirstBootPatch
 import com.kytyps5.android.presets.GamePresets
 import java.io.File
@@ -638,6 +639,13 @@ class MainActivity : Activity() {
                 showMessage(nexus.message)
                 return
             }
+            val geometry = DemonsSoulsGeometryFlow.configure(File(game.path), game.titleId)
+            if (!geometry.ok) {
+                showMessage(geometry.message)
+                return
+            }
+            Log.i("KytyDSGeometry", "Executable-verified BPE geometry path: " +
+                "doIndexBufferCulling=0 doSunShadowIndexBufferCulling=0")
             if (flow.changed || nexus.changed) {
                 Log.i("KytyDSBoot", if (perGame.demonsSoulsNexusRoute)
                     "PC Nexus route active: FullGame + force skip-tutorial option"

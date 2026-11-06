@@ -180,13 +180,7 @@ public:
 	}
 
 	[[nodiscard]] uint64_t GetBackingSize() const { return m_size; }
-#if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS) && defined(__linux__)
-	uint64_t AllocatedBytesForTest() const {
-		struct stat st {};
-		EXIT_IF(fstat(m_fd, &st) != 0);
-		return static_cast<uint64_t>(st.st_blocks) * 512u;
-	}
-#endif
+
 
 
 	bool ZeroRange(uint64_t backing_offset, uint64_t size) {
@@ -810,9 +804,7 @@ public:
 	[[nodiscard]] uint64_t GetGranularity() const { return m_granularity; }
 	[[nodiscard]] uint64_t GetBackingBase() const { return m_backing->GetBackingBase(); }
 	[[nodiscard]] uint64_t GetBackingSize() const { return m_backing->GetBackingSize(); }
-#if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS) && defined(__linux__)
-	uint64_t AllocatedBytesForTest() const { return m_backing->AllocatedBytesForTest(); }
-#endif
+
 
 
 	bool ZeroBacking(uint64_t backing_offset, uint64_t size) {
