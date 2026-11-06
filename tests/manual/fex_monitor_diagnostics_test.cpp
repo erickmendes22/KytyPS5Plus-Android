@@ -18,6 +18,21 @@ int main() {
     assert(ReadSelf(reinterpret_cast<uint64_t>(source.data()), copied.data(), copied.size()) == copied.size());
     assert(source == copied);
     assert(ReadSelf(1, copied.data(), copied.size()) == 0);
+    // A real frame-chain layout, a cycle, an unreadable successor, and invalid
+    // stack bounds must all terminate without faulting or scanning raw stacks.
+    alignas(16) std::array<uint64_t, 6> frames{};
+    const auto frame_base = reinterpret_cast<uint64_t>(frames.data());
+    frames = {frame_base + 16, 0x90083b583, frame_base + 32, 0x90083c1e0, 0, 0x900841645};
+    std::array<uint64_t, 24> callers{};
+    assert(Cpu::ThreadProbe::WalkFrames(frame_base, frame_base, callers) == 3);
+    assert(callers[0] == 0x90083b583 && callers[2] == 0x900841645);
+    frames[2] = frame_base; // backwards/cyclic chain
+    assert(Cpu::ThreadProbe::WalkFrames(frame_base, frame_base, callers) == 2);
+    frames[0] = frame_base + 16;
+    frames[2] = frame_base + 1024 * 1024 + 32; // outside bounded step
+    assert(Cpu::ThreadProbe::WalkFrames(frame_base, frame_base, callers) == 2);
+    assert(Cpu::ThreadProbe::WalkFrames(1, 8, callers) == 0);
+    assert(Cpu::ThreadProbe::WalkFrames(frame_base + 8, frame_base, callers) == 0);
     Cpu::ThreadProbe::Snapshot sample;
     sample.rip = 0x900041127;
     sample.exact = true;

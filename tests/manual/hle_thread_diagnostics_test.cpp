@@ -21,6 +21,18 @@ int main() {
     Cpu::ThreadProbe::request.store(Request);
     Dump();
     assert(probes.load() == 1);
+    {
+        Scope blocked(527, "LibKernel::PthreadCondWait", 0x9001e6ed5b, 1, 2, 0);
+        CurrentSlot()->state.since -= std::chrono::seconds(3);
+        Dump();
+        assert(probes.load() == 2); // blocked task, not only a spinning guest
+    }
+    {
+        Scope exited(538, "LibKernel::PthreadExit", 0x900111a2db, 0, 0, 0);
+        CurrentSlot()->state.since -= std::chrono::seconds(3);
+        Dump();
+        assert(probes.load() == 2); // exit leaves an active HLE record
+    }
     Cpu::ThreadProbe::request.store(nullptr);
     std::thread worker([] { Scope scope(19, "worker", 0x9999, 0, 0, 0); });
     worker.join();

@@ -1,4 +1,5 @@
 #pragma once
+#include "cpu/fexDecodeDiagnostics.h"
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -17,6 +18,22 @@ static_assert(std::atomic<uint64_t>::is_always_lock_free);
 inline std::array<Mailbox, 256> mailboxes;
 using Request = void (*)(uint64_t tid);
 inline std::atomic<Request> request{nullptr};
+// Read outside the signal handler. A stopped HLE thread keeps its guest frame
+// chain intact; a running thread can change it, so every read is kernel-guarded
+// and the walk stops at non-increasing, unaligned or excessively distant frames.
+inline size_t WalkFrames(uint64_t rsp, uint64_t rbp, std::array<uint64_t, 24>& callers) {
+    size_t count = 0;
+    if (!rsp || rbp < rsp || rbp - rsp > 1024 * 1024) return 0;
+    while (count < callers.size() && rbp && !(rbp & 7) && rbp <= UINT64_MAX - 16) {
+        std::array<uint64_t, 2> frame{};
+        if (Cpu::DecodeDiagnostics::ReadSelf(rbp, frame.data(), sizeof(frame)) != sizeof(frame)) break;
+        if (!frame[1]) break;
+        callers[count++] = frame[1];
+        if (frame[0] <= rbp || frame[0] - rbp > 1024 * 1024) break;
+        rbp = frame[0];
+    }
+    return count;
+}
 // Called on the interrupted thread: lock-free stores only; no logging/allocation.
 inline void Publish(size_t slot, const Snapshot& data) {
     if (slot >= mailboxes.size()) return;
@@ -53,5 +70,12 @@ inline void Dump(size_t slot, uint64_t tid) {
             static_cast<unsigned long long>(data.gpr[i]), static_cast<unsigned long long>(data.gpr[i+1]),
             static_cast<unsigned long long>(data.gpr[i+2]), static_cast<unsigned long long>(data.gpr[i+3]));
     }
+    std::array<uint64_t, 24> callers{};
+    const auto count = WalkFrames(data.gpr[4], data.gpr[5], callers);
+    std::printf("[DS_STACK] tid=%llu captured_frames=%zu live_memory=1 callers=",
+        static_cast<unsigned long long>(tid), count);
+    for (size_t i = 0; i < count; ++i)
+        std::printf("%s%016llx", i ? "/" : "", static_cast<unsigned long long>(callers[i]));
+    std::putchar('\n');
 }
 } // namespace Cpu::ThreadProbe

@@ -99,11 +99,15 @@ inline void Dump() {
             static_cast<unsigned long long>(state.args[1]),
             static_cast<unsigned long long>(state.args[2]));
         const auto tid = entry.tid;
-        const bool stale_guest = !state.active && age >= 2000;
+        // A worker inside an HLE wait can hold the missing game task. Sampling
+        // only guest loops hides precisely that dependency. pthread_exit does
+        // not unwind this scope, so its old record must not be sampled.
+        const bool stale_thread = age >= 2000 &&
+            (!state.active || state.symbol != "LibKernel::PthreadExit");
         const auto index = static_cast<size_t>(&entry - slots.data());
         lock.unlock();
         Cpu::ThreadProbe::Dump(index, tid);
-        if (stale_guest) {
+        if (stale_thread) {
             if (auto probe = Cpu::ThreadProbe::request.load(std::memory_order_acquire)) probe(tid);
         }
     }
