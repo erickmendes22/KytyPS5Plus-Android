@@ -851,8 +851,7 @@ void VideoOutDriver::Impl::VblankEnd() {
 void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
     const auto frequency = Common::Timer::QueryPerformanceFrequency();
     EXIT_IF(frequency == 0);
-    const char* trace_env = std::getenv("KYTY_DS_FRAME_TRACE");
-    const bool ds_trace = trace_env != nullptr && trace_env[0] == '1';
+    const bool ds_trace = Common::GuestTrace::Enabled();
     auto sample_start = std::chrono::steady_clock::now();
     uint64_t sample_vblanks = 0, sample_guest_flips = 0, sample_empty_vblanks = 0;
     int64_t total_wait = 0;

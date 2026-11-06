@@ -1,5 +1,6 @@
 #pragma once
 #include "cpu/guestThreadProbe.h"
+#include "common/guestTrace.h"
 // Per-thread HLE state survives ring wrap. Enabled only by the existing DS trace.
 // Observations never release a guest wait or alter command ordering.
 #include <array>
@@ -18,11 +19,7 @@
 #endif
 namespace Cpu::HleDiagnostics {
 inline bool Enabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("KYTY_DS_FRAME_TRACE");
-        return value && std::string_view(value) == "1";
-    }();
-    return enabled;
+    return Common::GuestTrace::Enabled();
 }
 struct State {
     uint32_t id = 0;

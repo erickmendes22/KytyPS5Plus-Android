@@ -39,3 +39,8 @@ This is diagnostic coverage, not a claim that the game stall is fixed.
 Wolverine's accompanying log reaches CS77 and reports the real translated
 MONITORX/MWAITX self-test PASS. It has no logged decode fault or assertion and
 exits with status 0. Those observations alone do not establish visible gameplay.
+The user confirms a black screen. Wolverine now enables the same observation
+path through KYTY_GUEST_FRAME_TRACE=1. The existing DS-prefixed record format is
+retained for parser compatibility; the launch header identifies the title.
+The generic trace does not enable any Demon-specific execution policy. Launch
+tests check both the positive title match and isolation of the clock/frame flags.

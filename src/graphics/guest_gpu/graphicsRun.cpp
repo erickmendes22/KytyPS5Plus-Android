@@ -8,6 +8,7 @@
 #include "graphics/host_gpu/renderer/cache/streamDefaults.h"
 
 #include "common/assert.h"
+#include "common/guestTrace.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/perfWaits.h"
@@ -80,10 +81,8 @@ static bool GraphicsRunDebugDumpEnabled() {
 GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
     EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
     const char* strict_frame = std::getenv("KYTY_DS_STRICT_FRAME");
-    const char* trace_frame = std::getenv("KYTY_DS_FRAME_TRACE");
     m_strict_frame_order = strict_frame != nullptr && std::strcmp(strict_frame, "1") == 0;
-    m_ds_frame_trace = m_strict_frame_order ||
-                       (trace_frame != nullptr && std::strcmp(trace_frame, "1") == 0);
+    m_ds_frame_trace = m_strict_frame_order || Common::GuestTrace::Enabled();
     if (m_ds_frame_trace) {
         ::printf("[DS_SYNC] strict_cross_queue_frame=%d frames_in_flight=%u max_boundary_wait_ms=400\n",
              m_strict_frame_order ? 1 : 0, Config::GetGpuFramesInFlight());

@@ -189,10 +189,15 @@ class LaunchArgsTest {
             val args = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = title)
             val env = args.indices.filter { args[it] == "--env" }.map { args[it + 1] }
             assertEquals(1, env.count { it == "KYTY_BINDLESS_IMAGES=1" })
+            assertEquals(1, env.count { it == "KYTY_MONITORWAITX_CHECK=1" })
+            assertEquals(1, env.count { it == "KYTY_GUEST_FRAME_TRACE=1" })
+            assertEquals(-1, args.indexOf("KYTY_DS_NATIVE_TSC=1"))
+            assertEquals(-1, args.indexOf("KYTY_DS_STRICT_FRAME=1"))
         }
         for (title in listOf("PPSA01341", "PPSA21564", "PPSA24156", null)) {
             val args = LaunchArgs.forGame("/games/PPSA03671", Resolution.HD_720, titleId = title)
             assertEquals(-1, args.indexOf("KYTY_BINDLESS_IMAGES=1"))
+            assertEquals(-1, args.indexOf("KYTY_GUEST_FRAME_TRACE=1"))
         }
     }
 
