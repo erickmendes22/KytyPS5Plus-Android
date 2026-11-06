@@ -215,6 +215,12 @@ bool BringUpTranslator() {
 	}
 
 
+    if (Cpu::GuestTscPolicy::NativeCounterRequested()) {
+        const auto clock = ctx->RunCPUIDFunction(0x15, 0);
+        std::printf("[DS_TSC] CPUID.15 denominator=%u numerator=%u crystal_hz=%u\n",
+            clock.eax, clock.ebx, clock.ecx);
+    }
+
 	// The VDSO carries FEX's callback return trampoline (GetThunkCallbackRET). FEXInterpreter maps it
 	// before any guest code runs; without it every host->guest callback returns to address 0.
 	auto* init_thread = syscalls->TM.CreateThread();

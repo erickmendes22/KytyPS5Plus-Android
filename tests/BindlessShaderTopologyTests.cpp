@@ -7,6 +7,7 @@
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/ir/passes/ShaderInfoCollection.h"
 #include <spirv-tools/libspirv.hpp>
+#include <spirv/unified1/spirv.hpp>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -126,6 +127,19 @@ void CheckBindlessImageTopology() {
         text.find("RuntimeDescriptorArray") != std::string::npos &&
         text.find("OpImageSampleExplicitLod") != std::string::npos,
         "test did not emit the GPU-indexed bindless sample");
+    uint32_t sampled = 0;
+    std::vector<uint32_t> nonuniform;
+    for (size_t offset = 5; offset < spirv.size();) {
+      const auto words = std::span<const uint32_t>(spirv).subspan(offset, spirv[offset] >> 16u);
+      const auto op = static_cast<spv::Op>(words[0] & 0xffffu);
+      if (op == spv::OpDecorate && words[2] == spv::DecorationNonUniform)
+        nonuniform.push_back(words[1]);
+      if (op == spv::OpImageSampleExplicitLod) sampled = words[3];
+      offset += words.size();
+    }
+    Require(name, "nonuniform sample operand", sampled != 0 &&
+        std::ranges::find(nonuniform, sampled) != nonuniform.end(),
+        "bindless sample lost NonUniform after OpSampledImage");
   }
   std::printf("[host]    %-32s ok\n", name);
 }

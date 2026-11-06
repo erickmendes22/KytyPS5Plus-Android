@@ -205,7 +205,7 @@ uint32_t MakeSampledImage(EmitterState& state, uint32_t resource, uint32_t sampl
             spv::OpTypeSampledImage, state.images[IR::ImageBindingIndex(kind)].type);
     }
 	state.builder.AddFunction(spv::OpSampledImage, sampled_type, sampled_image, image, sampler_id);
-	if (array_index != 0u || sampler_dynamic) {
+	if (image_resource.bindless || array_index != 0u || sampler_dynamic) {
 		DecorateNonUniformDescriptor(state, sampled_image, spv::CapabilitySampledImageArrayNonUniformIndexing);
 	}
 	return sampled_image;
