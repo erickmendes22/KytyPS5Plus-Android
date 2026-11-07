@@ -120,7 +120,10 @@ object LaunchArgs {
             // rejects unsupported drivers; never enable this for other games.
             (if (titleId.equals("PPSA03671", ignoreCase = true))
                 arrayOf("--env", "KYTY_BINDLESS_IMAGES=1", "--env", "KYTY_MONITORWAITX_CHECK=1",
-                    "--env", "KYTY_GUEST_FRAME_TRACE=1", "--env", "KYTY_TITLE_WORKAROUNDS=1") else emptyArray()) +
+                    "--env", "KYTY_GUEST_FRAME_TRACE=1", "--env", "KYTY_TITLE_WORKAROUNDS=1",
+                    "--gpu-memory-budget", "2560", "--gpu-evict-written", "1",
+                    "--vma-block-size", "32", "--env", "KYTY_STAGING_MIB=32",
+                    "--env", "KYTY_PRESENT_COMPACT=1") else emptyArray()) +
             // BPE mixes raw RDTSC with sceKernelGetTscFrequency. Disable FEX's
             // minimum-1GHz scaling only for this title; native APIs use CNTFRQ.
             (if (titleId.equals("PPSA01341", ignoreCase = true))
