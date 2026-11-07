@@ -180,6 +180,7 @@ class LaunchArgsTest {
             assertEquals(-1, args.indexOf("--gpu-indirect"))
             assertEquals(-1, args.indexOf("--targeted-readback"))
             assertEquals(1, args.count { it == "KYTY_REBIND_AFTER_JOIN=1" })
+            assertEquals("true", args[args.indexOf("--readback-linear-images") + 1])
         }
         for (title in listOf("PPSA03671", "PPSA21564", "PPSA24156", null)) {
             val args = LaunchArgs.forGame("/games/PPSA01341", Resolution.HD_720, titleId = title)
