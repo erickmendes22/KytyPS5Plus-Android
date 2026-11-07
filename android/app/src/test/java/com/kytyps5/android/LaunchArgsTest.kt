@@ -180,7 +180,10 @@ class LaunchArgsTest {
             assertEquals(-1, args.indexOf("--gpu-indirect"))
             assertEquals(-1, args.indexOf("--targeted-readback"))
             assertEquals(1, args.count { it == "KYTY_REBIND_AFTER_JOIN=1" })
-            assertEquals("true", args[args.indexOf("--readback-linear-images") + 1])
+            assertEquals(-1, args.indexOf("--readback-linear-images"))
+            assertEquals(1, args.count { it == "KYTY_DS_GPU_LAYER_KEEP=1" })
+            assertEquals(1, args.count { it == "KYTY_PRESENT_COMPACT=1" })
+            assertEquals("32", args[args.indexOf("--vma-block-size") + 1])
         }
         for (title in listOf("PPSA03671", "PPSA21564", "PPSA24156", null)) {
             val args = LaunchArgs.forGame("/games/PPSA01341", Resolution.HD_720, titleId = title)
@@ -190,6 +193,7 @@ class LaunchArgsTest {
             assertEquals(-1, args.indexOf("--targeted-readback"))
             assertEquals(-1, args.indexOf("KYTY_REBIND_AFTER_JOIN=1"))
             assertEquals(-1, args.indexOf("--readback-linear-images"))
+            assertEquals(-1, args.indexOf("KYTY_DS_GPU_LAYER_KEEP=1"))
         }
     }
 
@@ -202,6 +206,11 @@ class LaunchArgsTest {
             assertEquals(1, env.count { it == "KYTY_MONITORWAITX_CHECK=1" })
             assertEquals(1, env.count { it == "KYTY_GUEST_FRAME_TRACE=1" })
             assertEquals(1, env.count { it == "KYTY_TITLE_WORKAROUNDS=1" })
+            assertEquals(1, env.count { it == "KYTY_PRESENT_COMPACT=1" })
+            assertEquals(1, env.count { it == "KYTY_STAGING_MIB=32" })
+            assertEquals("2560", args[args.indexOf("--gpu-memory-budget") + 1])
+            assertEquals("1", args[args.indexOf("--gpu-evict-written") + 1])
+            assertEquals("32", args[args.indexOf("--vma-block-size") + 1])
             assertEquals(-1, args.indexOf("KYTY_DS_NATIVE_TSC=1"))
             assertEquals(-1, args.indexOf("--async-shaders"))
             assertEquals(-1, args.indexOf("--gpu-indirect"))
@@ -214,6 +223,8 @@ class LaunchArgsTest {
             val args = LaunchArgs.forGame("/games/PPSA03671", Resolution.HD_720, titleId = title)
             assertEquals(-1, args.indexOf("KYTY_BINDLESS_IMAGES=1"))
             assertEquals(-1, args.indexOf("KYTY_GUEST_FRAME_TRACE=1"))
+            assertEquals(-1, args.indexOf("KYTY_STAGING_MIB=32"))
+            assertEquals(-1, args.indexOf("--gpu-evict-written"))
         }
     }
 
