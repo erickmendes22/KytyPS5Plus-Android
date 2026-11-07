@@ -544,7 +544,7 @@ void TextureCache::RestoreKeptTracking(ImageId id) {
 
 void TextureCache::UntrackImageHead(ImageId id) {
 	auto&      image = m_slot_images[id];
-	if (!image.kept_unwatched.empty()) {
+	if (!image.kept_gpu_layers.empty() || !image.kept_unwatched.empty()) {
 		// Partial unmap cannot be kept safely: downgrade to the legacy
 		// whole-image refresh, releasing only watchers still registered.
 		UntrackImage(id);
@@ -567,7 +567,7 @@ void TextureCache::UntrackImageHead(ImageId id) {
 
 void TextureCache::UntrackImageTail(ImageId id) {
 	auto&      image = m_slot_images[id];
-	if (!image.kept_unwatched.empty()) {
+	if (!image.kept_gpu_layers.empty() || !image.kept_unwatched.empty()) {
 		UntrackImage(id);
 		return;
 	}
@@ -1356,7 +1356,7 @@ void TextureCache::InitializeImage(ImageId id) {
 	}
 	// Reprotect only the slices released for their CPU upload after the data
 	// is on the GPU; all other guest shadow-map layers remained watched.
-	if (!image.kept_unwatched.empty()) RestoreKeptTracking(id);
+	if (!image.kept_gpu_layers.empty() || !image.kept_unwatched.empty()) RestoreKeptTracking(id);
 }
 
 // Whether every byte of data equals code, comparing eight bytes at a time.
@@ -2438,11 +2438,17 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
 					owner->kept_gpu_layers.resize(layers);
 				}
 				for (uint32_t layer = first; layer <= last; ++layer) {
-					if (owner->kept_gpu_layers[layer]) continue;
 					const uint64_t base = info.data.address + uint64_t {layer} * stride;
-					m_page_manager.UpdatePageWatchers<false>(base, stride);
+					const bool already_unwatched = std::ranges::any_of(owner->kept_unwatched,
+					    [base](const GuestRange& range) { return range.address == base; });
+					// A prior partial UNMAP marks this layer guest-dirty but keeps
+					// its watcher for the remap. The actual CPU write must release
+					// that watcher to finish the faulting instruction.
+					if (!already_unwatched) {
+						m_page_manager.UpdatePageWatchers<false>(base, stride);
+						owner->kept_unwatched.push_back({base, stride});
+					}
 					owner->kept_gpu_layers[layer] = 1;
-					owner->kept_unwatched.push_back({base, stride});
 				}
 				owner->MarkCpuDirty();
 				static std::atomic<uint32_t> reported {0};
