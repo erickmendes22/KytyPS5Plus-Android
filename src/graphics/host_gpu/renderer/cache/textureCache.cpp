@@ -455,8 +455,12 @@ void TextureCache::DeleteImage(ImageId id) {
 		const auto metadata = m_surface_metas.find(image->info.metadata.range.address);
 		if (metadata != m_surface_metas.end() &&
 		    image->info.metadata.kind == ImageMetadataKind::Htile &&
-		    metadata->second.type == MetaDataInfo::Type::HTile) {
-			// A later binding may have reused this address for another metadata type.
+		    metadata->second.type == MetaDataInfo::Type::HTile &&
+		    metadata->second.owner == id) {
+			// An older depth backing can be superseded at the same HTile address.
+			// Only the depth image that acquired this metadata most recently
+			// may erase it. Otherwise its successor loses the clear state and
+			// may render garbage/black after a resolution or scene transition.
 			m_surface_metas.erase(metadata);
 		}
 	}
@@ -1955,6 +1959,9 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 				metadata->second.clear_mask.set();
 			}
 		}
+		// A reused HTile range belongs to the latest acquired depth image;
+		// do not reinitialize any slices that were already consumed.
+		metadata->second.owner = id;
 	}
 	RefreshImage(id);
 	CommitGpuWrite(image);

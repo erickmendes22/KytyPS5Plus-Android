@@ -106,6 +106,9 @@ private:
 		Type type;
 		// PS5 DB_DEPTH_VIEW encodes 13-bit base and last array-slice indices.
 		std::bitset<8192> clear_mask;
+		// Last depth image to acquire this HTile address. Superseded depth
+		// backings may be retired later without dropping its clear history.
+		ImageId owner {};
 	};
 
 	struct OverlapResult {
