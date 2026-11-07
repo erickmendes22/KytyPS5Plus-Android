@@ -189,6 +189,7 @@ class LaunchArgsTest {
             assertEquals(-1, args.indexOf("--gpu-indirect"))
             assertEquals(-1, args.indexOf("--targeted-readback"))
             assertEquals(-1, args.indexOf("KYTY_REBIND_AFTER_JOIN=1"))
+            assertEquals(-1, args.indexOf("--readback-linear-images"))
         }
     }
 
@@ -206,6 +207,7 @@ class LaunchArgsTest {
             assertEquals(-1, args.indexOf("--gpu-indirect"))
             assertEquals(-1, args.indexOf("--targeted-readback"))
             assertEquals(-1, args.indexOf("KYTY_REBIND_AFTER_JOIN=1"))
+            assertEquals(-1, args.indexOf("--readback-linear-images"))
             assertEquals(-1, args.indexOf("KYTY_DS_STRICT_FRAME=1"))
         }
         for (title in listOf("PPSA01341", "PPSA21564", "PPSA24156", null)) {
