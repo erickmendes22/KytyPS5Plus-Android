@@ -2424,12 +2424,12 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
 			    owner->IsTracked() && owner->track_addr == info.data.address &&
 			    owner->track_addr_end == info.data.End() &&
 			    info.IsTiled() && !info.IsVolume() && info.samples == 1 &&
-			    owner->backing.samples == 1 && info.resources.levels == 1 &&
+			    owner->backing.samples == 1 && info.resources.levels == 1 && info.linear_slice_stride != 0 &&
 			    layers >= 4 && layers <= 256 && info.data.size != 0 &&
 			    info.data.size % layers == 0 && stride % TRACKER_PAGE_SIZE == 0 &&
 			    info.data.address % TRACKER_PAGE_SIZE == 0 &&
 			    info.metadata.compression == VideoOutCompression::Uncompressed &&
-			    (info.IsDepth() || owner->usage.render_target) && size != 0;
+			    info.IsDepth() && size != 0;
 			if (partial_eligible) {
 				const auto start = std::max(address, info.data.address);
 				const auto finish = std::min(address + size, info.data.End());
