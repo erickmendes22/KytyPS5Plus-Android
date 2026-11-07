@@ -121,7 +121,7 @@ object LaunchArgs {
             (if (titleId.equals("PPSA03671", ignoreCase = true))
                 arrayOf("--env", "KYTY_BINDLESS_IMAGES=1", "--env", "KYTY_MONITORWAITX_CHECK=1",
                     "--env", "KYTY_GUEST_FRAME_TRACE=1", "--env", "KYTY_TITLE_WORKAROUNDS=1",
-                    "--gpu-memory-budget", "2560", "--gpu-evict-written", "1",
+                    "--gpu-memory-budget", "auto", "--gpu-evict-written", "1",
                     "--vma-block-size", "32", "--env", "KYTY_STAGING_MIB=32",
                     "--env", "KYTY_PRESENT_COMPACT=1") else emptyArray()) +
             // BPE mixes raw RDTSC with sceKernelGetTscFrequency. Disable FEX's
