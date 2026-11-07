@@ -22,6 +22,7 @@
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "graphics/host_gpu/renderer/renderContext.h"
 #include "kernel/addressFold.h"
 #include "kernel/memory.h"
 #include "libs/audio.h"
