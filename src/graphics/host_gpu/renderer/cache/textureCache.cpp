@@ -318,8 +318,28 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 	}
 	auto id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
 	for (int attempt = 0; m_slot_images[id].allocation_failed; attempt++) {
+		// A failed allocation must report the exact requested image, not just
+		// "out of device memory". Wolverine's previous fatal followed an
+		// indirect dimension query of a table root (opcode 306).
+		if (attempt == 0) {
+			const auto available = Common::ReadProcessMemory().available;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[IMAGE_ALLOCATION_FAIL] addr=0x{:x} guest_bytes={} extent={}x{}x{} "
+			    "format={} layers={} mips={} live={}MiB host_available={}MiB\\n",
+			    info.data.address, info.data.size, info.extent.width, info.extent.height,
+			    info.extent.depth, static_cast<uint32_t>(info.pixel_format),
+			    info.resources.layers, info.resources.levels,
+			    m_graphics.GetLiveDeviceMemory() / GpuBudget::MiB,
+			    available ? *available / GpuBudget::MiB : 0));
+		}
 		m_slot_images.erase(id);
-		if (attempt == 3 || !EvictForAllocation(keep)) {
+		std::string oom_title;
+		const bool wolverine = Loader::SystemContentParamSfoGetString("TITLE_ID", &oom_title) &&
+		                       oom_title == "PPSA03671";
+		// When its 4-KiB image pool cannot accommodate another allocation,
+		// also permit reclaim of recently sampled *CPU-backed* textures.
+		// Current bindings, GPU-owned images, and the merge source remain protected.
+		if (attempt == 3 || !EvictForAllocation(keep, wolverine)) {
 			LOGF("failed to create image after %d eviction passes: extent=%ux%ux%u format=%u "
 			     "layers=%u levels=%u\n",
 			     attempt, info.extent.width, info.extent.height, info.extent.depth,
@@ -2885,7 +2905,9 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 	uint64_t             downloaded = 0;
 	m_lru_cache.ForEachItemBelow(m_gc_tick - 2, [&](ImageId id) {
 		const auto* image = m_slot_images.try_get(id);
-		if (image == nullptr || !image->registered || image->depth_id || image->bindless_pinned || id == keep ||
+		if (image == nullptr || !image->registered || image->depth_id || image->bindless_pinned ||
+		    image->usage.video_out || !image->kept_gpu_layers.empty() ||
+		    image->IsGpuModified() && !image->SafeToDownload() || id == keep ||
 		    image->binding.is_bound || image->binding.is_target) {
 			return false;
 		}
@@ -2912,7 +2934,7 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
             const auto* image = m_slot_images.try_get(id);
             if (image == nullptr || !image->registered || image->bindless_pinned || id == keep ||
                 image->binding.is_bound || image->binding.is_target ||
-                image->IsGpuModified() || image->IsBufferModified() ||
+                !image->kept_gpu_layers.empty() || image->IsGpuModified() || image->IsBufferModified() ||
                 image->usage.video_out || image->usage.render_target || image->usage.storage ||
                 image->info.IsDepth() || image->depth_id || !image->stencil_ids.empty() ||
                 std::find(victims.begin(), victims.end(), id) != victims.end()) return false;
