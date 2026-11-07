@@ -131,6 +131,10 @@ public:
 		m_memory_tracker.QueueBdaSync(Kernel::AddressFold::Fold(vaddr), size);
 	}
 	void               RunGarbageCollector();
+	// Image allocations can fail even when all evictable images are gone: GPU guest
+	// buffer mirrors live in a separate cache. GPU-thread only. Never retires GPU-
+	// dirty or recently referenced buffers, and waits for deferred Vulkan frees.
+	[[nodiscard]] uint64_t ReclaimColdCleanBuffersForImageOom(uint64_t target_bytes);
 	// KYTY_LOOP_GUARD (graphics/shader/loopGuard.h): logs new "[loop-guard]" trips (at most once
 	// a second unless `force`).
 	void               PollLoopGuardLog(bool force = false);

@@ -357,6 +357,16 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 				continue;
 			}
 		}
+		// Image-only recovery is insufficient when guest-buffer mirrors and
+		// command buffers occupy the native heap. Wolverine's previous failure
+		// still had gigabytes outside the image cache. Retire COLD, CLEAN guest
+		// buffers once, after the already-obsolete image handles were drained.
+		// No GPU-authored contents or current-frame buffers are discarded.
+		if (wolverine && attempt == 0 &&
+		    m_buffer_cache.ReclaimColdCleanBuffersForImageOom(512u * GpuBudget::MiB) != 0) {
+			id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
+			continue;
+		}
 		// When its 4-KiB image pool cannot accommodate another allocation,
 		// also permit reclaim of recently sampled *CPU-backed* textures.
 		// Current bindings, GPU-owned images, and the merge source remain protected.

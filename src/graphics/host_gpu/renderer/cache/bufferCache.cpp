@@ -1433,6 +1433,48 @@ bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
 	return m_memory_tracker.IsRegionCpuModified(vaddr, size);
 }
 
+uint64_t BufferCache::ReclaimColdCleanBuffersForImageOom(uint64_t target_bytes) {
+	if (!m_scheduler.Active() || m_gc_tick < 4 || target_bytes == 0) return 0;
+	constexpr uint64_t kMaxBytes = 768ull << 20u;
+	constexpr size_t kMaxBuffers = 128;
+	const auto limit = std::min(target_bytes, kMaxBytes);
+	std::vector<BufferId> victims;
+	victims.reserve(32);
+	uint64_t candidate_bytes = 0;
+	m_lru_cache.ForEachItemBelow(m_gc_tick - 2, [&](BufferId id) {
+		const auto* candidate = m_slot_buffers.try_get(id);
+		if (candidate == nullptr || candidate->is_deleted) return false;
+		const auto begin = candidate->CpuAddress();
+		const auto size = candidate->Size();
+		// The tracker and exact dirty-range ledger must BOTH have no GPU writer;
+		// otherwise these bytes might exist only in the native buffer.
+		if (m_memory_tracker.IsRegionGpuModified(begin, size) ||
+		    HasGpuDirtyBytes(begin, size)) return false;
+		victims.push_back(id);
+		candidate_bytes += size;
+		return victims.size() >= kMaxBuffers || candidate_bytes >= limit;
+	});
+	if (victims.empty()) return 0;
+	const auto before = m_graphics.GetLiveDeviceMemory();
+	for (auto id: victims) {
+		const auto& candidate = m_slot_buffers[id];
+		m_memory_tracker.UntrackMemory(candidate.CpuAddress(), candidate.Size());
+		DeleteBuffer(id);
+	}
+	// DeleteBuffer retires Vulkan handles after their last GPU use. A retry
+	// before this completes sees no extra memory, so finish the GPU timeline.
+	m_scheduler.Finish();
+	const auto after = m_graphics.GetLiveDeviceMemory();
+	const auto reclaimed = before > after ? before - after : 0;
+	static std::atomic<uint32_t> logs {0};
+	if (logs.fetch_add(1, std::memory_order_relaxed) < 48) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[WOL_IMAGE_OOM_BUFFER_RECLAIM] victims={} guest={}MiB live_before={}MiB live_after={}MiB actual_reclaimed={}MiB\\n",
+		    victims.size(), candidate_bytes >> 20u, before >> 20u, after >> 20u, reclaimed >> 20u));
+	}
+	return reclaimed;
+}
+
 void BufferCache::RunGarbageCollector() {
 	const auto tick = m_gc_tick++;
 	if (m_budget_mode) {
