@@ -10,6 +10,7 @@
 #include "graphics/shader/shader.h"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -216,6 +217,7 @@ private:
 	bool                                  m_gt_no_live_cache_checkpoint = false;
 	// Android writes checkpoints on a worker thread (see CheckpointDriverCache).
 	std::thread                           m_flush_thread;
+	std::atomic_bool                     m_flush_active {false};
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<Pipeline>, GraphicsPipelineKeyHash>
 	                                                        m_graphics_pipelines;
 	std::unordered_map<uint64_t, std::unique_ptr<Pipeline>> m_compute_pipelines;

@@ -122,6 +122,11 @@ object LaunchArgs {
                 arrayOf("--env", "KYTY_BINDLESS_IMAGES=1", "--env", "KYTY_MONITORWAITX_CHECK=1",
                     "--env", "KYTY_REBIND_AFTER_JOIN=1",
                     "--env", "KYTY_GUEST_FRAME_TRACE=1", "--env", "KYTY_TITLE_WORKAROUNDS=1",
+                    // 2.67-GiB SSBO shaders directly precede a >3-minute native GPU
+                    // stall, with 108 submissions stuck. Bound only these shaders'
+                    // structured loops; preserve normal outputs below 8192 iterations.
+                    "--env", "KYTY_LOOP_GUARD=4149b1f60495dc2b:e91b367da1c4d456",
+                    "--env", "KYTY_LOOP_GUARD_N=8192",
                     "--gpu-memory-budget", "auto", "--gpu-evict-written", "1",
                     "--vma-block-size", "32", "--env", "KYTY_STAGING_MIB=32",
                     "--env", "KYTY_PRESENT_COMPACT=1", "--env", "KYTY_WOLVERINE_RT_ALIAS_RECLAIM=1") else emptyArray()) +

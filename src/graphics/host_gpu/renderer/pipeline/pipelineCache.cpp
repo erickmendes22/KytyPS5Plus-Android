@@ -1301,22 +1301,27 @@ PipelineCache::Pipeline* PipelineCache::PollPipeline(
 }
 
 bool PipelineCache::ReleaseDriverCacheForImageOom(CommandScheduler& scheduler) {
+	(void)scheduler;
 	if (m_driver_cache == nullptr) return false;
-	// A checkpoint worker can still be reading this handle; don't destroy
-	// VkPipelineCache until that snapshot finishes. Preserve installed pipelines:
-	// the current draw may be holding a pointer to one while resolving images.
+	// This code is called on the guest-GPU processing thread. Running outstanding
+	// shader jobs synchronously and waiting for the Vulkan GPU here can starve
+	// every other guest queue (Wolverine: 108 queued, zero flips for minutes).
+	// VkPipelineCache itself is a *host compile cache*: in-flight GPU draws
+	// reference installed VkPipelines, not this cache handle.
+	if (!m_pending_graphics.empty() || !m_pending_compute.empty() ||
+	    m_flush_active.load(std::memory_order_acquire)) {
+		static std::atomic<uint32_t> deferred {0};
+		if (deferred.fetch_add(1, std::memory_order_relaxed) < 8) {
+			PipelineCacheLog("Wolverine driver-cache reclaim deferred: async graphics={} "
+			                 "compute={} checkpoint_active={}",
+			                 m_pending_graphics.size(), m_pending_compute.size(),
+			                 m_flush_active.load() ? 1 : 0);
+		}
+		return false;
+	}
+	// A finished snapshot may still own a joinable std::thread, but joining it
+	// cannot wait on GPU work because m_flush_active is false.
 	if (m_flush_thread.joinable()) m_flush_thread.join();
-	// Pipeline jobs contain the old handle in their inputs. Drain the same
-	// collections used by the established PC pipeline-OOM recovery path.
-	for (auto& [key, job]: m_pending_graphics) {
-		(void)key;
-		m_workers->RunNow(job);
-	}
-	for (auto& [key, job]: m_pending_compute) {
-		(void)key;
-		m_workers->RunNow(job);
-	}
-	scheduler.Finish();
 	const auto before = m_graphics.GetLiveDeviceMemory();
 	m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
 	m_driver_cache = nullptr;
@@ -1514,7 +1519,11 @@ void PipelineCache::CheckpointDriverCache() {
 	}
 	m_next_driver_cache_save = std::chrono::steady_clock::now() + DriverCacheSaveInterval;
 	m_driver_cache_dirty     = false;
-	m_flush_thread           = std::thread([this] { (void)WriteDriverCacheFile(); });
+	m_flush_active.store(true, std::memory_order_release);
+	m_flush_thread = std::thread([this] {
+		(void)WriteDriverCacheFile();
+		m_flush_active.store(false, std::memory_order_release);
+	});
 #else
 	Save();
 #endif

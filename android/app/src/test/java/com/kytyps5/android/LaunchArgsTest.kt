@@ -214,6 +214,8 @@ class LaunchArgsTest {
             assertEquals(1, env.count { it == "KYTY_MONITORWAITX_CHECK=1" })
             assertEquals(1, env.count { it == "KYTY_GUEST_FRAME_TRACE=1" })
             assertEquals(1, env.count { it == "KYTY_TITLE_WORKAROUNDS=1" })
+            assertEquals(1, env.count { it == "KYTY_LOOP_GUARD=4149b1f60495dc2b:e91b367da1c4d456" })
+            assertEquals(1, env.count { it == "KYTY_LOOP_GUARD_N=8192" })
             assertEquals(1, env.count { it == "KYTY_PRESENT_COMPACT=1" })
             assertEquals(1, env.count { it == "KYTY_WOLVERINE_RT_ALIAS_RECLAIM=1" })
             assertEquals(1, env.count { it == "KYTY_STAGING_MIB=32" })
@@ -231,6 +233,7 @@ class LaunchArgsTest {
         for (title in listOf("PPSA01341", "PPSA21564", "PPSA24156", null)) {
             val args = LaunchArgs.forGame("/games/PPSA03671", Resolution.HD_720, titleId = title)
             assertEquals(-1, args.indexOf("KYTY_BINDLESS_IMAGES=1"))
+            assertEquals(-1, args.indexOf("KYTY_LOOP_GUARD=4149b1f60495dc2b:e91b367da1c4d456"))
             assertEquals(-1, args.indexOf("KYTY_GUEST_FRAME_TRACE=1"))
             assertEquals(-1, args.indexOf("KYTY_STAGING_MIB=32"))
             if (title != "PPSA24156") assertEquals(-1, args.indexOf("--gpu-evict-written"))
