@@ -1215,6 +1215,34 @@ void TextureCache::NoteVideoUpload(const Image& image) {
 	}
 }
 
+// Given a single-mip array's detiled source layout, upload only slices whose
+// CPU bytes changed. Every other slice stays GPU-owned, as on the console.
+// A combined buffer-image region may cover all layers, so split it into
+// independent one-layer regions with the correct linear staging offset.
+static void RetainGpuArraySlices(std::vector<vk::BufferImageCopy>& copies,
+                                 const Image& image, uint64_t staging_slice_stride) {
+	if (image.kept_gpu_layers.empty() || image.IsBufferModified()) return;
+	EXIT_IF(image.info.resources.levels != 1 ||
+	        image.kept_gpu_layers.size() != image.info.resources.layers ||
+	        staging_slice_stride == 0);
+	std::vector<vk::BufferImageCopy> selected;
+	for (const auto& region: copies) {
+		EXIT_IF(region.imageSubresource.mipLevel != 0);
+		for (uint32_t layer = 0; layer < region.imageSubresource.layerCount; ++layer) {
+			const uint32_t index = region.imageSubresource.baseArrayLayer + layer;
+			EXIT_IF(index >= image.kept_gpu_layers.size());
+			if (!image.kept_gpu_layers[index]) continue;
+			auto partial = region;
+			partial.imageSubresource.baseArrayLayer = index;
+			partial.imageSubresource.layerCount = 1;
+			partial.bufferOffset += static_cast<uint64_t>(layer) * staging_slice_stride;
+			selected.push_back(partial);
+		}
+	}
+	EXIT_IF(selected.empty());
+	copies = std::move(selected);
+}
+
 void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_offset) {
 	Common::PerfStats::Count(Common::PerfStats::Counter::ImageUploadBytes, image.info.data.size);
 	if (Common::PerfStats::Enabled()) {
@@ -1243,7 +1271,8 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 			EXIT("TextureCache: invalid video-out upload\n");
 		}
 		const auto linear = m_tiler.Detile(source.Handle(), source_offset, info);
-		const auto copies = info.BufferCopies(linear.offset);
+		auto copies = info.BufferCopies(linear.offset);
+		RetainGpuArraySlices(copies, image, info.linear_slice_stride);
 		destination.Upload(copies, linear.buffer, linear.offset, linear.size);
 		restore_scale();
 		return;
@@ -1290,6 +1319,9 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 		copies[0].imageSubresource  = {vk::ImageAspectFlagBits::eDepth, 0, 0, layers};
 		copies[0].imageExtent       = info.extent;
 	}
+	RetainGpuArraySlices(copies, image,
+	                     transfer_bytes == info.bytes_per_block ? info.linear_slice_stride
+	                                                           : transfer_slice);
 	destination.Upload(copies, linear.buffer, linear.offset, linear.size);
 	restore_scale();
 }
@@ -1322,6 +1354,9 @@ void TextureCache::InitializeImage(ImageId id) {
 	if (image.IsCpuDirty()) {
 		image.RefreshComplete();
 	}
+	// Reprotect only the slices released for their CPU upload after the data
+	// is on the GPU; all other guest shadow-map layers remained watched.
+	if (!image.kept_unwatched.empty()) RestoreKeptTracking(id);
 }
 
 // Whether every byte of data equals code, comparing eight bytes at a time.
