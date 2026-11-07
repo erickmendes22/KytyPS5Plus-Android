@@ -622,11 +622,24 @@ void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 		if (state.program.stage != ShaderType::Mesh && variable == 0) {
 			return;
 		}
-		const bool uint_output = MrtOutputMode(state, exp) == 7u;
-		const auto vector_type = uint_output ? TypeU32Vector(state, 4) : TypeF32Vector(state, 4);
-		auto       value       = ExportVector(ctx, data, exp, uint_output);
+		const auto mode = MrtOutputMode(state, exp);
+		const bool integer_mrt = state.program.stage == ShaderType::Pixel &&
+		                         exp.kind == IR::ExportTargetKind::Mrt &&
+		                         exp.index < std::size(state.input_info.pixel->target_output_mode);
+		const bool uint_output = mode == 7u ||
+		    (integer_mrt && mode != 0u &&
+		     (state.input_info.pixel->target_uint_mask & (1u << exp.index)) != 0u);
+		const bool sint_output = integer_mrt && mode != 0u &&
+		     (state.input_info.pixel->target_sint_mask & (1u << exp.index)) != 0u;
+		const auto vector_type = uint_output ? TypeU32Vector(state, 4)
+		                         : sint_output ? TypeI32Vector(state, 4)
+		                                       : TypeF32Vector(state, 4);
+		auto value = ExportVector(ctx, data, exp, uint_output || sint_output);
+		if (sint_output) {
+			value = Unary(state, spv::OpBitcast, vector_type, value);
+		}
 		if (state.program.stage == ShaderType::Pixel && exp.kind == IR::ExportTargetKind::Mrt &&
-		    exp.index == 0 && !uint_output &&
+		    exp.index == 0 && !uint_output && !sint_output &&
 		    state.input_info.pixel->alpha_blend_source != ShaderAlphaBlendSource::None) {
 			// Broadcast logical alpha before swizzling the primary output.
 			const auto blend_output =

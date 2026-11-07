@@ -244,6 +244,9 @@ struct ShaderPixelInputInfo {
 	uint8_t                                        target_packed_2101010_mask    = 0;
 	// CB round mode per converted export: zero adds half an LSB, one truncates.
 	uint8_t                                        target_round_mode            = 0;
+	// PC 306941b: retain raw bit patterns of 32-bit MRT exports for integer CB targets.
+	uint8_t                                        target_uint_mask             = 0;
+	uint8_t                                        target_sint_mask             = 0;
 	uint32_t                                       scratch_size_dwords          = 0;
 	// EXTRA_LDS_SIZE: LDS reserved beyond the interpolants (VGPR spills to LDS).
 	uint32_t                                       lds_size_dwords              = 0;
