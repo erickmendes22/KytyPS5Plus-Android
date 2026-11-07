@@ -147,6 +147,7 @@ private:
 	void                      FreeImage(ImageId id);
 	void                      TouchImage(Image& image);
 	void                      TrackImage(ImageId id);
+	void                      RestoreKeptTracking(ImageId id);
 	void                      TrackImageHead(ImageId id);
 	void                      TrackImageTail(ImageId id);
 	void                      UntrackImage(ImageId id);
