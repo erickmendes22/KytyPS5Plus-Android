@@ -19,6 +19,9 @@ public:
 	KYTY_CLASS_NO_COPY(PageManager);
 
 	[[nodiscard]] uint64_t GetPageSize() const;
+	// Reapply existing write/read watches after the kernel remaps guest pages.
+	// Does not modify watcher reference counts.
+	void RestoreMappedProtection(uint64_t vaddr, uint64_t size);
 
 	template <bool track>
 	void UpdatePageWatchers(uint64_t vaddr, uint64_t size);
