@@ -2,7 +2,11 @@
 #include <cassert>
 #include <cstdio>
 using Libs::Graphics::UseSamplerMinMaxReduction;
+using Libs::Graphics::SamplerComparisonEnabled;
 int main() {
+    assert(SamplerComparisonEnabled(true, false));
+    assert(!SamplerComparisonEnabled(false, false));
+    assert(!SamplerComparisonEnabled(true, true));
     for (unsigned m = 0; m <= 3; ++m) {
         assert(!UseSamplerMinMaxReduction(false, false, m));
         assert(!UseSamplerMinMaxReduction(true, true, m));

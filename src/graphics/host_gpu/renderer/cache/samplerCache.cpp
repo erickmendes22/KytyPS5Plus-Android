@@ -15,10 +15,14 @@ SamplerCache::~SamplerCache() {
 	}
 }
 
-vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool integer_border) {
+vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool integer_border,
+                                     bool depth_compare) {
 	Common::LockGuard lock(m_mutex);
 
-	const SamplerKey key {r.fields[0], r.fields[1], r.fields[2], r.fields[3], integer_border};
+	// The same PS5 sampler registers can be used by comparison and ordinary
+	// sampled-image instructions. Their Vulkan compareEnable states are different.
+	const SamplerKey key {r.fields[0], r.fields[1], r.fields[2], r.fields[3],
+	                      integer_border, depth_compare};
 	if (auto iter = m_samplers.find(key); iter != m_samplers.end()) {
 		return iter->second;
 	}
@@ -136,7 +140,12 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
 		sampler_info.anisotropyEnable = VK_FALSE;
 		sampler_info.maxAnisotropy    = 1.0f;
 	}
-	sampler_info.compareEnable           = (r.DepthCompareFunc() != 0 ? VK_TRUE : VK_FALSE);
+	// OpImageSampleDref requires a comparison sampler even for compareOp=Never
+	// (encoded as zero). Enabling comparison based on the register alone would
+	// construct a non-comparison VkSampler for a Dref shader operation.
+	sampler_info.compareEnable           = SamplerComparisonEnabled(depth_compare,
+	                                                              r.ForceUnormCoords())
+	                                           ? VK_TRUE : VK_FALSE;
 	sampler_info.compareOp               = static_cast<vk::CompareOp>(r.DepthCompareFunc());
 	// PS5 games may encode an inverted LOD range; Vulkan requires minLod <= maxLod.
 	sampler_info.minLod                  = std::min(min_lod, max_lod);

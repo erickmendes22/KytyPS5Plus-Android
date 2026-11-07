@@ -725,7 +725,8 @@ static vk::Sampler NativeSampler(RenderContext&                       context,
 	if (sampler.force_point_filtering) {
 		descriptor.SetPointFiltering();
 	}
-	return context.GetSamplerCache().GetSampler(descriptor, sampler.integer_border);
+	return context.GetSamplerCache().GetSampler(descriptor, sampler.integer_border,
+	                                            sampler.depth_compare);
 }
 
 static vk::DescriptorBufferInfo NativeUpload(RenderContext&            context,
