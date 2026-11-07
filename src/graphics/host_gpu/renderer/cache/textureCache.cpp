@@ -497,22 +497,59 @@ void TextureCache::TrackImageTail(ImageId id) {
 	m_page_manager.UpdatePageWatchers<true>(address, size);
 }
 
+// A kept CPU-dirty array layer has already released its own page watches;
+// subtracting the whole tracked span again would underflow PageManager counts.
 void TextureCache::UntrackImage(ImageId id) {
 	auto& image = m_slot_images[id];
 	if (!image.IsTracked()) {
+		image.kept_unwatched.clear();
+		image.kept_gpu_layers.clear();
 		return;
 	}
-	const auto address   = image.track_addr;
-	const auto size      = image.track_addr_end - image.track_addr;
+	auto cursor = image.track_addr;
+	const auto end = image.track_addr_end;
+	auto holes = image.kept_unwatched;
+	std::ranges::sort(holes, [](const GuestRange& a, const GuestRange& b) {
+		return a.address < b.address;
+	});
 	image.track_addr     = 0;
 	image.track_addr_end = 0;
-	if (size != 0) {
-		m_page_manager.UpdatePageWatchers<false>(address, size);
+	for (const auto& hole: holes) {
+		if (hole.address >= end) break;
+		if (hole.End() <= cursor) continue;
+		if (cursor < hole.address) {
+			m_page_manager.UpdatePageWatchers<false>(cursor, hole.address - cursor);
+		}
+		cursor = std::min(end, hole.End());
 	}
+	if (cursor < end) {
+		m_page_manager.UpdatePageWatchers<false>(cursor, end - cursor);
+	}
+	image.kept_unwatched.clear();
+	image.kept_gpu_layers.clear();
+}
+
+// Called only after the CPU-dirty slices have been refreshed. Reprotect just
+// those slices; all other pages remained protected throughout the write.
+void TextureCache::RestoreKeptTracking(ImageId id) {
+	auto& image = m_slot_images[id];
+	if (image.IsTracked()) {
+		for (const auto& slice: image.kept_unwatched) {
+			m_page_manager.UpdatePageWatchers<true>(slice.address, slice.size);
+		}
+	}
+	image.kept_unwatched.clear();
+	image.kept_gpu_layers.clear();
 }
 
 void TextureCache::UntrackImageHead(ImageId id) {
 	auto&      image = m_slot_images[id];
+	if (!image.kept_unwatched.empty()) {
+		// Partial unmap cannot be kept safely: downgrade to the legacy
+		// whole-image refresh, releasing only watchers still registered.
+		UntrackImage(id);
+		return;
+	}
 	const auto begin = image.info.data.address;
 	if (!image.IsTracked() || begin < image.track_addr) {
 		return;
@@ -530,6 +567,10 @@ void TextureCache::UntrackImageHead(ImageId id) {
 
 void TextureCache::UntrackImageTail(ImageId id) {
 	auto&      image = m_slot_images[id];
+	if (!image.kept_unwatched.empty()) {
+		UntrackImage(id);
+		return;
+	}
 	const auto end   = image.info.data.End();
 	if (!image.IsTracked() || image.track_addr_end < end) {
 		return;
