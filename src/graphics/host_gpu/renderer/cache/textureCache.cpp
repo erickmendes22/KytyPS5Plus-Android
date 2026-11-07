@@ -1293,12 +1293,14 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 		}
 	}
 	const auto transfer_bytes = image.depth_id ? 1u : DepthAspectTransferBytes(info.pixel_format);
+	uint64_t staging_slice_stride = info.linear_slice_stride;
 	if (transfer_bytes != info.bytes_per_block) {
 		const uint64_t texels_per_slice = static_cast<uint64_t>(info.pitch) * info.extent.height;
 		EXIT_NOT_IMPLEMENTED(info.bytes_per_block != sizeof(uint16_t) ||
 		                     transfer_bytes != sizeof(uint32_t) || texels_per_slice > UINT32_MAX ||
 		                     texels_per_slice > UINT64_MAX / transfer_bytes);
 		const uint64_t transfer_slice = texels_per_slice * transfer_bytes;
+		staging_slice_stride = transfer_slice;
 		EXIT_NOT_IMPLEMENTED(transfer_slice > UINT64_MAX / layers);
 		auto promoted = m_tiler.GetScratchBuffer(transfer_slice * layers, linear.buffer);
 		m_tiler.ConvertD16(
@@ -1319,9 +1321,7 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 		copies[0].imageSubresource  = {vk::ImageAspectFlagBits::eDepth, 0, 0, layers};
 		copies[0].imageExtent       = info.extent;
 	}
-	RetainGpuArraySlices(copies, image,
-	                     transfer_bytes == info.bytes_per_block ? info.linear_slice_stride
-	                                                           : transfer_slice);
+	RetainGpuArraySlices(copies, image, staging_slice_stride);
 	destination.Upload(copies, linear.buffer, linear.offset, linear.size);
 	restore_scale();
 }
