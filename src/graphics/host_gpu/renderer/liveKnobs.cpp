@@ -242,6 +242,9 @@ const Snapshot& TitleWorkarounds() {
 			if (title_id == workaround.title_id) {
 				LOGF("Title workarounds: %s: %s (%s)\n", workaround.title_id, workaround.lines,
 				     workaround.reason);
+				if (title_id == "PPSA03671") {
+					std::printf("[WOLVERINE_OOM_GUARD] enabled=1 shader=4aeaa757f8135f95 reason=2.67GiB_vulkan_arena\n");
+				}
 				return Parse(workaround.lines);
 			}
 		}
