@@ -74,6 +74,8 @@ private:
 		bool                      blocked           = false;
 		uint64_t                  flip_request_id   = 0;
         uint64_t                  sequence          = 0;
+        uint64_t                  frame_fence       = 0;
+        uint64_t                  fence_hold_ns     = 0;
         bool                      reset_processor   = false;
 	};
 
@@ -83,6 +85,7 @@ private:
 	bool              TryDeferFlush();
 	void              FlushDeferred();
 	bool              HasRunnableWork();
+	[[nodiscard]] bool FrameFencePassed(const Submission& submission) const;
 	void              ProcessCommands();
 	bool              Process(Submission& submission);
 	static void       ThreadRun(void* data);
@@ -113,6 +116,8 @@ private:
     // and Done waits for the previous submission prefix across ALL queues.
     std::atomic_bool m_ds_title_checked {false};
     std::atomic_bool m_ds_prefix_mode {false};
+    std::atomic_bool m_ds_frame_fence {false};
+    uint64_t m_ds_frame_boundary = 0; // guarded by m_queue_mutex
     std::mutex m_submission_mutex;
     GuestFramePolicy m_ds_frame_policy;
     bool DrainFrameQueuesForGuestBoundary();
