@@ -153,8 +153,6 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 	if (samples == 0) {
 		DepthFatal("unsupported depth fragment count: %u", z.z_info.num_samples);
 	}
-	const bool htile_stencil_compat = depth_htile_stencil_acceleration_compatible(
-	    has_stencil, has_htile, z.stencil_info.htile_stencil_disabled);
 	const auto view = ResolveTargetViewInfo(z.depth_view.slice_start, z.depth_view.slice_max);
 	switch (view.type) {
 		case TargetViewType::Image2D:
@@ -170,7 +168,7 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 		DepthFatal("unsupported depth register state");
 	}
 	if (has_stencil) {
-		if (z.stencil_info.format != Prospero::StencilFormat::k8UInt || !htile_stencil_compat ||
+		if (z.stencil_info.format != Prospero::StencilFormat::k8UInt ||
 		    stencil_address == 0 || (stencil_address & 0xffffu) != 0) {
 			DepthFatal("unsupported stencil attachment state");
 		}
@@ -268,8 +266,12 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	const auto& sc          = hw.GetStencilControl();
 	const auto& sm          = hw.GetStencilMask();
 	const bool  has_stencil = z.stencil_info.format != Prospero::StencilFormat::kInvalid;
+	// A compression-disabled pass can expand a previously fast-cleared HTile
+	// attachment even when depth/stencil tests are off. Skipping its binding
+	// leaves the guest depth undefined on the following sampled pass (PC b64e430).
 	const bool depth_active = dc.z_enable || dc.depth_bounds_enable ||
-	                          rc.depth_clear_enable || rc.copy_depth_to_color;
+	                          rc.depth_clear_enable || rc.copy_depth_to_color ||
+	                          (rc.depth_compress_disable && z.z_info.htile_acceleration);
 	const bool stencil_active =
 	    has_stencil && (dc.stencil_enable || rc.stencil_clear_enable || rc.copy_stencil_to_color);
 	if (!depth_active && !stencil_active) {

@@ -734,14 +734,14 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		}
 		auto        image_view = cache.FindDepthTarget(depth.image_id, depth.desc);
 		const auto& metadata   = depth.desc.info.metadata;
-		if (metadata.kind == ImageMetadataKind::Htile && depth.depth_clear_enable &&
-		    !cache.ClearMeta(metadata.range.address)) {
-			EXIT("failed to acquire HTile metadata for a depth clear\n");
-		}
 		const bool meta_clear =
 		    metadata.kind == ImageMetadataKind::Htile &&
 		    cache.IsMetaCleared(metadata.range.address, depth.desc.view_info.base_layer);
 		depth.depth_load_clear_enable = depth.depth_clear_enable || meta_clear;
+		// HTile also carries Hi-Stencil when that plane is compressed. A
+		// pending metadata clear must materialize BOTH aspects; otherwise stale
+		// stencil from the previous 3D pass survives the next draw (PC 5bf37f5).
+		depth.stencil_clear_enable |= meta_clear && metadata.stencil_compressed;
 		if (meta_clear &&
 		    !cache.TouchMeta(metadata.range.address, depth.desc.view_info.base_layer, false)) {
 			EXIT("failed to consume HTile clear state\n");
