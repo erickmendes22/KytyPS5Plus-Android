@@ -1254,7 +1254,7 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 	// Buffer copies address guest texels and overwrite the whole image; a scaled target takes
 	// the uploaded contents back up so an attachment bind that refreshes it keeps its pass size.
 	const bool was_scaled = destination.scaled;
-	destination.SetScaled(false, /*preserve=*/false);
+	destination.SetScaled(false, /*preserve=*/!image.kept_gpu_layers.empty() && !image.IsBufferModified());
 	const auto restore_scale = [&destination, was_scaled] {
 		if (was_scaled) {
 			destination.SetScaled(true);
