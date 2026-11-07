@@ -212,6 +212,13 @@ struct TitleWorkaround {
 constexpr TitleWorkaround kTitleWorkarounds[] = {
     {"PPSA21567", "skip=2b3be82b",
      "Astro Bot: VK_ERROR_DEVICE_LOST in the crash-landing cinematic on Adreno 830"},
+    // PPSA03671 (2026-11-06, pid 12685) was killed by Android's low-memory killer
+    // immediately after CS 0x4aeaa757f8135f95 first bound a 2.67-GiB SSBO.
+    // Segmentation still allocated the whole arena and did not fix the OOM.
+    // Skip only that proven high-water compute dispatch. This retains every
+    // other shader and is reversible by not setting KYTY_TITLE_WORKAROUNDS.
+    {"PPSA03671", "skip=4aeaa757f8135f95",
+     "Wolverine: prevent measured 2.67-GiB compute arena OOM (one shader only)"},
 };
 
 bool Matches(const std::vector<std::string>& prefixes, uint64_t hash) {
