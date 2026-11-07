@@ -289,10 +289,12 @@ uint32_t ResultVector(ValueEmitContext& ctx, uint32_t value,
 }
 
 uint32_t QueryDimensions(ValueEmitContext& ctx, const IR::MemoryInfo& mem,
-                         const IR::Inst& address) {
-	const auto  dimension = ctx.state.program.info.images.at(mem.resource).dimension;
+                         const IR::Inst& address, uint32_t resource, uint32_t array_index) {
+	const auto  dimension = ctx.state.program.info.images.at(resource).dimension;
 	const auto& info      = ImageDimensionInfoFor(dimension);
-	const auto  image     = LoadImageDescriptor(ctx.state, mem.resource);
+	// An enumerated SRT image root is a table selector, not the texture to
+	// query. Resolve the selected candidate just like ImageRead/ImageSample.
+	const auto  image     = LoadImageDescriptor(ctx.state, resource, 0u, array_index);
 	const auto  size      = ctx.state.builder.AllocateId();
 	if (info.multisampled != 0u) {
 		ctx.state.builder.AddFunction(spv::OpImageQuerySize,
@@ -316,7 +318,7 @@ uint32_t QueryDimensions(ValueEmitContext& ctx, const IR::MemoryInfo& mem,
 	}
 	// --render-scale: a scaled image reports its guest size.
 	for (uint32_t index = 0; index < std::min(components, info.spatial_components); index++) {
-		result[index] = EmitRescaleQuerySize(ctx.state, mem.resource, result[index]);
+		result[index] = EmitRescaleQuerySize(ctx.state, resource, result[index]);
 	}
 	if (info.multisampled == 0u) {
 		result[3] = ctx.state.builder.AllocateId();
@@ -903,7 +905,14 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto* address = ctx.ImageAddress(inst.Arg(image_info.needs_sampler ? 2 : 1));
 	if (op == IR::ValueOpcode::ImageQueryDimensions) {
 		state.builder.RequireCapability(spv::CapabilityImageQuery);
-		ctx.Define(inst, QueryDimensions(ctx, mem, *address));
+		// Keep the dynamic image selector. Querying the SRT table root as a
+		// concrete descriptor returned wrong texture sizes and could create
+		// oversized Vulkan images (Wolverine PPSA03671, opcode 306).
+		ctx.Define(inst, EmitImageAccess(
+		    ctx, inst, TypeU32Vector(state, 4),
+		    [&](uint32_t resource, uint32_t array_index) {
+			    return QueryDimensions(ctx, mem, *address, resource, array_index);
+		    }));
 		return;
 	}
 	if (image_info.needs_sampler &&
