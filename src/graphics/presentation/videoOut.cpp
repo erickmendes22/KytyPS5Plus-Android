@@ -1141,6 +1141,27 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 		    "Warning: HDR output is unavailable; HDR-to-SDR conversion is not implemented, "
 		    "displaying PQ video-out pixels unchanged.\n");
 	}
+	// Demon's Souls continues submitting flips with a black screen. Distinguish
+	// explicit blank/black flips from actual rendered image sources.
+	// This is bounded tracing only: no CPU/GPU synchronization is introduced.
+	static const bool ds_source_trace = [] {
+		const char* env = std::getenv("KYTY_DS_FRAME_TRACE");
+		return env != nullptr && env[0] == '1' && env[1] == '\0';
+	}();
+	if (ds_source_trace) {
+		static std::atomic<uint32_t> reports {0};
+		const uint32_t n = reports.fetch_add(1, std::memory_order_relaxed);
+		if (n < 24 || (n % 80u) == 0u) {
+			std::printf("[DS_FLIP_SOURCE] sample=%u request=%" PRIu64
+			            " index=%d blank=%u normal=%u addr=0x%016" PRIx64
+			            " bytes=%" PRIu64 " format=%u hdr=%u\n",
+			            n, request_id, index, special ? 1u : 0u, special ? 0u : 1u,
+			            special ? uint64_t {0} : source_info.data.address,
+			            special ? uint64_t {0} : source_info.data.size,
+			            special ? 0u : static_cast<uint32_t>(source_info.pixel_format),
+			            hdr ? 1u : 0u);
+		}
+	}
 	Graphics::Presenter::Frame* frame = nullptr;
 	if (special) {
 		frame = &m_presenter.PrepareBlankFrame(width, height, index == VIDEO_OUT_BUFFER_INDEX_BLACK,
