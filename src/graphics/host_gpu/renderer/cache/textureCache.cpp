@@ -325,7 +325,7 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 			const auto available = Common::ReadProcessMemory().available;
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[IMAGE_ALLOCATION_FAIL] addr=0x{:x} guest_bytes={} extent={}x{}x{} "
-			    "format={} layers={} mips={} live={}MiB host_available={}MiB\\n",
+			    "format={} layers={} mips={} live={}MiB host_available={}MiB\n",
 			    info.data.address, info.data.size, info.extent.width, info.extent.height,
 			    info.extent.depth, static_cast<uint32_t>(info.pixel_format),
 			    info.resources.layers, info.resources.levels,
