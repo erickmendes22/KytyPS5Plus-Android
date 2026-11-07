@@ -199,6 +199,7 @@ class LaunchArgsTest {
             assertEquals(1, env.count { it == "KYTY_BINDLESS_IMAGES=1" })
             assertEquals(1, env.count { it == "KYTY_MONITORWAITX_CHECK=1" })
             assertEquals(1, env.count { it == "KYTY_GUEST_FRAME_TRACE=1" })
+            assertEquals(1, env.count { it == "KYTY_TITLE_WORKAROUNDS=1" })
             assertEquals(-1, args.indexOf("KYTY_DS_NATIVE_TSC=1"))
             assertEquals(-1, args.indexOf("--async-shaders"))
             assertEquals(-1, args.indexOf("--gpu-indirect"))
