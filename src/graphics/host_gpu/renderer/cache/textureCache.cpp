@@ -495,19 +495,11 @@ void TextureCache::DeleteImage(ImageId id) {
 		EXIT("TextureCache: deleting a GPU-modified image without resolving its contents\n");
 	}
 	m_download_images.erase(id);
-	if (image->info.HasMetadata()) {
-		const auto metadata = m_surface_metas.find(image->info.metadata.range.address);
-		if (metadata != m_surface_metas.end() &&
-		    image->info.metadata.kind == ImageMetadataKind::Htile &&
-		    metadata->second.type == MetaDataInfo::Type::HTile &&
-		    metadata->second.owner == id) {
-			// An older depth backing can be superseded at the same HTile address.
-			// Only the depth image that acquired this metadata most recently
-			// may erase it. Otherwise its successor loses the clear state and
-			// may render garbage/black after a resolution or scene transition.
-			m_surface_metas.erase(metadata);
-		}
-	}
+	// Guest HTile metadata has an independent allocation lifetime. A Vulkan
+	// depth image may be replaced or retired without unmapping the underlying
+	// HTile guest address. Removing its clear_mask here loses Bluepoint's
+	// partial depth clear history before the next 3D pass. The guest memory
+	// unmap path below owns metadata removal (PC KytyPS5 d8c4a9af38).
 	UnregisterImage(id);
 	if (m_scheduler.Active()) {
 		m_scheduler.DeferOperation([this, id] { m_slot_images.erase(id); });
