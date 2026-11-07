@@ -194,7 +194,11 @@ class LaunchArgsTest {
             assertEquals(-1, args.indexOf("--async-shaders"))
             assertEquals(-1, args.indexOf("--gpu-indirect"))
             assertEquals(-1, args.indexOf("--targeted-readback"))
-            assertEquals(-1, args.indexOf("KYTY_REBIND_AFTER_JOIN=1"))
+            if (title == "PPSA03671") {
+                assertEquals(1, args.count { it == "KYTY_REBIND_AFTER_JOIN=1" })
+            } else {
+                assertEquals(-1, args.indexOf("KYTY_REBIND_AFTER_JOIN=1"))
+            }
             assertEquals(-1, args.indexOf("--readback-linear-images"))
             assertEquals(-1, args.indexOf("KYTY_DS_GPU_LAYER_KEEP=1"))
             assertEquals(-1, args.indexOf("KYTY_DS_QUEUE_FRAME_FENCE=1"))
