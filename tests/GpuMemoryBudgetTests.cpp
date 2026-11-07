@@ -154,6 +154,24 @@ void TestGtPreallocationReclaim() {
 	      "short frame gap throttles GPU synchronizations");
 }
 
+void TestWolverinePreallocation() {
+    Check(!ShouldPreemptWolverineBufferAllocation(5 * GiB, 8 * MiB, 4 * GiB, 128 * MiB),
+          "small allocations never initiate a heavyweight reclaim");
+    Check(!ShouldPreemptWolverineBufferAllocation(3 * GiB, 256 * MiB, 0, 128 * MiB),
+          "disabled budget never reclaims");
+    Check(!ShouldPreemptWolverineBufferAllocation(2 * GiB, 128 * MiB, 4 * GiB, 4 * GiB),
+          "healthy headroom does not incur a GPU wait");
+    Check(ShouldPreemptWolverineBufferAllocation(3900 * MiB, 256 * MiB,
+                                                  4 * GiB, 4 * GiB),
+          "predicted budget overflow triggers clean-buffer eviction");
+    Check(ShouldPreemptWolverineBufferAllocation(3 * GiB, 64 * MiB,
+                                                  4 * GiB, 512 * MiB),
+          "Android RAM pressure also triggers early eviction");
+    Check(ShouldPreemptWolverineBufferAllocation(10 * GiB, 256 * MiB,
+                                                  4 * GiB, std::nullopt),
+          "already-over-budget live allocation triggers early eviction");
+}
+
 void TestProcessMemoryReadings() {
 	std::istringstream meminfo("MemTotal: 12000000 kB\nMemAvailable:\t512000 kB\n");
 	std::istringstream status("Name:\tkyty\nVmRSS: 6000000 kB\nRssAnon: 4000000 kB\nVmSwap: 0 kB\n");
@@ -213,6 +231,7 @@ int main() {
   TestGtPressureReplay();
   TestUnifiedSystemPressure();
   TestGtPreallocationReclaim();
+  TestWolverinePreallocation();
   TestProcessMemoryReadings();
   TestWrittenDownloadLimits();
   std::printf("GpuMemoryBudgetTests: ok\n");

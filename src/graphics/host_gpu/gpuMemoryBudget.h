@@ -82,6 +82,18 @@ inline constexpr uint64_t kGtPreallocGrowth = 64 * MiB;
 	       frames_since_attempt >= 3;
 }
 
+// Wolverine's large guest buffers can push a unified-memory GPU beyond the
+// budget before frame-end GC. Only reclaim when the incoming buffer is sizable,
+// and never treat a zero/unknown budget as a reason to free valid guest data.
+[[nodiscard]] constexpr bool ShouldPreemptWolverineBufferAllocation(
+    uint64_t live, uint64_t incoming, uint64_t budget,
+    std::optional<uint64_t> available) {
+    if (budget == 0 || incoming < 32 * MiB) return false;
+    if (live >= budget || incoming > budget - live) return true;
+    return available && *available < kGtPreallocLowRam &&
+           live >= kGtPreallocMinUsage;
+}
+
 // mem_available: MemAvailable at start (bytes); 0 when unknown.
 [[nodiscard]] constexpr uint64_t AutoBudget(uint64_t mem_available) {
 	if (mem_available == 0) {

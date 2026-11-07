@@ -11,6 +11,7 @@
 #include "common/hostFaultAccess.h"
 #include "common/logging/log.h"
 #include "common/perfWaits.h"
+#include "common/processMemory.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/gpuFatal.h"
@@ -30,6 +31,7 @@
 #include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "kernel/memory.h"
+#include "loader/systemContent.h"
 
 #include <xxhash.h>
 
@@ -44,6 +46,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1001,6 +1004,56 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 	vaddr = Common::AlignDown(vaddr, CACHING_PAGESIZE);
 	size               = end - vaddr;
 	const auto overlap = ResolveOverlaps(vaddr, size);
+
+	// Wolverine: the frame-end collector cannot prevent a large guest-buffer
+	// allocation from temporarily pushing live VMA memory past Android's limit.
+	// Before allocating, retire only OLD, CLEAN, NON-OVERLAPPING guest buffers.
+	// GPU-written contents and every buffer we must merge into the new one stay
+	// intact. DeleteBuffer defers Vulkan destruction until GPU completion.
+	const uint64_t incoming = overlap.end - overlap.begin;
+	if (m_budget_mode && m_scheduler.Active() && m_gc_tick >= 4 &&
+	    incoming >= 32u * MiB) {
+		std::string title;
+		if (Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		    title == "PPSA03671") {
+			const auto available = Common::ReadProcessMemory().available;
+			const auto live = m_graphics.GetLiveDeviceMemory();
+			if (GpuBudget::ShouldPreemptWolverineBufferAllocation(
+			        live, incoming, m_graphics.MemoryBudget(), available)) {
+				std::vector<BufferId> retire;
+				uint64_t candidate_bytes = 0;
+				const uint64_t target = std::min<uint64_t>(incoming, 768u * MiB);
+				m_lru_cache.ForEachItemBelow(m_gc_tick - 2, [&](BufferId old_id) {
+					const auto& old = m_slot_buffers[old_id];
+					const auto old_begin = old.CpuAddress();
+					const auto old_end = old_begin + old.Size();
+					if (old.is_deleted || (old_begin < overlap.end && overlap.begin < old_end) ||
+					    m_memory_tracker.IsRegionGpuModified(old_begin, old.Size()))
+						return false;
+					retire.push_back(old_id);
+					candidate_bytes += old.Size();
+					return retire.size() >= 96 || candidate_bytes >= target;
+				});
+				if (!retire.empty()) {
+					for (const auto old_id: retire) {
+						const auto& old = m_slot_buffers[old_id];
+						m_memory_tracker.UntrackMemory(old.CpuAddress(), old.Size());
+						DeleteBuffer(old_id);
+					}
+					m_scheduler.Finish();
+					const auto after = m_graphics.GetLiveDeviceMemory();
+					static std::atomic_uint32_t reports {0};
+					if (reports.fetch_add(1, std::memory_order_relaxed) < 64) {
+						LOGF("[WOL_BUFFER_PREALLOC] requested=%" PRIu64
+						     "MiB retired=%zu old_clean=%" PRIu64
+						     "MiB live_before=%" PRIu64 "MiB live_after=%" PRIu64 "MiB\\n",
+						     incoming / MiB, retire.size(), candidate_bytes / MiB,
+						     live / MiB, after / MiB);
+					}
+				}
+			}
+		}
+	}
 
 	const auto id = m_slot_buffers.insert(
 	    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, overlap.begin,

@@ -278,6 +278,11 @@ bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanIm
 	EXIT_IF(allocator == nullptr || image.image != nullptr || image.allocation != nullptr);
 
 	VmaAllocationCreateInfo alloc_info {};
+	// Match the PC allocator: report budget exhaustion to TextureCache while
+	// its ownership-safe image eviction still has a chance to recover. Without
+	// this flag Android could oversubscribe shared RAM until system OOM.
+	alloc_info.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+	alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 	alloc_info.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
 	vk::Image::CType native_image = VK_NULL_HANDLE;
