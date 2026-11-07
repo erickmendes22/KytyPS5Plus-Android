@@ -125,7 +125,8 @@ object LaunchArgs {
             // minimum-1GHz scaling only for this title; native APIs use CNTFRQ.
             (if (titleId.equals("PPSA01341", ignoreCase = true))
                 arrayOf("--env", "KYTY_DS_NATIVE_TSC=1",
-                    "--async-shaders", "0", "--env", "KYTY_REBIND_AFTER_JOIN=1") else emptyArray()) +
+                    "--async-shaders", "0", "--env", "KYTY_REBIND_AFTER_JOIN=1",
+                    "--readback-linear-images", "true") else emptyArray()) +
             // The GT reference fork enables LS/HS/TES explicitly. Keep it title-scoped.
             (if (titleId.equals("PPSA24156", ignoreCase = true))
                 arrayOf(FLAG_TESSELLATION) else emptyArray())
