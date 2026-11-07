@@ -193,6 +193,12 @@ public:
 	bool             registered     = false;
     bool             bindless_pinned = false; // host bindless set may still reference this image
 	bool                         allocation_failed = false;
+	// PPSA01341 opt-in: CPU writes to one slice of a GPU-owned texture array
+	// must not replace its untouched rendered slices from stale guest backing.
+	// An entry 1 in kept_gpu_layers means that slice is guest-dirty; the ranges
+	// in kept_unwatched were explicitly removed from page watches until refresh.
+	std::vector<uint8_t>         kept_gpu_layers;
+	std::vector<GuestRange>      kept_unwatched;
 	mutable uint32_t query_epoch    = 0;
 	uint64_t         track_addr     = 0;
 	uint64_t         track_addr_end = 0;
