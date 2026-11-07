@@ -2359,6 +2359,14 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
 void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
                                         RefreshCause::Source source) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
+	// Demon’s Souls streams CPU data into individual shadow-array slices while
+	// the GPU owns the other rendered slices. The old whole-image dirty flag
+	// uploaded stale guest data over all layers on next use. The opt-in below
+	// retains GPU layers and releases watchers only over the touched CPU slices.
+	static const bool keep_gpu_layers = [] {
+		const char* env = std::getenv("KYTY_DS_GPU_LAYER_KEEP");
+		return env != nullptr && env[0] == '1' && env[1] == '\0';
+	}();
 	const auto page_begin = Common::AlignDown(address, TRACKER_PAGE_SIZE);
 	const auto page_end   = Common::AlignUp(address + size, TRACKER_PAGE_SIZE);
 	for (const auto id: FindImagesInRegion(address, size, true)) {
@@ -2370,6 +2378,47 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
 			owner->dirty_source = source;
 		}
 		if (owner->Overlaps(address, size)) {
+			const auto& info = owner->info;
+			const auto layers = info.resources.layers;
+			const uint64_t stride = layers != 0 ? info.data.size / layers : 0;
+			const bool partial_eligible =
+			    keep_gpu_layers && owner->registered && !owner->depth_id &&
+			    owner->stencil_ids.empty() && owner->IsGpuModified() &&
+			    !owner->IsBufferModified() && !owner->IsMaybeCpuDirty() &&
+			    (!owner->IsCpuDirty() || !owner->kept_gpu_layers.empty()) &&
+			    owner->IsTracked() && owner->track_addr == info.data.address &&
+			    owner->track_addr_end == info.data.End() &&
+			    info.IsTiled() && !info.IsVolume() && info.samples == 1 &&
+			    owner->backing.samples == 1 && info.resources.levels == 1 &&
+			    layers >= 4 && layers <= 256 && info.data.size != 0 &&
+			    info.data.size % layers == 0 && stride % TRACKER_PAGE_SIZE == 0 &&
+			    info.data.address % TRACKER_PAGE_SIZE == 0 &&
+			    info.metadata.compression == VideoOutCompression::Uncompressed &&
+			    (info.IsDepth() || owner->usage.render_target) && size != 0;
+			if (partial_eligible) {
+				const auto start = std::max(address, info.data.address);
+				const auto finish = std::min(address + size, info.data.End());
+				const uint32_t first = static_cast<uint32_t>((start - info.data.address) / stride);
+				const uint32_t last = static_cast<uint32_t>((finish - 1 - info.data.address) / stride);
+				if (owner->kept_gpu_layers.empty()) {
+					owner->kept_gpu_layers.resize(layers);
+				}
+				for (uint32_t layer = first; layer <= last; ++layer) {
+					if (owner->kept_gpu_layers[layer]) continue;
+					const uint64_t base = info.data.address + uint64_t {layer} * stride;
+					m_page_manager.UpdatePageWatchers<false>(base, stride);
+					owner->kept_gpu_layers[layer] = 1;
+					owner->kept_unwatched.push_back({base, stride});
+				}
+				owner->MarkCpuDirty();
+				static std::atomic<uint32_t> reported {0};
+				if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+					LOGF("[DS_GPU_LAYER_KEEP] cpu_write=0x%016" PRIx64
+					     " size=%" PRIu64 " first_layer=%u last_layer=%u of %u\n",
+					     address, size, first, last, layers);
+				}
+				continue;
+			}
 			owner->MarkCpuDirty();
 			UntrackImage(id);
 			continue;
