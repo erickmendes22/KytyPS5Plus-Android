@@ -2546,11 +2546,58 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 		}
 	}
 	auto images = FindImagesInRegion(address, size, false);
+	const char* layer_env = std::getenv("KYTY_DS_GPU_LAYER_KEEP");
+	const bool keep_layers = layer_env != nullptr && layer_env[0] == '1' &&
+	                         layer_env[1] == '\0';
 	for (const auto id: images) {
 		auto owner = m_slot_images.try_get(id);
-		if (owner == nullptr) {
-			continue;
+		if (owner == nullptr) continue;
+		const auto& info = owner->info;
+		const auto layers = info.resources.layers;
+		const uint64_t stride = layers != 0 ? info.data.size / layers : 0;
+		const bool partial_eligible =
+		    keep_layers && owner->registered && !owner->depth_id &&
+		    owner->stencil_ids.empty() && owner->IsGpuModified() &&
+		    !owner->IsBufferModified() && !owner->IsMaybeCpuDirty() &&
+		    (!owner->IsCpuDirty() || !owner->kept_gpu_layers.empty()) &&
+		    owner->IsTracked() && owner->track_addr == info.data.address &&
+		    owner->track_addr_end == info.data.End() &&
+		    info.IsDepth() && info.IsTiled() && !info.IsVolume() &&
+		    info.samples == 1 && owner->backing.samples == 1 &&
+		    info.resources.levels == 1 && info.linear_slice_stride != 0 &&
+		    layers >= 4 && layers <= 256 && stride != 0 &&
+		    info.data.size % layers == 0 && stride % TRACKER_PAGE_SIZE == 0 &&
+		    info.data.address % TRACKER_PAGE_SIZE == 0 &&
+		    info.metadata.compression == VideoOutCompression::Uncompressed;
+		if (partial_eligible) {
+			const auto begin = std::max(address, info.data.address);
+			const auto end = std::min(address + size, info.data.End());
+			if (begin < end) {
+				const uint32_t first = static_cast<uint32_t>((begin - info.data.address) / stride);
+				const uint32_t last = static_cast<uint32_t>((end - 1 - info.data.address) / stride);
+				if (last - first + 1 < layers) {
+					// Unmapping one shadow-array layer does not invalidate the
+					// GPU-rendered siblings. Mark only the affected layers as
+					// CPU-owned; the guest remap path restores page protection
+					// before subsequent writes.
+					if (owner->kept_gpu_layers.empty()) owner->kept_gpu_layers.resize(layers);
+					for (uint32_t layer = first; layer <= last; ++layer) {
+						owner->kept_gpu_layers[layer] = 1;
+					}
+					owner->MarkCpuDirty();
+					static std::atomic<uint32_t> reported {0};
+					if (reported.fetch_add(1, std::memory_order_relaxed) < 24) {
+						LOGF("[DS_GPU_LAYER_KEEP] partial_unmap=0x%016" PRIx64
+						     " bytes=%" PRIu64 " layers=%u-%u/%u retained=%u\n",
+						     address, size, first, last, layers,
+						     layers - (last - first + 1));
+					}
+					continue;
+				}
+			}
 		}
+		// Complete unmaps, unsupported layouts or CPU-only images retain the
+		// original conservative whole-image invalidation behavior.
 		FreeImage(id);
 	}
 }
