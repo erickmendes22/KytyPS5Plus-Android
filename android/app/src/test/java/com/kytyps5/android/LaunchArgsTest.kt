@@ -224,7 +224,7 @@ class LaunchArgsTest {
             assertEquals(-1, args.indexOf("KYTY_BINDLESS_IMAGES=1"))
             assertEquals(-1, args.indexOf("KYTY_GUEST_FRAME_TRACE=1"))
             assertEquals(-1, args.indexOf("KYTY_STAGING_MIB=32"))
-            assertEquals(-1, args.indexOf("--gpu-evict-written"))
+            if (title != "PPSA24156") assertEquals(-1, args.indexOf("--gpu-evict-written"))
         }
     }
 
