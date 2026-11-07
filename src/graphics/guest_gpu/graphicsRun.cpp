@@ -295,6 +295,12 @@ void GuestGpu::SuspendPoint() {
                 ::printf("[DS_BOUNDARY] PPSA01341: PC bounded submission-prefix ordering active; "
                          "reset graphics at next submission, not inside suspend point\\n");
             }
+            const char* fence_env = std::getenv("KYTY_DS_QUEUE_FRAME_FENCE");
+            if (title == "PPSA01341" && fence_env != nullptr && fence_env[0] == '1' &&
+                fence_env[1] == '\0') {
+                m_ds_frame_fence.store(true, std::memory_order_release);
+                ::printf("[DS_QUEUE_FRAME_FENCE] enabled=1; later-frame submissions wait on prior queues\n");
+            }
             m_ds_title_checked.store(true, std::memory_order_release);
         }
     }
@@ -642,6 +648,13 @@ void GuestGpu::Enqueue(Submission submission) {
     if (m_ds_prefix_mode.load(std::memory_order_acquire)) {
         submission.sequence = m_ds_frame_policy.Admit();
         m_ds_in_flight.insert(submission.sequence);
+    } else if (m_ds_frame_fence.load(std::memory_order_acquire)) {
+        submission.sequence = m_ds_frame_policy.Admit();
+        submission.frame_fence = m_ds_frame_boundary;
+        m_ds_in_flight.insert(submission.sequence);
+        if (submission.type == SubmissionType::SuspendPoint) {
+            m_ds_frame_boundary = submission.sequence;
+        }
     }
 	m_queues[submission.queue_id].push_back(std::move(submission));
 	m_submission_count++;
@@ -685,13 +698,29 @@ void GuestGpu::FlushDeferred() {
 	m_gfx_cp->BufferFlush();
 }
 
+// Cross-queue frame ordering: a later guest frame can start only after the
+// previous boundary's submissions have completed. A bounded 2-second fallback
+// prevents a deadlock if the guest waits on a later frame's CPU producer.
+static uint64_t GuestQueueNowNs() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+bool GuestGpu::FrameFencePassed(const Submission& submission) const {
+    return submission.frame_fence == 0 || submission.started || m_ds_in_flight.empty() ||
+           *m_ds_in_flight.begin() > submission.frame_fence ||
+           (submission.fence_hold_ns != 0 &&
+            GuestQueueNowNs() - submission.fence_hold_ns > 2'000'000'000ull);
+}
+
 bool GuestGpu::HasRunnableWork() {
 	Common::LockGuard lock(m_queue_mutex);
 	if (!m_commands.empty()) {
 		return true;
 	}
 	for (const auto& queue: m_queues) {
-		if (!queue.empty() && !queue.front().blocked) {
+		if (!queue.empty() && !queue.front().blocked &&
+            FrameFencePassed(queue.front())) {
 			return true;
 		}
 	}
