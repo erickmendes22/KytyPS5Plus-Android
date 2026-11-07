@@ -1044,6 +1044,45 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	const bool safe_to_delete =
 	    current_tick - std::min(current_tick, cached.tick_accessed_last) > NumFramesBeforeRemoval;
 
+	// Wolverine dynamically changes resolution repeatedly at one guest render-target
+	// address. The normal 32-frame safety window retains every old extent, and the
+	// host VMA working set reaches 11+ GiB in one frame despite a 4.6-GiB budget.
+	// A newly bound colour target replaces the *same guest address*: its prior
+	// differently sized backing cannot remain the authoritative texture.
+	// Retire only old, unbound target aliases. BindlessTable::OnImageUnregistered
+	// invalidates any old descriptor slots; Vulkan deletion is deferred until
+	// the outstanding submitted work completes.
+	const char* alias_env = std::getenv("KYTY_WOLVERINE_RT_ALIAS_RECLAIM");
+	const bool reclaim_alias = alias_env != nullptr && alias_env[0] == '1' &&
+	                           alias_env[1] == '\0' &&
+	    binding == BindingType::RenderTarget && cached.usage.render_target &&
+	    !cached.usage.video_out && !cached.info.IsDepth() && !requested.IsDepth() &&
+	    requested.data.address == cached.info.data.address &&
+	    requested.extent != cached.info.extent &&
+	    requested.type == cached.info.type &&
+	    requested.samples == cached.info.samples &&
+	    requested.pixel_format == cached.info.pixel_format &&
+	    requested.metadata.compression == VideoOutCompression::Uncompressed &&
+	    cached.info.metadata.compression == VideoOutCompression::Uncompressed &&
+	    !cached.binding.is_bound && !cached.binding.is_target &&
+	    !cached.depth_id && cached.stencil_ids.empty() &&
+	    cached.kept_gpu_layers.empty() && cached.kept_unwatched.empty();
+	if (reclaim_alias) {
+		static std::atomic<uint32_t> reports {0};
+		if (reports.fetch_add(1, std::memory_order_relaxed) < 64) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[WOL_RT_ALIAS_RETIRE] addr=0x{:x} old={}x{} new={}x{} "
+			    "old_size={}MiB gpu_owned={} pinned={} old_tick={} now_tick={}\n",
+			    requested.data.address, cached.info.extent.width, cached.info.extent.height,
+			    requested.extent.width, requested.extent.height,
+			    cached.AccountedSize() / GpuBudget::MiB, cached.IsGpuModified() ? 1 : 0,
+			    cached.bindless_pinned ? 1 : 0, cached.tick_accessed_last, current_tick));
+		}
+		NoteRecreate("wolverine-dynamic-resolution-retire", requested, cached.info);
+		FreeImage(cached_id);
+		return {merged_id};
+	}
+
 	const uint32_t requested_block = requested.bytes_per_block * requested.samples;
 	const uint32_t cached_block    = cached.info.bytes_per_block * cached.info.samples;
 	if (requested.data.address == cached.info.data.address &&
