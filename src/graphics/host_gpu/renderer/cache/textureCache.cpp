@@ -2532,6 +2532,10 @@ bool TextureCache::IsRegionRegistered(uint64_t address, uint64_t size) {
 }
 
 void TextureCache::RestoreMappedProtection(uint64_t address, uint64_t size) {
+	// This compatibility path is enabled only for PPSA01341. No other title's
+	// kernel map protections or image-cache tracking are altered.
+	const char* env = std::getenv("KYTY_DS_GPU_LAYER_KEEP");
+	if (env == nullptr || env[0] != '1' || env[1] != '\0') return;
 	address = Kernel::AddressFold::Fold(address);
 	if (!GuestRange {address, size}.Valid()) return;
 	m_page_manager.RestoreMappedProtection(address, size);
