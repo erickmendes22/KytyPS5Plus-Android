@@ -2098,15 +2098,17 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 				memory.sampler = sampler_plan.mapping[memory.sampler][type];
 				EXIT_IF(memory.sampler == UINT32_MAX);
 			}
-			// An enumerated root image reached by an opcode that is not a plain sample. Which
-			// opcode that will be is not knowable ahead of the draw, and ending the process here
-			// loses a run that has already drawn its frames. Report it and clear the marker
-			// instead.
+			// The SPIR-V backend handles indirect image samples, reads, writes and
+			// ImageQueryDimensions through the candidate table. Only unsupported
+			// image operations still take the legacy direct-root fallback.
+			// Treating a dimension query as a direct root can interpret the
+			// table header as texture data (Wolverine PPSA03671, opcode 306).
 			if (image.indirect_root == memory.resource &&
 			    inst.GetOpcode() != ValueOpcode::ImageSampleRaw &&
 			    inst.GetOpcode() != ValueOpcode::ImageGatherRaw &&
 			    inst.GetOpcode() != ValueOpcode::ImageRead &&
-			    inst.GetOpcode() != ValueOpcode::ImageWrite) {
+			    inst.GetOpcode() != ValueOpcode::ImageWrite &&
+			    inst.GetOpcode() != ValueOpcode::ImageQueryDimensions) {
 				static std::atomic<uint32_t> reported {0};
 				if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
 					std::printf("ResourceMaterialization: root image %u used by opcode %u\n",
