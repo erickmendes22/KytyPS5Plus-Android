@@ -1055,6 +1055,67 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 		}
 	}
 
+
+	// Wolverine: growing a clean guest buffer by even one page normally allocates
+	// the entire replacement *before* retiring its old Vulkan allocation.
+	// For a GiB-sized SSBO this transiently doubles residency and can make
+	// Vulkan return OOM despite all bytes still being available in guest RAM.
+	// Under actual budget pressure, replace that clean overlap in two phases:
+	// drain older GPU readers, release the old allocation, then rebuild from
+	// CPU-dirty guest pages. GPU-authored bytes MUST stay on the copy/merge path.
+	if (m_budget_mode && m_scheduler.Active() && incoming >= 128u * MiB &&
+	    overlap.first != overlap.last) {
+		std::string title;
+		if (Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		    title == "PPSA03671") {
+			const auto available = Common::ReadProcessMemory().available;
+			const auto live = m_graphics.GetLiveDeviceMemory();
+			if (GpuBudget::ShouldPreemptWolverineBufferAllocation(
+			        live, incoming, m_graphics.MemoryBudget(), available)) {
+				std::vector<BufferId> clean_overlaps;
+				uint64_t old_bytes = 0;
+				bool all_clean = true;
+				for (auto it = overlap.first; it != overlap.last; ++it) {
+					const auto id = it->second;
+					const auto& old = m_slot_buffers[id];
+					if (old.is_deleted ||
+					    m_memory_tracker.IsRegionGpuModified(old.CpuAddress(), old.Size()) ||
+					    HasGpuDirtyBytes(old.CpuAddress(), old.Size())) {
+						all_clean = false;
+						break;
+					}
+					clean_overlaps.push_back(id);
+					old_bytes += old.Size();
+				}
+				if (all_clean && old_bytes >= 128u * MiB) {
+					// No submitted GPU command may still read a retired buffer.
+					m_scheduler.Finish();
+					for (const auto old_id: clean_overlaps) {
+						const auto& old = m_slot_buffers[old_id];
+						// UntrackMemory explicitly makes guest pages CPU-dirty,
+						// so the next native binding uploads the full requested
+						// contents rather than reading uninitialized Vulkan RAM.
+						m_memory_tracker.UntrackMemory(old.CpuAddress(), old.Size());
+						DeleteBuffer(old_id);
+					}
+					m_scheduler.Finish();
+					static std::atomic<uint32_t> reports {0};
+					if (reports.fetch_add(1, std::memory_order_relaxed) < 32) {
+						Log::WriteToConsoleAndLog(fmt::format(
+						    "[WOL_CLEAN_OVERLAP_REBUILD] old={}MiB new={}MiB buffers={} "
+						    "live_before={}MiB live_after={}MiB\n",
+						    old_bytes / MiB, incoming / MiB, clean_overlaps.size(),
+						    live / MiB, m_graphics.GetLiveDeviceMemory() / MiB));
+					}
+					// The old map iterators were invalidated by DeleteBuffer.
+					// Rediscover the entire union, including bytes outside this
+					// request that belonged to a previously cached buffer.
+					return CreateBuffer(overlap.begin, overlap.end - overlap.begin);
+				}
+			}
+		}
+	}
+
 	const auto id = m_slot_buffers.insert(
 	    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, overlap.begin,
 	    AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress, overlap.end - overlap.begin);
