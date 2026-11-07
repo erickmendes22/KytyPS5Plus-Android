@@ -14759,6 +14759,7 @@ void TestNewShaderRecompilerExpPixelOutputs() {
 
   ShaderPixelInputInfo uint16_info;
   uint16_info.target_output_mode[0] = 7;
+  uint16_info.target_uint_mask = 1;
   options.input_info.pixel = &uint16_info;
   auto uint16_result = RecompileForTest(shader, options);
   const auto uint16_source = DisassembleSpirvBinary(uint16_result.spirv);
@@ -14772,6 +14773,20 @@ void TestNewShaderRecompilerExpPixelOutputs() {
   Check(!SpirvContainsExtInst(uint16_result.spirv, 62),
         "compressed UINT16 MRT export was incorrectly decoded as FP16");
   CheckSpirvBinaryValidates(uint16_result.spirv);
+
+  // Signed 16-bit exports must sign-extend, never reinterpret their lanes
+  // as unsigned values or write them to a FLOAT attachment (PC 26ca609).
+  ShaderPixelInputInfo sint16_info;
+  sint16_info.target_output_mode[0] = 8;
+  sint16_info.target_sint_mask = 1;
+  options.input_info.pixel = &sint16_info;
+  const auto sint16_result = RecompileForTest(shader, options);
+  const auto sint16_source = DisassembleSpirvBinary(sint16_result.spirv);
+  Check(sint16_source.find("OpVariable %_ptr_Output_v4int Output") != std::string::npos &&
+            CountSourceOccurrences(sint16_source, "OpBitFieldSExtract") == 4u &&
+            !SpirvContainsExtInst(sint16_result.spirv, 62),
+        "compressed SINT16 MRT export failed signed extension/output typing");
+  CheckSpirvBinaryValidates(sint16_result.spirv);
 
   ShaderPixelInputInfo unorm16_info;
   unorm16_info.target_output_mode[0] = 5;
