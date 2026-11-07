@@ -356,6 +356,39 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 				id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
 				continue;
 			}
+			// Each scaled image can retain another Vulkan allocation for the
+			// previously-used extent. It is excluded from the normal primary-
+			// image accounting, and the GT-only inactive trim never ran here.
+			// Reclaim only COLD, UNBOUND, UNPINNED alternate backings once an
+			// allocation already failed; authoritative GPU contents stay intact.
+			uint64_t inactive_queued = 0;
+			uint32_t inactive_count = 0;
+			if (m_gc_tick >= 3) {
+				m_lru_cache.ForEachItemBelow(m_gc_tick - 2, [&](ImageId candidate_id) {
+					auto* candidate = m_slot_images.try_get(candidate_id);
+					if (candidate == nullptr || !candidate->registered || candidate->depth_id ||
+					    candidate->bindless_pinned || candidate->binding.is_bound ||
+					    candidate->binding.is_target || candidate_id == keep) return false;
+					const auto retired = candidate->ReleaseInactiveBacking();
+					if (retired == 0) return false;
+					inactive_queued += retired;
+					++inactive_count;
+					return inactive_count >= 48 || inactive_queued >= 512u * GpuBudget::MiB;
+				});
+			}
+			if (inactive_count != 0) {
+				m_scheduler.Finish();
+				const auto after_trim = m_graphics.GetLiveDeviceMemory();
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[WOL_INACTIVE_BACKING_RECLAIM] images={} queued={}MiB actual={}MiB live_after={}MiB\\n",
+				    inactive_count, inactive_queued / GpuBudget::MiB,
+				    after > after_trim ? (after - after_trim) / GpuBudget::MiB : 0,
+				    after_trim / GpuBudget::MiB));
+				if (after_trim < after) {
+					id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
+					continue;
+				}
+			}
 		}
 		// Image-only recovery is insufficient when guest-buffer mirrors and
 		// command buffers occupy the native heap. Wolverine's previous failure
@@ -2829,9 +2862,9 @@ void TextureCache::LogMemoryBreakdown(uint64_t used_memory) {
 	        (host.swap ? 8u : 0u),
 	    m_gc_written_cold_bytes / MiB, m_gc_written_large_bytes / MiB, m_log_writeback_chunks,
 	    m_log_writeback_chunk_bytes / MiB));
-	if (m_gt_prealloc_reclaim) {
+	if (m_budget_mode) {
 		Log::WriteToConsoleAndLog(fmt::format(
-		    "GT image backing breakdown: active={} MiB inactive={} MiB ({} images) "
+		    "GPU image backing breakdown: active={} MiB inactive={} MiB ({} images) "
 		    "other_vma={} MiB\n",
 		    image_bytes / MiB, inactive_bytes / MiB, inactive_images,
 		    (allocated > image_bytes + inactive_bytes
