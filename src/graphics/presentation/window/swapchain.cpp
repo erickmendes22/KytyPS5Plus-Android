@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -243,11 +244,30 @@ void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source) {
 	source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
 	               command);
 	Transit(command, vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite);
+	const auto src_extent = source.backing.extent;
+	const auto dst_extent = image.extent;
+	if (src_extent.width != dst_extent.width || src_extent.height != dst_extent.height) {
+		// Compact presentation: the guest still renders at its native size, but
+		// an in-flight display frame need only contain output-resolution pixels.
+		// This replaces a full-size intermediate copy plus downscale with a
+		// single GPU blit into the smaller intermediate. Other games retain copy.
+		EXIT_IF(source.backing.layers != 1 || image.layers != 1);
+		vk::ImageBlit region {};
+		region.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+		region.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+		region.srcOffsets[1] = {static_cast<int32_t>(src_extent.width),
+		                        static_cast<int32_t>(src_extent.height), 1};
+		region.dstOffsets[1] = {static_cast<int32_t>(dst_extent.width),
+		                        static_cast<int32_t>(dst_extent.height), 1};
+		command.blitImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal,
+		                  image.image, vk::ImageLayout::eTransferDstOptimal, 1, &region,
+		                  vk::Filter::eLinear);
+		return;
+	}
 	vk::ImageCopy copy {};
 	copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, source.backing.layers};
 	copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, image.layers};
-	copy.extent         = {std::min(source.backing.extent.width, image.extent.width),
-	                       std::min(source.backing.extent.height, image.extent.height), 1};
+	copy.extent = {src_extent.width, src_extent.height, 1};
 	EXIT_IF(copy.srcSubresource.layerCount != copy.dstSubresource.layerCount);
 	command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, image.image,
 	                  vk::ImageLayout::eTransferDstOptimal, copy);
@@ -1021,16 +1041,52 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		case vk::Format::eB8G8R8A8Srgb: frame_format = vk::Format::eB8G8R8A8Unorm; break;
 		default: break;
 	}
-	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
+	// Full-resolution video-out is often 3840x2176 even when Android outputs
+	// 1280x720. Requiring one 32-MiB intermediate per pending guest flip wastes
+	// shared RAM and can cause Android's low-memory killer to end the process.
+	// Keep this opt-in and title-scoped; the backing render target is untouched.
+	static const bool compact_present = [] {
+		const char* env = std::getenv("KYTY_PRESENT_COMPACT");
+		return env != nullptr && env[0] == '1' && env[1] == '\0';
+	}();
+	const uint32_t output_width = Config::GetScreenWidth();
+	const uint32_t output_height = Config::GetScreenHeight();
+	const bool want_compact = compact_present && output_width != 0 && output_height != 0 &&
+	                         info.extent.width > output_width && info.extent.height > output_height;
+	const vk::Extent2D request_extent =
+	    want_compact ? vk::Extent2D {output_width, output_height}
+	                 : vk::Extent2D {info.extent.width, info.extent.height};
+	auto* frame = m_impl->frames.Acquire(request_extent, frame_format);
 	frame->hdr   = hdr;
 	frame->blank = false;
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
-	auto&             image = m_impl->ResolveSurface(info);
+	auto& image = m_impl->ResolveSurface(info);
 	if (image.backing.format == vk::Format::eUndefined) {
 		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
 	}
-	frame->Configure(m_impl->window.graphic_ctx,
-	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
+	const auto& graphics = m_impl->window.graphic_ctx;
+	const auto src_features =
+	    graphics.GetFormatProperties(image.backing.format).optimalTilingFeatures;
+	const auto dst_features = graphics.GetFormatProperties(frame_format).optimalTilingFeatures;
+	const bool blit_supported =
+	    static_cast<bool>(src_features & vk::FormatFeatureFlagBits::eBlitSrc) &&
+	    static_cast<bool>(src_features & vk::FormatFeatureFlagBits::eSampledImageFilterLinear) &&
+	    static_cast<bool>(dst_features & vk::FormatFeatureFlagBits::eBlitDst);
+	const auto source_extent = image.backing.extent;
+	const bool compact = want_compact && blit_supported && image.backing.layers == 1 &&
+	                     source_extent.width > output_width &&
+	                     source_extent.height > output_height;
+	const vk::Extent2D extent = compact
+	    ? vk::Extent2D {output_width, output_height}
+	    : vk::Extent2D {source_extent.width, source_extent.height};
+	frame->Configure(graphics, extent, frame_format);
+	if (compact) {
+		static std::atomic<uint32_t> samples {0};
+		if (samples.fetch_add(1, std::memory_order_relaxed) < 4) {
+			LOGF("Compact present: source=%ux%u staged=%ux%u (one blit; guest untouched)\n",
+			     source_extent.width, source_extent.height, extent.width, extent.height);
+		}
+	}
 	frame->CopyFrom(buffer, image);
 	return *frame;
 }
