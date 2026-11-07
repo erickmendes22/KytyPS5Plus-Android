@@ -123,7 +123,7 @@ object LaunchArgs {
                     "--env", "KYTY_GUEST_FRAME_TRACE=1", "--env", "KYTY_TITLE_WORKAROUNDS=1",
                     "--gpu-memory-budget", "auto", "--gpu-evict-written", "1",
                     "--vma-block-size", "32", "--env", "KYTY_STAGING_MIB=32",
-                    "--env", "KYTY_PRESENT_COMPACT=1") else emptyArray()) +
+                    "--env", "KYTY_PRESENT_COMPACT=1", "--env", "KYTY_WOLVERINE_RT_ALIAS_RECLAIM=1") else emptyArray()) +
             // BPE mixes raw RDTSC with sceKernelGetTscFrequency. Disable FEX's
             // minimum-1GHz scaling only for this title; native APIs use CNTFRQ.
             (if (titleId.equals("PPSA01341", ignoreCase = true))
