@@ -120,6 +120,7 @@ object LaunchArgs {
             // rejects unsupported drivers; never enable this for other games.
             (if (titleId.equals("PPSA03671", ignoreCase = true))
                 arrayOf("--env", "KYTY_BINDLESS_IMAGES=1", "--env", "KYTY_MONITORWAITX_CHECK=1",
+                    "--env", "KYTY_REBIND_AFTER_JOIN=1",
                     "--env", "KYTY_GUEST_FRAME_TRACE=1", "--env", "KYTY_TITLE_WORKAROUNDS=1",
                     "--gpu-memory-budget", "auto", "--gpu-evict-written", "1",
                     "--vma-block-size", "32", "--env", "KYTY_STAGING_MIB=32",
