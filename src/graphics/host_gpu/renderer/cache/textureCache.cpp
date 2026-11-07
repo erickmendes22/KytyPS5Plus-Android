@@ -2398,10 +2398,9 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
 	// the GPU owns the other rendered slices. The old whole-image dirty flag
 	// uploaded stale guest data over all layers on next use. The opt-in below
 	// retains GPU layers and releases watchers only over the touched CPU slices.
-	static const bool keep_gpu_layers = [] {
-		const char* env = std::getenv("KYTY_DS_GPU_LAYER_KEEP");
-		return env != nullptr && env[0] == '1' && env[1] == '\0';
-	}();
+	const char* layer_env = std::getenv("KYTY_DS_GPU_LAYER_KEEP");
+	const bool keep_gpu_layers = layer_env != nullptr && layer_env[0] == '1' &&
+	                             layer_env[1] == '\0';
 	const auto page_begin = Common::AlignDown(address, TRACKER_PAGE_SIZE);
 	const auto page_end   = Common::AlignUp(address + size, TRACKER_PAGE_SIZE);
 	for (const auto id: FindImagesInRegion(address, size, true)) {
