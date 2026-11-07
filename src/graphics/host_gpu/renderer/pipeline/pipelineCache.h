@@ -115,6 +115,10 @@ public:
 	~PipelineCache();
 	KYTY_CLASS_NO_COPY(PipelineCache);
 	void Save();
+	// On a Wolverine image-allocation OOM, release the *driver compilation cache*,
+	// not live VkPipeline objects (a draw can still hold one while binding images).
+	// Safe only after all pending pipeline jobs and the GPU timeline have drained.
+	[[nodiscard]] bool ReleaseDriverCacheForImageOom(CommandScheduler& scheduler);
 
 	struct Pipeline {
 		vk::PipelineLayout      pipeline_layout       = nullptr;

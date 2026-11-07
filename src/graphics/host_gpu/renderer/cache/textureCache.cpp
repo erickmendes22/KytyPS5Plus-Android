@@ -400,6 +400,16 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 			id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
 			continue;
 		}
+		// Turnip can retain compilation allocations in VkPipelineCache that are
+		// not counted as guest images or buffers. If the previous recoveries
+		// cannot create the image, drop only that driver cache and retry once.
+		// Keep installed VkPipeline handles: the current draw may hold a pointer
+		// to one while preparing this render target.
+		if (wolverine && attempt == 0 && m_scheduler.Active() &&
+		    m_scheduler.Context().GetPipelineCache().ReleaseDriverCacheForImageOom(m_scheduler)) {
+			id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
+			continue;
+		}
 		// When its 4-KiB image pool cannot accommodate another allocation,
 		// also permit reclaim of recently sampled *CPU-backed* textures.
 		// Current bindings, GPU-owned images, and the merge source remain protected.

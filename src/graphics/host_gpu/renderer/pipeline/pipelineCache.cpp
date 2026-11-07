@@ -1298,6 +1298,36 @@ PipelineCache::Pipeline* PipelineCache::PollPipeline(
 	return iter->second.get();
 }
 
+bool PipelineCache::ReleaseDriverCacheForImageOom(CommandScheduler& scheduler) {
+	if (m_driver_cache == nullptr) return false;
+	// A checkpoint worker can still be reading this handle; don't destroy
+	// VkPipelineCache until that snapshot finishes. Preserve installed pipelines:
+	// the current draw may be holding a pointer to one while resolving images.
+	if (m_flush_thread.joinable()) m_flush_thread.join();
+	// Pipeline jobs contain the old handle in their inputs. Drain the same
+	// collections used by the established PC pipeline-OOM recovery path.
+	for (auto& [key, job]: m_pending_graphics) {
+		(void)key;
+		m_workers->RunNow(job);
+	}
+	for (auto& [key, job]: m_pending_compute) {
+		(void)key;
+		m_workers->RunNow(job);
+	}
+	scheduler.Finish();
+	const auto before = m_graphics.GetLiveDeviceMemory();
+	m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
+	m_driver_cache = nullptr;
+	m_driver_cache_dirty = false;
+	const auto after = m_graphics.GetLiveDeviceMemory();
+	PipelineCacheLog("Wolverine VkPipelineCache OOM recovery: before={} MiB after={} MiB "
+	                 "freed={} MiB; retained {} graphics and {} compute pipelines",
+	                 before >> 20u, after >> 20u,
+	                 (before > after ? before - after : 0) >> 20u,
+	                 m_graphics_pipelines.size(), m_compute_pipelines.size());
+	return true;
+}
+
 void PipelineCache::ReclaimGraphicsPipelines() {
 	// Called only after Finish(): no submitted or open GPU command retains these
 	// handles. Workers read shader permutations, not installed Pipeline objects.
