@@ -208,7 +208,7 @@ class LaunchArgsTest {
             assertEquals(1, env.count { it == "KYTY_TITLE_WORKAROUNDS=1" })
             assertEquals(1, env.count { it == "KYTY_PRESENT_COMPACT=1" })
             assertEquals(1, env.count { it == "KYTY_STAGING_MIB=32" })
-            assertEquals("2560", args[args.indexOf("--gpu-memory-budget") + 1])
+            assertEquals("auto", args[args.indexOf("--gpu-memory-budget") + 1])
             assertEquals("1", args[args.indexOf("--gpu-evict-written") + 1])
             assertEquals("32", args[args.indexOf("--vma-block-size") + 1])
             assertEquals(-1, args.indexOf("KYTY_DS_NATIVE_TSC=1"))
