@@ -70,7 +70,7 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 	const auto evictable = [&](ImageId id) -> const Image* {
 		const auto* image = m_slot_images.try_get(id);
 		if (image == nullptr || !image->registered || image->depth_id ||
-		    image->bindless_pinned || image->usage.video_out ||
+		    image->bindless_pinned || image->usage.video_out || !image->kept_unwatched.empty() ||
 		    image->binding.is_bound || image->binding.is_target) {
 			return nullptr;
 		}
