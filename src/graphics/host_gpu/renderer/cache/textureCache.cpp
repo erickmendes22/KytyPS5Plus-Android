@@ -336,6 +336,27 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 		std::string oom_title;
 		const bool wolverine = Loader::SystemContentParamSfoGetString("TITLE_ID", &oom_title) &&
 		                       oom_title == "PPSA03671";
+		if (wolverine && attempt == 0 && m_scheduler.Active()) {
+			// Dynamic-resolution aliases were detached from the cache, but their
+			// native Vulkan images are still pending deferred destruction until
+			// the current command buffer completes. Before declaring that 11 GiB
+			// is genuinely resident, submit and retire this *already obsolete*
+			// backing. Never discard an in-flight texture or bypass fences.
+			const uint64_t before = m_graphics.GetLiveDeviceMemory();
+			m_scheduler.Finish();
+			const uint64_t after = m_graphics.GetLiveDeviceMemory();
+			if (after < before) {
+				static std::atomic<uint32_t> reported {0};
+				if (reported.fetch_add(1, std::memory_order_relaxed) < 32) {
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[WOL_RT_ALIAS_RETIRED] before={}MiB after={}MiB freed={}MiB\n",
+					    before / GpuBudget::MiB, after / GpuBudget::MiB,
+					    (before - after) / GpuBudget::MiB));
+				}
+				id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
+				continue;
+			}
+		}
 		// When its 4-KiB image pool cannot accommodate another allocation,
 		// also permit reclaim of recently sampled *CPU-backed* textures.
 		// Current bindings, GPU-owned images, and the merge source remain protected.
