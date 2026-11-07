@@ -1100,7 +1100,16 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 			    cached.bindless_pinned ? 1 : 0, cached.tick_accessed_last, current_tick));
 		}
 		NoteRecreate("wolverine-dynamic-resolution-retire", requested, cached.info);
+		const uint64_t old_bytes = cached.AccountedSize();
 		FreeImage(cached_id);
+		// Retiring an image only schedules destruction. Wolverine changes
+		// resolution several times in one frame, before normal cache ageing.
+		// At critical usage, finish the prior submissions so their replaced
+		// images actually give the shared RAM back before more allocations.
+		if (old_bytes >= 8u * GpuBudget::MiB && m_scheduler.Active() &&
+		    m_graphics.GetLiveDeviceMemory() > m_critical_gc_memory) {
+			m_scheduler.Finish();
+		}
 		return {merged_id};
 	}
 
