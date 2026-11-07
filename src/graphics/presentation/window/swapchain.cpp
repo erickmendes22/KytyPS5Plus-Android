@@ -1045,10 +1045,9 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	// 1280x720. Requiring one 32-MiB intermediate per pending guest flip wastes
 	// shared RAM and can cause Android's low-memory killer to end the process.
 	// Keep this opt-in and title-scoped; the backing render target is untouched.
-	static const bool compact_present = [] {
-		const char* env = std::getenv("KYTY_PRESENT_COMPACT");
-		return env != nullptr && env[0] == '1' && env[1] == '\0';
-	}();
+	const char* compact_env = std::getenv("KYTY_PRESENT_COMPACT");
+	const bool compact_present = compact_env != nullptr && compact_env[0] == '1' &&
+	                             compact_env[1] == '\0';
 	const uint32_t output_width = Config::GetScreenWidth();
 	const uint32_t output_height = Config::GetScreenHeight();
 	const bool want_compact = compact_present && output_width != 0 && output_height != 0 &&
