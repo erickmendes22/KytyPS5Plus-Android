@@ -2907,7 +2907,7 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 		const auto* image = m_slot_images.try_get(id);
 		if (image == nullptr || !image->registered || image->depth_id || image->bindless_pinned ||
 		    image->usage.video_out || !image->kept_gpu_layers.empty() ||
-		    image->IsGpuModified() && !image->SafeToDownload() || id == keep ||
+		    (image->IsGpuModified() && !image->SafeToDownload()) || id == keep ||
 		    image->binding.is_bound || image->binding.is_target) {
 			return false;
 		}
