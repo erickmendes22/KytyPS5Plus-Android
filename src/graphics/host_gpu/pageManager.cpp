@@ -282,6 +282,48 @@ struct PageManager::Impl {
 		}
 	}
 
+	// Guest kernel mapping restores its own RW protections. PageManager's
+	// reference counts survive the unmap, so reapply their actual CPU access
+	// modes over the new host mapping without incrementing any watcher.
+	void RestoreMappedProtection(uint64_t vaddr, uint64_t size) {
+		ValidateRange(vaddr, size);
+		const auto begin = Common::AlignDown(vaddr, PAGE_SIZE);
+		const auto end = Common::AlignUp(vaddr + size, PAGE_SIZE);
+		for (auto chunk = begin; chunk < end;) {
+			const auto region_base = Common::AlignDown(chunk, REGION_SIZE);
+			const auto next = std::min(end, region_base + REGION_SIZE);
+			auto* region = FindRegion(chunk);
+			if (region != nullptr) {
+				SpinGuard lock(region->lock);
+				const size_t first = static_cast<size_t>((chunk - region_base) / PAGE_SIZE);
+				const size_t last = static_cast<size_t>((next - region_base) / PAGE_SIZE);
+				size_t run_start = first;
+				bool open = false;
+				auto mode = Common::VirtualMemory::Mode::ReadWrite;
+				const auto flush = [&](size_t at) {
+					if (open) {
+						Protect(region_base + run_start * PAGE_SIZE,
+						        (at - run_start) * PAGE_SIZE, mode);
+						open = false;
+					}
+				};
+				for (size_t i = first; i < last; ++i) {
+					const auto next_mode = region->pages[i].Perms();
+					if (next_mode == Common::VirtualMemory::Mode::ReadWrite) {
+						flush(i);
+					} else if (!open || next_mode != mode) {
+						flush(i);
+						open = true;
+						run_start = i;
+						mode = next_mode;
+					}
+				}
+				flush(last);
+			}
+			chunk = next;
+		}
+	}
+
 	std::unique_ptr<std::atomic<Region*>[]> regions;
 	std::vector<std::unique_ptr<Region>>    region_storage;
 	std::mutex                              region_mutex;
@@ -295,6 +337,10 @@ PageManager::~PageManager() = default;
 
 uint64_t PageManager::GetPageSize() const {
 	return PAGE_SIZE;
+}
+
+void PageManager::RestoreMappedProtection(uint64_t vaddr, uint64_t size) {
+	m_impl->RestoreMappedProtection(vaddr, size);
 }
 
 template <bool track>
