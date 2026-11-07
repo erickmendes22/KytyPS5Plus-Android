@@ -832,10 +832,24 @@ void GuestGpu::ThreadRun(void* data) {
 				int selected_queue = -1;
 				for (uint32_t offset = 0; offset < QueueCount; offset++) {
 					const auto id = (gpu->m_next_queue + offset) % QueueCount;
-					if (!gpu->m_queues[id].empty() && !gpu->m_queues[id].front().blocked) {
-						selected_queue = static_cast<int>(id);
-						break;
+					auto& q = gpu->m_queues[id];
+					if (q.empty() || q.front().blocked) continue;
+					if (!gpu->FrameFencePassed(q.front())) {
+						if (q.front().fence_hold_ns == 0) q.front().fence_hold_ns = GuestQueueNowNs();
+						continue;
 					}
+					if (q.front().fence_hold_ns != 0 &&
+					    GuestQueueNowNs() - q.front().fence_hold_ns >= 2'000'000'000ull) {
+						static std::atomic<uint32_t> reported {0};
+						if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+							::printf("[DS_QUEUE_FRAME_FENCE] timeout_fallback queue=%u "
+							         "older_seq=%llu submission=%llu\n", id,
+							         static_cast<unsigned long long>(q.front().frame_fence),
+							         static_cast<unsigned long long>(q.front().sequence));
+						}
+					}
+					selected_queue = static_cast<int>(id);
+					break;
 				}
 				if (selected_queue < 0) {
 					gpu->m_processing = false;
