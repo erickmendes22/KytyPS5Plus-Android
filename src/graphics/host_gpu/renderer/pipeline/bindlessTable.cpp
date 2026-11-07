@@ -211,8 +211,7 @@ bool BindlessTable::MirrorSamplerHeap(SamplerHeap&                              
 		if ((heap.flags & SamplerPointFiltering) != 0u) {
 			descriptor.SetPointFiltering();
 		}
-		infos.push_back({cache.GetSampler(descriptor, (heap.flags & SamplerIntegerBorder) != 0u,
-		                                  (heap.flags & SamplerDepthCompare) != 0u),
+		infos.push_back({cache.GetSampler(descriptor, (heap.flags & SamplerIntegerBorder) != 0u),
 		                 nullptr, vk::ImageLayout::eUndefined});
 	}
 	if (!infos.empty()) {

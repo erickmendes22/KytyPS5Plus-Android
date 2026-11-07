@@ -14835,6 +14835,50 @@ void TestNewShaderRecompilerExpPixelOutputs() {
   Check(CountSourceOccurrences(unorm16_ba_source, "UnpackUnorm2x16") == 1u,
         "compressed UNORM16 BA-only export did not unpack VSRC1");
   CheckSpirvBinaryValidates(unorm16_ba_result.spirv);
+
+  // PC KytyPS5 306941b: Demon’s Souls writes raw 32-bit exports into
+  // integer MRT attachments. Vulkan declares FLOAT -> UINT/SINT undefined.
+  // Verify output SPIR-V types, preservation of bits, and shader cache keys.
+  const uint32_t raw32_shader[] = {
+      EncodeExp0(0x00, 0x1), EncodeExp1(0, 0, 0, 0), 0xbf810000u,
+  };
+  ShaderPixelInputInfo raw32_float_info;
+  raw32_float_info.target_output_mode[0] = 1;
+  options.input_info.pixel = &raw32_float_info;
+  const auto raw32_float = RecompileForTest(raw32_shader, options);
+  const auto raw32_float_source = DisassembleSpirvBinary(raw32_float.spirv);
+  Check(raw32_float_source.find("OpVariable %_ptr_Output_v4float Output") != std::string::npos,
+        "raw32 float MRT export no longer produces float output");
+  CheckSpirvBinaryValidates(raw32_float.spirv);
+
+  ShaderPixelInputInfo raw32_uint_info;
+  raw32_uint_info.target_output_mode[0] = 1;
+  raw32_uint_info.target_uint_mask = 1;
+  Check(MakeStageStaticKey(raw32_uint_info) != MakeStageStaticKey(raw32_float_info),
+        "UINT MRT shader specialization reused float variant");
+  options.input_info.pixel = &raw32_uint_info;
+  const auto raw32_uint = RecompileForTest(raw32_shader, options);
+  const auto raw32_uint_source = DisassembleSpirvBinary(raw32_uint.spirv);
+  Check(raw32_uint_source.find("OpVariable %_ptr_Output_v4uint Output") != std::string::npos,
+        "raw32 UINT MRT export incorrectly uses float output");
+  Check(raw32_uint_source.find("OpBitcast %v4float") == std::string::npos,
+        "raw32 UINT MRT export lost the original raw register bits");
+  CheckSpirvBinaryValidates(raw32_uint.spirv);
+
+  ShaderPixelInputInfo raw32_sint_info;
+  raw32_sint_info.target_output_mode[0] = 1;
+  raw32_sint_info.target_sint_mask = 1;
+  Check(MakeStageStaticKey(raw32_sint_info) != MakeStageStaticKey(raw32_uint_info) &&
+            MakeStageStaticKey(raw32_sint_info) != MakeStageStaticKey(raw32_float_info),
+        "SINT MRT shader specialization reused a float/unsigned variant");
+  options.input_info.pixel = &raw32_sint_info;
+  const auto raw32_sint = RecompileForTest(raw32_shader, options);
+  const auto raw32_sint_source = DisassembleSpirvBinary(raw32_sint.spirv);
+  Check(raw32_sint_source.find("OpVariable %_ptr_Output_v4int Output") != std::string::npos,
+        "raw32 SINT MRT export incorrectly uses float output");
+  Check(raw32_sint_source.find("OpBitcast %v4int") != std::string::npos,
+        "raw32 SINT MRT export did not reinterpret the original register bits");
+  CheckSpirvBinaryValidates(raw32_sint.spirv);
 }
 
 void TestAutomaticObjectPrimitiveId() {
