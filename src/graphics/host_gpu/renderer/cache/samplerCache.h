@@ -25,6 +25,11 @@ public:
 	KYTY_CLASS_NO_COPY(SamplerCache);
 
 	vk::Sampler GetSampler(const ShaderSamplerResource& r, bool integer_border, bool depth_compare);
+	// Compatibility for existing native Vulkan harnesses using the previous
+	// two-argument form. Production paths supply explicit shader Dref semantics.
+	vk::Sampler GetSampler(const ShaderSamplerResource& r, bool integer_border) {
+		return GetSampler(r, integer_border, r.DepthCompareFunc() != 0);
+	}
 
 private:
 	using SamplerKey = std::array<uint32_t, 6>;
