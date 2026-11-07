@@ -2531,6 +2531,12 @@ bool TextureCache::IsRegionRegistered(uint64_t address, uint64_t size) {
 	return !FindImagesInRegion(address, size, false).empty();
 }
 
+void TextureCache::RestoreMappedProtection(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address);
+	if (!GuestRange {address, size}.Valid()) return;
+	m_page_manager.RestoreMappedProtection(address, size);
+}
+
 void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {address, size}.Valid()) {
