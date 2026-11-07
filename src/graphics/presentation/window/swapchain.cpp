@@ -1064,7 +1064,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	if (image.backing.format == vk::Format::eUndefined) {
 		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
 	}
-	const auto& graphics = m_impl->window.graphic_ctx;
+	auto& graphics = m_impl->window.graphic_ctx;
 	const auto src_features =
 	    graphics.GetFormatProperties(image.backing.format).optimalTilingFeatures;
 	const auto dst_features = graphics.GetFormatProperties(frame_format).optimalTilingFeatures;
