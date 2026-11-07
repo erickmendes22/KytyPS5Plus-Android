@@ -134,11 +134,17 @@ bool RenderContext::IsMapped(uint64_t vaddr, uint64_t size) const noexcept {
 }
 
 void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
-	std::lock_guard lock(m_mapped_ranges_mutex);
-	m_mapped_ranges.Add(vaddr, size);
-	m_buffer_cache.QueueBdaSync(vaddr, size);
-	m_buffer_cache.NoteMappedEnd(vaddr, size);
-	LogMappedSpread(vaddr, size);
+	{
+		std::lock_guard lock(m_mapped_ranges_mutex);
+		m_mapped_ranges.Add(vaddr, size);
+		m_buffer_cache.QueueBdaSync(vaddr, size);
+		m_buffer_cache.NoteMappedEnd(vaddr, size);
+		LogMappedSpread(vaddr, size);
+	}
+	// Partial guest-memory remaps replace kernel page permissions. Images that
+	// retained their GPU-owned sibling slices still have write-watcher counts:
+	// restore those protections without changing the counts or GPU contents.
+	m_texture_cache.RestoreMappedProtection(vaddr, size);
 }
 
 // How much of the dense BDA page table (one entry per 16 KiB page of the lower window plus the
