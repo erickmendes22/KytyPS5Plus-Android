@@ -182,6 +182,7 @@ class LaunchArgsTest {
             assertEquals(1, args.count { it == "KYTY_REBIND_AFTER_JOIN=1" })
             assertEquals(-1, args.indexOf("--readback-linear-images"))
             assertEquals(1, args.count { it == "KYTY_DS_GPU_LAYER_KEEP=1" })
+            assertEquals(1, args.count { it == "KYTY_DS_QUEUE_FRAME_FENCE=1" })
             assertEquals(1, args.count { it == "KYTY_PRESENT_COMPACT=1" })
             assertEquals("32", args[args.indexOf("--vma-block-size") + 1])
         }
@@ -194,6 +195,7 @@ class LaunchArgsTest {
             assertEquals(-1, args.indexOf("KYTY_REBIND_AFTER_JOIN=1"))
             assertEquals(-1, args.indexOf("--readback-linear-images"))
             assertEquals(-1, args.indexOf("KYTY_DS_GPU_LAYER_KEEP=1"))
+            assertEquals(-1, args.indexOf("KYTY_DS_QUEUE_FRAME_FENCE=1"))
         }
     }
 
@@ -207,6 +209,7 @@ class LaunchArgsTest {
             assertEquals(1, env.count { it == "KYTY_GUEST_FRAME_TRACE=1" })
             assertEquals(1, env.count { it == "KYTY_TITLE_WORKAROUNDS=1" })
             assertEquals(1, env.count { it == "KYTY_PRESENT_COMPACT=1" })
+            assertEquals(1, env.count { it == "KYTY_WOLVERINE_RT_ALIAS_RECLAIM=1" })
             assertEquals(1, env.count { it == "KYTY_STAGING_MIB=32" })
             assertEquals("auto", args[args.indexOf("--gpu-memory-budget") + 1])
             assertEquals("1", args[args.indexOf("--gpu-evict-written") + 1])
