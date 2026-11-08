@@ -1028,7 +1028,8 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 					const auto old_begin = old.CpuAddress();
 					const auto old_end = old_begin + old.Size();
 					if (old.is_deleted || (old_begin < overlap.end && overlap.begin < old_end) ||
-					    m_memory_tracker.IsRegionGpuModified(old_begin, old.Size()))
+					    m_memory_tracker.IsRegionGpuModified(old_begin, old.Size()) ||
+					    HasGpuDirtyBytes(old_begin, old.Size()))
 						return false;
 					retire.push_back(old_id);
 					candidate_bytes += old.Size();

@@ -950,17 +950,6 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	}
 	const bool stencil_match = requested.HasStencil() == cached.info.HasStencil();
 	const bool bpp_match     = requested.bytes_per_block == cached.info.bytes_per_block;
-	// PPSA04264
-	const bool raw_d16_texture =
-	    binding == BindingType::Texture && cached.info.IsDepth() &&
-	    cached.info.guest_format == Prospero::BufferFormat::k16UNorm &&
-	    requested.guest_format == Prospero::BufferFormat::k16UInt &&
-	    requested.pixel_format == vk::Format::eR16Uint && cached.backing.samples == 1 &&
-	    requested.samples == 1 && requested.data == cached.info.data &&
-	    requested.extent == cached.info.extent && requested.resources == cached.info.resources &&
-	    requested.type == cached.info.type && requested.pitch == cached.info.pitch &&
-	    !requested.HasStencil() && !cached.info.HasStencil() && !requested.HasMetadata() &&
-	    !cached.info.HasMetadata();
 	// PPSA04264, PPSA04288
 	// A partial view retains the entire matching array layout. HTile belongs to
 	// the depth source, independently of the data slices copied into color storage.
@@ -984,12 +973,22 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	    !requested.HasStencil() && !cached.info.HasStencil() && !requested.HasMetadata() &&
 	    (cached.info.metadata.kind == ImageMetadataKind::None ||
 	     cached.info.metadata.kind == ImageMetadataKind::Htile);
+	// Full single-sampled depth image bytes sometimes need a sampled color view
+	// (e.g. R16_UINT or R8G8_UNORM) that a Vulkan depth image cannot provide.
+	// Retire the depth backing and reinterpret its bytes as a color image,
+	// retaining matching partial-layer layouts. Backport of upstream 0543c3d.
+	const bool raw_depth_texture =
+	    cached.info.IsDepth() && !requested.IsDepth() && !cached.info.HasStencil() &&
+	    !requested.HasMetadata() && cached.backing.samples == 1 && requested.samples == 1 &&
+	    requested.pitch == cached.info.pitch &&
+	    (requested.resources == cached.info.resources || retain_cached_layout) &&
+	    !IsSupportedSampledDepthFormat(cached.info.pixel_format, requested.pixel_format);
 	bool recreate = cached.info.resources < requested.resources ||
 	                requested.IsVolume() != cached.info.IsVolume();
 	switch (binding) {
 		case BindingType::Texture:
 			recreate |= requested.IsDepth() && !cached.info.IsDepth();
-			recreate |= raw_d16_texture;
+			recreate |= raw_depth_texture;
 			break;
 		case BindingType::Storage: recreate |= cached.info.IsDepth(); break;
 		case BindingType::RenderTarget: recreate |= cached.info.IsDepth(); break;
