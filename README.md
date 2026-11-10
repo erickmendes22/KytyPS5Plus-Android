@@ -83,6 +83,7 @@ Build checks do not replace testing on an Android device.
 
 - [erickmendes22 / KytyPS5 Plus](https://github.com/erickmendes22/KytyPS5Plus-Android): this fork and Android interface changes.
 - [tarek369 / KytyPS5-Android](https://github.com/tarek369/KytyPS5-Android): base Android port.
+- [CapyPS5](https://github.com/Ghael-V/CapyPS5) by [Ghael-V](https://github.com/Ghael-V): pioneering open-source PS5 emulation work on Android and a reference project for the Android PS5 emulation community.
 - [KytyPS5](https://github.com/KytyPS5/KytyPS5): PS5 emulation core.
 - [Kyty](https://github.com/InoriRus/Kyty) by InoriRus: original project.
 - [FEX-Emu](https://github.com/FEX-Emu/FEX): FEXCore CPU translation.
