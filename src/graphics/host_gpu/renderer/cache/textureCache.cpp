@@ -3145,7 +3145,16 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 	}
 	LOGF("TextureCache: out of device memory, evicted %zu images (%" PRIu64 " MiB)\n", freed,
 	     bytes >> 20u);
-	if (freed == 0 && wolverine_chunked_gpu) {
+	// Host image deletion is deferred until prior Vulkan work is complete. The
+	// old path checked only the number of images freed, even when they totalled
+	// 2 MiB and the 4.6-GiB budget was still exceeded by several GiB.
+	// Finish the normal pass before checking true resident bytes; a tiny
+	// reclaim must NOT prevent the large GPU-written image fallback.
+	if (freed != 0 && wolverine_chunked_gpu) m_scheduler.Finish();
+	const bool still_over_budget =
+	    wolverine_chunked_gpu && m_graphics.MemoryBudget() != 0 &&
+	    m_graphics.GetLiveDeviceMemory() >= m_graphics.MemoryBudget();
+	if (wolverine_chunked_gpu && (freed == 0 || still_over_budget)) {
 		// Wolverine's 2026-11-12 failure: 420 MiB of old GPU-authored images
 		// remained eligible, but the normal 32-MiB DOWNLOAD_BUDGET excludes
 		// every large candidate before the readback is even attempted. The
@@ -3217,7 +3226,7 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 		}
 	}
 	if (freed == 0) return false;
-	m_scheduler.Finish();
+	if (!wolverine_chunked_gpu) m_scheduler.Finish();
 	return true;
 }
 

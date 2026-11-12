@@ -1,4 +1,5 @@
 #include "loader/demonsSoulsIdle.h"
+#include "loader/demonsSoulsHdMobile.h"
 #include "loader/runtimeLinker.h"
 #include "loader/guestHostFunction.h"
 #include "loader/systemContent.h"
@@ -7,7 +8,12 @@
 #include "graphics/host_gpu/hostMemory.h"
 #include "kernel/memory.h"
 
+#include <algorithm>
 #include <array>
+#include <optional>
+#include <vector>
+#include <string_view>
+#include <limits>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -64,6 +70,130 @@ bool IsSupportedGame() {
     // actual EBOOT instruction signatures before changing anything.
     return SystemContentParamSfoGetString("TITLE_ID", &title) && title=="PPSA01341";
 }
+
+struct HdPatch {
+    uint64_t address;
+    std::vector<uint8_t> before;
+    std::vector<uint8_t> after;
+};
+std::vector<HdPatch> g_hd_patches;
+
+// Do not assume a US/JP eboot or a different update has identical bytes.
+// Search only within 4 KiB of independently documented BPE 01.007.000 sites,
+// then require exactly one match. No match -> no modification to guest code.
+std::optional<uint64_t> FindHdSignature(Program* program, uint64_t hint,
+                                        std::string_view signature) {
+    using namespace DemonsSoulsHdMobile;
+    constexpr uint64_t Radius = 4096;
+    const size_t count = SignatureBytes(signature);
+    if (count == 0 || program->mapped_size < count ||
+        program->base_vaddr > UINT64_MAX - program->mapped_size) return {};
+    const uint64_t first = hint > Radius ? hint - Radius : 0u;
+    const uint64_t last = std::min<uint64_t>(program->mapped_size, hint + Radius + count);
+    if (last < first + count) return {};
+    const uint64_t address = program->base_vaddr + first;
+    const auto length = last - first;
+    if (!Libs::Graphics::HostMemoryRangeIsReadable(address, length)) return {};
+    const auto data = std::span<const uint8_t>(
+        reinterpret_cast<const uint8_t*>(address), static_cast<size_t>(length));
+    std::optional<uint64_t> result;
+    uint64_t best_distance = UINT64_MAX;
+    for (size_t at = 0; at + count <= data.size(); ++at) {
+        if (data[at] != static_cast<uint8_t>((HexDigit(signature[0]) << 4u) |
+                                             HexDigit(signature[1]))) continue;
+        if (!Matches(data.subspan(at, count), signature)) continue;
+        const uint64_t offset = first + at;
+        const uint64_t distance = offset > hint ? offset - hint : hint - offset;
+        if (distance == best_distance) return {}; // equally plausible sites
+        if (distance < best_distance) {
+            // Two legitimate 3840x2160 display-buffer calls lie only ~240
+            // bytes apart: resolve each by its independently verified RVA.
+            best_distance = distance;
+            result = address + at;
+        }
+    }
+    return result;
+}
+void UndoHdOutput() {
+    for (auto it = g_hd_patches.rbegin(); it != g_hd_patches.rend(); ++it) {
+        if (!Libs::Graphics::HostMemoryRangeIsReadable(it->address, it->after.size()))
+            continue;
+        // Preserve patches applied by the game or other modules after us.
+        if (std::memcmp(reinterpret_cast<const void*>(it->address),
+                        it->after.data(), it->after.size()) != 0) continue;
+        std::memcpy(reinterpret_cast<void*>(it->address),
+                    it->before.data(), it->before.size());
+        (void)Common::VirtualMemory::FlushInstructionCache(it->address, it->before.size());
+    }
+    g_hd_patches.clear();
+}
+bool WriteHd(uint64_t address, const void* bytes, size_t count) {
+    if (count == 0 || !Libs::Graphics::HostMemoryRangeIsReadable(address, count))
+        return false;
+    HdPatch edit {address, std::vector<uint8_t>(count),
+                  std::vector<uint8_t>(count)};
+    std::memcpy(edit.before.data(), reinterpret_cast<const void*>(address), count);
+    std::memcpy(edit.after.data(), bytes, count);
+    g_hd_patches.push_back(std::move(edit));
+    std::memcpy(reinterpret_cast<void*>(address), bytes, count);
+    return Common::VirtualMemory::FlushInstructionCache(address, count);
+}
+void InstallHdOutput(Program* program) {
+#if defined(__ANDROID__) && defined(__aarch64__)
+    const char* choice = std::getenv("KYTY_DS_HD_GAME_OUTPUT");
+    if (choice && choice[0] == '0' && choice[1] == '\0') return;
+    if (!g_hd_patches.empty()) return;
+    using namespace DemonsSoulsHdMobile;
+    const auto video = FindHdSignature(program, 0x9fe6a3, VideoChoice);
+    const auto renderer = FindHdSignature(program, 0xb26055, RendererChoice);
+    const auto ui = FindHdSignature(program, 0xde88b6, InterfaceChoice);
+    const auto buffer_a = FindHdSignature(program, 0x90af74, DisplayBuffer);
+    const auto buffer_b = FindHdSignature(program, 0x90b061, DisplayBuffer);
+    const auto setter = FindHdSignature(program, 0x90a6a7, SetterFixedPair);
+    const auto builder = FindHdSignature(program, 0x90b210, ConstructorFixedPair);
+    const auto query = FindHdSignature(program, 0x90ac3c, QueryFixedPair);
+    if (!video || !renderer || !ui || !buffer_a || !buffer_b ||
+        !setter || !builder || !query || *buffer_a == *buffer_b) {
+        Note("HD video mode: one or more 01.007.000 signatures absent; original 4K output retained");
+        return;
+    }
+    constexpr std::array<uint8_t, 3> nop3 {0x0f, 0x1f, 0x00};
+    constexpr std::array<uint8_t, 4> nop4 {0x0f, 0x1f, 0x40, 0x00};
+    const auto write_mode = [&](uint64_t address) {
+        return WriteHd(address + 1, &VideoMode, sizeof(VideoMode));
+    };
+    const auto set_buffer = [&](uint64_t address) {
+        return WriteHd(address + 1, &OutputWidth, sizeof(OutputWidth)) &&
+               WriteHd(address + 6, &OutputHeight, sizeof(OutputHeight));
+    };
+    // Atomic at the operation level: all signatures were validated before
+    // any patch, and a failed code-cache flush restores every changed site.
+    const bool ok = write_mode(*video) && write_mode(*renderer) && write_mode(*ui) &&
+        WriteHd(*video + 7, nop3.data(), nop3.size()) &&
+        WriteHd(*video + 12, nop3.data(), nop3.size()) &&
+        WriteHd(*renderer + 27, nop3.data(), nop3.size()) &&
+        WriteHd(*renderer + 32, nop3.data(), nop3.size()) &&
+        WriteHd(*ui + 7, nop3.data(), nop3.size()) &&
+        WriteHd(*ui + 16, nop4.data(), nop4.size()) &&
+        set_buffer(*buffer_a) && set_buffer(*buffer_b) &&
+        WriteHd(*setter + 6, &PackedCeiling, sizeof(PackedCeiling)) &&
+        WriteHd(*builder + 9, &PackedCeiling, sizeof(PackedCeiling)) &&
+        WriteHd(*query + 5, &PackedCeiling, sizeof(PackedCeiling));
+    if (!ok) {
+        UndoHdOutput();
+        Note("HD video mode: patch failed; original guest instructions restored");
+        return;
+    }
+    // Mode 1 (1600x900 3D -> 1920x1080) is intentional: the PC fork
+    // reproduced missing 3D character models with mode 2 at 1080 output.
+    // 720p Android window is scaled from the game's native HD video mode.
+    Note("HD video mode: validated 01.007.000; output=1920x1080 "
+         "renderer=mode1(1600x900) UI=HD (reversible; fixes PC menu-mode mismatch)");
+#else
+    (void)program;
+#endif
+}
+
 void InstallGeometryBranch(Program* program) {
     if (g_geometry_site || program->mapped_size < GeometryBranchOffset + GeometryBranchBytes.size() ||
         program->base_vaddr > UINT64_MAX - GeometryBranchOffset - GeometryBranchBytes.size()) {
@@ -104,6 +234,7 @@ void Install(Program* program) {
     }
     // Geometry must not depend on whether the optional idle backoff is enabled.
     InstallGeometryBranch(program);
+    InstallHdOutput(program);
     if (!Enabled()) return;
     if (g_cave || program->mapped_size < PollOffset+PollBytes.size() ||
         program->mapped_size >= CaveOffset ||
@@ -165,6 +296,7 @@ void Install(Program* program) {
 }
 
 void Clear() {
+    UndoHdOutput();
     if (g_geometry_site != 0) {
         const uint64_t opcode = g_geometry_site + GeometryJumpOpcodeOffset;
         const uint8_t patched = 0xeb;

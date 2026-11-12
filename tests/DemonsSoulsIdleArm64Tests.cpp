@@ -1,4 +1,5 @@
 #include "loader/demonsSoulsIdle.h"
+#include "loader/demonsSoulsHdMobile.h"
 #include <cassert>
 #include <atomic>
 #include <cstdint>
@@ -27,6 +28,21 @@ int main() {
     static_assert(!UseIdleBackoff(true, true, "0"));
     static_assert(UseIdleBackoff(true, true, "1"));
     static_assert(UseIdleBackoff(false, false, "1"));
+    // PC-validated native HD mode: all three guest display choices plus
+    // independent render-size/ceiling sites must match before patching.
+    using namespace Loader::DemonsSoulsHdMobile;
+    static_assert(OutputWidth == 1920 && OutputHeight == 1080);
+    static_assert(VideoMode == 1 && PackedCeiling == 0x43800000780ull);
+    static_assert(SignatureBytes(RendererChoice) > 30);
+    const std::array<uint8_t,16> hd_video = {
+        0xbe,0x03,0x00,0x00,0x00,0x85,0xc9,0x0f,
+        0x45,0xf1,0x85,0xc0,0x0f,0x45,0xf0,0xe8};
+    Expect(Loader::DemonsSoulsHdMobile::Matches(hd_video, VideoChoice),
+           "verified 01.007.000 HD display-mode selector");
+    auto hd_other = hd_video;
+    hd_other[1] = 1;
+    Expect(!Loader::DemonsSoulsHdMobile::Matches(hd_other, VideoChoice),
+           "different or already patched guest HD selector is rejected");
     Expect(Matches(CallBytes,PollBytes),"verified Bluepoint byte signatures");
     Expect(IdleBackoffMicroseconds(1) == 50u, "short BPE empty poll retains low latency");
     Expect(IdleBackoffMicroseconds(63) == 50u, "short poll threshold");
