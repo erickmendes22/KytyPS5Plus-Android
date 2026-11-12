@@ -1089,8 +1089,9 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 					old_bytes += old.Size();
 				}
 				if (all_clean && old_bytes >= 128u * MiB) {
-					// No submitted GPU command may still read a retired buffer.
-					m_scheduler.Finish();
+					// Old Vulkan allocations are retired on the GPU timeline.
+					// One Finish AFTER retiring clean buffers drains deferred frees;
+					// the previous pre/post double wait stalled guest GPU work.
 					for (const auto old_id: clean_overlaps) {
 						const auto& old = m_slot_buffers[old_id];
 						// UntrackMemory explicitly makes guest pages CPU-dirty,

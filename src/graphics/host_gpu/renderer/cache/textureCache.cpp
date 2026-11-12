@@ -495,11 +495,18 @@ void TextureCache::DeleteImage(ImageId id) {
 		EXIT("TextureCache: deleting a GPU-modified image without resolving its contents\n");
 	}
 	m_download_images.erase(id);
-	// Guest HTile metadata has an independent allocation lifetime. A Vulkan
-	// depth image may be replaced or retired without unmapping the underlying
-	// HTile guest address. Removing its clear_mask here loses Bluepoint's
-	// partial depth clear history before the next 3D pass. The guest memory
-	// unmap path below owns metadata removal (PC KytyPS5 d8c4a9af38).
+	// Guest HTile clear state belongs to the mapped guest allocation, not to
+	// one Vulkan image. When this image retires, release only its ownership ID:
+	// a replacement depth target must still see the clear_mask until unmap.
+	if (image->info.HasMetadata() &&
+	    image->info.metadata.kind == ImageMetadataKind::Htile) {
+		auto metadata = m_surface_metas.find(image->info.metadata.range.address);
+		if (metadata != m_surface_metas.end() &&
+		    metadata->second.type == MetaDataInfo::Type::HTile &&
+		    metadata->second.owner == id) {
+			metadata->second.owner = {};
+		}
+	}
 	UnregisterImage(id);
 	if (m_scheduler.Active()) {
 		m_scheduler.DeferOperation([this, id] { m_slot_images.erase(id); });
@@ -973,15 +980,24 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	    !requested.HasStencil() && !cached.info.HasStencil() && !requested.HasMetadata() &&
 	    (cached.info.metadata.kind == ImageMetadataKind::None ||
 	     cached.info.metadata.kind == ImageMetadataKind::Htile);
-	// Full single-sampled depth image bytes sometimes need a sampled color view
-	// (e.g. R16_UINT or R8G8_UNORM) that a Vulkan depth image cannot provide.
-	// Retire the depth backing and reinterpret its bytes as a color image,
-	// retaining matching partial-layer layouts. Backport of upstream 0543c3d.
+	// Reinterpret a depth backing as sampled colour only when both
+	// descriptors cover the same guest bytes and subresource geometry.
+	// Unrelated overlapping extents must never replace a GPU-authored depth.
+	const bool full_raw_layout =
+	    requested.data == cached.info.data &&
+	    requested.resources == cached.info.resources;
 	const bool raw_depth_texture =
-	    cached.info.IsDepth() && !requested.IsDepth() && !cached.info.HasStencil() &&
-	    !requested.HasMetadata() && cached.backing.samples == 1 && requested.samples == 1 &&
+	    binding == BindingType::Texture &&
+	    cached.info.IsDepth() && !requested.IsDepth() &&
+	    !cached.info.HasStencil() && !requested.HasStencil() &&
+	    !requested.HasMetadata() && cached.backing.samples == 1 &&
+	    cached.info.samples == 1 && requested.samples == 1 &&
+	    bpp_match &&
+	    requested.data.address == cached.info.data.address &&
+	    requested.extent == cached.info.extent &&
+	    requested.type == cached.info.type &&
 	    requested.pitch == cached.info.pitch &&
-	    (requested.resources == cached.info.resources || retain_cached_layout) &&
+	    (full_raw_layout || retain_cached_layout) &&
 	    !IsSupportedSampledDepthFormat(cached.info.pixel_format, requested.pixel_format);
 	bool recreate = cached.info.resources < requested.resources ||
 	                requested.IsVolume() != cached.info.IsVolume();

@@ -6,9 +6,7 @@
 
 #include <SDL3/SDL_vulkan.h>
 
-#include <array>
 #include <atomic>
-#include <cstdint>
 #include <cstdlib>
 #include <fmt/format.h>
 #include <string>
@@ -41,7 +39,6 @@ namespace {
 
 struct DriverState {
 	std::string               custom_directory;
-	std::string               cache_identity = "system";
 	bool                      print_caps    = false;
 	bool                      custom_active = false;
 	PFN_vkGetInstanceProcAddr custom_gipa   = nullptr;
@@ -238,28 +235,6 @@ std::optional<DriverPackage> ReadDriverPackage(const std::string& directory) {
 	return package;
 }
 
-// Different Turnip builds can expose the same deviceID, driverVersion and
-// pipelineCacheUUID. Hash the *loaded .so*, once, so a cached pipeline from
-// another imported package cannot poison the next driver's shader compiler.
-std::string FingerprintDriverBinary(const std::string& path) {
-	std::ifstream file(path, std::ios::binary);
-	if (!file) return fmt::format("custom-unreadable:{}", path);
-	constexpr uint64_t kFnvOffset = 14695981039346656037ull;
-	constexpr uint64_t kFnvPrime  = 1099511628211ull;
-	uint64_t hash = kFnvOffset;
-	uint64_t bytes = 0;
-	std::array<char, 32768> block {};
-	while (file.read(block.data(), block.size()) || file.gcount() > 0) {
-		const auto used = static_cast<size_t>(file.gcount());
-		for (size_t i = 0; i < used; ++i) {
-			hash ^= static_cast<uint8_t>(block[i]);
-			hash *= kFnvPrime;
-		}
-		bytes += used;
-	}
-	return fmt::format("custom-fnv64:{:016x}:{:x}", hash, bytes);
-}
-
 // adrenotools loads its hook libraries from the APK's nativeLibraryDir, which is where libmain.so
 // (this code) was extracted to.
 std::optional<std::string> NativeLibraryDirectory() {
@@ -298,8 +273,6 @@ PFN_vkGetInstanceProcAddr OpenCustomDriver(const std::string& directory) {
 		Report("GPU driver: the loaded driver exports no vkGetInstanceProcAddr");
 		return nullptr;
 	}
-	State().cache_identity = FingerprintDriverBinary(package->directory + package->library_name);
-	Report(fmt::format("GPU driver cache binary identity: {}", State().cache_identity));
 	return gipa;
 }
 #endif
@@ -308,11 +281,6 @@ PFN_vkGetInstanceProcAddr OpenCustomDriver(const std::string& directory) {
 
 void SetCustomDriverDirectory(std::string directory) {
 	State().custom_directory = std::move(directory);
-	State().cache_identity = "system";
-}
-
-const std::string& DriverCacheIdentity() {
-	return State().cache_identity;
 }
 
 void SetPrintCaps(bool enabled) {
@@ -418,7 +386,6 @@ PFN_vkGetInstanceProcAddr FallBackToSystemDriver() {
 	       "system Vulkan driver");
 	state.custom_active = false;
 	state.custom_gipa   = nullptr;
-	state.cache_identity = "system";
 	return SystemInstanceProcAddr();
 }
 
