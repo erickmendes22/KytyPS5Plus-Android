@@ -94,6 +94,26 @@ inline constexpr uint64_t kGtPreallocGrowth = 64 * MiB;
            live >= kGtPreallocMinUsage;
 }
 
+// Wolverine streams multiple compressed mips and giant SSBOs within a single
+// GPU tick. The normal frame collector cannot keep its native residency under
+// budget if we wait until vmaCreateImage returns OOM. The preflight is sampled
+// on image creation and only triggers after meaningful native growth; actual
+// evictions retain all normal GPU-ownership and active-binding protections.
+[[nodiscard]] constexpr bool ShouldPreemptWolverineImageAllocation(
+    uint64_t live, uint64_t budget, uint64_t previous,
+    std::optional<uint64_t> available) {
+    if (budget < 512 * MiB || live < 1024 * MiB) return false;
+    const bool pressure = live >= budget - std::min(budget, 384 * MiB);
+    const bool low_ram = available && *available < 1024 * MiB;
+    if (!pressure && !low_ram) return false;
+    return previous == 0 ||
+           (live > previous && live - previous >= 128 * MiB);
+}
+static_assert(!ShouldPreemptWolverineImageAllocation(2 * GiB, 4608 * MiB, 0, 4 * GiB));
+static_assert(ShouldPreemptWolverineImageAllocation(4352 * MiB, 4608 * MiB, 0, 4 * GiB));
+static_assert(!ShouldPreemptWolverineImageAllocation(4400 * MiB, 4608 * MiB, 4352 * MiB, 4 * GiB));
+static_assert(ShouldPreemptWolverineImageAllocation(4530 * MiB, 4608 * MiB, 4352 * MiB, 4 * GiB));
+
 // mem_available: MemAvailable at start (bytes); 0 when unknown.
 [[nodiscard]] constexpr uint64_t AutoBudget(uint64_t mem_available) {
 	if (mem_available == 0) {

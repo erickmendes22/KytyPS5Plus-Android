@@ -226,6 +226,8 @@ private:
 	uint32_t         m_gt_prealloc_insertions = 0;
 	uint64_t         m_gt_prealloc_last_usage = 0;
 	uint64_t         m_gt_prealloc_last_tick  = 0;
+	uint32_t         m_wol_prealloc_insertions = 0;
+	uint64_t         m_wol_prealloc_last_usage = 0;
 	uint64_t         m_gt_last_alternate_trim = 0;
 	uint64_t                                          m_gc_written_cold_bytes  = 0;
 	uint64_t                                          m_gc_written_large_bytes = 0;

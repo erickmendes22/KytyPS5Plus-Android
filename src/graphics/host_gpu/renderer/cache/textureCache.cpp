@@ -317,6 +317,49 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 			}
 		}
 	}
+	// PPSA03671: the 2026-11-12 trace goes from 2.8 GiB at the last
+	// frame collector to 11.4 GiB while still preparing one Vulkan frame.
+	// Reclaim before the next allocation at >= 4.2 GiB, sampling only every
+	// four insertions or for >= 16-MiB guest images. Do not make a hard
+	// budget cap: GPU-owned resources needed by this frame cannot be
+	// discarded safely, and the ownership-checked recovery may find none.
+	if (m_budget_mode && m_scheduler.Active() && m_gc_tick >= 3 &&
+	    ((++m_wol_prealloc_insertions % 4u) == 0u ||
+	     info.data.size >= 16u * GpuBudget::MiB)) {
+		std::string title;
+		if (Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		    title == "PPSA03671") {
+			const auto live = m_graphics.GetLiveDeviceMemory();
+			const auto available = Common::ReadProcessMemory().available;
+			if (GpuBudget::ShouldPreemptWolverineImageAllocation(
+			        live, m_graphics.MemoryBudget(),
+			        m_wol_prealloc_last_usage, available)) {
+				const bool evicted = EvictForAllocation(keep, true);
+				const auto after_images = m_graphics.GetLiveDeviceMemory();
+				// Recover only clean, old guest buffers; the GPU-dirty ledger
+				// protects current compute output and shared SSBO contents.
+				const auto retired_buffers =
+				    !evicted && after_images >= m_graphics.MemoryBudget()
+				        ? m_buffer_cache.ReclaimColdCleanBuffersForImageOom(
+				              256u * GpuBudget::MiB)
+				        : 0u;
+				const auto after = m_graphics.GetLiveDeviceMemory();
+				m_wol_prealloc_last_usage = after;
+				static std::atomic<uint32_t> reported {0};
+				if (reported.fetch_add(1, std::memory_order_relaxed) < 80u) {
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[WOL_IMAGE_PREFLIGHT] before={}MiB after={}MiB "
+					    "budget={}MiB available={}MiB evicted={} "
+					    "clean_buffers={}MiB tick={}\\n",
+					    live / GpuBudget::MiB, after / GpuBudget::MiB,
+					    m_graphics.MemoryBudget() / GpuBudget::MiB,
+					    available.value_or(0) / GpuBudget::MiB,
+					    evicted ? 1u : 0u, retired_buffers / GpuBudget::MiB,
+					    m_gc_tick));
+				}
+			}
+		}
+	}
 	auto id = m_slot_images.insert(m_graphics, m_scheduler, info, scaled);
 	for (int attempt = 0; m_slot_images[id].allocation_failed; attempt++) {
 		// A failed allocation must report the exact requested image, not just

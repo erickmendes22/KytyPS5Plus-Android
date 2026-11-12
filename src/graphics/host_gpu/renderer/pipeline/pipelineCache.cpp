@@ -27,6 +27,7 @@
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/presentation/window/vulkanDriver.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMemo.h"
 #include "graphics/shader/shaderCompiler.h"
@@ -120,8 +121,9 @@ std::string DriverCacheSignature(const vk::PhysicalDeviceProperties& properties)
 		uuid[i * 2 + 1] = hex[properties.pipelineCacheUUID[i] & 0xfu];
 	}
 	// Driver cache entries already distinguish shader code and pipeline state across builds.
-	return fmt::format("KytyPC2:{:08x}:{:08x}:{:08x}:{}\n",
-	                   properties.vendorID, properties.deviceID, properties.driverVersion, uuid);
+	return fmt::format("KytyPC3:{:08x}:{:08x}:{:08x}:{}:{}\n",
+	                   properties.vendorID, properties.deviceID, properties.driverVersion, uuid,
+	                   VulkanDriver::DriverCacheIdentity());
 }
 
 std::string PipelineCacheTitleId() {
@@ -1422,9 +1424,12 @@ void PipelineCache::InitializeDriverCache() {
 	// imported Turnip) fails the signature check, and alternating drivers would otherwise discard
 	// each other's cache on every launch and recompile every pipeline (seconds each on mobile).
 	const auto& device_properties = m_graphics.GetPhysicalDeviceProperties();
+	const auto& binary_identity = VulkanDriver::DriverCacheIdentity();
+	const auto binary_hash = XXH3_64bits(binary_identity.data(), binary_identity.size());
 	m_driver_cache_path = std::filesystem::path("_PipelineCache") /
-	                      fmt::format("{}-{:08x}-{:08x}.bin", title_id, device_properties.deviceID,
-	                                  device_properties.driverVersion);
+	                      fmt::format("{}-{:08x}-{:08x}-{:016x}.bin", title_id,
+	                                  device_properties.deviceID,
+	                                  device_properties.driverVersion, binary_hash);
 	const auto path         = Common::PathToString(m_driver_cache_path);
 	const bool cache_exists = Common::File::IsFileExisting(m_driver_cache_path);
 	if (cache_exists) {

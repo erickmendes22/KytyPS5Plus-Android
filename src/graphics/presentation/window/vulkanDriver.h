@@ -12,6 +12,9 @@ namespace Libs::Graphics::VulkanDriver {
 // .so, the AdrenoTools format used by Eden/Yuzu/Skyline), e.g. Mesa Turnip. Android only; other
 // platforms log and ignore it. An empty directory selects the system driver.
 void SetCustomDriverDirectory(std::string directory);
+// Fingerprint of the actual loaded Vulkan binary, not just deviceID/driverVersion:
+// imported Turnip packages can report identical Vulkan IDs despite different code.
+[[nodiscard]] const std::string& DriverCacheIdentity();
 
 // --print-vulkan-caps: dump the selected device's driver, extensions and key features.
 void SetPrintCaps(bool enabled);
