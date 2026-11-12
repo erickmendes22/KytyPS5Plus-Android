@@ -20,6 +20,36 @@ inline constexpr bool UseIdleBackoff(bool android, bool arm64, const char* env) 
     if (env != nullptr && env[0]=='1' && env[1]=='\0') return true;
     return android && arm64;
 }
+// The verified Bluepoint empty-job path can run millions of times while
+// the GPU is almost idle. Keep short polls responsive, but avoid waking 13
+// BPE workers at 20 kHz apiece after sustained inactivity.
+inline constexpr uint32_t IdleBackoffMicroseconds(uint32_t consecutive_empty) {
+    return consecutive_empty < 64 ? 50u : consecutive_empty < 512 ? 200u : 800u;
+}
+static_assert(IdleBackoffMicroseconds(1) == 50);
+static_assert(IdleBackoffMicroseconds(64) == 200);
+static_assert(IdleBackoffMicroseconds(512) == 800);
+
+// Executable-verified guest branch observed in the supplied PPSA01341 eboot.
+// At image+0xA0D6FB it tests doIndexBufferCulling (BPE CVar+0xCAA):
+//   cmp byte ptr [rcx+0xcaa], 1; jne +0x20
+// The JNE bypasses GPU-produced indices; replacing just JNE by JMP
+// preserves the original guest index buffer even if PackageCmdLineArgs.txt
+// is ignored on a particular boot. Never patch an unverified executable.
+inline constexpr uint64_t GeometryBranchOffset = 0xA0D6FB;
+inline constexpr size_t GeometryJumpOpcodeOffset = 11;
+inline constexpr std::array<uint8_t,45> GeometryBranchBytes{
+    0x48,0x8b,0x49,0x68,0x80,0xb9,0xaa,0x0c,0x00,0x00,0x01,0x75,0x20,
+    0x41,0xc6,0x86,0xec,0xda,0x02,0x00,0x01,0x48,0xc7,0x03,0x00,0x00,
+    0x00,0x00,0xc5,0xf8,0x10,0x80,0xf0,0x0d,0x00,0x00,0xc4,0xc1,0x78,
+    0x11,0x86,0xb8,0xda,0x02,0x00
+};
+inline bool HasGeometryBranch(std::span<const uint8_t> guest) {
+    return std::ranges::equal(guest, GeometryBranchBytes);
+}
+static_assert(GeometryBranchBytes[GeometryJumpOpcodeOffset] == 0x75);
+static_assert(GeometryBranchBytes[GeometryJumpOpcodeOffset + 1] == 0x20);
+
 inline constexpr uint64_t CallOffset=0x83b59b, PollOffset=0x83b880;
 inline constexpr uint64_t CaveOffset=0x8000000, CaveSize=0x4000;
 inline constexpr std::array<uint8_t,24> CallBytes{

@@ -92,7 +92,8 @@ public:
 	void LogMemoryBreakdown(uint64_t used_memory);
 
 private:
-	bool EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_backed = false);
+	bool EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_backed = false,
+	                        bool wolverine_chunked_gpu = false);
 	// --gpu-memory-budget (textureCacheBudget.cpp). Caller holds m_lock.
 	void ApplyBudgetThresholds(uint64_t budget);
 	void CollectWithinBudget(uint64_t tick, uint64_t used_memory);

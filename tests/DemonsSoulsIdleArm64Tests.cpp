@@ -28,6 +28,18 @@ int main() {
     static_assert(UseIdleBackoff(true, true, "1"));
     static_assert(UseIdleBackoff(false, false, "1"));
     Expect(Matches(CallBytes,PollBytes),"verified Bluepoint byte signatures");
+    Expect(IdleBackoffMicroseconds(1) == 50u, "short BPE empty poll retains low latency");
+    Expect(IdleBackoffMicroseconds(63) == 50u, "short poll threshold");
+    Expect(IdleBackoffMicroseconds(64) == 200u, "sustained polls slow down");
+    Expect(IdleBackoffMicroseconds(512) == 800u, "long sustained polls park briefly");
+    Expect(HasGeometryBranch(GeometryBranchBytes), "verified Bluepoint original index branch");
+    auto wrong_geom = GeometryBranchBytes;
+    wrong_geom[GeometryJumpOpcodeOffset] = 0xeb;
+    Expect(!HasGeometryBranch(wrong_geom), "already patched geometry cannot patch twice");
+    wrong_geom = GeometryBranchBytes;
+    wrong_geom[18] ^= 0x01;
+    Expect(!HasGeometryBranch(wrong_geom), "different game binary rejected");
+
     auto bad=CallBytes;
     bad[20]^=1;
     Expect(!Matches(bad,PollBytes),"reject changed call after branch");

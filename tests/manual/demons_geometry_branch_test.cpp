@@ -55,6 +55,25 @@ int main() {
         Check(index_result == (enabled ? 0u : 63u), "unculled path did not preserve original index result");
         if (enabled) Check(render[0x2dab8] == 0xa5, "GPU-cull replacement was not selected");
     }
+    // Production in-memory bypass changes only JNE rel8 -> JMP rel8 for the
+    // verified executable. Confirm both CVar settings preserve CPU indices.
+    Check(mprotect(code, 4096, PROT_READ | PROT_WRITE) == 0,
+          "allow temporary runtime patch in executable fixture");
+    Check(code[sizeof(enter) + 11] == 0x75 && code[sizeof(enter) + 12] == 0x20,
+          "fixture original conditional branch");
+    code[sizeof(enter) + 11] = 0xeb;
+    Check(mprotect(code, 4096, PROT_READ | PROT_EXEC) == 0,
+          "restore executable protection");
+    __builtin___clear_cache(reinterpret_cast<char*>(code),
+                            reinterpret_cast<char*>(code + sizeof(enter) + sizeof(guest)));
+    for (const uint8_t enabled : {0, 1}) {
+        std::fill(render.begin(), render.end(), 0);
+        uint64_t index_result = 63;
+        cvars[0xcaa] = enabled;
+        fixture(outer.data(), render.data(), &index_result, source.data());
+        Check(index_result == 63u, "runtime bypass failed to preserve original index count");
+        Check(render[0x2daec] == 0, "runtime bypass still chose GPU-cull path");
+    }
     Check(munmap(code, 4096) == 0, "fixture cleanup failed");
     std::puts("Demon geometry: actual guest branch preserves original indices with culling off; GPU-cull path zeroes result before its job");
 #endif

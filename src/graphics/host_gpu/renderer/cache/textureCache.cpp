@@ -334,7 +334,7 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 			if (GpuBudget::ShouldPreemptWolverineImageAllocation(
 			        live, m_graphics.MemoryBudget(),
 			        m_wol_prealloc_last_usage, available)) {
-				const bool evicted = EvictForAllocation(keep, true);
+				const bool evicted = EvictForAllocation(keep, true, true);
 				const auto after_images = m_graphics.GetLiveDeviceMemory();
 				// Recover only clean, old guest buffers; the GPU-dirty ledger
 				// protects current compute output and shared SSBO contents.
@@ -457,7 +457,7 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, ImageId keep, bool scal
 		// When its 4-KiB image pool cannot accommodate another allocation,
 		// also permit reclaim of recently sampled *CPU-backed* textures.
 		// Current bindings, GPU-owned images, and the merge source remain protected.
-		if (attempt == 3 || !EvictForAllocation(keep, wolverine)) {
+		if (attempt == 3 || !EvictForAllocation(keep, wolverine, wolverine)) {
 			LOGF("failed to create image after %d eviction passes: extent=%ux%ux%u format=%u "
 			     "layers=%u levels=%u\n",
 			     attempt, info.extent.width, info.extent.height, info.extent.depth,
@@ -3074,7 +3074,8 @@ void TextureCache::RunGarbageCollector() {
 // source image, downloading GPU-written ones like the collector does, then finish the GPU work so
 // their deferred destruction actually returns the memory before the caller retries. Caller holds
 // m_lock; none of the scheduler's deferred operations take it.
-bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_backed) {
+bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_backed,
+                                      bool wolverine_chunked_gpu) {
 	constexpr uint64_t EVICT_TARGET    = 256ull << 20u;
 	constexpr uint64_t DOWNLOAD_BUDGET = 32ull << 20u;
 	if (!m_scheduler.Active() || m_gc_tick < 2) {
@@ -3144,9 +3145,78 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 	}
 	LOGF("TextureCache: out of device memory, evicted %zu images (%" PRIu64 " MiB)\n", freed,
 	     bytes >> 20u);
-	if (freed == 0) {
-		return false;
+	if (freed == 0 && wolverine_chunked_gpu) {
+		// Wolverine's 2026-11-12 failure: 420 MiB of old GPU-authored images
+		// remained eligible, but the normal 32-MiB DOWNLOAD_BUDGET excludes
+		// every large candidate before the readback is even attempted. The
+		// existing incremental image readback safely publishes guest bytes
+		// one window at a time, then frees the Vulkan image only AFTER all
+		// windows completed. Never discard a GPU-owned image without this.
+		auto& staging = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
+		const uint64_t window_bytes = std::min<uint64_t>(staging.Size(), 32u * GpuBudget::MiB);
+		ImageId candidate {};
+		uint64_t candidate_bytes = 0;
+		if (window_bytes != 0) {
+			m_lru_cache.ForEachItemBelow(m_gc_tick, [&](ImageId id) {
+				const auto* image = m_slot_images.try_get(id);
+				if (image == nullptr || !image->registered || id == keep ||
+				    image->depth_id || image->bindless_pinned || image->usage.video_out ||
+				    image->binding.is_bound || image->binding.is_target ||
+				    !image->kept_gpu_layers.empty() || !image->kept_unwatched.empty() ||
+				    !image->stencil_ids.empty() || !image->IsGpuModified() ||
+				    !image->SafeToDownload() || image->info.IsDepth() ||
+				    image->info.data.size <= DOWNLOAD_BUDGET ||
+				    !CanDownloadInChunks(*image, window_bytes)) return false;
+				// Resume an interrupted download before choosing another
+				// image; never mix partially published mip/layer windows.
+				if (m_written_window.image == id &&
+				    m_written_window.version == image->ContentVersion()) {
+					candidate = id;
+					return true;
+				}
+				if (!candidate || image->AccountedSize() > candidate_bytes) {
+					candidate = id;
+					candidate_bytes = image->AccountedSize();
+				}
+				return false;
+			});
+		}
+		if (candidate) {
+			auto& image = m_slot_images[candidate];
+			const uint64_t bytes_to_free = image.AccountedSize();
+			uint32_t windows = 0;
+			bool complete = false;
+			// Even a 1-GiB texture fits in 32 windows at a 32-MiB staging
+			// size. Bound emergency work; if a window cannot progress, keep
+			// native GPU ownership and allow a later call to retry.
+			while (windows < 64 && !complete) {
+				const auto before = m_written_window;
+				complete = DownloadImageMemoryChunk(candidate, window_bytes);
+				++windows;
+				if (!complete && m_written_window.image == before.image &&
+				    m_written_window.version == before.version &&
+				    m_written_window.level == before.level &&
+				    m_written_window.layer == before.layer &&
+				    m_written_window.row == before.row) break;
+			}
+			if (complete) {
+				NoteEviction(image, true);
+				FreeImage(candidate);
+				m_scheduler.Finish();
+			}
+			static std::atomic_uint32_t reported {0};
+			if (reported.fetch_add(1, std::memory_order_relaxed) < 32u) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[WOL_GPU_CHUNKED_EVICT] completed={} windows={} "
+				    "guest={}MiB live={}MiB budget={}MiB\\n",
+				    complete ? 1 : 0, windows, bytes_to_free / GpuBudget::MiB,
+				    m_graphics.GetLiveDeviceMemory() / GpuBudget::MiB,
+				    m_graphics.MemoryBudget() / GpuBudget::MiB));
+			}
+			if (complete) return true;
+		}
 	}
+	if (freed == 0) return false;
 	m_scheduler.Finish();
 	return true;
 }
