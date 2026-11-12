@@ -101,7 +101,7 @@ std::optional<uint64_t> FindHdSignature(Program* program, uint64_t hint,
     for (size_t at = 0; at + count <= data.size(); ++at) {
         if (data[at] != static_cast<uint8_t>((HexDigit(signature[0]) << 4u) |
                                              HexDigit(signature[1]))) continue;
-        if (!Matches(data.subspan(at, count), signature)) continue;
+        if (!DemonsSoulsHdMobile::Matches(data.subspan(at, count), signature)) continue;
         const uint64_t offset = first + at;
         const uint64_t distance = offset > hint ? offset - hint : hint - offset;
         if (distance == best_distance) return {}; // equally plausible sites
