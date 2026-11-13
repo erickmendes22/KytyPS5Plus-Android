@@ -992,7 +992,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			case vk::Format::eR32G32B32A32Sfloat: return 16;
 			case vk::Format::eR16Sfloat:
 			case vk::Format::eR8G8Unorm:
-			case vk::Format::eR8G8Snorm: return 2;
+			case vk::Format::eR8G8Snorm:
+			case vk::Format::eD16Unorm: return 2;
 			// BC1 is sampled in *compressed 4x4 blocks*; never copy a 1x1 texel.
 			case vk::Format::eBc1RgbaSrgbBlock:
 			case vk::Format::eBc1RgbaUnormBlock:
@@ -1014,7 +1015,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		    backing.format == vk::Format::eBc1RgbaUnormBlock ||
 		    backing.format == vk::Format::eBc1RgbSrgbBlock ||
 		    backing.format == vk::Format::eBc1RgbUnormBlock;
-		const bool depth = backing.format == vk::Format::eD32Sfloat;
+		const bool depth = backing.format == vk::Format::eD32Sfloat ||
+		    backing.format == vk::Format::eD16Unorm;
 		if (example_format == 0u) {
 			example_format = static_cast<uint32_t>(backing.format);
 			example_width = backing.extent.width; example_height = backing.extent.height;
