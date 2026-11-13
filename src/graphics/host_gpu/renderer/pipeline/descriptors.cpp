@@ -24,6 +24,7 @@
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/bindMemo.h"
+#include "graphics/host_gpu/renderer/pipeline/sampledDepthMetadataPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -205,18 +206,18 @@ bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor, bo
 	if (descriptor.MsaaDepth() && !IsMultisampledTexture(descriptor.Type())) {
 		return false;
 	}
-	const auto metadata_control = descriptor.fields[6] & 0x00ffffffu;
-	// META_PIPE_ALIGNED only describes the layout of a metadata surface. Without COMPRESSION_EN
-	// the texture unit reads no HTILE, so the view is plain uncompressed depth.
-	constexpr uint32_t meta_pipe_aligned = 1u << 19u;
-	if ((metadata_control & ~meta_pipe_aligned) == 0) {
+	// Descriptor word 6 bits 0-7 are the mip-stats counter, not HTILE configuration.
+	// When COMPRESSION_EN is clear, the metadata controls are inactive; do not reject
+	// legitimate sampled depth targets because the counter is nonzero (Demon's Souls).
+	if (!IsSupportedDepthMetadataControl(descriptor.fields[6], descriptor.MetaCompress(),
+	                                     descriptor.MsaaDepth())) {
+		return false;
+	}
+	if (!descriptor.MetaCompress()) {
 		return true;
 	}
-	constexpr uint32_t htile_control = 0x00280000u;
-	const uint32_t expected_control  = htile_control | (descriptor.MsaaDepth() ? (1u << 10u) : 0u);
-	const auto     metadata_addr     = descriptor.MetaAddr() << 8u;
-	return metadata_control == expected_control && GuestRange {metadata_addr, 1}.Valid() &&
-	       (metadata_addr & 0x7fffu) == 0 &&
+	const auto metadata_addr = descriptor.MetaAddr() << 8u;
+	return GuestRange {metadata_addr, 1}.Valid() && (metadata_addr & 0x7fffu) == 0 &&
 	       descriptor.TileMode() == Prospero::TileMode::kDepth;
 }
 
