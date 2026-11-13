@@ -2121,6 +2121,30 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    ? state.ps_input_info.stage.program->shader_hash : 0;
 		ProbeDsColorOutputs(m_context, state.color_info, state.color_count, ps_hash);
 	}
+	// PPSA01341: distinguish accepted depth-only draws from a shadow atlas
+	// that was never written. These counters never force a GPU wait.
+	static const bool ds_depth_trace = [] {
+		const char* env = std::getenv("KYTY_DS_FRAME_TRACE");
+		return env != nullptr && env[0] == '1' && env[1] == '\0';
+	}();
+	if (ds_depth_trace && state.color_count == 0u && state.depth_info.image_id) {
+		static std::atomic_uint32_t depth_events {0};
+		const uint32_t n = depth_events.fetch_add(1u, std::memory_order_relaxed);
+		if (n < 32u || n % 4096u == 0u) {
+			const auto& di = state.depth_info;
+			const auto& tracked = m_context.GetTextureCache().GetImage(di.image_id);
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_DEPTH_DRAW] seq={} frame={} target=0x{:x} format={} extent={}x{} "
+			    "depth_write={} depth_test={} gpu_modified={} cpu_dirty={} "
+			    "content_version={}\n",
+			    n, m_context.GetGpu().GetFrameNum(), di.desc.info.data.address,
+			    static_cast<uint32_t>(tracked.backing.format),
+			    tracked.backing.extent.width, tracked.backing.extent.height,
+			    di.depth_write_enable ? 1 : 0, di.depth_test_enable ? 1 : 0,
+			    tracked.IsGpuModified() ? 1 : 0, tracked.IsCpuDirty() ? 1 : 0,
+			    tracked.ContentVersion()));
+		}
+	}
 	LogDrawPhase(draw.Name(), "DrawComplete");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
