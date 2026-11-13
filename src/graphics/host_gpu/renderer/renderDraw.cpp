@@ -1074,10 +1074,11 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 				std::memcpy(&second_words[i], mapped + i*bpp + 4u, std::min<uint32_t>(bpp-4u,4u));
 		}
 		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE] path=%s capture=%u shader=0x%016" PRIx64
-		     " slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
+		     " frame=%d slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
 		     " samples=5 compressed_blocks=%u depth=%u zero=%u rgb_black=%u first=%08x,%08x,%08x,%08x,%08x"
 		     " second=%08x,%08x,%08x,%08x,%08x\n",
-		     compute ? "compute" : "graphics", capture, shader_hash, slot, image.info.data.address,
+		     compute ? "compute" : "graphics", capture, shader_hash,
+		     context.GetGpu().GetFrameNum(), slot, image.info.data.address,
 		     static_cast<uint32_t>(backing.format), w, h, compressed ? 1u : 0u,
 		     depth ? 1u : 0u, zero, zero_rgb,
 		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4],
