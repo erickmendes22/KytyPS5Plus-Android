@@ -3159,6 +3159,7 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 	// available in guest memory for a later re-upload.
 	uint64_t same_tick_freed = 0;
 	uint32_t same_tick_count = 0;
+	uint32_t written_count = 0;
 	if (wolverine_chunked_gpu && m_graphics.MemoryBudget() != 0 &&
 	    m_graphics.GetLiveDeviceMemory() >= m_graphics.MemoryBudget()) {
 		std::vector<ImageId> clean;
@@ -3193,7 +3194,6 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 		// nor bindless-pinned and have no partial GPU ownership. Bigger
 		// candidates are handled by the windowed path below.
 		uint64_t written_guest = 0;
-		uint32_t written_count = 0;
 		if (m_graphics.GetLiveDeviceMemory() >= m_graphics.MemoryBudget()) {
 			std::vector<ImageId> written;
 			m_lru_cache.ForEachItemBelow(m_gc_tick + 1, [&](ImageId id) {
