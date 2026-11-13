@@ -2163,11 +2163,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    (face_mode.poly_offset_front_enable &&
 		     (face_offset.front_offset != face_offset.back_offset ||
 		      face_offset.front_scale != face_offset.back_scale));
+		const auto stage_image_writes = [](const auto& stage) {
+			if (stage.program == nullptr) return false;
+			if (stage.program->has_address_writes) return true;
+			return std::any_of(stage.program->info.images.begin(),
+			                   stage.program->info.images.end(), [](const auto& image) {
+				                   return image.written;
+			                   });
+		};
+		const bool image_side_effects =
+		    std::any_of(vertex_stages.begin(), vertex_stages.end(), [&](const auto& stage) {
+			    return stage_image_writes(stage.stage);
+		    }) ||
+		    (state.ps_active && stage_image_writes(state.ps_input_info.stage));
 		const bool split_bias = ds_per_face_bias && different_bias && !rect_face &&
 		    !face_mode.cull_front && !face_mode.cull_back &&
 		    state.depth_info.image_id && state.depth_info.depth_write_enable &&
 		    state.color_count == 0 && !state.depth_info.stencil_test_enable &&
-		    !mesh_active && !mesh_emulated && !shader_write_stages;
+		    !mesh_active && !mesh_emulated && !shader_write_stages && !image_side_effects;
 		if (split_bias) {
 			const auto draw_face = [&](bool front) {
 				const bool active = front ? face_mode.poly_offset_front_enable
