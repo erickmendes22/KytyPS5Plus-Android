@@ -1962,8 +1962,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (ds_composite_trace && state.ps_active && bindings.pixel &&
 	    state.ps_input_info.stage.program != nullptr &&
 	    state.ps_input_info.stage.program->shader_hash == 0x17defa333d9d1e22ull &&
-	    state.color_count != 0u &&
-	    state.color_info[0].desc.info.data.address == 0x282c50000ull) {
+	    state.color_count != 0u) {
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
 		static std::atomic_uint32_t phases {0};
 		const uint32_t phase = frame >= 490 ? 2u : frame >= 280 ? 1u : 0u;
@@ -1995,6 +1994,44 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				    ps_images[i].read ? 1 : 0, ps_images[i].written ? 1 : 0,
 				    b.placeholder ? 1 : 0, img.IsGpuModified() ? 1 : 0,
 				    img.IsCpuDirty() ? 1 : 0));
+			}
+		}
+	}
+	// The 4K address is no longer stable at 1080p, and the compositor hash
+	// itself may differ. Discover actual PS -> large target pairs instead of
+	// relying on a previous frame's shader hash or guest allocation address.
+	// Lightweight one-time metadata only; zero device submissions/readbacks.
+	if (ds_composite_trace && state.ps_active &&
+	    state.ps_input_info.stage.program != nullptr && state.color_count != 0u &&
+	    state.color_info[0].image_id && m_context.GetGpu().GetFrameNum() >= 350) {
+		const auto& color_owner = m_context.GetTextureCache().GetImage(
+		    state.color_info[0].image_id);
+		if (color_owner.backing.extent.width >= 960u &&
+		    color_owner.backing.extent.height >= 540u) {
+			static std::array<std::atomic_uint64_t, 64> logged_pairs {};
+			const uint64_t shader_hash = state.ps_input_info.stage.program->shader_hash;
+			const uint64_t target = state.color_info[0].desc.info.data.address;
+			const uint64_t key = (shader_hash ^ (target * 0x9e3779b97f4a7c15ull)) | 1ull;
+			bool already = false, inserted = false;
+			for (auto& slot: logged_pairs) {
+				auto existing = slot.load(std::memory_order_relaxed);
+				if (existing == key) { already = true; break; }
+				if (existing == 0ull && slot.compare_exchange_strong(
+				    existing, key, std::memory_order_relaxed)) {
+					inserted = true;
+					break;
+				}
+			}
+			if (inserted && !already) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_LARGE_PS_TARGET] frame={} ps=0x{:016x} target=0x{:x} "
+				    "format={} extent={}x{} images={} bound={} gpu_modified={}\n",
+				    m_context.GetGpu().GetFrameNum(), shader_hash, target,
+				    static_cast<uint32_t>(color_owner.backing.format),
+				    color_owner.backing.extent.width, color_owner.backing.extent.height,
+				    state.ps_input_info.stage.program->info.images.size(),
+				    bindings.pixel ? bindings.pixel->images.size() : 0u,
+				    color_owner.IsGpuModified() ? 1 : 0));
 			}
 		}
 	}
