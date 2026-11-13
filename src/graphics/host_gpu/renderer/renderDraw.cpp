@@ -1951,6 +1951,53 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info,
 	                         feedback_aspects, stages);
 
+	// The gameplay HUD is visible but RGB in the 4K scene-composition target
+	// remains black. Compare this particular pixel shader's *actual bound*
+	// inputs before (280-489) and during (>=490) the blank scene. No GPU
+	// readback, extra draw, shader replacement or host fence is involved.
+	static const bool ds_composite_trace = [] {
+		const char* v = std::getenv("KYTY_DS_FRAME_TRACE");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
+	if (ds_composite_trace && state.ps_active && bindings.pixel &&
+	    state.ps_input_info.stage.program != nullptr &&
+	    state.ps_input_info.stage.program->shader_hash == 0x17defa333d9d1e22ull &&
+	    state.color_count != 0u &&
+	    state.color_info[0].desc.info.data.address == 0x282c50000ull) {
+		const int32_t frame = m_context.GetGpu().GetFrameNum();
+		static std::atomic_uint32_t phases {0};
+		const uint32_t phase = frame >= 490 ? 2u : frame >= 280 ? 1u : 0u;
+		if (phase != 0u && !(phases.fetch_or(phase, std::memory_order_relaxed) & phase)) {
+			const auto& ps_images = state.ps_input_info.stage.program->info.images;
+			const auto& bound = bindings.pixel->images;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_COMPOSITE_INPUTS] frame={} phase={} target=0x{:x} resources={} bound={}\n",
+			    frame, phase, state.color_info[0].desc.info.data.address,
+			    ps_images.size(), bound.size()));
+			auto& texture_cache = m_context.GetTextureCache();
+			for (uint32_t i = 0; i < ps_images.size() && i < bound.size(); ++i) {
+				const auto& b = bound[i];
+				if (!b.image_id) {
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_COMPOSITE_IMAGE] index={} missing=1 written={}\n",
+					    i, ps_images[i].written ? 1 : 0));
+					continue;
+				}
+				const auto& img = texture_cache.GetImage(b.image_id);
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_COMPOSITE_IMAGE] index={} guest=0x{:x} owner=0x{:x} "
+				    "fmt={} extent={}x{} layer={} mip={} sampled={} storage={} "
+				    "placeholder={} gpu_modified={} cpu_dirty={}\n",
+				    i, b.desc.info.data.address, img.info.data.address,
+				    static_cast<uint32_t>(img.backing.format),
+				    img.backing.extent.width, img.backing.extent.height,
+				    b.desc.view_info.base_layer, b.desc.view_info.base_level,
+				    ps_images[i].read ? 1 : 0, ps_images[i].written ? 1 : 0,
+				    b.placeholder ? 1 : 0, img.IsGpuModified() ? 1 : 0,
+				    img.IsCpuDirty() ? 1 : 0));
+			}
+		}
+	}
 	// Resource preparation above may synchronously finish and restart the scheduler. From this
 	// point onward, every operation targets the current command buffer and cannot touch guest
 	// memory.
