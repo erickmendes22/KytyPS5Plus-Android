@@ -440,7 +440,7 @@ static void ProbeDsComputeWrites(RenderContext& context,
 				    repeated ? 1 : 0, is_tiny ? 1 : 0,
 				    source.image_id == target_id ? 1 : 0,
 				    texture.IsGpuModified() ? 1 : 0, texture.IsCpuDirty() ? 1 : 0));
-				if (!repeated && !is_tiny && source.image_id != target_id && probed < 5u) {
+				if (!repeated && !is_tiny && source.image_id != target_id && probed < 6u) {
 					ProbeDsComputeImage(context, source.image_id, hash, true);
 					++probed;
 				}
