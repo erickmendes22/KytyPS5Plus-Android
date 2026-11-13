@@ -445,6 +445,23 @@ static void ProbeDsComputeWrites(RenderContext& context,
 					++probed;
 				}
 			}
+			// Compute illumination may source scalar constants and buffers even
+			// when its sampled images are valid. Record bounded guest buffer
+			// descriptors without dereferencing guest memory or changing binds.
+			if (input.stage.resources != nullptr) {
+				const auto& snapshot = *input.stage.resources;
+				for (uint32_t bi = 0; bi < input.stage.program->info.buffers.size() &&
+				     bi < snapshot.buffers.size(); ++bi) {
+					const auto& resource = input.stage.program->info.buffers[bi];
+					const auto native = DecodeNativeDescriptor<ShaderBufferResource>(
+					    snapshot.buffers[bi]);
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_TARGET_BUFFER] shader=0x{:016x} index={} source={} "
+					    "guest=0x{:x} stride={} records={} format={} written={}\n",
+					    hash, bi, resource.source, native.Base48(), native.Stride(),
+					    native.NumRecords(), native.RawFormat(), resource.written ? 1 : 0));
+				}
+			}
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_TARGET_INPUT_SUMMARY] shader=0x{:016x} read_images={} "
 			    "probed={} missing={} tiny={} buffers={} dma={} address_writes={}\n",
