@@ -1142,6 +1142,43 @@ static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
 			output_mask |= 1u << slot;
 		}
 	}
+	// Chen's Demon renderer uses CB_TARGET_MASK & CB_SHADER_MASK to decide
+	// whether a present PS is active and which guest color attachments it
+	// prepares. The Android prefilter additionally required output_mode and
+	// an inferred export-target mapping. When those were absent it marked a
+	// genuinely color-writing PS inactive *before translating the shader*.
+	// Recover only guest-enabled targets with real backing addresses at this
+	// earlier point. The translated shader still determines what it exports:
+	// unlike the old post-translation MRT experiment, this cannot invent an
+	// output for a depth-only shader.
+	static const bool ds_cb_mask_prepare = [] {
+		const char* v = std::getenv("KYTY_DS_CB_MASK_PREPARE");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
+	if (ds_cb_mask_prepare) {
+		uint32_t guest_writes = 0, present_targets = 0;
+		for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; ++slot) {
+			if (render_target_mask_slot(write_mask, slot) != 0) {
+				guest_writes |= 1u << slot;
+			}
+			if (ctx.GetRenderTarget(slot).base.addr != 0) {
+				present_targets |= 1u << slot;
+			}
+		}
+		const auto expanded = RecoverGuestColorTargets(
+		    output_mask, guest_writes, present_targets);
+		if (expanded != output_mask) {
+			static std::atomic_uint32_t recovered {0};
+			const uint32_t n = recovered.fetch_add(1u, std::memory_order_relaxed);
+			if (n < 48u || (n % 8192u) == 0u) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_CB_MASK_PREPARE] recovered={} old=0x{:x} new=0x{:x} "
+				    "guest=0x{:x} targets=0x{:x}\n",
+				    n, output_mask, expanded, guest_writes, present_targets));
+			}
+		}
+		output_mask = expanded;
+	}
 	return output_mask;
 }
 
