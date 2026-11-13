@@ -48,6 +48,9 @@ class GpuTimer;
 struct GpuPassInfo;
 struct RenderExecutorTestAccess;
 
+// PPSA01341: bounded diagnostic of GPU-written compute storage textures.
+void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash);
+
 enum class CommandBufferDebugOp : uint32_t {
 	DispatchDirect,
 	DrawIndex,

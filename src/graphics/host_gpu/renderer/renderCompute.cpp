@@ -342,6 +342,31 @@ static void NoteComputeItem(const ShaderComputeInputInfo& input_info) {
 	PipelineProbe::AddResourceBytes(PipelineProbe::ResourceBytes(input_info.stage.resources));
 }
 
+// PPSA01341: match a sampled pixel from a compute storage image with a
+// downstream graphics render target. An accepted dispatch count alone cannot
+// distinguish black lighting data from broken final composition.
+static void ProbeDsComputeWrites(RenderContext& context,
+                                 const ShaderComputeInputInfo& input,
+                                 const PreparedBindings& bindings) {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_DS_COLOR_PROBE");
+		if (value != nullptr) return value[0] == '1' && value[1] == '\0';
+		value = std::getenv("KYTY_DS_FRAME_TRACE");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	if (!enabled || !input.stage.program) return;
+	const auto& images = input.stage.program->info.images;
+	for (uint32_t i = 0; i < images.size() && i < bindings.images.size(); ++i) {
+		if (!images[i].written ||
+		    images[i].resource_class != ShaderRecompiler::IR::ImageResourceClass::Storage ||
+		    !bindings.images[i].image_id || bindings.images[i].placeholder)
+			continue;
+		ProbeDsComputeImage(context, bindings.images[i].image_id,
+		                    input.stage.program->shader_hash);
+		return; // one representative output per dispatch, every 256 samples
+	}
+}
+
 // KYTY_CS_PACK runs two guest workgroups of at most 32 threads in one 64-lane host workgroup (the
 // recompiler decides per program: ShaderRecompiler.cpp ComputeGroupPack). Default on with Mesa
 // Turnip (Astro Bot: 74.8 -> 66.7 GPU ms/frame, research/clock_policy.md), off elsewhere;
@@ -708,6 +733,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	// The removed host fence also ordered read-only dispatches before later writers.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	ProbeDsComputeWrites(m_context, input_info, bindings);
 	ResetBindings();
 }
 
@@ -842,6 +868,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().NoteWork();
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	ProbeDsComputeWrites(m_context, input_info, bindings);
 	ResetBindings();
 	if (two_pass) {
 		DispatchRetracePass(buffer, cs_regs, pass2_input, args_addr, *retrace);
@@ -897,6 +924,7 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	buffer.MarkGpu("cs-retrace", input_info.stage.program->shader_hash);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	ProbeDsComputeWrites(m_context, input_info, bindings);
 	ResetBindings();
 }
 

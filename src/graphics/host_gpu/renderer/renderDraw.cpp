@@ -938,7 +938,7 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 // reported separately). The readback is synchronized and never changes guest
 // image ownership or writes guest memory. Other games never enable it.
 static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* colors,
-                                uint32_t count, uint64_t shader_hash) {
+                                uint32_t count, uint64_t shader_hash, bool compute = false) {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_DS_COLOR_PROBE");
 		// An explicit 0 disables probing. Otherwise reuse the existing DS
@@ -948,9 +948,12 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
 	if (!enabled || count == 0) return;
-	static uint64_t eligible_draws = 0;
-	static uint32_t captures = 0;
-	if (++eligible_draws % 4096u != 0u || captures >= 48u) return;
+	static uint64_t eligible_events[2] {};
+	static uint32_t captures[2] {};
+	const uint32_t kind = compute ? 1u : 0u;
+	const uint32_t period = compute ? 256u : 4096u;
+	const uint32_t limit = compute ? 32u : 48u;
+	if (++eligible_events[kind] % period != 0u || captures[kind] >= limit) return;
 	auto& cache = context.GetTextureCache();
 	auto& scheduler = context.GetCommandScheduler();
 	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
@@ -969,7 +972,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			default: return 0;
 		}
 	};
-	++captures;
+	++captures[kind];
 	for (uint32_t slot = 0, sampled = 0; slot < count && sampled < 3u; ++slot) {
 		if (!colors[slot].image_id) continue;
 		auto& image = cache.GetImage(colors[slot].image_id);
@@ -982,8 +985,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		const uint64_t length = bpp * 5u;
 		auto [mapped, offset] = download.Map(length, 16u, true);
 		if (mapped == nullptr) {
-			LOGF("[DS_PIXEL_PROBE] shader=0x%016" PRIx64 " slot=%u result=staging_unavailable\n",
-			     shader_hash, slot);
+			LOGF("[DS_PIXEL_PROBE] path=%s shader=0x%016" PRIx64 " slot=%u result=staging_unavailable\n",
+			     compute ? "compute" : "graphics", shader_hash, slot);
 			continue;
 		}
 		download.Commit();
@@ -1015,13 +1018,22 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			zero += empty;
 			std::memcpy(&first_words[i], mapped + i*bpp, std::min<uint32_t>(bpp,4u));
 		}
-		LOGF("[DS_PIXEL_PROBE] capture=%u shader=0x%016" PRIx64
+		LOGF("[DS_PIXEL_PROBE] path=%s capture=%u shader=0x%016" PRIx64
 		     " slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
 		     " samples=5 zero=%u first=%08x,%08x,%08x,%08x,%08x\n",
-		     captures, shader_hash, slot, image.info.data.address,
+		     compute ? "compute" : "graphics", captures[kind], shader_hash, slot, image.info.data.address,
 		     static_cast<uint32_t>(backing.format), w, h, zero,
 		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4]);
 	}
+}
+
+// The compute renderer shares the same exact-pixel sampler rather than
+// inferring nonzero outputs from vkCmdDispatch counts.
+void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash) {
+	if (!id) return;
+	RenderColorInfo color {};
+	color.image_id = id;
+	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true);
 }
 
 static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
