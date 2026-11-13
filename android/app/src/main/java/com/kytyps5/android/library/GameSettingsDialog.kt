@@ -88,6 +88,16 @@ class GameSettingsDialog(
             textSize = 14f
             isChecked = current.demonsSoulsIdleBackoff
         }
+        val ds1080p = Switch(activity).apply {
+            text = "Demon's Souls: internal 1080p (WantsPerf; reversible file backup)"
+            textSize = 14f
+            isChecked = current.demonsSouls1080p
+        }
+        val dsPixelTrace = Switch(activity).apply {
+            text = "GPU pixel captures (slow, diagnostics only)"
+            textSize = 14f
+            isChecked = current.demonsSoulsPixelTrace
+        }
         val env = EditText(activity).apply {
             setText(EnvVars.format(current.envVars))
             hint = "TU_DEBUG=sysmem"
@@ -149,6 +159,10 @@ class GameSettingsDialog(
                 addView(pcFrameSync)
                 addView(label("Bluepoint worker fix: preserves the original empty-job poll and sleeps only when no work is available. Reversible; ARM64 FEX HLE host trap.", secondary = true))
                 addView(idleBackoff)
+                addView(ds1080p)
+                addView(label("Controls the game\u0027s own PS5 renderconfig files, not just the window. Originals are preserved alongside each file. Does not fix black geometry by itself.", secondary = true))
+                addView(dsPixelTrace)
+                addView(label("Off by default: synchronous GPU pixel readbacks previously interrupted rendering and added GPU/CPU overhead.", secondary = true))
             }
             if (presetSwitches.isNotEmpty()) {
                 addView(label("Game presets", bold = true))
@@ -201,6 +215,8 @@ class GameSettingsDialog(
                         demonsSoulsSkipPrompts = titleId.equals("PPSA01341", ignoreCase = true) && firstBoot.isChecked && !nexusRoute.isChecked,
                         demonsSoulsPcFrameSync = titleId.equals("PPSA01341", ignoreCase = true) && pcFrameSync.isChecked,
                         demonsSoulsIdleBackoff = titleId.equals("PPSA01341", ignoreCase = true) && idleBackoff.isChecked,
+                        demonsSouls1080p = titleId.equals("PPSA01341", ignoreCase = true) && ds1080p.isChecked,
+                        demonsSoulsPixelTrace = titleId.equals("PPSA01341", ignoreCase = true) && dsPixelTrace.isChecked,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
                     ),
