@@ -33,6 +33,8 @@ data class GameSettings(
     val demonsSoulsSkipPrompts: Boolean = false,
     val demonsSoulsPcFrameSync: Boolean = false,
     val demonsSoulsIdleBackoff: Boolean = true,
+    val demonsSouls1080p: Boolean = true,
+    val demonsSoulsPixelTrace: Boolean = false,
 ) {
     fun toJson(): String = JSONObject()
         .put("resolution", resolution?.storageValue ?: JSONObject.NULL)
@@ -49,6 +51,8 @@ data class GameSettings(
         // V2 resets the previous unproven frame-fence experiment to OFF on upgrade.
         .put("demonsSoulsPcFrameSyncV2", demonsSoulsPcFrameSync)
         .put("demonsSoulsIdleBackoff", demonsSoulsIdleBackoff)
+        .put("demonsSouls1080p", demonsSouls1080p)
+        .put("demonsSoulsPixelTrace", demonsSoulsPixelTrace)
         .toString()
 
     companion object {
@@ -75,6 +79,8 @@ data class GameSettings(
                     // Ignore V1 saved default=true (Action #242); do not carry it into the new CPU-poll test.
                     demonsSoulsPcFrameSync = obj.optBoolean("demonsSoulsPcFrameSyncV2", false),
                     demonsSoulsIdleBackoff = obj.optBoolean("demonsSoulsIdleBackoff", true),
+                    demonsSouls1080p = obj.optBoolean("demonsSouls1080p", true),
+                    demonsSoulsPixelTrace = obj.optBoolean("demonsSoulsPixelTrace", false),
                 )
             } catch (e: JSONException) {
                 DEFAULT
