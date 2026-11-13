@@ -93,6 +93,11 @@ class GameSettingsDialog(
             textSize = 14f
             isChecked = current.demonsSouls1080p
         }
+        val dsFaceBias = Switch(activity).apply {
+            text = "Experimental: independent front/back shadow depth bias (extra draws)"
+            textSize = 14f
+            isChecked = current.demonsSoulsPerFaceBias
+        }
         val dsPixelTrace = Switch(activity).apply {
             text = "GPU pixel captures (slow, diagnostics only)"
             textSize = 14f
@@ -161,6 +166,7 @@ class GameSettingsDialog(
                 addView(idleBackoff)
                 addView(ds1080p)
                 addView(label("Controls the game\u0027s own PS5 renderconfig files, not just the window. Originals are preserved alongside each file. Does not fix black geometry by itself.", secondary = true))
+                addView(dsFaceBias)
                 addView(dsPixelTrace)
                 addView(label("Off by default: synchronous GPU pixel readbacks previously interrupted rendering and added GPU/CPU overhead.", secondary = true))
             }
@@ -217,6 +223,7 @@ class GameSettingsDialog(
                         demonsSoulsIdleBackoff = titleId.equals("PPSA01341", ignoreCase = true) && idleBackoff.isChecked,
                         demonsSouls1080p = titleId.equals("PPSA01341", ignoreCase = true) && ds1080p.isChecked,
                         demonsSoulsPixelTrace = titleId.equals("PPSA01341", ignoreCase = true) && dsPixelTrace.isChecked,
+                        demonsSoulsPerFaceBias = titleId.equals("PPSA01341", ignoreCase = true) && dsFaceBias.isChecked,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
                     ),
