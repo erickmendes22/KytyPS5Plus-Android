@@ -374,16 +374,21 @@ static void ProbeDsComputeWrites(RenderContext& context,
 		    0x3dfe402653925fbfull, 0x93b0be7f1a0293d1ull,
 		    0xfabe0bcb275a3005ull, 0xc2e01fbe98f5ebabull
 		}};
-		static std::array<std::atomic_bool, 6> captured {};
+		// Frame 1 is mostly pre-scene initialization. Capturing only there
+		// cannot diagnose missing lighting during gameplay. Compare one
+		// initialization sample with one sample after frame 280 per shader.
+		static std::array<std::atomic_uint32_t, 6> captured {};
 		const auto match = std::find(target_hashes.begin(), target_hashes.end(), hash);
 		const auto ordinal = static_cast<size_t>(match - target_hashes.begin());
+		const int32_t frame = context.GetGpu().GetFrameNum();
+		const uint32_t phase = frame >= 280 ? 2u : 1u;
 		if (match != target_hashes.end() &&
 		    context.GetTextureCache().GetImage(target_id).info.data.address == 0x281300000ull &&
-		    !captured[ordinal].exchange(true, std::memory_order_relaxed)) {
+		    !(captured[ordinal].fetch_or(phase, std::memory_order_relaxed) & phase)) {
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_TARGET_WRITER] shader=0x{:016x} output=0x{:x} "
-			    "image_resources={} output_binding={}\n",
-			    hash, 0x281300000ull, images.size(), i));
+			    "frame={} phase={} image_resources={} output_binding={}\n",
+			    hash, 0x281300000ull, frame, phase == 1u ? "init" : "scene", images.size(), i));
 			ProbeDsComputeImage(context, target_id, hash, true);
 			// The previous diagnostic stopped after four inputs. For all six
 			// affected shaders those were mostly the same black 4x4 image.
