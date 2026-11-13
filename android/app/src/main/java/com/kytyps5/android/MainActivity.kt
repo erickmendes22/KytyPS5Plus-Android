@@ -646,9 +646,12 @@ class MainActivity : Activity() {
                 showMessage(geometry.message)
                 return
             }
-            val fog = DemonsSoulsFogFlow.configure(File(game.path), perGame.demonsSoulsDisableFog)
+            // Undo any managed fog override left by the unverified experimental
+            // build. The fog switch did not cause the PC fork's 3D rendering to work.
+            // Keep this one-time cleanup so upgrades restore original game behavior.
+            val fog = DemonsSoulsFogFlow.configure(File(game.path), false)
             if (!fog.ok) {
-                Log.w("KytyDSFog", fog.message)
+                Log.w("KytyDSFogRollback", fog.message)
                 showMessage(fog.message)
             }
             val display = DemonsSoulsDisplayMode.configure(File(game.path), perGame.demonsSouls1080p)
