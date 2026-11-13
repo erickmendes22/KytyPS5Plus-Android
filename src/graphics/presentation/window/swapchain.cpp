@@ -22,6 +22,7 @@
 #include <array>
 #include <atomic>
 #include <cstdlib>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -402,7 +403,7 @@ struct Presenter::Impl {
 		const bool buffer_before = image.IsBufferModified();
 		const uint64_t version_before = image.ContentVersion();
 		if (ds_log) {
-			LOGF("[DS_FLIP_BACKING] sample=%u stage=before addr=0x%016" PRIx64
+			std::printf("[DS_FLIP_BACKING] sample=%u stage=before addr=0x%016" PRIx64
 			     " format=%u extent=%ux%u gpu_modified=%u cpu_dirty=%u buffer_modified=%u"
 			     " version=%" PRIu64 "\n",
 			     ds_num, info.data.address, static_cast<uint32_t>(image.backing.format),
@@ -425,7 +426,7 @@ struct Presenter::Impl {
 		}
 		cache.UpdateImage(image_id);
 		if (ds_log) {
-			LOGF("[DS_FLIP_BACKING] sample=%u stage=after addr=0x%016" PRIx64
+			std::printf("[DS_FLIP_BACKING] sample=%u stage=after addr=0x%016" PRIx64
 			     " gpu_modified=%u cpu_dirty=%u buffer_modified=%u version=%" PRIu64
 			     " refresh_candidate=%u\n",
 			     ds_num, info.data.address, image.IsGpuModified() ? 1u : 0u,
