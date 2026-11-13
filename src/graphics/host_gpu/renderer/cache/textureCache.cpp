@@ -3151,10 +3151,91 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 	// Finish the normal pass before checking true resident bytes; a tiny
 	// reclaim must NOT prevent the large GPU-written image fallback.
 	if (freed != 0 && wolverine_chunked_gpu) m_scheduler.Finish();
+	// PPSA03671 is creating and binding many Vulkan images in one *single*
+	// guest frame (tick 1274 in the 2026-11-12 log). All normal age filters
+	// exclude the images touched at that tick. Once submitted work has
+	// completed, unbound plain CPU-backed textures are safe to retire even
+	// when their LRU age is the current frame: their source bytes are still
+	// available in guest memory for a later re-upload.
+	uint64_t same_tick_freed = 0;
+	uint32_t same_tick_count = 0;
+	if (wolverine_chunked_gpu && m_graphics.MemoryBudget() != 0 &&
+	    m_graphics.GetLiveDeviceMemory() >= m_graphics.MemoryBudget()) {
+		std::vector<ImageId> clean;
+		m_lru_cache.ForEachItemBelow(m_gc_tick + 1, [&](ImageId id) {
+			const auto* image = m_slot_images.try_get(id);
+			if (!image || !image->registered || id == keep ||
+			    image->bindless_pinned || image->depth_id ||
+			    image->binding.is_bound || image->binding.is_target ||
+			    image->usage.video_out || image->usage.render_target ||
+			    image->usage.storage || image->info.IsDepth() ||
+			    !image->stencil_ids.empty() || !image->kept_gpu_layers.empty() ||
+			    !image->kept_unwatched.empty() ||
+			    image->IsGpuModified() || image->IsBufferModified()) return false;
+			clean.push_back(id);
+			same_tick_freed += image->AccountedSize();
+			return same_tick_freed >= EVICT_TARGET;
+		});
+		for (const auto id: clean) {
+			auto* image = m_slot_images.try_get(id);
+			if (image == nullptr || !image->registered) continue;
+			NoteEviction(*image, false);
+			FreeImage(id);
+			++same_tick_count;
+		}
+		if (same_tick_count) {
+			// Synchronize once for ALL retired images; never free in-flight VkImages.
+			m_scheduler.Finish();
+		}
+		// The same guest tick also writes hundreds of storage/RT aliases.
+		// Sub-32MiB GPU-authored textures can be copied back through the
+		// existing normal readback, provided they are neither active targets
+		// nor bindless-pinned and have no partial GPU ownership. Bigger
+		// candidates are handled by the windowed path below.
+		uint64_t written_guest = 0;
+		uint32_t written_count = 0;
+		if (m_graphics.GetLiveDeviceMemory() >= m_graphics.MemoryBudget()) {
+			std::vector<ImageId> written;
+			m_lru_cache.ForEachItemBelow(m_gc_tick + 1, [&](ImageId id) {
+				const auto* image = m_slot_images.try_get(id);
+				if (!image || !image->registered || id == keep ||
+				    image->depth_id || image->bindless_pinned ||
+				    image->binding.is_bound || image->binding.is_target ||
+				    image->usage.video_out || image->info.IsDepth() ||
+				    !image->stencil_ids.empty() ||
+				    !image->kept_gpu_layers.empty() ||
+				    !image->kept_unwatched.empty() ||
+				    !image->IsGpuModified() || !image->SafeToDownload() ||
+				    image->info.data.size > DOWNLOAD_BUDGET ||
+				    !CanDownload(*image)) return false;
+				written.push_back(id);
+				written_guest += image->AccountedSize();
+				return written_guest >= EVICT_TARGET;
+			});
+			for (const auto id: written) {
+				auto* image = m_slot_images.try_get(id);
+				if (!image || !image->registered || !DownloadImageMemory(id))
+					continue; // GPU bytes remain authoritative on failure
+				NoteEviction(*image, true);
+				FreeImage(id);
+				++written_count;
+			}
+			if (written_count) m_scheduler.Finish();
+		}
+		static std::atomic_uint32_t logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 24u)
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[WOL_SAME_TICK_RECLAIM] tick={} images={} guest={}MiB "
+			    "live={}MiB budget={}MiB written={}MiB written_count={}\n", m_gc_tick, same_tick_count,
+			    same_tick_freed / GpuBudget::MiB,
+			    m_graphics.GetLiveDeviceMemory() / GpuBudget::MiB,
+			    m_graphics.MemoryBudget() / GpuBudget::MiB,
+			    written_guest / GpuBudget::MiB, written_count));
+	}
 	const bool still_over_budget =
 	    wolverine_chunked_gpu && m_graphics.MemoryBudget() != 0 &&
 	    m_graphics.GetLiveDeviceMemory() >= m_graphics.MemoryBudget();
-	if (wolverine_chunked_gpu && (freed == 0 || still_over_budget)) {
+	if (wolverine_chunked_gpu && ((freed == 0 && same_tick_count == 0) || still_over_budget)) {
 		// Wolverine's 2026-11-12 failure: 420 MiB of old GPU-authored images
 		// remained eligible, but the normal 32-MiB DOWNLOAD_BUDGET excludes
 		// every large candidate before the readback is even attempted. The
@@ -3166,7 +3247,10 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 		ImageId candidate {};
 		uint64_t candidate_bytes = 0;
 		if (window_bytes != 0) {
-			m_lru_cache.ForEachItemBelow(m_gc_tick, [&](ImageId id) {
+			// The old pass excluded every GPU-written image created during
+			// the runaway tick. Completed submission work can be copied back
+			// before retiring a cold, currently unbound storage image as well.
+			m_lru_cache.ForEachItemBelow(m_gc_tick + 1, [&](ImageId id) {
 				const auto* image = m_slot_images.try_get(id);
 				if (image == nullptr || !image->registered || id == keep ||
 				    image->depth_id || image->bindless_pinned || image->usage.video_out ||
@@ -3225,7 +3309,7 @@ bool TextureCache::EvictForAllocation(ImageId keep, bool reclaim_recent_cpu_back
 			if (complete) return true;
 		}
 	}
-	if (freed == 0) return false;
+	if (freed == 0 && same_tick_count == 0 && written_count == 0) return false;
 	if (!wolverine_chunked_gpu) m_scheduler.Finish();
 	return true;
 }

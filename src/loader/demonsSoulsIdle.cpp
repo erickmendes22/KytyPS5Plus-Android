@@ -140,8 +140,12 @@ bool WriteHd(uint64_t address, const void* bytes, size_t count) {
 }
 void InstallHdOutput(Program* program) {
 #if defined(__ANDROID__) && defined(__aarch64__)
+    // The hardware 1080p layout completed installation, but the 2026-11-12
+    // on-device test still showed the game world black and the HUD oversized.
+    // Restore the last known default (guest output mode 3) for normal launches.
+    // Only the explicit opt-in should activate the signature-validated mode 1.
     const char* choice = std::getenv("KYTY_DS_HD_GAME_OUTPUT");
-    if (choice && choice[0] == '0' && choice[1] == '\0') return;
+    if (!choice || choice[0] != '1' || choice[1] != '\0') return;
     if (!g_hd_patches.empty()) return;
     using namespace DemonsSoulsHdMobile;
     const auto video = FindHdSignature(program, 0x9fe6a3, VideoChoice);

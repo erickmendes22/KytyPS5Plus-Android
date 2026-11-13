@@ -51,6 +51,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -60,6 +61,44 @@
 #include <vector>
 
 namespace Libs::Graphics {
+
+// Draw accounting, enabled only for PPSA01341's already-present frame trace.
+// The current screenshots contain UI but zero 3D scene: normal flip and
+// shader compile counters do not say whether graphics draws got a real
+// pipeline and color/depth attachments. This samples actual decisions and
+// records only once per 8192 prepared draws, never a per-draw log.
+static void TraceDsGraphicsOutcome(bool shader_ready, bool pipeline_ready,
+                                   uint32_t colors, bool depth, bool ps_active) {
+    static const bool enabled = [] {
+        const auto* trace = std::getenv("KYTY_DS_FRAME_TRACE");
+        return trace && trace[0] == '1' && trace[1] == '\0';
+    }();
+    if (!enabled) return;
+    static std::atomic_uint64_t total {0}, no_shader {0}, no_pipeline {0};
+    static std::atomic_uint64_t no_color {0}, no_depth {0}, accepted {0};
+    static std::atomic_uint64_t no_ps {0}, depth_only {0};
+    if (!shader_ready) no_shader.fetch_add(1, std::memory_order_relaxed);
+    else if (!pipeline_ready) no_pipeline.fetch_add(1, std::memory_order_relaxed);
+    else {
+        accepted.fetch_add(1, std::memory_order_relaxed);
+        if (colors == 0) no_color.fetch_add(1, std::memory_order_relaxed);
+        if (!depth) no_depth.fetch_add(1, std::memory_order_relaxed);
+        if (!ps_active) no_ps.fetch_add(1, std::memory_order_relaxed);
+        if (colors == 0 && depth) depth_only.fetch_add(1, std::memory_order_relaxed);
+    }
+    const auto count = total.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count % 8192 != 0) return;
+    Log::WriteToConsoleAndLog(fmt::format(
+        "[DS_GRAPHICS_PATH] draws={} accepted={} shader_not_ready={} "
+        "pipeline_null={} colorless={} depthless={} depth_only={} no_ps={}\n",
+        count, accepted.load(std::memory_order_relaxed),
+        no_shader.load(std::memory_order_relaxed),
+        no_pipeline.load(std::memory_order_relaxed),
+        no_color.load(std::memory_order_relaxed),
+        no_depth.load(std::memory_order_relaxed),
+        depth_only.load(std::memory_order_relaxed),
+        no_ps.load(std::memory_order_relaxed)));
+}
 
 std::pair<int32_t, uint32_t> ResolveDrawOffsets(uint32_t index_offset,
 	                                           const ShaderVertexInputInfo& vs_input_info) {
@@ -1290,6 +1329,7 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 	                   PixelShaderHasDepthOrCoverageSideEffects(shader_regs));
 	RefreshShaders(buffer, draw, color_output_mask, state);
 	if (!state.programs.ready) {
+		TraceDsGraphicsOutcome(false, false, 0, false, state.ps_active);
 		// --async-shaders: a program is still translating on a worker. The draw is dropped for
 		// this frame (its stage pointers are unset) and drawn once the program is installed.
 		Common::PerfStats::CountSkippedDraw();
@@ -1694,6 +1734,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		pipeline_ptr = nullptr;
 	}
 	if (pipeline_ptr == nullptr) {
+		TraceDsGraphicsOutcome(true, false, state.color_count,
+		                      static_cast<bool>(state.depth_info.image_id), state.ps_active);
 		// --async-shaders: the pipeline is being created on a worker. Nothing recorded so far
 		// depends on it (bindings and buffers were only prepared), so the draw is dropped for
 		// this frame and drawn once the pipeline is installed.
@@ -1705,6 +1747,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		return;
 	}
 	auto& pipeline = *pipeline_ptr;
+	TraceDsGraphicsOutcome(true, true, state.color_count,
+	                      static_cast<bool>(state.depth_info.image_id), state.ps_active);
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering =
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info,
