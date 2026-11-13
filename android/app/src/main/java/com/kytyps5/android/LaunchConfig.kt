@@ -131,6 +131,7 @@ object LaunchArgs {
                 arrayOf("--env", "KYTY_DS_NATIVE_TSC=1",
                     "--async-shaders", "0", "--env", "KYTY_REBIND_AFTER_JOIN=1",
                     "--env", "KYTY_PRESENT_COMPACT=1", "--env", "KYTY_DS_GPU_LAYER_KEEP=1",
+                    "--env", "KYTY_DS_PER_FACE_BIAS=1",
                     "--vma-block-size", "32") else emptyArray()) +
             // The GT reference fork enables LS/HS/TES explicitly. Keep it title-scoped.
             (if (titleId.equals("PPSA24156", ignoreCase = true))
