@@ -361,8 +361,52 @@ static void ProbeDsComputeWrites(RenderContext& context,
 		    images[i].resource_class != ShaderRecompiler::IR::ImageResourceClass::Storage ||
 		    !bindings.images[i].image_id || bindings.images[i].placeholder)
 			continue;
-		ProbeDsComputeImage(context, bindings.images[i].image_id,
-		                    input.stage.program->shader_hash);
+		const uint64_t hash = input.stage.program->shader_hash;
+		const ImageId target_id = bindings.images[i].image_id;
+		ProbeDsComputeImage(context, target_id, hash);
+		// The 07:07 diagnostic identified six repeatedly black 2560x1440
+		// RGBA16F writers at guest address 0x281300000. Compare their
+		// *actual sampled inputs* against their zero outputs, once per
+		// distinct shader. This determines whether lighting's inputs are
+		// already black or its dispatch fails to produce color.
+		constexpr std::array<uint64_t, 6> target_hashes {{
+		    0x23056085c1120461ull, 0xe75589aa0bb3ae52ull,
+		    0x3dfe402653925fbfull, 0x93b0be7f1a0293d1ull,
+		    0xfabe0bcb275a3005ull, 0xc2e01fbe98f5ebabull
+		}};
+		static std::array<std::atomic_bool, 6> captured {};
+		const auto match = std::find(target_hashes.begin(), target_hashes.end(), hash);
+		const auto ordinal = static_cast<size_t>(match - target_hashes.begin());
+		if (match != target_hashes.end() &&
+		    context.GetTextureCache().GetImage(target_id).info.data.address == 0x281300000ull &&
+		    !captured[ordinal].exchange(true, std::memory_order_relaxed)) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_TARGET_WRITER] shader=0x{:016x} output=0x{:x} "
+			    "image_resources={} output_binding={}\n",
+			    hash, 0x281300000ull, images.size(), i));
+			ProbeDsComputeImage(context, target_id, hash, true);
+			uint32_t inspected = 0;
+			for (uint32_t other = 0; other < images.size() && other < bindings.images.size() &&
+			     inspected < 4u; ++other) {
+				const auto& source = bindings.images[other];
+				if (other == i || !images[other].read || !source.image_id ||
+				    source.placeholder || source.image_id == target_id) continue;
+				const auto& texture = context.GetTextureCache().GetImage(source.image_id);
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_TARGET_INPUT] shader=0x{:016x} index={} guest=0x{:x} "
+				    "format={} extent={}x{} gpu_modified={} cpu_dirty={}\n",
+				    hash, other, texture.info.data.address,
+				    static_cast<uint32_t>(texture.backing.format),
+				    texture.backing.extent.width, texture.backing.extent.height,
+				    texture.IsGpuModified() ? 1 : 0, texture.IsCpuDirty() ? 1 : 0));
+				ProbeDsComputeImage(context, source.image_id, hash, true);
+				++inspected;
+			}
+			if (inspected == 0)
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_TARGET_INPUT] shader=0x{:016x} no_sampled_image_inputs; "
+				    "check scalar/BDA buffer inputs\n", hash));
+		}
 		return; // one representative output per dispatch, every 256 samples
 	}
 }

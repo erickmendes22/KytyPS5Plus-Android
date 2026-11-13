@@ -938,7 +938,7 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 // reported separately). The readback is synchronized and never changes guest
 // image ownership or writes guest memory. Other games never enable it.
 static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* colors,
-                                uint32_t count, uint64_t shader_hash, bool compute = false) {
+                                uint32_t count, uint64_t shader_hash, bool compute = false, bool forced = false) {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_DS_COLOR_PROBE");
 		// An explicit 0 disables probing. Otherwise reuse the existing DS
@@ -960,9 +960,9 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 	static std::atomic_uint64_t eligible_events[2] {};
 	static std::atomic_uint32_t captures[2] {};
 	const uint32_t period = compute ? 256u : 4096u;
-	const uint32_t limit = compute ? 32u : 48u;
+	const uint32_t limit = compute ? 64u : 48u;
 	const uint64_t event = eligible_events[kind].fetch_add(1, std::memory_order_relaxed) + 1u;
-	if (event % period != 0u || captures[kind].load(std::memory_order_relaxed) >= limit) return;
+	if ((!forced && event % period != 0u) || captures[kind].load(std::memory_order_relaxed) >= limit) return;
 	auto& cache = context.GetTextureCache();
 	auto& scheduler = context.GetCommandScheduler();
 	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
@@ -1038,20 +1038,30 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		// bytes until the command containing vkCmdCopyImageToBuffer completed.
 		scheduler.Finish();
 		download.Invalidate(offset, length);
-		uint32_t zero = 0;
-		std::array<uint32_t,5> first_words {};
+		uint32_t zero = 0, zero_rgb = 0;
+		std::array<uint32_t,5> first_words {}, second_words {};
 		for (uint32_t i = 0; i < 5; ++i) {
-			bool empty = true;
-			for (uint32_t b = 0; b < bpp; ++b) empty &= mapped[i*bpp+b] == 0u;
+			bool empty = true, rgb_black = true;
+			for (uint32_t b = 0; b < bpp; ++b) {
+				empty &= mapped[i*bpp+b] == 0u;
+				// RGBA16F: RGB are bytes [0,6); alpha alone is not visible lighting.
+				if (b < (backing.format == vk::Format::eR16G16B16A16Sfloat ? 6u : bpp))
+					rgb_black &= mapped[i*bpp+b] == 0u;
+			}
 			zero += empty;
+			zero_rgb += rgb_black;
 			std::memcpy(&first_words[i], mapped + i*bpp, std::min<uint32_t>(bpp,4u));
+			if (bpp > 4u)
+				std::memcpy(&second_words[i], mapped + i*bpp + 4u, std::min<uint32_t>(bpp-4u,4u));
 		}
 		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE] path=%s capture=%u shader=0x%016" PRIx64
 		     " slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
-		     " samples=5 zero=%u first=%08x,%08x,%08x,%08x,%08x\n",
+		     " samples=5 zero=%u rgb_black=%u first=%08x,%08x,%08x,%08x,%08x"
+		     " second=%08x,%08x,%08x,%08x,%08x\n",
 		     compute ? "compute" : "graphics", capture, shader_hash, slot, image.info.data.address,
-		     static_cast<uint32_t>(backing.format), w, h, zero,
-		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4]));
+		     static_cast<uint32_t>(backing.format), w, h, zero, zero_rgb,
+		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4],
+		     second_words[0],second_words[1],second_words[2],second_words[3],second_words[4]));
 	}
 	if (probed == 0) {
 		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE_REJECT] path=%s capture=%u event=%" PRIu64
@@ -1065,11 +1075,11 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 
 // The compute renderer shares the same exact-pixel sampler rather than
 // inferring nonzero outputs from vkCmdDispatch counts.
-void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash) {
+void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash, bool forced) {
 	if (!id) return;
 	RenderColorInfo color {};
 	color.image_id = id;
-	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true);
+	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced);
 }
 
 static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
