@@ -30,6 +30,17 @@ static_assert(IdleBackoffMicroseconds(1) == 50);
 static_assert(IdleBackoffMicroseconds(64) == 200);
 static_assert(IdleBackoffMicroseconds(512) == 800);
 
+// The working Chen renderer uses the original GPU-produced index path.
+// The forced CPU fallback is an explicit debugging option only. Re-enabling
+// it silently would turn a real gameplay compute producer into dead code.
+inline constexpr bool UseCpuIndexFallback(const char* env) {
+    return env != nullptr && env[0] == '1' && env[1] == '\0';
+}
+static_assert(!UseCpuIndexFallback(nullptr));
+static_assert(!UseCpuIndexFallback("0"));
+static_assert(!UseCpuIndexFallback("1x"));
+static_assert(UseCpuIndexFallback("1"));
+
 // Executable-verified guest branch observed in the supplied PPSA01341 eboot.
 // At image+0xA0D6FB it tests doIndexBufferCulling (BPE CVar+0xCAA):
 //   cmp byte ptr [rcx+0xcaa], 1; jne +0x20
