@@ -2062,6 +2062,34 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	dynamic_state.SetAttachmentFeedbackLoopAspects(feedback_aspects);
 	dynamic_state.Commit(m_context.GetGraphics(), vk_buffer);
 
+	// DS shadow casters supply a separate PA_SU_POLY_OFFSET_* for front and
+	// back faces. When this title-scoped path is enabled the pipeline exposes
+	// dynamic culling, which must be explicitly set on *every* draw (including
+	// ordinary draws) to avoid inheriting the preceding split face.
+	static const bool ds_per_face_bias = [] {
+		const char* setting = std::getenv("KYTY_DS_PER_FACE_BIAS");
+		return setting != nullptr && setting[0] == '1' && setting[1] == '\0';
+	}();
+	const auto& face_mode = buffer.GetRegisters().GetModeControl();
+	const auto& face_offset = buffer.GetRegisters().GetPolyOffset();
+	const bool rect_face = Prospero::IsRectList(ucfg.GetPrimType());
+	const bool front_bias = face_mode.poly_offset_front_enable && !face_mode.cull_front;
+	const bool back_bias  = face_mode.poly_offset_back_enable && !face_mode.cull_back;
+	if (ds_per_face_bias) {
+		vk::CullModeFlags base_cull {};
+		if (!rect_face && face_mode.cull_front) base_cull |= vk::CullModeFlagBits::eFront;
+		if (!rect_face && face_mode.cull_back) base_cull |= vk::CullModeFlagBits::eBack;
+		vk_buffer.setCullMode(base_cull);
+		vk_buffer.setDepthBiasEnable(front_bias || back_bias);
+		if (front_bias || back_bias) {
+			const float guest_constant = front_bias ? face_offset.front_offset : face_offset.back_offset;
+			const float constant = ConvertPolygonOffsetConstantFactor(
+			    guest_constant, face_offset, state.depth_info.desc.view_info.format);
+			const float slope = (front_bias ? face_offset.front_scale : face_offset.back_scale) / 16.0f;
+			vk_buffer.setDepthBias(constant, face_offset.clamp, slope);
+		}
+	}
+
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
@@ -2112,17 +2140,68 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const ScopedDebugLabel draw_label(vk_buffer, mesh_emulated ? "draw-mesh" : "draw",
 		                                  label_vs != nullptr ? label_vs->shader_hash : 0,
 		                                  label_ps != nullptr ? label_ps->shader_hash : 0);
-		if (mesh_emulated && indirect != nullptr) {
-			vk_buffer.drawIndexedIndirect(emulated_mesh.draw_buffer, emulated_mesh.draw_offset, 1,
-			                              5 * sizeof(uint32_t));
-		} else if (indirect != nullptr) {
-			m_indirect_fixup->Draw(vk_buffer, indirect_records, indirect->indexed);
-		} else if (mesh_emulated) {
-			vk_buffer.drawIndexed(emulated_mesh.index_count, 1, 0, 0, 0);
-		} else if (mesh_active) {
-			vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
+		const auto issue_draw = [&] {
+			if (mesh_emulated && indirect != nullptr) {
+				vk_buffer.drawIndexedIndirect(emulated_mesh.draw_buffer, emulated_mesh.draw_offset, 1,
+				                              5 * sizeof(uint32_t));
+			} else if (indirect != nullptr) {
+				m_indirect_fixup->Draw(vk_buffer, indirect_records, indirect->indexed);
+			} else if (mesh_emulated) {
+				vk_buffer.drawIndexed(emulated_mesh.index_count, 1, 0, 0, 0);
+			} else if (mesh_active) {
+				vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
+			} else {
+				EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
+			}
+		};
+		// With no face culling, a single VkPipeline cannot assign independent
+		// polygon offset to each face. Split only depth-only draws without
+		// stencil tests or shader buffer writes, so ordering-sensitive color
+		// blending and storage side effects are untouched.
+		const bool different_bias = face_mode.poly_offset_front_enable !=
+		                                face_mode.poly_offset_back_enable ||
+		    (face_mode.poly_offset_front_enable &&
+		     (face_offset.front_offset != face_offset.back_offset ||
+		      face_offset.front_scale != face_offset.back_scale));
+		const bool split_bias = ds_per_face_bias && different_bias && !rect_face &&
+		    !face_mode.cull_front && !face_mode.cull_back &&
+		    state.depth_info.image_id && state.depth_info.depth_write_enable &&
+		    state.color_count == 0 && !state.depth_info.stencil_test_enable &&
+		    !mesh_active && !mesh_emulated && !shader_write_stages;
+		if (split_bias) {
+			const auto draw_face = [&](bool front) {
+				const bool active = front ? face_mode.poly_offset_front_enable
+				                          : face_mode.poly_offset_back_enable;
+				vk_buffer.setCullMode(front ? vk::CullModeFlagBits::eBack
+				                             : vk::CullModeFlagBits::eFront);
+				vk_buffer.setDepthBiasEnable(active);
+				if (active) {
+					const float guest_bias = front ? face_offset.front_offset
+					                               : face_offset.back_offset;
+					const float constant = ConvertPolygonOffsetConstantFactor(
+					    guest_bias, face_offset, state.depth_info.desc.view_info.format);
+					const float slope = (front ? face_offset.front_scale
+					                           : face_offset.back_scale) / 16.0f;
+					vk_buffer.setDepthBias(constant, face_offset.clamp, slope);
+				}
+				issue_draw();
+			};
+			draw_face(true);
+			draw_face(false);
+			static std::atomic_uint32_t ds_split_logs {0};
+			const uint32_t n = ds_split_logs.fetch_add(1, std::memory_order_relaxed);
+			if (n < 8u || (n % 4096u) == 0u) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_PER_FACE_BIAS] split={} frame={} depth=0x{:x} "
+				    "front={}/{} back={}/{} draw={} indirect={}\n",
+				    n, m_context.GetGpu().GetFrameNum(),
+				    state.depth_info.desc.info.data.address,
+				    face_offset.front_offset, face_offset.front_scale,
+				    face_offset.back_offset, face_offset.back_scale,
+				    draw.index_count, indirect != nullptr ? 1 : 0));
+			}
 		} else {
-			EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
+			issue_draw();
 		}
 	}
 
