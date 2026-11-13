@@ -1229,56 +1229,115 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	auto&       images   = prepared.images;
 	EXIT_IF(images.size() != program.info.images.size());
 	auto& texture_cache = m_context.GetTextureCache();
-	// Acquire each view before a later overlapping descriptor can replace its image.
-	for (uint32_t i = 0; i < program.info.images.size(); i++) {
-        if (program.info.images[i].bindless) continue;
-		if (!images[i].image_id) continue;
-		const auto old_image = texture_cache.m_slot_images.try_get(images[i].image_id);
-		if (old_image == nullptr || (!old_image->registered && !old_image->info.data.Empty()) ||
-		    old_image->binding.needs_rebind) {
-			if (old_image != nullptr) {
-				old_image->binding = {};
-			}
-			auto* slots = (BindMemo::Bits() & BindMemo::TextureDesc) != 0
-			                  ? m_texture_desc_memo.SlotsFor(&program, program.info.images.size()).data()
-			                  : nullptr;
-			images[i] = ResolveTexture(program.info.images[i], snapshot.images[i],
-			                           slots != nullptr ? &slots[i] : nullptr);
-			BindImage(images[i].image_id,
-			          images[i].desc.type == TextureCache::BindingType::Storage);
+	// The Chen Demon's Souls renderer retries resource bindings after
+	// resolving image aliases. Discovering an overlapping texture later in
+	// this list may retire an earlier owner; one forward pass can therefore
+	// submit an invalid image view. Keep normal behavior for other games.
+	static const bool ds_stable_image_bindings = [] {
+		const char* v = std::getenv("KYTY_DS_STABLE_IMAGE_BINDINGS");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
+	const auto binding_still_valid = [&](uint32_t i) {
+		if (program.info.images[i].bindless || !images[i].image_id) return true;
+		const auto* owner = texture_cache.m_slot_images.try_get(images[i].image_id);
+		return owner != nullptr && !owner->binding.needs_rebind &&
+		       (owner->registered || owner->info.data.Empty());
+	};
+	const auto all_valid = [&] {
+		for (uint32_t i = 0; i < images.size(); ++i) {
+			if (!binding_still_valid(i)) return false;
 		}
-		auto& binding = images[i];
-		binding.mip_views.clear();
+		return true;
+	};
+	const uint32_t passes = ds_stable_image_bindings ? 8u : 1u;
+	for (uint32_t attempt = 0; attempt < passes; ++attempt) {
+		for (uint32_t i = 0; i < program.info.images.size(); i++) {
+	        if (program.info.images[i].bindless) continue;
+			if (!images[i].image_id) continue;
+			const auto old_image = texture_cache.m_slot_images.try_get(images[i].image_id);
+			if (old_image == nullptr || (!old_image->registered && !old_image->info.data.Empty()) ||
+			    old_image->binding.needs_rebind) {
+				if (old_image != nullptr) {
+					old_image->binding = {};
+				}
+				auto* slots = (BindMemo::Bits() & BindMemo::TextureDesc) != 0
+				                  ? m_texture_desc_memo.SlotsFor(&program, program.info.images.size()).data()
+				                  : nullptr;
+				images[i] = ResolveTexture(program.info.images[i], snapshot.images[i],
+				                           slots != nullptr ? &slots[i] : nullptr);
+				BindImage(images[i].image_id,
+				          images[i].desc.type == TextureCache::BindingType::Storage);
+			}
+			auto& binding = images[i];
+			binding.mip_views.clear();
+			const auto& resource = program.info.images[i];
+			{
+				// --render-scale: only pixel and compute stages rescale texel coordinates and size
+				// queries (ShaderIR PushData::Rescale*). A scaled image fetched by texel from another
+				// stage returns to guest size for good.
+				auto& image = texture_cache.GetImage(binding.image_id);
+				if (image.scaled && resource.texel_access &&
+				    !ShaderRecompiler::IR::PushData::RescaleStage(program.stage)) {
+					image.BlockScaling();
+				}
+			}
+			if (resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::Dynamic) {
+				EXIT_IF(resource.mip_count == 0u ||
+				        resource.mip_count != binding.desc.view_info.level_count);
+				binding.mip_views.reserve(resource.mip_count);
+				for (uint32_t mip = 0; mip < resource.mip_count; mip++) {
+					auto desc = binding.desc;
+					desc.view_info.base_level += mip;
+					desc.view_info.level_count = 1;
+					// The shader selects the mip after applying the guest minimum LOD.
+					desc.view_info.min_lod = 0;
+					binding.mip_views.push_back(texture_cache.FindTexture(binding.image_id, desc));
+				}
+				binding.image_view = binding.mip_views.front();
+			} else {
+				binding.image_view = texture_cache.FindTexture(binding.image_id, binding.desc);
+			}
+			auto&      image   = texture_cache.GetImage(binding.image_id);
+			const bool storage = binding.desc.type == TextureCache::BindingType::Storage;
+			image.usage.storage |= storage;
+		}
+		if (!ds_stable_image_bindings || all_valid()) {
+			if (attempt != 0) {
+				static std::atomic_uint32_t recovered {0};
+				const uint32_t n = recovered.fetch_add(1, std::memory_order_relaxed);
+				if (n < 32u || (n % 4096u) == 0u) {
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_IMAGE_BIND_REPAIRED] shader=0x{:016x} attempts={} images={}\n",
+					    program.shader_hash, attempt + 1u, images.size()));
+				}
+			}
+			return;
+		}
+	}
+	// A permanently conflicting alias should not submit a retired native
+	// view. Resolve it to the existing 1x1 null placeholder, matching Chen's
+	// bounded fallback for nonsettling game textures.
+	static std::atomic_uint32_t unresolved {0};
+	for (uint32_t i = 0; i < images.size(); ++i) {
+		if (binding_still_valid(i)) continue;
 		const auto& resource = program.info.images[i];
-		{
-			// --render-scale: only pixel and compute stages rescale texel coordinates and size
-			// queries (ShaderIR PushData::Rescale*). A scaled image fetched by texel from another
-			// stage returns to guest size for good.
-			auto& image = texture_cache.GetImage(binding.image_id);
-			if (image.scaled && resource.texel_access &&
-			    !ShaderRecompiler::IR::PushData::RescaleStage(program.stage)) {
-				image.BlockScaling();
-			}
+		const uint32_t n = unresolved.fetch_add(1u, std::memory_order_relaxed);
+		if (n < 32u || (n % 4096u) == 0u) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_IMAGE_BIND_UNRESOLVED] shader=0x{:016x} slot={} limit={}\n",
+			    program.shader_hash, i, passes));
 		}
-		if (resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::Dynamic) {
-			EXIT_IF(resource.mip_count == 0u ||
-			        resource.mip_count != binding.desc.view_info.level_count);
-			binding.mip_views.reserve(resource.mip_count);
-			for (uint32_t mip = 0; mip < resource.mip_count; mip++) {
-				auto desc = binding.desc;
-				desc.view_info.base_level += mip;
-				desc.view_info.level_count = 1;
-				// The shader selects the mip after applying the guest minimum LOD.
-				desc.view_info.min_lod = 0;
-				binding.mip_views.push_back(texture_cache.FindTexture(binding.image_id, desc));
-			}
-			binding.image_view = binding.mip_views.front();
-		} else {
-			binding.image_view = texture_cache.FindTexture(binding.image_id, binding.desc);
-		}
-		auto&      image   = texture_cache.GetImage(binding.image_id);
-		const bool storage = binding.desc.type == TextureCache::BindingType::Storage;
-		image.usage.storage |= storage;
+		// Dynamic-mip resources require several host views, and the existing
+		// null image only has one mip. Leave their fallback unchanged.
+		if (resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::Dynamic) continue;
+		const bool storage = resource.written;
+		auto desc = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
+		                                           : TextureCache::BindingType::Texture);
+		const auto id = texture_cache.FindImage(desc);
+		BindImage(id, storage);
+		auto& binding = images[i];
+		binding = {.image_id = id, .desc = std::move(desc), .placeholder = true};
+		binding.image_view = texture_cache.FindTexture(id, binding.desc);
 	}
 }
 
