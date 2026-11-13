@@ -915,6 +915,18 @@ void StoreFormattedPrepared(ValueEmitContext& ctx, const IR::Inst& inst,
 	});
 }
 
+// Reference arithmetic for the host SPIR-V scalar-load path. These cases
+// expose the carry previously lost by independently clearing low address bits.
+[[maybe_unused]] constexpr uint64_t IndirectScalarGuestAddressForTest(
+    uint64_t base, uint32_t offset, uint32_t soffset) {
+    return (base + uint64_t{uint32_t(offset + soffset)}) & ~uint64_t{3};
+}
+static_assert(IndirectScalarGuestAddressForTest(0x1003, 1, 0) == 0x1004);
+static_assert(IndirectScalarGuestAddressForTest(0x1001, 2, 1) == 0x1004);
+static_assert(IndirectScalarGuestAddressForTest(0x1000, 1, 3) == 0x1004);
+static_assert(IndirectScalarGuestAddressForTest(0x1000, 3, 0) == 0x1000);
+static_assert(IndirectScalarGuestAddressForTest(0x1000, 4, 0) == 0x1004);
+
 uint32_t LoadIndirectScalarBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&       state  = ctx.state;
 	const auto& handle = *inst.Arg(0).ResolveInstruction();
@@ -925,21 +937,29 @@ uint32_t LoadIndirectScalarBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
 	                            Unary(state, spv::OpUConvert, TypeU64(state),
 	                                  EmitUMax32(state, stride, ConstantU32(state, 1))),
 	                            Unary(state, spv::OpUConvert, TypeU64(state), ctx.Arg(handle, 2)));
-	const auto  offset = Binary(state, spv::OpIAdd, TypeU64(state),
-	                            Unary(state, spv::OpUConvert, TypeU64(state),
-	                                  Binary(state, spv::OpBitwiseAnd, TypeU32(state),
-	                                         ctx.Arg(inst, 1), ConstantU32(state, ~3u))),
-	                            ConstantU64(state, ctx.Memory(inst).offset & ~3u));
-	const auto  end =
-	    Binary(state, spv::OpIAdd, TypeU64(state), offset, ConstantU64(state, sizeof(uint32_t)));
+	// RDNA2 S_BUFFER_LOAD_DWORD forms the byte address as
+	// (base + OFFSET + SOFFSET) & ~3, *not* (base & ~3) + (OFFSET & ~3)
+	// + (SOFFSET & ~3). Independent rounding loses carry into the next
+	// dword, corrupting runtime material-table entries at unaligned offsets.
+	// The scalar-buffer bound is checked against the relative, aligned
+	// OFFSET+SOFFSET, exactly as for a host-bound scalar descriptor.
+	const auto raw_offset = Binary(state, spv::OpIAdd, TypeU32(state),
+	                               ctx.Arg(inst, 1), ConstantU32(state, ctx.Memory(inst).offset));
+	const auto aligned_offset = Binary(state, spv::OpBitwiseAnd, TypeU32(state),
+	                                   raw_offset, ConstantU32(state, ~3u));
+	const auto offset64 = Unary(state, spv::OpUConvert, TypeU64(state), aligned_offset);
+	const auto end = Binary(state, spv::OpIAdd, TypeU64(state),
+	                        offset64, ConstantU64(state, sizeof(uint32_t)));
 	return EmitValueOrZeroIfCondition(
 	    state, Binary(state, spv::OpULessThanEqual, TypeBool(state), end, size), [&]() {
-		    const auto base = PackU64(state,
-		                              Binary(state, spv::OpBitwiseAnd, TypeU32(state),
-		                                     ctx.Arg(handle, 0), ConstantU32(state, ~3u)),
-		                              Binary(state, spv::OpBitwiseAnd, TypeU32(state), word1,
-		                                     ConstantU32(state, 0xffffu)));
-		    return LoadBdaDword(ctx, Binary(state, spv::OpIAdd, TypeU64(state), base, offset));
+		    const auto base = PackU64(
+		        state, ctx.Arg(handle, 0),
+		        Binary(state, spv::OpBitwiseAnd, TypeU32(state), word1, ConstantU32(state, 0xffffu)));
+		    const auto address = Binary(state, spv::OpBitwiseAnd, TypeU64(state),
+		        Binary(state, spv::OpIAdd, TypeU64(state), base,
+		               Unary(state, spv::OpUConvert, TypeU64(state), raw_offset)),
+		        ConstantU64(state, ~uint64_t{3}));
+		    return LoadBdaDword(ctx, address);
 	    });
 }
 
