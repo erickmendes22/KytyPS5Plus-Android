@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cinttypes>
 #include <cstring>
+#include <cstdlib>
 
 namespace Libs::Graphics {
 
@@ -273,6 +274,27 @@ void IndirectDrawFixup::PollFeedback() {
 			continue;
 		}
 		NoteCpuResult(feedback.site, requested == 0);
+		// vkCmdDrawIndexedIndirect can be accepted with indexCount=0.
+		// The DS graphics accepted-draw counter cannot distinguish this.
+		// Count already-completed GPU fixup feedback, never wait on a fence.
+		static const bool ds_trace = [] {
+			const char* v = std::getenv("KYTY_DS_FRAME_TRACE");
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
+		}();
+		if (ds_trace) {
+			static std::atomic_uint64_t feedback_total {0};
+			static std::atomic_uint64_t feedback_nonempty {0};
+			const uint64_t n = feedback_total.fetch_add(1u, std::memory_order_relaxed) + 1u;
+			if (requested != 0u) feedback_nonempty.fetch_add(1u, std::memory_order_relaxed);
+			if (n <= 12u || n % 512u == 0u) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_INDIRECT_FEEDBACK] completed={} nonempty={} empty={} "
+				    "last_site=0x{:x} last_requested={} mesh={}\n",
+				    n, feedback_nonempty.load(std::memory_order_relaxed),
+				    n - feedback_nonempty.load(std::memory_order_relaxed),
+				    feedback.site, requested, feedback.mesh ? 1 : 0));
+			}
+		}
 		if (!feedback.mesh) {
 			feedback = {};
 			continue;
