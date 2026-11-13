@@ -1178,9 +1178,12 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	// host VMA working set reaches 11+ GiB in one frame despite a 4.6-GiB budget.
 	// A newly bound colour target replaces the *same guest address*: its prior
 	// differently sized backing cannot remain the authoritative texture.
-	// Retire only old, unbound target aliases. BindlessTable::OnImageUnregistered
-	// invalidates any old descriptor slots; Vulkan deletion is deferred until
-	// the outstanding submitted work completes.
+	// The previously unbound-only condition misses Wolverine's actual failure:
+	// the material bindless table keeps old 4K/3K/2K extents bound while the
+	// game reuses the same guest RT address. At critical budget pressure, first
+	// finish previous GPU commands, preserve any GPU-authored bytes, invalidate
+	// the bindless table, and ONLY THEN retire obsolete same-address backing.
+	// Active render attachments and images with unrecoverable writes are excluded.
 	const char* alias_env = std::getenv("KYTY_WOLVERINE_RT_ALIAS_RECLAIM");
 	const bool reclaim_alias = alias_env != nullptr && alias_env[0] == '1' &&
 	                           alias_env[1] == '\0' &&
@@ -1191,33 +1194,93 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	    requested.type == cached.info.type &&
 	    requested.samples == cached.info.samples &&
 	    requested.pixel_format == cached.info.pixel_format &&
+	    requested.tile_mode == cached.info.tile_mode &&
 	    requested.metadata.compression == VideoOutCompression::Uncompressed &&
 	    cached.info.metadata.compression == VideoOutCompression::Uncompressed &&
-	    !cached.binding.is_bound && !cached.binding.is_target &&
+	    !cached.binding.is_target &&
 	    !cached.depth_id && cached.stencil_ids.empty() &&
 	    cached.kept_gpu_layers.empty() && cached.kept_unwatched.empty();
 	if (reclaim_alias) {
-		static std::atomic<uint32_t> reports {0};
-		if (reports.fetch_add(1, std::memory_order_relaxed) < 64) {
-			Log::WriteToConsoleAndLog(fmt::format(
-			    "[WOL_RT_ALIAS_RETIRE] addr=0x{:x} old={}x{} new={}x{} "
-			    "old_size={}MiB gpu_owned={} pinned={} old_tick={} now_tick={}\n",
-			    requested.data.address, cached.info.extent.width, cached.info.extent.height,
-			    requested.extent.width, requested.extent.height,
-			    cached.AccountedSize() / GpuBudget::MiB, cached.IsGpuModified() ? 1 : 0,
-			    cached.bindless_pinned ? 1 : 0, cached.tick_accessed_last, current_tick));
-		}
-		NoteRecreate("wolverine-dynamic-resolution-retire", requested, cached.info);
+		const bool was_bound = cached.binding.is_bound;
+		const bool was_bindless = cached.bindless_pinned;
+		const bool gpu_owned = cached.IsGpuModified();
 		const uint64_t old_bytes = cached.AccountedSize();
-		FreeImage(cached_id);
-		// Retiring an image only schedules destruction. Wolverine changes
-		// resolution several times in one frame, before normal cache ageing.
-		// At critical usage, finish the prior submissions so their replaced
-		// images actually give the shared RAM back before more allocations.
-		if (old_bytes >= 8u * GpuBudget::MiB && m_scheduler.Active() &&
-		    m_graphics.GetLiveDeviceMemory() > m_critical_gc_memory) {
-			m_scheduler.Finish();
+		const uint32_t old_width = cached.info.extent.width;
+		const uint32_t old_height = cached.info.extent.height;
+		const bool over_budget = m_budget_mode && m_scheduler.Active() &&
+		    m_graphics.GetLiveDeviceMemory() >= m_pressure_gc_memory;
+		// Do not force turnover of live aliases at ordinary residency levels.
+		// Under pressure this is a *replacement* at an identical guest address,
+		// unlike generic cache eviction of a potentially live texture.
+		if (!over_budget && (was_bound || was_bindless)) return {merged_id};
+		if (gpu_owned && (!cached.SafeToDownload() || !CanDownload(cached))) {
+			static std::atomic_uint32_t denied {0};
+			if (denied.fetch_add(1, std::memory_order_relaxed) < 36u)
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[WOL_RT_ALIAS_PROTECTED] addr=0x{:x} size={}MiB "
+				    "bound={} bindless={} gpu_owned=1 reason=no_safe_readback\n",
+				    cached.info.data.address, old_bytes / GpuBudget::MiB,
+				    was_bound ? 1 : 0, was_bindless ? 1 : 0));
+			return {merged_id};
 		}
+		// An UPDATE_AFTER_BIND descriptor cannot be rewritten while an older
+		// submitted command still samples it. Drain before invalidating its slot.
+		if (was_bound || was_bindless || gpu_owned) m_scheduler.Finish();
+		uint32_t readback_windows = 0;
+		if (gpu_owned) {
+			auto& staging = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
+			const uint64_t capacity = std::min<uint64_t>(staging.Size(), 32u * GpuBudget::MiB);
+			bool complete = false;
+			if (cached.info.data.size <= capacity) {
+				complete = DownloadImageMemory(cached_id);
+				if (complete) m_scheduler.Finish();
+			} else if (capacity && CanDownloadInChunks(cached, capacity)) {
+				// Each window waits for its own writeback; original guest bytes
+				// remain protected until EVERY window completes.
+				for (uint32_t i = 0; i < 64 && !complete; ++i) {
+					const auto before = m_written_window;
+					complete = DownloadImageMemoryChunk(cached_id, capacity);
+					++readback_windows;
+					if (!complete && before.image == m_written_window.image &&
+					    before.version == m_written_window.version &&
+					    before.level == m_written_window.level &&
+					    before.layer == m_written_window.layer &&
+					    before.row == m_written_window.row) break;
+				}
+			}
+			if (!complete) {
+				static std::atomic_uint32_t incomplete {0};
+				if (incomplete.fetch_add(1, std::memory_order_relaxed) < 36u)
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[WOL_RT_ALIAS_PROTECTED] addr=0x{:x} size={}MiB "
+					    "bound={} bindless={} reason=readback_incomplete windows={}\n",
+					    cached.info.data.address, old_bytes / GpuBudget::MiB,
+					    was_bound ? 1 : 0, was_bindless ? 1 : 0,
+					    readback_windows));
+				return {merged_id};
+			}
+		}
+		const uint64_t live_before = m_graphics.GetLiveDeviceMemory();
+		cached.binding.needs_rebind |= was_bound || was_bindless;
+		NoteRecreate("wolverine-dynamic-resolution-retire", requested, cached.info);
+		FreeImage(cached_id); // includes BindlessTable::OnImageUnregistered
+		// Deferred Vulkan image destruction must actually return residency
+		// before the subsequent resolution sweep allocates another image.
+		if (m_scheduler.Active() && (over_budget || old_bytes >= 8u * GpuBudget::MiB))
+			m_scheduler.Finish();
+		const uint64_t live_after = m_graphics.GetLiveDeviceMemory();
+		static std::atomic_uint32_t reports {0};
+		if (reports.fetch_add(1, std::memory_order_relaxed) < 96u)
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[WOL_RT_ALIAS_RETIRED] addr=0x{:x} old={}x{} new={}x{} "
+			    "old={}MiB before={}MiB after={}MiB bound={} bindless={} "
+			    "gpu_written={} windows={}\n",
+			    requested.data.address, old_width, old_height,
+			    requested.extent.width, requested.extent.height,
+			    old_bytes / GpuBudget::MiB, live_before / GpuBudget::MiB,
+			    live_after / GpuBudget::MiB,
+			    was_bound ? 1 : 0, was_bindless ? 1 : 0,
+			    gpu_owned ? 1 : 0, readback_windows));
 		return {merged_id};
 	}
 
