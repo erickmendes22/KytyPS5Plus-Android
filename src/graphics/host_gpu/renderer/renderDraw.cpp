@@ -2129,20 +2129,26 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}();
 	if (ds_depth_trace && state.color_count == 0u && state.depth_info.image_id) {
 		static std::atomic_uint32_t depth_events {0};
+		static std::atomic_uint32_t depth_102a4 {0};
+		static std::atomic_uint32_t depth_20926 {0};
 		const uint32_t n = depth_events.fetch_add(1u, std::memory_order_relaxed);
+		const auto& di = state.depth_info;
+		const uint64_t address = di.desc.info.data.address;
+		if (address == 0x102a400000ull) depth_102a4.fetch_add(1u, std::memory_order_relaxed);
+		if (address == 0x209260000ull) depth_20926.fetch_add(1u, std::memory_order_relaxed);
 		if (n < 32u || n % 4096u == 0u) {
-			const auto& di = state.depth_info;
 			const auto& tracked = m_context.GetTextureCache().GetImage(di.image_id);
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_DEPTH_DRAW] seq={} frame={} target=0x{:x} format={} extent={}x{} "
 			    "depth_write={} depth_test={} gpu_modified={} cpu_dirty={} "
-			    "content_version={}\n",
-			    n, m_context.GetGpu().GetFrameNum(), di.desc.info.data.address,
+			    "content_version={} seen_102a4={} seen_20926={}\n",
+			    n, m_context.GetGpu().GetFrameNum(), address,
 			    static_cast<uint32_t>(tracked.backing.format),
 			    tracked.backing.extent.width, tracked.backing.extent.height,
 			    di.depth_write_enable ? 1 : 0, di.depth_test_enable ? 1 : 0,
 			    tracked.IsGpuModified() ? 1 : 0, tracked.IsCpuDirty() ? 1 : 0,
-			    tracked.ContentVersion()));
+			    tracked.ContentVersion(), depth_102a4.load(std::memory_order_relaxed),
+			    depth_20926.load(std::memory_order_relaxed)));
 		}
 	}
 	LogDrawPhase(draw.Name(), "DrawComplete");
