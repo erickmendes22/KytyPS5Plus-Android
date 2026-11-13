@@ -2024,17 +2024,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info,
 	                         feedback_aspects, stages);
 
-	// The gameplay HUD is visible but RGB in the 4K scene-composition target
-	// remains black. Compare this particular pixel shader's *actual bound*
-	// inputs before (280-489) and during (>=490) the blank scene. No GPU
-	// readback, extra draw, shader replacement or host fence is involved.
+	// Track the final Demon scene-composition pixel shader (identified from
+	// the guest output chain), not the unrelated 0x17defa... pass that reports
+	// zero image bindings. Log only bound metadata, without extra GPU work.
+	// This is diagnostic and does not change shader outputs or drawing.
 	static const bool ds_composite_trace = [] {
 		const char* v = std::getenv("KYTY_DS_FRAME_TRACE");
 		return v != nullptr && v[0] == '1' && v[1] == '\0';
 	}();
 	if (ds_composite_trace && state.ps_active && bindings.pixel &&
 	    state.ps_input_info.stage.program != nullptr &&
-	    state.ps_input_info.stage.program->shader_hash == 0x17defa333d9d1e22ull &&
+	    state.ps_input_info.stage.program->shader_hash == 0x3265b01ed00a5c01ull &&
 	    state.color_count != 0u) {
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
 		static std::atomic_uint32_t phases {0};
