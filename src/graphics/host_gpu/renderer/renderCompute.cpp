@@ -400,9 +400,9 @@ static void ProbeDsComputeWrites(RenderContext& context,
 				const auto& source = bindings.images[other];
 				uint64_t raw_address = 0;
 				uint32_t raw_width = 0, raw_height = 0;
-				if (other < input.stage.resources.images.size()) {
+				if (other < input.stage.resources->images.size()) {
 					const auto native = DecodeNativeDescriptor<ShaderTextureResource>(
-					    input.stage.resources.images[other]);
+					    input.stage.resources->images[other]);
 					raw_address = native.Base40();
 					raw_width = static_cast<uint32_t>(native.Width5()) + 1u;
 					raw_height = static_cast<uint32_t>(native.Height5()) + 1u;
