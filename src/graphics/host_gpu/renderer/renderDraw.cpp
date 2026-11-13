@@ -960,7 +960,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 	static std::atomic_uint64_t eligible_events[2] {};
 	static std::atomic_uint32_t captures[2] {};
 	const uint32_t period = compute ? 256u : 4096u;
-	const uint32_t limit = compute ? 64u : 48u;
+	const uint32_t limit = compute ? 128u : 48u;
 	const uint64_t event = eligible_events[kind].fetch_add(1, std::memory_order_relaxed) + 1u;
 	if ((!forced && event % period != 0u) || captures[kind].load(std::memory_order_relaxed) >= limit) return;
 	auto& cache = context.GetTextureCache();
