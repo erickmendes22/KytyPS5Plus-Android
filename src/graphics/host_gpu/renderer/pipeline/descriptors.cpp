@@ -1266,9 +1266,14 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 				                  : nullptr;
 				images[i] = ResolveTexture(program.info.images[i], snapshot.images[i],
 				                           slots != nullptr ? &slots[i] : nullptr);
-				BindImage(images[i].image_id,
-				          images[i].desc.type == TextureCache::BindingType::Storage);
+				// NullDescriptor-capable devices may legitimately resolve a missing
+				// guest image to VkDescriptorImageInfo without a cache image.
+				if (images[i].image_id) {
+					BindImage(images[i].image_id,
+					          images[i].desc.type == TextureCache::BindingType::Storage);
+				}
 			}
+			if (!images[i].image_id) continue;
 			auto& binding = images[i];
 			binding.mip_views.clear();
 			const auto& resource = program.info.images[i];
