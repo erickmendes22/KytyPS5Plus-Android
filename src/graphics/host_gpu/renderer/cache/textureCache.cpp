@@ -1810,10 +1810,31 @@ ImageId TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
 	ImageId association {};
 	for (const auto id: FindImagesInRegion(stencil.address, stencil.size, false)) {
 		const auto owner = m_slot_images.try_get(id);
-		if (owner != nullptr && owner->info.data == stencil &&
-		    owner->info.extent == depth.info.extent) {
-			association = id;
+		if (owner == nullptr || owner->info.data != stencil ||
+		    owner->info.extent != depth.info.extent) {
+			continue;
 		}
+		// Chen's Demon's Souls fix (chenxiao07/KytyPS5 24a7809221f):
+		// The game reuses the same bytes as stencil memory and as live
+		// color/depth/storage targets. Reinterpreting one of those targets as
+		// an associated stencil silently takes its native image away; the next
+		// pixel shader samples the wrong backing or black pixels.
+		// Only a bookkeeping/standalone stencil record may be associated.
+		if (owner->usage.render_target || owner->usage.storage ||
+		    owner->usage.video_out || owner->info.IsDepth()) {
+			static std::atomic_uint32_t rejected {0};
+			const uint32_t n = rejected.fetch_add(1u, std::memory_order_relaxed);
+			if (n < 24u || (n % 4096u) == 0u) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_STENCIL_TARGET_ALIAS] rejected={} addr=0x{:x} "
+				    "render_target={} storage={} video_out={} depth={}\n",
+				    n, stencil.address, owner->usage.render_target ? 1 : 0,
+				    owner->usage.storage ? 1 : 0, owner->usage.video_out ? 1 : 0,
+				    owner->info.IsDepth() ? 1 : 0));
+			}
+			continue;
+		}
+		association = id;
 	}
 	if (!association) {
 		ImageInfo info {};
