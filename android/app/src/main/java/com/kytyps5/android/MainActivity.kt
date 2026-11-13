@@ -37,6 +37,7 @@ import com.kytyps5.android.library.DemonsSoulsDemoFlow
 import com.kytyps5.android.library.DemonsSoulsNexusFlow
 import com.kytyps5.android.library.DemonsSoulsGeometryFlow
 import com.kytyps5.android.library.DemonsSoulsDisplayMode
+import com.kytyps5.android.library.DemonsSoulsFogFlow
 import com.kytyps5.android.library.DemonsSoulsFirstBootPatch
 import com.kytyps5.android.presets.GamePresets
 import java.io.File
@@ -644,6 +645,11 @@ class MainActivity : Activity() {
             if (!geometry.ok) {
                 showMessage(geometry.message)
                 return
+            }
+            val fog = DemonsSoulsFogFlow.configure(File(game.path), perGame.demonsSoulsDisableFog)
+            if (!fog.ok) {
+                Log.w("KytyDSFog", fog.message)
+                showMessage(fog.message)
             }
             val display = DemonsSoulsDisplayMode.configure(File(game.path), perGame.demonsSouls1080p)
             if (!display.ok) {
