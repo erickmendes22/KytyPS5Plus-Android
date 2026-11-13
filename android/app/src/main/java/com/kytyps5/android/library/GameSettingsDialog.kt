@@ -98,6 +98,11 @@ class GameSettingsDialog(
             textSize = 14f
             isChecked = current.demonsSoulsPerFaceBias
         }
+        val dsDisableFog = Switch(activity).apply {
+            text = "Demon's Souls: Disable volumetric fog (3D black scene test)"
+            textSize = 14f
+            isChecked = current.demonsSoulsDisableFog
+        }
         val dsPixelTrace = Switch(activity).apply {
             text = "GPU pixel captures (slow, diagnostics only)"
             textSize = 14f
@@ -167,6 +172,7 @@ class GameSettingsDialog(
                 addView(ds1080p)
                 addView(label("Controls the game\u0027s own PS5 renderconfig files, not just the window. Originals are preserved alongside each file. Does not fix black geometry by itself.", secondary = true))
                 addView(dsFaceBias)
+                addView(dsDisableFog)
                 addView(dsPixelTrace)
                 addView(label("Off by default: synchronous GPU pixel readbacks previously interrupted rendering and added GPU/CPU overhead.", secondary = true))
             }
@@ -224,6 +230,7 @@ class GameSettingsDialog(
                         demonsSouls1080p = titleId.equals("PPSA01341", ignoreCase = true) && ds1080p.isChecked,
                         demonsSoulsPixelTrace = titleId.equals("PPSA01341", ignoreCase = true) && dsPixelTrace.isChecked,
                         demonsSoulsPerFaceBias = titleId.equals("PPSA01341", ignoreCase = true) && dsFaceBias.isChecked,
+                        demonsSoulsDisableFog = titleId.equals("PPSA01341", ignoreCase = true) && dsDisableFog.isChecked,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
                     ),
