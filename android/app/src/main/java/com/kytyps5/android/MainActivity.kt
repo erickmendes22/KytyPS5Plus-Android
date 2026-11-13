@@ -36,6 +36,7 @@ import com.kytyps5.android.library.GameSettingsDialog
 import com.kytyps5.android.library.DemonsSoulsDemoFlow
 import com.kytyps5.android.library.DemonsSoulsNexusFlow
 import com.kytyps5.android.library.DemonsSoulsGeometryFlow
+import com.kytyps5.android.library.DemonsSoulsDisplayMode
 import com.kytyps5.android.library.DemonsSoulsFirstBootPatch
 import com.kytyps5.android.presets.GamePresets
 import java.io.File
@@ -644,6 +645,15 @@ class MainActivity : Activity() {
                 showMessage(geometry.message)
                 return
             }
+            val display = DemonsSoulsDisplayMode.configure(File(game.path), perGame.demonsSouls1080p)
+            if (!display.ok) {
+                // The original files must be left untouched if the backup was
+                // modified or filesystem access fails. Don't prevent game boot.
+                Log.w("KytyDSDisplay", display.message)
+                showMessage(display.message)
+            } else {
+                Log.i("KytyDSDisplay", display.message)
+            }
             Log.i("KytyDSGeometry", "Executable-verified BPE geometry path: " +
                 "doIndexBufferCulling=0 doSunShadowIndexBufferCulling=0")
             if (flow.changed || nexus.changed) {
@@ -671,7 +681,9 @@ class MainActivity : Activity() {
         if (game.titleId.equals("PPSA01341", ignoreCase = true)) {
             // Enable very low-rate per-5-second vblank/guest-flip diagnostics even
             // if the ordering experiment is disabled. Only this title gets it.
-            args += arrayOf("--env", "KYTY_DS_FRAME_TRACE=1")
+            args += arrayOf("--env", "KYTY_DS_FRAME_TRACE=1",
+                "--env", if (perGame.demonsSoulsPixelTrace) "KYTY_DS_COLOR_PROBE=1"
+                         else "KYTY_DS_COLOR_PROBE=0")
             if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsIdleBackoff) {
                 args += arrayOf("--env", "KYTY_DS_IDLE_BACKOFF=1")
             }
