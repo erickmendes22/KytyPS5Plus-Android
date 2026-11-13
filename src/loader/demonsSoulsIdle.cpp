@@ -236,8 +236,16 @@ void Install(Program* program) {
     if (!program || program->file_name.filename()!="eboot.bin" || !IsSupportedGame()) {
         return;
     }
-    // Geometry must not depend on whether the optional idle backoff is enabled.
-    InstallGeometryBranch(program);
+    // The working Chen KytyPS5 keeps Bluepoint's native GPU index-culling
+    // path. An earlier Android experiment forced JMP at EBOOT+0xA0D6FB,
+    // bypassing that path on *every* launch, at the same time the launcher
+    // disabled doIndexBufferCulling. That changed the producer of the indices
+    // used by every 3D draw before Vulkan ever saw them. Do not replace a
+    // conditional guest branch without explicit opt-in.
+    const char* cpu_indices = std::getenv("KYTY_DS_FORCE_CPU_INDICES");
+    if (cpu_indices != nullptr && cpu_indices[0] == '1' && cpu_indices[1] == '\0') {
+        InstallGeometryBranch(program);
+    }
     InstallHdOutput(program);
     if (!Enabled()) return;
     if (g_cave || program->mapped_size < PollOffset+PollBytes.size() ||
