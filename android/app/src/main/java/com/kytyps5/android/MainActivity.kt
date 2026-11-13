@@ -683,7 +683,9 @@ class MainActivity : Activity() {
             // if the ordering experiment is disabled. Only this title gets it.
             args += arrayOf("--env", "KYTY_DS_FRAME_TRACE=1",
                 "--env", if (perGame.demonsSoulsPixelTrace) "KYTY_DS_COLOR_PROBE=1"
-                         else "KYTY_DS_COLOR_PROBE=0")
+                         else "KYTY_DS_COLOR_PROBE=0",
+                "--env", if (perGame.demonsSoulsPerFaceBias) "KYTY_DS_PER_FACE_BIAS=1"
+                         else "KYTY_DS_PER_FACE_BIAS=0")
             if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsIdleBackoff) {
                 args += arrayOf("--env", "KYTY_DS_IDLE_BACKOFF=1")
             }
