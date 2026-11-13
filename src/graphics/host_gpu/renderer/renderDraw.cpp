@@ -969,6 +969,9 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 	const auto bytes_per_pixel = [](vk::Format format) -> uint32_t {
 		switch (format) {
 			case vk::Format::eR8G8B8A8Unorm:
+			case vk::Format::eR32Uint:
+			case vk::Format::eR32Sint:
+			case vk::Format::eD32Sfloat:
 			case vk::Format::eR8G8B8A8Srgb:
 			case vk::Format::eR8G8B8A8Uint:
 			case vk::Format::eR8G8B8A8Snorm:
@@ -987,7 +990,14 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			case vk::Format::eR16G16B16A16Sint:
 			case vk::Format::eR32G32Sfloat: return 8;
 			case vk::Format::eR32G32B32A32Sfloat: return 16;
-			case vk::Format::eR16Sfloat: return 2;
+			case vk::Format::eR16Sfloat:
+			case vk::Format::eR8G8Unorm:
+			case vk::Format::eR8G8Snorm: return 2;
+			// BC1 is sampled in *compressed 4x4 blocks*; never copy a 1x1 texel.
+			case vk::Format::eBc1RgbaSrgbBlock:
+			case vk::Format::eBc1RgbaUnormBlock:
+			case vk::Format::eBc1RgbSrgbBlock:
+			case vk::Format::eBc1RgbUnormBlock: return 8;
 			default: return 0;
 		}
 	};
@@ -1000,6 +1010,11 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		auto& image = cache.GetImage(colors[slot].image_id);
 		const auto& backing = image.backing;
 		const uint32_t bpp = bytes_per_pixel(backing.format);
+		const bool compressed = backing.format == vk::Format::eBc1RgbaSrgbBlock ||
+		    backing.format == vk::Format::eBc1RgbaUnormBlock ||
+		    backing.format == vk::Format::eBc1RgbSrgbBlock ||
+		    backing.format == vk::Format::eBc1RgbUnormBlock;
+		const bool depth = backing.format == vk::Format::eD32Sfloat;
 		if (example_format == 0u) {
 			example_format = static_cast<uint32_t>(backing.format);
 			example_width = backing.extent.width; example_height = backing.extent.height;
@@ -1025,13 +1040,15 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		std::array<vk::BufferImageCopy,5> regions {};
 		for (size_t i = 0; i < regions.size(); ++i) {
 			regions[i].bufferOffset = offset + i * bpp;
-			regions[i].imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+			regions[i].imageSubresource.aspectMask = depth ? vk::ImageAspectFlagBits::eDepth
+			                                                 : vk::ImageAspectFlagBits::eColor;
 			regions[i].imageSubresource.mipLevel = 0;
 			regions[i].imageSubresource.baseArrayLayer = 0;
 			regions[i].imageSubresource.layerCount = 1;
-			regions[i].imageOffset = vk::Offset3D{static_cast<int32_t>(xy[i].first),
-			                                     static_cast<int32_t>(xy[i].second), 0};
-			regions[i].imageExtent = vk::Extent3D{1,1,1};
+			regions[i].imageOffset = vk::Offset3D{
+			    static_cast<int32_t>(compressed ? (xy[i].first & ~3u) : xy[i].first),
+			    static_cast<int32_t>(compressed ? (xy[i].second & ~3u) : xy[i].second), 0};
+			regions[i].imageExtent = compressed ? vk::Extent3D{4,4,1} : vk::Extent3D{1,1,1};
 		}
 		image.Download(regions, download.Handle(), offset, length);
 		// A once-per-4096-draw diagnostic GPU wait is intentional. Do not read
@@ -1056,10 +1073,11 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		}
 		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE] path=%s capture=%u shader=0x%016" PRIx64
 		     " slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
-		     " samples=5 zero=%u rgb_black=%u first=%08x,%08x,%08x,%08x,%08x"
+		     " samples=5 compressed_blocks=%u depth=%u zero=%u rgb_black=%u first=%08x,%08x,%08x,%08x,%08x"
 		     " second=%08x,%08x,%08x,%08x,%08x\n",
 		     compute ? "compute" : "graphics", capture, shader_hash, slot, image.info.data.address,
-		     static_cast<uint32_t>(backing.format), w, h, zero, zero_rgb,
+		     static_cast<uint32_t>(backing.format), w, h, compressed ? 1u : 0u,
+		     depth ? 1u : 0u, zero, zero_rgb,
 		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4],
 		     second_words[0],second_words[1],second_words[2],second_words[3],second_words[4]));
 	}
