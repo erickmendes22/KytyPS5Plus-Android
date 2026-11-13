@@ -1168,8 +1168,10 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 		                                       &buffer);
 	} else {
 		frame = &m_presenter.PrepareFrame(buffer, source_info, hdr);
-		if (ds_source_trace && (reports.load(std::memory_order_relaxed) <= 24u ||
-		                        (reports.load(std::memory_order_relaxed) % 80u) == 1u)) {
+		static std::atomic_uint32_t prepared_reports {0};
+		const uint32_t count = ds_source_trace
+		    ? prepared_reports.fetch_add(1u, std::memory_order_relaxed) : 0u;
+		if (ds_source_trace && (count < 24u || (count % 80u) == 0u)) {
 			std::printf("[DS_FLIP_PREPARED] request=%" PRIu64 " index=%d "
 			            "source=0x%016" PRIx64 " frame_ready=%u\n",
 			            request_id, index, source_info.data.address, frame != nullptr ? 1u : 0u);
