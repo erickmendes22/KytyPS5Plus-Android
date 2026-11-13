@@ -243,7 +243,7 @@ void Install(Program* program) {
     // used by every 3D draw before Vulkan ever saw them. Do not replace a
     // conditional guest branch without explicit opt-in.
     const char* cpu_indices = std::getenv("KYTY_DS_FORCE_CPU_INDICES");
-    if (cpu_indices != nullptr && cpu_indices[0] == '1' && cpu_indices[1] == '\0') {
+    if (UseCpuIndexFallback(cpu_indices)) {
         InstallGeometryBranch(program);
     }
     InstallHdOutput(program);
