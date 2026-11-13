@@ -131,7 +131,10 @@ object LaunchArgs {
                 arrayOf("--env", "KYTY_DS_NATIVE_TSC=1",
                     "--async-shaders", "0", "--env", "KYTY_REBIND_AFTER_JOIN=1",
                     "--env", "KYTY_PRESENT_COMPACT=1", "--env", "KYTY_DS_GPU_LAYER_KEEP=1",
-                    "--env", "KYTY_DS_GUEST_COLOR_TARGETS=1",
+                    // An unrecognized/absent pixel export must not be promoted to
+                    // a real color write: Chen's CB_SHADER_MASK fix prevents
+                    // depth-only draws from corrupting bound color targets.
+                    "--env", "KYTY_DS_GUEST_COLOR_TARGETS=0",
                     "--env", "KYTY_DS_STABLE_IMAGE_BINDINGS=1",
 
                     "--vma-block-size", "32") else emptyArray()) +
