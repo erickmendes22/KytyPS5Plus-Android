@@ -1241,7 +1241,7 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 		if (program.info.images[i].bindless || !images[i].image_id) return true;
 		const auto* owner = texture_cache.m_slot_images.try_get(images[i].image_id);
 		return owner != nullptr && !owner->binding.needs_rebind &&
-		       (owner->registered || owner->info.data.Empty());
+		       (owner->info.data.Empty() || (owner->registered && !owner->depth_id));
 	};
 	const auto all_valid = [&] {
 		for (uint32_t i = 0; i < images.size(); ++i) {
@@ -1256,7 +1256,8 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 			if (!images[i].image_id) continue;
 			const auto old_image = texture_cache.m_slot_images.try_get(images[i].image_id);
 			if (old_image == nullptr || (!old_image->registered && !old_image->info.data.Empty()) ||
-			    old_image->binding.needs_rebind) {
+			    old_image->binding.needs_rebind ||
+			    (ds_stable_image_bindings && old_image->depth_id)) {
 				if (old_image != nullptr) {
 					old_image->binding = {};
 				}
