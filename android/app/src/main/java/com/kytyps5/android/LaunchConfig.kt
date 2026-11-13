@@ -135,6 +135,7 @@ object LaunchArgs {
                     // a real color write: Chen's CB_SHADER_MASK fix prevents
                     // depth-only draws from corrupting bound color targets.
                     "--env", "KYTY_DS_GUEST_COLOR_TARGETS=0",
+                    "--env", "KYTY_DS_CB_MASK_PREPARE=1",
                     "--env", "KYTY_DS_STABLE_IMAGE_BINDINGS=1",
 
                     "--vma-block-size", "32") else emptyArray()) +
