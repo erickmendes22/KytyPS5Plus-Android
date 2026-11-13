@@ -1151,7 +1151,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	if (ds_source_trace) {
 		static std::atomic<uint32_t> reports {0};
 		const uint32_t n = reports.fetch_add(1, std::memory_order_relaxed);
-		if (n < 24 || (n % 80u) == 0u) {
+		if (n < 24 || (n % 80u) <= 1u) {
 			std::printf("[DS_FLIP_SOURCE] sample=%u request=%" PRIu64
 			            " index=%d blank=%u normal=%u addr=0x%016" PRIx64
 			            " bytes=%" PRIu64 " format=%u hdr=%u\n",
@@ -1171,7 +1171,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 		static std::atomic_uint32_t prepared_reports {0};
 		const uint32_t count = ds_source_trace
 		    ? prepared_reports.fetch_add(1u, std::memory_order_relaxed) : 0u;
-		if (ds_source_trace && (count < 24u || (count % 80u) == 0u)) {
+		if (ds_source_trace && (count < 24u || (count % 80u) <= 1u)) {
 			std::printf("[DS_FLIP_PREPARED] request=%" PRIu64 " index=%d "
 			            "source=0x%016" PRIx64 " frame_ready=%u\n",
 			            request_id, index, source_info.data.address, frame != nullptr ? 1u : 0u);
