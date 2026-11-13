@@ -641,7 +641,10 @@ class MainActivity : Activity() {
                 showMessage(nexus.message)
                 return
             }
-            val geometry = DemonsSoulsGeometryFlow.configure(File(game.path), game.titleId)
+            // Restore the game's real GPU index-culling path, as in Chen's
+            // running PPSA01341 renderer. Remove only the managed experimental
+            // +doIndexBufferCulling=0 / +doSunShadowIndexBufferCulling=0 block.
+            val geometry = DemonsSoulsGeometryFlow.configure(File(game.path), game.titleId, false)
             if (!geometry.ok) {
                 showMessage(geometry.message)
                 return
