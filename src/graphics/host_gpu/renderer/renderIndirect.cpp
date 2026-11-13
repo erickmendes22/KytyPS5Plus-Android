@@ -18,6 +18,7 @@
 #include <cinttypes>
 #include <cstring>
 #include <cstdlib>
+#include <fmt/format.h>
 
 namespace Libs::Graphics {
 
