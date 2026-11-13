@@ -385,27 +385,72 @@ static void ProbeDsComputeWrites(RenderContext& context,
 			    "image_resources={} output_binding={}\n",
 			    hash, 0x281300000ull, images.size(), i));
 			ProbeDsComputeImage(context, target_id, hash, true);
-			uint32_t inspected = 0;
-			for (uint32_t other = 0; other < images.size() && other < bindings.images.size() &&
-			     inspected < 4u; ++other) {
+			// The previous diagnostic stopped after four inputs. For all six
+			// affected shaders those were mostly the same black 4x4 image.
+			// Log every *read* image descriptor, even an unbound one, but spend
+			// synchronous GPU probes only on distinct, non-trivial inputs.
+			// Never substitute a texture or alter descriptor bindings here.
+			uint32_t inspected = 0, probed = 0, missing = 0, tiny = 0;
+			std::array<uint64_t, 32> seen_addresses {};
+			uint32_t seen_count = 0;
+			for (uint32_t other = 0; other < images.size() &&
+			     other < bindings.images.size(); ++other) {
+				if (other == i || !images[other].read) continue;
+				++inspected;
 				const auto& source = bindings.images[other];
-				if (other == i || !images[other].read || !source.image_id ||
-				    source.placeholder || source.image_id == target_id) continue;
+				uint64_t raw_address = 0;
+				uint32_t raw_width = 0, raw_height = 0;
+				if (other < input.stage.resources.images.size()) {
+					const auto native = DecodeNativeDescriptor<ShaderTextureResource>(
+					    input.stage.resources.images[other]);
+					raw_address = native.Base40();
+					raw_width = static_cast<uint32_t>(native.Width5()) + 1u;
+					raw_height = static_cast<uint32_t>(native.Height5()) + 1u;
+				}
+				if (!source.image_id || source.placeholder) {
+					++missing;
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_TARGET_INPUT] shader=0x{:016x} index={} class={} "
+					    "raw=0x{:x} raw_extent={}x{} unbound_or_placeholder=1\n",
+					    hash, other, static_cast<uint32_t>(images[other].resource_class),
+					    raw_address, raw_width, raw_height));
+					continue;
+				}
 				const auto& texture = context.GetTextureCache().GetImage(source.image_id);
+				const uint64_t addr = texture.info.data.address;
+				const bool repeated =
+				    std::find(seen_addresses.begin(),
+				              seen_addresses.begin() + seen_count, addr) !=
+				    seen_addresses.begin() + seen_count;
+				if (!repeated && seen_count < seen_addresses.size())
+					seen_addresses[seen_count++] = addr;
+				const bool is_tiny =
+				    texture.backing.extent.width <= 4u &&
+				    texture.backing.extent.height <= 4u;
+				if (is_tiny) ++tiny;
 				Log::WriteToConsoleAndLog(fmt::format(
-				    "[DS_TARGET_INPUT] shader=0x{:016x} index={} guest=0x{:x} "
-				    "format={} extent={}x{} gpu_modified={} cpu_dirty={}\n",
-				    hash, other, texture.info.data.address,
+				    "[DS_TARGET_INPUT] shader=0x{:016x} index={} class={} "
+				    "raw=0x{:x} raw_extent={}x{} guest=0x{:x} format={} "
+				    "extent={}x{} repeated={} tiny={} feedback={} gpu_modified={} "
+				    "cpu_dirty={}\n",
+				    hash, other, static_cast<uint32_t>(images[other].resource_class),
+				    raw_address, raw_width, raw_height, addr,
 				    static_cast<uint32_t>(texture.backing.format),
 				    texture.backing.extent.width, texture.backing.extent.height,
+				    repeated ? 1 : 0, is_tiny ? 1 : 0,
+				    source.image_id == target_id ? 1 : 0,
 				    texture.IsGpuModified() ? 1 : 0, texture.IsCpuDirty() ? 1 : 0));
-				ProbeDsComputeImage(context, source.image_id, hash, true);
-				++inspected;
+				if (!repeated && !is_tiny && source.image_id != target_id && probed < 3u) {
+					ProbeDsComputeImage(context, source.image_id, hash, true);
+					++probed;
+				}
 			}
-			if (inspected == 0)
-				Log::WriteToConsoleAndLog(fmt::format(
-				    "[DS_TARGET_INPUT] shader=0x{:016x} no_sampled_image_inputs; "
-				    "check scalar/BDA buffer inputs\n", hash));
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_TARGET_INPUT_SUMMARY] shader=0x{:016x} read_images={} "
+			    "probed={} missing={} tiny={} buffers={} dma={} address_writes={}\n",
+			    hash, inspected, probed, missing, tiny, input.stage.program->info.buffers.size(),
+			    input.stage.program->info.uses_dma ? 1 : 0,
+			    input.stage.program->has_address_writes ? 1 : 0));
 		}
 		return; // one representative output per dispatch, every 256 samples
 	}
