@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/cache/stencilAssociationPolicy.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
 #include "graphics/host_gpu/renderer/pipeline/bindMemo.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
@@ -1820,8 +1821,9 @@ ImageId TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
 		// an associated stencil silently takes its native image away; the next
 		// pixel shader samples the wrong backing or black pixels.
 		// Only a bookkeeping/standalone stencil record may be associated.
-		if (owner->usage.render_target || owner->usage.storage ||
-		    owner->usage.video_out || owner->info.IsDepth()) {
+		if (!ReusableAsStencilRecord(owner->usage.render_target,
+		                            owner->usage.storage, owner->usage.video_out,
+		                            owner->info.IsDepth())) {
 			static std::atomic_uint32_t rejected {0};
 			const uint32_t n = rejected.fetch_add(1u, std::memory_order_relaxed);
 			if (n < 24u || (n % 4096u) == 0u) {
