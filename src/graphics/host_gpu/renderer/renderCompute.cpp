@@ -389,7 +389,9 @@ static void ProbeDsComputeWrites(RenderContext& context,
 			    "[DS_TARGET_WRITER] shader=0x{:016x} output=0x{:x} "
 			    "frame={} phase={} image_resources={} output_binding={}\n",
 			    hash, 0x281300000ull, frame, phase == 1u ? "init" : "scene", images.size(), i));
-			ProbeDsComputeImage(context, target_id, hash, true);
+			ProbeDsComputeImage(context, target_id, hash, true,
+			                    bindings.images[i].desc.view_info.base_layer,
+			                    bindings.images[i].desc.view_info.base_level);
 			// The previous diagnostic stopped after four inputs. For all six
 			// affected shaders those were mostly the same black 4x4 image.
 			// Log every *read* image descriptor, even an unbound one, but spend
@@ -436,17 +438,21 @@ static void ProbeDsComputeWrites(RenderContext& context,
 				Log::WriteToConsoleAndLog(fmt::format(
 				    "[DS_TARGET_INPUT] shader=0x{:016x} index={} class={} "
 				    "raw=0x{:x} raw_extent={}x{} guest=0x{:x} format={} "
-				    "extent={}x{} repeated={} tiny={} feedback={} gpu_modified={} "
-				    "cpu_dirty={}\n",
+				    "extent={}x{} owner_layers={} view_layer={} view_mip={} "
+				    "repeated={} tiny={} feedback={} gpu_modified={} cpu_dirty={}\n",
 				    hash, other, static_cast<uint32_t>(images[other].resource_class),
 				    raw_address, raw_width, raw_height, addr,
 				    static_cast<uint32_t>(texture.backing.format),
 				    texture.backing.extent.width, texture.backing.extent.height,
+				    texture.backing.layers, source.desc.view_info.base_layer,
+				    source.desc.view_info.base_level,
 				    repeated ? 1 : 0, is_tiny ? 1 : 0,
 				    source.image_id == target_id ? 1 : 0,
 				    texture.IsGpuModified() ? 1 : 0, texture.IsCpuDirty() ? 1 : 0));
 				if (!repeated && !is_tiny && source.image_id != target_id && probed < 6u) {
-					ProbeDsComputeImage(context, source.image_id, hash, true);
+					ProbeDsComputeImage(context, source.image_id, hash, true,
+					                    source.desc.view_info.base_layer,
+					                    source.desc.view_info.base_level);
 					++probed;
 				}
 			}
