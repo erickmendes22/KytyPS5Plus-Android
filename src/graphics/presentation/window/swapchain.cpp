@@ -387,6 +387,29 @@ struct Presenter::Impl {
 		const auto image_id   = cache.FindImage(desc);
 		auto&      image      = cache.GetImage(image_id);
 		image.usage.video_out = true;
+		// PPSA01341: the guest flip addresses are not the 2560x1440
+		// intermediate targets. Capture final video-out cache ownership
+		// before and after the normal refresh, without changing its behavior.
+		static const bool ds_trace = [] {
+			const char* value = std::getenv("KYTY_DS_FRAME_TRACE");
+			return value != nullptr && value[0] == '1' && value[1] == '\0';
+		}();
+		static std::atomic_uint32_t ds_flip_sample {0};
+		const uint32_t ds_num = ds_trace ? ds_flip_sample.fetch_add(1, std::memory_order_relaxed) : 0;
+		const bool ds_log = ds_trace && (ds_num < 24u || (ds_num % 80u) == 0u);
+		const bool gpu_before = image.IsGpuModified();
+		const bool cpu_before = image.IsCpuDirty();
+		const bool buffer_before = image.IsBufferModified();
+		const uint64_t version_before = image.ContentVersion();
+		if (ds_log) {
+			LOGF("[DS_FLIP_BACKING] sample=%u stage=before addr=0x%016" PRIx64
+			     " format=%u extent=%ux%u gpu_modified=%u cpu_dirty=%u buffer_modified=%u"
+			     " version=%" PRIu64 "\n",
+			     ds_num, info.data.address, static_cast<uint32_t>(image.backing.format),
+			     image.backing.extent.width, image.backing.extent.height,
+			     gpu_before ? 1u : 0u, cpu_before ? 1u : 0u, buffer_before ? 1u : 0u,
+			     version_before);
+		}
 		if (Common::PerfStats::Enabled() && (image.IsCpuDirty() || image.IsBufferModified())) {
 			// The display buffer is about to be refreshed from guest memory, which the GPU-written
 			// frame never reached: the presented frame would be stale or black.
@@ -401,6 +424,14 @@ struct Presenter::Impl {
 			}
 		}
 		cache.UpdateImage(image_id);
+		if (ds_log) {
+			LOGF("[DS_FLIP_BACKING] sample=%u stage=after addr=0x%016" PRIx64
+			     " gpu_modified=%u cpu_dirty=%u buffer_modified=%u version=%" PRIu64
+			     " refresh_candidate=%u\n",
+			     ds_num, info.data.address, image.IsGpuModified() ? 1u : 0u,
+			     image.IsCpuDirty() ? 1u : 0u, image.IsBufferModified() ? 1u : 0u,
+			     image.ContentVersion(), (cpu_before || buffer_before) ? 1u : 0u);
+		}
 		return image;
 	}
 	void Present();
