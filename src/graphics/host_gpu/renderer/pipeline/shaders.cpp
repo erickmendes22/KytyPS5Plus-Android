@@ -1140,6 +1140,16 @@ vk::Result CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipel
 	    vk::DynamicState::eStencilWriteMask,
 	    vk::DynamicState::eBlendConstants,
 	};
+	// Shadow casters use distinct front/back polygon offsets. Vulkan accepts
+	// one bias per draw; dynamic culling is required for a safe two-pass split.
+	// Scope the extra dynamic state to this title's explicit launch setting.
+	static const bool ds_per_face_bias = [] {
+		const char* value = std::getenv("KYTY_DS_PER_FACE_BIAS");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	if (ds_per_face_bias) {
+		dynamic_states.push_back(vk::DynamicState::eCullMode);
+	}
 	if (graphics.optional_features.depth_bounds) {
 		dynamic_states.push_back(vk::DynamicState::eDepthBoundsTestEnable);
 		dynamic_states.push_back(vk::DynamicState::eDepthBounds);
