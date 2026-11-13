@@ -20,6 +20,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
+#include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/image/renderScale.h"
@@ -928,6 +929,99 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	        state.guest_width == std::numeric_limits<uint32_t>::max() ||
 	        state.guest_height == std::numeric_limits<uint32_t>::max());
 	return state;
+}
+
+// PPSA01341: bounded *GPU pixel* validation, not another draw/pipeline counter.
+// On every 8192nd accepted color draw, sample 5 actual pixels of up to three
+// render-target images. This distinguishes an all-black G-buffer from an
+// all-black final composition (their addresses, shader hashes and formats are
+// reported separately). The readback is synchronized and never changes guest
+// image ownership or writes guest memory. Other games never enable it.
+static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* colors,
+                                uint32_t count, uint64_t shader_hash) {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_DS_COLOR_PROBE");
+		// An explicit 0 disables probing. Otherwise reuse the existing DS
+		// frame trace opt-in on Android; no extra launcher setting required.
+		if (value != nullptr) return value[0] == '1' && value[1] == '\0';
+		value = std::getenv("KYTY_DS_FRAME_TRACE");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	if (!enabled || count == 0) return;
+	static uint64_t eligible_draws = 0;
+	static uint32_t captures = 0;
+	if (++eligible_draws % 4096u != 0u || captures >= 48u) return;
+	auto& cache = context.GetTextureCache();
+	auto& scheduler = context.GetCommandScheduler();
+	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	const auto bytes_per_pixel = [](vk::Format format) -> uint32_t {
+		switch (format) {
+			case vk::Format::eR8G8B8A8Unorm:
+			case vk::Format::eR8G8B8A8Srgb:
+			case vk::Format::eB8G8R8A8Unorm:
+			case vk::Format::eB8G8R8A8Srgb:
+			case vk::Format::eR32Sfloat:
+			case vk::Format::eA2B10G10R10UnormPack32: return 4;
+			case vk::Format::eR16G16B16A16Sfloat:
+			case vk::Format::eR32G32Sfloat: return 8;
+			case vk::Format::eR32G32B32A32Sfloat: return 16;
+			case vk::Format::eR16Sfloat: return 2;
+			default: return 0;
+		}
+	};
+	++captures;
+	for (uint32_t slot = 0, sampled = 0; slot < count && sampled < 3u; ++slot) {
+		if (!colors[slot].image_id) continue;
+		auto& image = cache.GetImage(colors[slot].image_id);
+		const auto& backing = image.backing;
+		const uint32_t bpp = bytes_per_pixel(backing.format);
+		if (!backing.image || backing.samples != 1u || bpp == 0u ||
+		    backing.extent.width < 4u || backing.extent.height < 4u ||
+		    !(backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) continue;
+		++sampled;
+		const uint64_t length = bpp * 5u;
+		auto [mapped, offset] = download.Map(length, 16u, true);
+		if (mapped == nullptr) {
+			LOGF("[DS_PIXEL_PROBE] shader=0x%016" PRIx64 " slot=%u result=staging_unavailable\n",
+			     shader_hash, slot);
+			continue;
+		}
+		download.Commit();
+		const uint32_t w = backing.extent.width, h = backing.extent.height;
+		const std::array<std::pair<uint32_t,uint32_t>,5> xy {
+		    std::pair{w/2u,h/2u}, {w/4u,h/4u}, {3u*w/4u,h/4u},
+		    {w/4u,3u*h/4u}, {3u*w/4u,3u*h/4u}};
+		std::array<vk::BufferImageCopy,5> regions {};
+		for (size_t i = 0; i < regions.size(); ++i) {
+			regions[i].bufferOffset = offset + i * bpp;
+			regions[i].imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+			regions[i].imageSubresource.mipLevel = 0;
+			regions[i].imageSubresource.baseArrayLayer = 0;
+			regions[i].imageSubresource.layerCount = 1;
+			regions[i].imageOffset = vk::Offset3D{static_cast<int32_t>(xy[i].first),
+			                                     static_cast<int32_t>(xy[i].second), 0};
+			regions[i].imageExtent = vk::Extent3D{1,1,1};
+		}
+		image.Download(regions, download.Handle(), offset, length);
+		// A once-per-4096-draw diagnostic GPU wait is intentional. Do not read
+		// bytes until the command containing vkCmdCopyImageToBuffer completed.
+		scheduler.Finish();
+		download.Invalidate(offset, length);
+		uint32_t zero = 0;
+		std::array<uint32_t,5> first_words {};
+		for (uint32_t i = 0; i < 5; ++i) {
+			bool empty = true;
+			for (uint32_t b = 0; b < bpp; ++b) empty &= mapped[i*bpp+b] == 0u;
+			zero += empty;
+			std::memcpy(&first_words[i], mapped + i*bpp, std::min<uint32_t>(bpp,4u));
+		}
+		LOGF("[DS_PIXEL_PROBE] capture=%u shader=0x%016" PRIx64
+		     " slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
+		     " samples=5 zero=%u first=%08x,%08x,%08x,%08x,%08x\n",
+		     captures, shader_hash, slot, image.info.data.address,
+		     static_cast<uint32_t>(backing.format), w, h, zero,
+		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4]);
+	}
 }
 
 static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
@@ -1940,6 +2034,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (shader_write_stages) {
 		m_context.GetCommandScheduler().EndRendering(PassEnd::ShaderWrite);
 		ShaderWriteBarrier(buffer.Handle(), shader_write_stages);
+	}
+	// Only a deliberate DS probe samples pixels. The ordinary renderer never
+	// pays a forced submission boundary or a host-visible image readback.
+	if (state.ps_active && state.color_count != 0u) {
+		const uint64_t ps_hash = state.ps_input_info.stage.program != nullptr
+		    ? state.ps_input_info.stage.program->shader_hash : 0;
+		ProbeDsColorOutputs(m_context, state.color_info, state.color_count, ps_hash);
 	}
 	LogDrawPhase(draw.Name(), "DrawComplete");
 	if (!draw.IsIndexed()) {
