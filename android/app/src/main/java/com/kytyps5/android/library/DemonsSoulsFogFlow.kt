@@ -7,9 +7,10 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 /**
- * Optional Bluepoint native rendering experiment: fog_enable=false has been
- * used in PC Demon’s Souls visual bring-up. It is not a verified fix for
- * black scenes on Android. Keep the user's existing command-line args intact.
+ * Legacy rollback for the experimental fog override, which was NOT shown to
+ * cause successful 3D rendering on PC. The Android launcher only calls this
+ * with enabled=false, to restore PackageCmdLineArgs.txt after previous builds.
+ * Keep the managed block syntax unchanged so prior installations can migrate.
  */
 object DemonsSoulsFogFlow {
     private const val BEGIN = "// >>> kytyps5-android-demons-fog >>>"
