@@ -397,7 +397,7 @@ struct Presenter::Impl {
 		}();
 		static std::atomic_uint32_t ds_flip_sample {0};
 		const uint32_t ds_num = ds_trace ? ds_flip_sample.fetch_add(1, std::memory_order_relaxed) : 0;
-		const bool ds_log = ds_trace && (ds_num < 24u || (ds_num % 80u) == 0u);
+		const bool ds_log = ds_trace && (ds_num < 24u || (ds_num % 80u) <= 1u);
 		const bool gpu_before = image.IsGpuModified();
 		const bool cpu_before = image.IsCpuDirty();
 		const bool buffer_before = image.IsBufferModified();
