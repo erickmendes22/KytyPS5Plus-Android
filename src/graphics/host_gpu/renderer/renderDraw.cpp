@@ -947,13 +947,22 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		value = std::getenv("KYTY_DS_FRAME_TRACE");
 		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
-	if (!enabled || count == 0) return;
-	static uint64_t eligible_events[2] {};
-	static uint32_t captures[2] {};
 	const uint32_t kind = compute ? 1u : 0u;
+	static std::atomic_bool setup_logged[2] {};
+	if (!setup_logged[kind].exchange(true, std::memory_order_relaxed)) {
+		const char* explicit_probe = std::getenv("KYTY_DS_COLOR_PROBE");
+		const char* trace = std::getenv("KYTY_DS_FRAME_TRACE");
+		LOGF("[DS_PIXEL_PROBE_SETUP] path=%s enabled=%u count=%u probe=%s trace=%s\n",
+		     compute ? "compute" : "graphics", enabled ? 1u : 0u, count,
+		     explicit_probe ? explicit_probe : "(unset)", trace ? trace : "(unset)");
+	}
+	if (!enabled || count == 0) return;
+	static std::atomic_uint64_t eligible_events[2] {};
+	static std::atomic_uint32_t captures[2] {};
 	const uint32_t period = compute ? 256u : 4096u;
 	const uint32_t limit = compute ? 32u : 48u;
-	if (++eligible_events[kind] % period != 0u || captures[kind] >= limit) return;
+	const uint64_t event = eligible_events[kind].fetch_add(1, std::memory_order_relaxed) + 1u;
+	if (event % period != 0u || captures[kind].load(std::memory_order_relaxed) >= limit) return;
 	auto& cache = context.GetTextureCache();
 	auto& scheduler = context.GetCommandScheduler();
 	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
@@ -961,27 +970,46 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		switch (format) {
 			case vk::Format::eR8G8B8A8Unorm:
 			case vk::Format::eR8G8B8A8Srgb:
+			case vk::Format::eR8G8B8A8Uint:
+			case vk::Format::eR8G8B8A8Snorm:
 			case vk::Format::eB8G8R8A8Unorm:
 			case vk::Format::eB8G8R8A8Srgb:
+			case vk::Format::eB10G11R11UfloatPack32:
+			case vk::Format::eR16G16Sfloat:
+			case vk::Format::eR16G16Unorm:
+			case vk::Format::eR16G16Snorm:
 			case vk::Format::eR32Sfloat:
 			case vk::Format::eA2B10G10R10UnormPack32: return 4;
 			case vk::Format::eR16G16B16A16Sfloat:
+			case vk::Format::eR16G16B16A16Unorm:
+			case vk::Format::eR16G16B16A16Snorm:
+			case vk::Format::eR16G16B16A16Uint:
+			case vk::Format::eR16G16B16A16Sint:
 			case vk::Format::eR32G32Sfloat: return 8;
 			case vk::Format::eR32G32B32A32Sfloat: return 16;
 			case vk::Format::eR16Sfloat: return 2;
 			default: return 0;
 		}
 	};
-	++captures[kind];
-	for (uint32_t slot = 0, sampled = 0; slot < count && sampled < 3u; ++slot) {
-		if (!colors[slot].image_id) continue;
+	const uint32_t capture = captures[kind].fetch_add(1, std::memory_order_relaxed) + 1u;
+	uint32_t probed = 0, no_id = 0, no_backing = 0, not_1x = 0;
+	uint32_t unknown_format = 0, tiny = 0, no_transfer = 0;
+	uint32_t example_format = 0, example_width = 0, example_height = 0;
+	for (uint32_t slot = 0; slot < count && probed < 3u; ++slot) {
+		if (!colors[slot].image_id) { ++no_id; continue; }
 		auto& image = cache.GetImage(colors[slot].image_id);
 		const auto& backing = image.backing;
 		const uint32_t bpp = bytes_per_pixel(backing.format);
-		if (!backing.image || backing.samples != 1u || bpp == 0u ||
-		    backing.extent.width < 4u || backing.extent.height < 4u ||
-		    !(backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) continue;
-		++sampled;
+		if (example_format == 0u) {
+			example_format = static_cast<uint32_t>(backing.format);
+			example_width = backing.extent.width; example_height = backing.extent.height;
+		}
+		if (!backing.image) { ++no_backing; continue; }
+		if (backing.samples != 1u) { ++not_1x; continue; }
+		if (bpp == 0u) { ++unknown_format; continue; }
+		if (backing.extent.width < 4u || backing.extent.height < 4u) { ++tiny; continue; }
+		if (!(backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) { ++no_transfer; continue; }
+		++probed;
 		const uint64_t length = bpp * 5u;
 		auto [mapped, offset] = download.Map(length, 16u, true);
 		if (mapped == nullptr) {
@@ -1021,9 +1049,17 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		LOGF("[DS_PIXEL_PROBE] path=%s capture=%u shader=0x%016" PRIx64
 		     " slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
 		     " samples=5 zero=%u first=%08x,%08x,%08x,%08x,%08x\n",
-		     compute ? "compute" : "graphics", captures[kind], shader_hash, slot, image.info.data.address,
+		     compute ? "compute" : "graphics", capture, shader_hash, slot, image.info.data.address,
 		     static_cast<uint32_t>(backing.format), w, h, zero,
 		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4]);
+	}
+	if (probed == 0) {
+		LOGF("[DS_PIXEL_PROBE_REJECT] path=%s capture=%u event=%" PRIu64
+		     " shader=0x%016" PRIx64 " count=%u no_id=%u no_backing=%u msaa=%u"
+		     " format=%u small=%u transfer=%u example_format=%u example_extent=%ux%u\n",
+		     compute ? "compute" : "graphics", capture, event, shader_hash, count,
+		     no_id, no_backing, not_1x, unknown_format, tiny, no_transfer,
+		     example_format, example_width, example_height);
 	}
 }
 
