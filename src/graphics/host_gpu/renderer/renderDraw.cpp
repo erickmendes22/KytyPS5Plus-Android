@@ -952,9 +952,9 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 	if (!setup_logged[kind].exchange(true, std::memory_order_relaxed)) {
 		const char* explicit_probe = std::getenv("KYTY_DS_COLOR_PROBE");
 		const char* trace = std::getenv("KYTY_DS_FRAME_TRACE");
-		LOGF("[DS_PIXEL_PROBE_SETUP] path=%s enabled=%u count=%u probe=%s trace=%s\n",
+		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE_SETUP] path=%s enabled=%u count=%u probe=%s trace=%s\n",
 		     compute ? "compute" : "graphics", enabled ? 1u : 0u, count,
-		     explicit_probe ? explicit_probe : "(unset)", trace ? trace : "(unset)");
+		     explicit_probe ? explicit_probe : "(unset)", trace ? trace : "(unset)"));
 	}
 	if (!enabled || count == 0) return;
 	static std::atomic_uint64_t eligible_events[2] {};
@@ -1013,8 +1013,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		const uint64_t length = bpp * 5u;
 		auto [mapped, offset] = download.Map(length, 16u, true);
 		if (mapped == nullptr) {
-			LOGF("[DS_PIXEL_PROBE] path=%s shader=0x%016" PRIx64 " slot=%u result=staging_unavailable\n",
-			     compute ? "compute" : "graphics", shader_hash, slot);
+			Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE] path=%s shader=0x%016" PRIx64 " slot=%u result=staging_unavailable\n",
+			     compute ? "compute" : "graphics", shader_hash, slot));
 			continue;
 		}
 		download.Commit();
@@ -1046,20 +1046,20 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			zero += empty;
 			std::memcpy(&first_words[i], mapped + i*bpp, std::min<uint32_t>(bpp,4u));
 		}
-		LOGF("[DS_PIXEL_PROBE] path=%s capture=%u shader=0x%016" PRIx64
+		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE] path=%s capture=%u shader=0x%016" PRIx64
 		     " slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
 		     " samples=5 zero=%u first=%08x,%08x,%08x,%08x,%08x\n",
 		     compute ? "compute" : "graphics", capture, shader_hash, slot, image.info.data.address,
 		     static_cast<uint32_t>(backing.format), w, h, zero,
-		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4]);
+		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4]));
 	}
 	if (probed == 0) {
-		LOGF("[DS_PIXEL_PROBE_REJECT] path=%s capture=%u event=%" PRIu64
+		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE_REJECT] path=%s capture=%u event=%" PRIu64
 		     " shader=0x%016" PRIx64 " count=%u no_id=%u no_backing=%u msaa=%u"
 		     " format=%u small=%u transfer=%u example_format=%u example_extent=%ux%u\n",
 		     compute ? "compute" : "graphics", capture, event, shader_hash, count,
 		     no_id, no_backing, not_1x, unknown_format, tiny, no_transfer,
-		     example_format, example_width, example_height);
+		     example_format, example_width, example_height));
 	}
 }
 
