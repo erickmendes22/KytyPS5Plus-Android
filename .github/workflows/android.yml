@@ -278,6 +278,10 @@ jobs:
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/realtime_clock_policy_test.cpp -o /tmp/realtime-clock-policy-test
           /tmp/realtime-clock-policy-test
+      - name: Verify Demon's Souls guest MRT color target recovery
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_guest_color_targets_test.cpp -o /tmp/demons-guest-mrt
+          /tmp/demons-guest-mrt
       - name: Test safe FEX decode and thread-sample capture
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -pthread -Isrc tests/manual/fex_monitor_diagnostics_test.cpp -o /tmp/fex-monitor-diagnostics-test
