@@ -20,6 +20,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
+#include "graphics/host_gpu/renderer/colorOutputRecovery.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
@@ -1542,6 +1543,41 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		}
 	}
 	mrt_mask &= color_output_mask;
+	// The Chen PPSA01341 renderer binds all enabled guest color targets before
+	// compiling pixel output assignments. On the Android path an unrecognized
+	// translated MRT can instead remove that attachment entirely; the draw
+	// still "succeeds" but the scene compositor samples a blank image.
+	// Retain only REAL enabled CB targets with backing memory. This is strictly
+	// scoped to the title's compatibility preset and never changes other games.
+	static const bool ds_guest_color_targets = [] {
+		const char* setting = std::getenv("KYTY_DS_GUEST_COLOR_TARGETS");
+		return setting != nullptr && setting[0] == '1' && setting[1] == '\0';
+	}();
+	if (ds_guest_color_targets && state.ps_active) {
+		uint32_t eligible = 0;
+		const auto& ctx = buffer.GetRegisters();
+		for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; ++slot) {
+			if (ctx.GetRenderTarget(slot).base.addr != 0 &&
+			    render_target_mask_slot(ctx.GetRenderTargetMask(), slot) != 0) {
+				eligible |= 1u << slot;
+			}
+		}
+		const uint32_t expanded = RecoverGuestColorTargets(mrt_mask, color_output_mask, eligible);
+		const uint32_t recovered = expanded & ~mrt_mask;
+		if (recovered != 0) {
+			static std::atomic_uint32_t recovered_logs {0};
+			const uint32_t n = recovered_logs.fetch_add(1u, std::memory_order_relaxed);
+			if (n < 32u || (n % 4096u) == 0u) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_GUEST_MRT_RECOVERY] frame={} ps=0x{:016x} missing=0x{:x} "
+				    "translated=0x{:x} guest=0x{:x} valid=0x{:x} effective=0x{:x}\n",
+				    m_context.GetGpu().GetFrameNum(),
+				    state.ps_input_info.stage.program->shader_hash, recovered,
+				    mrt_mask, color_output_mask, eligible, expanded));
+			}
+		}
+		mrt_mask = expanded;
+	}
 	if (draw.IsIndexed()) {
 		LogDrawPhase(draw.Name(), "ResolveRenderColorTarget");
 	}
