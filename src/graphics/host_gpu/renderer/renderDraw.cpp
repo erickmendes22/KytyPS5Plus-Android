@@ -938,7 +938,8 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 // reported separately). The readback is synchronized and never changes guest
 // image ownership or writes guest memory. Other games never enable it.
 static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* colors,
-                                uint32_t count, uint64_t shader_hash, bool compute = false, bool forced = false) {
+                                uint32_t count, uint64_t shader_hash, bool compute = false, bool forced = false,
+                                uint32_t sample_layer = 0, uint32_t sample_mip = 0) {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_DS_COLOR_PROBE");
 		// An explicit 0 disables probing. Otherwise reuse the existing DS
@@ -962,7 +963,16 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 	const uint32_t period = compute ? 256u : 4096u;
 	const uint32_t limit = compute ? 128u : 48u;
 	const uint64_t event = eligible_events[kind].fetch_add(1, std::memory_order_relaxed) + 1u;
-	if ((!forced && event % period != 0u) || captures[kind].load(std::memory_order_relaxed) >= limit) return;
+	// Six lighting dispatches are sampled again after the scene is initialized.
+	// Reserve a second budget so periodic init probes cannot exhaust it by frame 216.
+	static std::atomic_uint32_t late_forced_samples {0};
+	const bool late_forced = compute && forced && context.GetGpu().GetFrameNum() >= 280;
+	if (late_forced) {
+		if (late_forced_samples.fetch_add(1, std::memory_order_relaxed) >= 64u) return;
+	} else if ((!forced && event % period != 0u) ||
+	           captures[kind].load(std::memory_order_relaxed) >= limit) {
+		return;
+	}
 	auto& cache = context.GetTextureCache();
 	auto& scheduler = context.GetCommandScheduler();
 	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
@@ -972,6 +982,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			case vk::Format::eR32Uint:
 			case vk::Format::eR32Sint:
 			case vk::Format::eD32Sfloat:
+			case vk::Format::eD32SfloatS8Uint:
 			case vk::Format::eR8G8B8A8Srgb:
 			case vk::Format::eR8G8B8A8Uint:
 			case vk::Format::eR8G8B8A8Snorm:
@@ -1016,6 +1027,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		    backing.format == vk::Format::eBc1RgbSrgbBlock ||
 		    backing.format == vk::Format::eBc1RgbUnormBlock;
 		const bool depth = backing.format == vk::Format::eD32Sfloat ||
+		    backing.format == vk::Format::eD32SfloatS8Uint ||
 		    backing.format == vk::Format::eD16Unorm;
 		if (example_format == 0u) {
 			example_format = static_cast<uint32_t>(backing.format);
@@ -1026,6 +1038,16 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		if (bpp == 0u) { ++unknown_format; continue; }
 		if (backing.extent.width < 4u || backing.extent.height < 4u) { ++tiny; continue; }
 		if (!(backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) { ++no_transfer; continue; }
+		// Sample precisely the native view bound to the shader, not the owner image's
+		// first layer. Some PS5 texture descriptors alias a nonzero depth array slice.
+		if (sample_layer >= backing.layers || sample_mip >= backing.mip_levels) {
+			Log::WriteToConsoleAndLog(fmt::sprintf(
+			    "[DS_PIXEL_PROBE_REJECT] path=%s shader=0x%016" PRIx64
+			    " layer=%u/%u mip=%u/%u reason=invalid_subresource\n",
+			    compute ? "compute" : "graphics", shader_hash,
+			    sample_layer, backing.layers, sample_mip, backing.mip_levels));
+			continue;
+		}
 		++probed;
 		const uint64_t length = bpp * 5u;
 		auto [mapped, offset] = download.Map(length, 16u, true);
@@ -1035,7 +1057,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			continue;
 		}
 		download.Commit();
-		const uint32_t w = backing.extent.width, h = backing.extent.height;
+		const uint32_t w = std::max(backing.extent.width >> sample_mip, 1u);
+		const uint32_t h = std::max(backing.extent.height >> sample_mip, 1u);
 		const std::array<std::pair<uint32_t,uint32_t>,5> xy {
 		    std::pair{w/2u,h/2u}, {w/4u,h/4u}, {3u*w/4u,h/4u},
 		    {w/4u,3u*h/4u}, {3u*w/4u,3u*h/4u}};
@@ -1044,8 +1067,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			regions[i].bufferOffset = offset + i * bpp;
 			regions[i].imageSubresource.aspectMask = depth ? vk::ImageAspectFlagBits::eDepth
 			                                                 : vk::ImageAspectFlagBits::eColor;
-			regions[i].imageSubresource.mipLevel = 0;
-			regions[i].imageSubresource.baseArrayLayer = 0;
+			regions[i].imageSubresource.mipLevel = sample_mip;
+			regions[i].imageSubresource.baseArrayLayer = sample_layer;
 			regions[i].imageSubresource.layerCount = 1;
 			regions[i].imageOffset = vk::Offset3D{
 			    static_cast<int32_t>(compressed ? (xy[i].first & ~3u) : xy[i].first),
@@ -1075,11 +1098,11 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		}
 		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE] path=%s capture=%u shader=0x%016" PRIx64
 		     " frame=%d slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
-		     " samples=5 compressed_blocks=%u depth=%u zero=%u rgb_black=%u first=%08x,%08x,%08x,%08x,%08x"
+		     " layer=%u mip=%u samples=5 compressed_blocks=%u depth=%u zero=%u rgb_black=%u first=%08x,%08x,%08x,%08x,%08x"
 		     " second=%08x,%08x,%08x,%08x,%08x\n",
 		     compute ? "compute" : "graphics", capture, shader_hash,
 		     context.GetGpu().GetFrameNum(), slot, image.info.data.address,
-		     static_cast<uint32_t>(backing.format), w, h, compressed ? 1u : 0u,
+		     static_cast<uint32_t>(backing.format), w, h, sample_layer, sample_mip, compressed ? 1u : 0u,
 		     depth ? 1u : 0u, zero, zero_rgb,
 		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4],
 		     second_words[0],second_words[1],second_words[2],second_words[3],second_words[4]));
@@ -1096,11 +1119,12 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 
 // The compute renderer shares the same exact-pixel sampler rather than
 // inferring nonzero outputs from vkCmdDispatch counts.
-void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash, bool forced) {
+void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash,
+                         bool forced, uint32_t base_layer, uint32_t base_mip) {
 	if (!id) return;
 	RenderColorInfo color {};
 	color.image_id = id;
-	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced);
+	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced, base_layer, base_mip);
 }
 
 static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
