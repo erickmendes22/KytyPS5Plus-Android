@@ -172,6 +172,23 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun demonsSoulsKeepsActualGuestColorTargetsAndShaderWriteGuards() {
+        for (title in listOf("PPSA01341", "ppsa01341")) {
+            val args = LaunchArgs.forGame("/games/demons", Resolution.HD_720, titleId = title)
+            val env = args.indices.filter { args[it] == "--env" }.map { args[it + 1] }
+            assertEquals(1, env.count { it == "KYTY_DS_GUEST_COLOR_TARGETS=1" })
+            assertEquals(0, env.count { it == "KYTY_DS_GUEST_COLOR_TARGETS=0" })
+            assertEquals(1, env.count { it == "KYTY_DS_CB_MASK_PREPARE=1" })
+            assertEquals(1, env.count { it == "KYTY_DS_STABLE_IMAGE_BINDINGS=1" })
+        }
+        for (title in listOf("PPSA03671", "PPSA21564", "PPSA24156", null)) {
+            val args = LaunchArgs.forGame("/games/other", Resolution.HD_720, titleId = title)
+            val env = args.indices.filter { args[it] == "--env" }.map { args[it + 1] }
+            assertEquals(0, env.count { it.startsWith("KYTY_DS_GUEST_COLOR_TARGETS=") })
+        }
+    }
+
+    @Test
     fun demonsSoulsUsesNativeCounterUnitsOnlyForConfirmedTitle() {
         for (title in listOf("PPSA01341", "ppsa01341")) {
             val args = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = title)
