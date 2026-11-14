@@ -966,6 +966,13 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		     explicit_probe ? explicit_probe : "(unset)", trace ? trace : "(unset)"));
 	}
 	if (!enabled || count == 0) return;
+	// The Demon launcher enables a strict two-phase compositor comparison,
+	// not the earlier 48 color + 128 compute periodic GPU stalls.
+	static const bool compositor_only = [] {
+		const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
+	if (compositor_only && (compute || !forced)) return;
 	static std::atomic_uint64_t eligible_events[2] {};
 	static std::atomic_uint32_t captures[2] {};
 	const uint32_t period = compute ? 256u : 4096u;
@@ -2400,6 +2407,41 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (shader_write_stages) {
 		m_context.GetCommandScheduler().EndRendering(PassEnd::ShaderWrite);
 		ShaderWriteBarrier(buffer.Handle(), shader_write_stages);
+	}
+	// Diagnose the Demon scene chain at most twice per run: the actual
+	// sampled HUD/scene inputs versus the compositor's final color target.
+	// One short set after initialization and another during live play. Normal
+	// draw/compute probes are suppressed by KYTY_DS_COLOR_PROBE_TARGETED.
+	static const bool ds_compositor_pixel_probe = [] {
+		const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
+	if (ds_compositor_pixel_probe && state.ps_active && bindings.pixel &&
+	    state.ps_input_info.stage.program != nullptr &&
+	    state.ps_input_info.stage.program->shader_hash == 0x3265b01ed00a5c01ull &&
+	    state.color_count != 0u) {
+		const int32_t frame = m_context.GetGpu().GetFrameNum();
+		const uint32_t phase = frame >= 490 ? 2u : frame >= 280 ? 1u : 0u;
+		static std::atomic_uint32_t phases_done {0};
+		if (phase && !(phases_done.fetch_or(phase, std::memory_order_relaxed) & phase)) {
+			std::array<RenderColorInfo, 2> sources {};
+			uint32_t count = 0;
+			const auto& bound_images = bindings.pixel->images;
+			for (uint32_t i = 0; i < bound_images.size() && count < sources.size(); ++i) {
+				if (bound_images[i].image_id) {
+					sources[count++].image_id = bound_images[i].image_id;
+				}
+			}
+			const auto shader_hash = state.ps_input_info.stage.program->shader_hash;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_COMPOSITE_PIXEL_PHASE] frame={} phase={} sources={} outputs={}\\n",
+			    frame, phase, count, state.color_count));
+			if (count != 0u) {
+				ProbeDsColorOutputs(m_context, sources.data(), count, shader_hash, false, true);
+			}
+			ProbeDsColorOutputs(m_context, state.color_info, state.color_count,
+			                    shader_hash, false, true);
+		}
 	}
 	// Only a deliberate DS probe samples pixels. The ordinary renderer never
 	// pays a forced submission boundary or a host-visible image readback.
