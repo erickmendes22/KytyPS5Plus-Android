@@ -175,7 +175,7 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 
 // Reserved and unsupported T# fields must be zero; perf_mod only scales sampler state.
 static bool IsCanonicalTextureEncoding(const ShaderTextureResource& descriptor, bool r128) {
-	constexpr uint32_t field1_reserved_mask = 0x200fff00u;
+	constexpr uint32_t field1_reserved_mask = CanonicalTextureField1ReservedMask;
 	constexpr uint32_t field2_reserved_mask = 0xf0003000u;
 	const uint32_t     field3_expected = descriptor.DstSelXYZW() |
 	                                     (static_cast<uint32_t>(descriptor.BaseLevel()) << 12u) |
@@ -183,8 +183,9 @@ static bool IsCanonicalTextureEncoding(const ShaderTextureResource& descriptor, 
 	                                     (static_cast<uint32_t>(descriptor.TileMode()) << 20u) |
 	                                     (static_cast<uint32_t>(descriptor.Type()) << 28u);
 	const uint32_t     field4_expected = descriptor.Depth() | (descriptor.BaseArray5() << 16u);
-	const uint32_t     field5_expected = (static_cast<uint32_t>(descriptor.PerfMod5()) << 20u) |
-	                                     (static_cast<uint32_t>(descriptor.MaxMip()) << 4u);
+	const uint32_t     field5_expected = CanonicalTextureField5(
+	    static_cast<uint32_t>(descriptor.PerfMod5()), static_cast<uint32_t>(descriptor.MaxMip()),
+	    (descriptor.fields[5] & (1u << 25u)) != 0u);
 	if ((descriptor.fields[1] & field1_reserved_mask) != 0 ||
 	    (descriptor.fields[2] & field2_reserved_mask) != 0 || descriptor.fields[3] != field3_expected) {
 		return false;
