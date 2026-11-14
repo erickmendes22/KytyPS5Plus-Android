@@ -150,6 +150,26 @@ object LaunchArgs {
                 arrayOf(FLAG_TESSELLATION) else emptyArray())
 }
 
+/**
+ * Demon's Souls diagnostics are launch-scoped. The default title preset in
+ * LaunchArgs enables exactly two compositor probes. Per-game full tracing
+ * deliberately overrides that mode; disabled full tracing must NOT append
+ * a second COLOR_PROBE=0 that silently cancels the targeted probes.
+ */
+object DemonsSoulsDiagnosticArgs {
+    fun append(base: Array<String>, fullPixelTrace: Boolean, perFaceBias: Boolean): Array<String> {
+        val always = arrayOf(
+            "--env", "KYTY_DS_FRAME_TRACE=1",
+            "--env", if (perFaceBias) "KYTY_DS_PER_FACE_BIAS=1"
+                     else "KYTY_DS_PER_FACE_BIAS=0",
+        )
+        return base + always + (if (fullPixelTrace) {
+            arrayOf("--env", "KYTY_DS_COLOR_PROBE_TARGETED=0",
+                    "--env", "KYTY_DS_COLOR_PROBE=1")
+        } else emptyArray())
+    }
+}
+
 /** Which GPU driver a launch uses: a per-game override wins over the global choice. */
 object GpuDriverChoice {
     /**
