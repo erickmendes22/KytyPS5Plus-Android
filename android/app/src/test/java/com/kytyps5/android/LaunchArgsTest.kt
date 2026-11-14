@@ -178,6 +178,8 @@ class LaunchArgsTest {
             val env = args.indices.filter { args[it] == "--env" }.map { args[it + 1] }
             assertEquals(1, env.count { it == "KYTY_DS_GUEST_COLOR_TARGETS=1" })
             assertEquals(0, env.count { it == "KYTY_DS_GUEST_COLOR_TARGETS=0" })
+            assertEquals(1, env.count { it == "KYTY_DS_COLOR_PROBE=1" })
+            assertEquals(1, env.count { it == "KYTY_DS_COLOR_PROBE_TARGETED=1" })
             assertEquals(1, env.count { it == "KYTY_DS_CB_MASK_PREPARE=1" })
             assertEquals(1, env.count { it == "KYTY_DS_STABLE_IMAGE_BINDINGS=1" })
         }
