@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "common/emulatorConfig.h"
 #include "graphics/host_gpu/renderer/image/imageFormatList.h"
+#include "graphics/host_gpu/renderer/image/zeroNewImagePolicy.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/renderScale.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
@@ -314,9 +315,70 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
 	return barriers;
 }
 
+// Chen KytyPS5 backport: a freshly created host image has undefined Vulkan
+// contents, while its new PS5 guest allocation is zero-initialized. Clearing
+// the first uncompressed backing before its first use also avoids persisting
+// garbage/NaNs in temporal history textures in Demon\'s Souls.
+namespace {
+bool ZeroNewImages() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("KYTY_ZERO_NEW_IMAGES");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+void ClearNewImage(vk::Image image, vk::ImageAspectFlags aspects,
+                   vk::CommandBuffer command) {
+    vk::ImageSubresourceRange whole {};
+    whole.aspectMask = aspects;
+    whole.levelCount = VK_REMAINING_MIP_LEVELS;
+    whole.layerCount = VK_REMAINING_ARRAY_LAYERS;
+
+    vk::ImageMemoryBarrier2 barrier {};
+    barrier.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+    barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+    barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
+    barrier.oldLayout = vk::ImageLayout::eUndefined;
+    barrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = whole;
+
+    vk::DependencyInfo dependency {};
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+    command.pipelineBarrier2(dependency);
+
+    if (aspects & vk::ImageAspectFlagBits::eColor) {
+        vk::ClearColorValue zero {};
+        zero.uint32 = std::array<uint32_t, 4> {0u, 0u, 0u, 0u};
+        command.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal,
+                                &zero, 1, &whole);
+    } else {
+        const vk::ClearDepthStencilValue zero {0.0f, 0u};
+        command.clearDepthStencilImage(image, vk::ImageLayout::eTransferDstOptimal,
+                                       &zero, 1, &whole);
+    }
+}
+} // namespace
+
 void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destination_access,
                     std::optional<ImageSubresourceRange> range, vk::CommandBuffer command_buffer,
                     PassEnd reason) {
+	const auto block_extent = vk::blockExtent(info.pixel_format);
+	if (ImageInitPolicy::ShouldZeroOnFirstUse(
+	        backing.state.layout == vk::ImageLayout::eUndefined,
+	        backing.subresource_states.empty(), static_cast<bool>(backing.image),
+	        block_extent[0] == 1u && block_extent[1] == 1u, ZeroNewImages()) &&
+	    destination_layout != vk::ImageLayout::eUndefined) {
+		m_scheduler.EndRendering(PassEnd::ImageCopy);
+		ClearNewImage(backing.image, FullAspectMask(backing.format), command_buffer);
+		backing.state = {vk::PipelineStageFlagBits2::eTransfer,
+		                 vk::AccessFlagBits2::eTransferWrite,
+		                 vk::ImageLayout::eTransferDstOptimal};
+	}
 	if (destination_layout != vk::ImageLayout::eColorAttachmentOptimal) {
 		rp_clear_pending = false; // any other use than an attachment sees the cleared contents
 	}
