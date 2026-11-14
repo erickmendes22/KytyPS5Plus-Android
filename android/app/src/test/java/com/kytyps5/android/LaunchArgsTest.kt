@@ -191,6 +191,27 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun demonsSoulsTargetedProbeSurvivesDisabledFullTrace() {
+        val base = LaunchArgs.forGame("/games/demons", Resolution.HD_720, titleId = "PPSA01341")
+        val baseEnv = base.indices.filter { base[it] == "--env" }.map { base[it + 1] }
+        assertEquals(1, baseEnv.count { it == "KYTY_DS_COLOR_PROBE_TARGETED=1" })
+        assertEquals(1, baseEnv.count { it == "KYTY_DS_COLOR_PROBE=1" })
+
+        val default = DemonsSoulsDiagnosticArgs.append(base, fullPixelTrace = false, perFaceBias = false)
+        val defaultEnv = default.indices.filter { default[it] == "--env" }.map { default[it + 1] }
+        assertEquals(1, defaultEnv.count { it == "KYTY_DS_COLOR_PROBE=1" })
+        assertEquals(0, defaultEnv.count { it == "KYTY_DS_COLOR_PROBE=0" })
+        assertEquals(1, defaultEnv.count { it == "KYTY_DS_COLOR_PROBE_TARGETED=1" })
+
+        val verbose = DemonsSoulsDiagnosticArgs.append(base, fullPixelTrace = true, perFaceBias = true)
+        val verboseEnv = verbose.indices.filter { verbose[it] == "--env" }.map { verbose[it + 1] }
+        assertEquals("KYTY_DS_COLOR_PROBE=1", verboseEnv.last { it.startsWith("KYTY_DS_COLOR_PROBE=") })
+        assertEquals("KYTY_DS_COLOR_PROBE_TARGETED=0",
+            verboseEnv.last { it.startsWith("KYTY_DS_COLOR_PROBE_TARGETED=") })
+        assertEquals(1, verboseEnv.count { it == "KYTY_DS_PER_FACE_BIAS=1" })
+    }
+
+    @Test
     fun demonsSoulsUsesNativeCounterUnitsOnlyForConfirmedTitle() {
         for (title in listOf("PPSA01341", "ppsa01341")) {
             val args = LaunchArgs.forGame("/games/arbitrary", Resolution.HD_720, titleId = title)
