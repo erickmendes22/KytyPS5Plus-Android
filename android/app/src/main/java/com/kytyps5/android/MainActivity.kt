@@ -693,17 +693,12 @@ class MainActivity : Activity() {
         if (game.titleId.equals("PPSA01341", ignoreCase = true)) {
             // Enable very low-rate per-5-second vblank/guest-flip diagnostics even
             // if the ordering experiment is disabled. Only this title gets it.
-            // Keep the two bounded composition pixel checks from LaunchArgs.
-            // The optional full pixel-trace toggle replaces them with periodic
-            // diagnostics. Do not append COLOR_PROBE=0: native --env is
-            // last-wins and previously disabled the targeted capture silently.
-            args += arrayOf("--env", "KYTY_DS_FRAME_TRACE=1",
-                "--env", if (perGame.demonsSoulsPerFaceBias) "KYTY_DS_PER_FACE_BIAS=1"
-                         else "KYTY_DS_PER_FACE_BIAS=0")
-            if (perGame.demonsSoulsPixelTrace) {
-                args += arrayOf("--env", "KYTY_DS_COLOR_PROBE_TARGETED=0",
-                                "--env", "KYTY_DS_COLOR_PROBE=1")
-            }
+            // A false full-probe toggle must not cancel LaunchArgs' bounded
+            // compositor pixel samples. Keep override behavior in the tested
+            // helper rather than adding duplicate --env keys here.
+            args = DemonsSoulsDiagnosticArgs.append(
+                args, perGame.demonsSoulsPixelTrace, perGame.demonsSoulsPerFaceBias,
+            )
             if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsIdleBackoff) {
                 args += arrayOf("--env", "KYTY_DS_IDLE_BACKOFF=1")
             }
