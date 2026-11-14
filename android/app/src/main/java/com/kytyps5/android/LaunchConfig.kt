@@ -137,6 +137,10 @@ object LaunchArgs {
                     // The separate CB_SHADER_MASK write gating prevents depth-only
                     // passes from damaging those attached surfaces.
                     "--env", "KYTY_DS_GUEST_COLOR_TARGETS=1",
+                    // Two bounded compositor readbacks reveal whether scene inputs
+                    // or the final output are black; no periodic per-draw probing.
+                    "--env", "KYTY_DS_COLOR_PROBE=1",
+                    "--env", "KYTY_DS_COLOR_PROBE_TARGETED=1",
                     "--env", "KYTY_DS_CB_MASK_PREPARE=1",
                     "--env", "KYTY_DS_STABLE_IMAGE_BINDINGS=1",
 
