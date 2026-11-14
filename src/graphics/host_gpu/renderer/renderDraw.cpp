@@ -21,6 +21,7 @@
 #include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/colorOutputRecovery.h"
+#include "graphics/host_gpu/renderer/colorWritePolicy.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
@@ -495,8 +496,12 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	// relies on the static colorWriteMask instead.
 	if (buffer.GetGraphics().optional_features.color_write_enable) {
 		vk::Bool32 enable[RENDER_COLOR_ATTACHMENTS_MAX] = {};
+		const auto shader_mask = ctx.GetShaderRegisters().m_cbShaderMask;
+		const auto target_mask = ctx.GetRenderTargetMask();
 		for (uint32_t slot = 0; slot < rendering.num_color_attachments; slot++) {
-			enable[slot] = rendering.color_attachments[slot].image_view != nullptr;
+			enable[slot] = GuestColorWriteEnabled(
+			    target_mask, shader_mask, slot,
+			    rendering.color_attachments[slot].image_view != nullptr) ? VK_TRUE : VK_FALSE;
 		}
 		dynamic_state.SetColorWriteEnables(
 		    std::span {enable}.first(rendering.num_color_attachments));
