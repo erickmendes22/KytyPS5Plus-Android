@@ -42,6 +42,7 @@
 #include "kernel/eventQueue.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
+#include "loader/systemContent.h"
 #include "libs/errno.h"
 
 #include <algorithm>
@@ -1151,9 +1152,16 @@ static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
 	// earlier point. The translated shader still determines what it exports:
 	// unlike the old post-translation MRT experiment, this cannot invent an
 	// output for a depth-only shader.
+	// Match the Chen KytyPS5 PS activation rule by default for the verified
+	// Demon's Souls title. Only actual CB_TARGET/CB_SHADER-mask writes with
+	// real guest backings are restored; PS export locations are still determined
+	// by shader translation. Keep a reversible opt-out for Android drivers.
 	static const bool ds_cb_mask_prepare = [] {
 		const char* v = std::getenv("KYTY_DS_CB_MASK_PREPARE");
-		return v != nullptr && v[0] == '1' && v[1] == '\0';
+		if (v != nullptr) return v[0] == '1' && v[1] == '\0';
+		std::string title;
+		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		       title == "PPSA01341";
 	}();
 	if (ds_cb_mask_prepare) {
 		uint32_t guest_writes = 0, present_targets = 0;
