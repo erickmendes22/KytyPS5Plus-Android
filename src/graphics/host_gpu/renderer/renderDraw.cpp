@@ -2434,7 +2434,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			}
 			const auto shader_hash = state.ps_input_info.stage.program->shader_hash;
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_COMPOSITE_PIXEL_PHASE] frame={} phase={} sources={} outputs={}\\n",
+			    "[DS_COMPOSITE_PIXEL_PHASE] frame={} phase={} sources={} outputs={}\n",
 			    frame, phase, count, state.color_count));
 			if (count != 0u) {
 				ProbeDsColorOutputs(m_context, sources.data(), count, shader_hash, false, true);
