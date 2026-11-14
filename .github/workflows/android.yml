@@ -202,17 +202,38 @@ jobs:
         if: env.KYTY_KEYSTORE_FILE == ''
         run: |
           fallback="$HOME/.android/debug.keystore"
+          # Never generate a new signing identity. GitHub caches are scoped to
+          # branches; a new feature branch can miss the stable signing cache.
           if [ ! -f "$fallback" ]; then
-            if [ "${{ steps.fallback_signing_cache.outputs.cache-hit }}" = "true" ]; then
-              echo "Cached signing key is missing; refusing to silently change identity"
-              exit 1
-            fi
-            mkdir -p "$HOME/.android"
-            keytool -genkeypair -keystore "$fallback" -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            echo "::error::Stable KytyPS5 Plus signing keystore is unavailable. Refusing to create an incompatible APK."
+            exit 1
           fi
           keytool -list -keystore "$fallback" -storepass android -alias androiddebugkey
           echo "KYTY_KEYSTORE_FILE=$fallback" >> "$GITHUB_ENV"
           echo "KYTY_USE_FALLBACK_SIGNING=1" >> "$GITHUB_ENV"
+
+      - name: Verify update-compatible signing certificate
+        env:
+          KYTY_KEYSTORE_PASSWORD: ${{ secrets.KYTY_KEYSTORE_PASSWORD }}
+          KYTY_KEY_ALIAS: ${{ secrets.KYTY_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          : "${KYTY_KEYSTORE_FILE:?Missing stable release keystore}"
+          if [ "${KYTY_USE_FALLBACK_SIGNING:-0}" = "1" ]; then
+            cert_password=android
+            cert_alias=androiddebugkey
+          else
+            cert_password="${KYTY_KEYSTORE_PASSWORD:?Missing signing password}"
+            cert_alias="${KYTY_KEY_ALIAS:?Missing signing alias}"
+          fi
+          # SHA-256 of DER certificate = Android's APK signing certificate fingerprint.
+          actual=$(keytool -exportcert -keystore "$KYTY_KEYSTORE_FILE" -storepass "$cert_password" -alias "$cert_alias" | sha256sum | awk '{print $1}')
+          expected=8f5f176fc9fc9654de485ac73a8d1873ceb2b61122fd93f9da95717aa1309ee0
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::APK update would change its signing certificate: $actual (expected $expected)"
+            exit 1
+          fi
+          echo "Stable APK update certificate verified: $actual"
 
       - name: Unit tests and APK
         working-directory: android
