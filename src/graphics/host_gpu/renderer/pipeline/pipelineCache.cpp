@@ -2016,11 +2016,20 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 			continue;
 		}
 		++kept_color_count;
-		static_params.color_mask[slot] = colors[i].export_mapping.ApplyMask(
-		    render_target_mask_slot(ctx.GetRenderTargetMask(), colors[i].target_slot));
+		// Without VK_EXT_color_write_enable the pipeline's static mask is the
+		// only protection against undefined PS exports (Chen KytyPS5 #41).
+		// With the extension, the dynamic write-enable mask enforces the
+		// guest shader mask, preserving existing pipeline-cache keys.
+		const uint32_t guest_mask = ctx.GetRenderTargetMask() &
+		    (m_graphics.optional_features.color_write_enable
+		         ? 0xffffffffu : ctx.GetShaderRegisters().m_cbShaderMask);
+		const uint32_t guest_slot_mask =
+		    render_target_mask_slot(guest_mask, colors[i].target_slot);
+		static_params.color_mask[slot] =
+		    colors[i].export_mapping.ApplyMask(guest_slot_mask);
 		if ((colors[i].desc.info.guest_format == Prospero::BufferFormat::k11_11_10UNorm ||
 		     colors[i].desc.info.guest_format == Prospero::BufferFormat::k2_10_10_10UNorm)) {
-			static_params.color_mask[slot] = 1u;
+			static_params.color_mask[slot] = guest_slot_mask != 0u ? 1u : 0u;
 		}
 		rendering.color_formats[slot] = colors[i].desc.view_info.format;
 		const auto& rt                        = ctx.GetRenderTarget(colors[i].target_slot);
