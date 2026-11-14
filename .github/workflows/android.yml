@@ -290,6 +290,10 @@ jobs:
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_zero_new_image_test.cpp -o /tmp/demons-image-zero-test
           /tmp/demons-image-zero-test
+      - name: Validate Chen pixel export and color target write masks
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_color_write_mask_test.cpp -o /tmp/demons-color-write-test
+          /tmp/demons-color-write-test
       - name: Verify Demon's Souls guest MRT color target recovery
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_guest_color_targets_test.cpp -o /tmp/demons-guest-mrt
