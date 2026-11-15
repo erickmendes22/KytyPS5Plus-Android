@@ -947,7 +947,7 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 // image ownership or writes guest memory. Other games never enable it.
 static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* colors,
                                 uint32_t count, uint64_t shader_hash, bool compute = false, bool forced = false,
-                                uint32_t sample_layer = 0, uint32_t sample_mip = 0) {
+                                uint32_t sample_layer = UINT32_MAX, uint32_t sample_mip = UINT32_MAX) {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_DS_COLOR_PROBE");
 		// An explicit 0 disables probing. Otherwise reuse the existing DS
@@ -972,7 +972,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
 		return v != nullptr && v[0] == '1' && v[1] == '\0';
 	}();
-	if (compositor_only && (compute || !forced)) return;
+	if (compositor_only && (!forced || (compute && context.GetGpu().GetFrameNum() < 730))) return;
 	static std::atomic_uint64_t eligible_events[2] {};
 	static std::atomic_uint32_t captures[2] {};
 	const uint32_t period = compute ? 256u : 4096u;
@@ -1036,6 +1036,12 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		if (!colors[slot].image_id) { ++no_id; continue; }
 		auto& image = cache.GetImage(colors[slot].image_id);
 		const auto& backing = image.backing;
+		// For graphics, honor each attachment's own array slice and mip.
+		// The prior diagnostic read layer zero three times for a 4-layer R32Uint target.
+		const uint32_t view_layer = sample_layer == UINT32_MAX
+		    ? colors[slot].desc.view_info.base_layer : sample_layer;
+		const uint32_t view_mip = sample_mip == UINT32_MAX
+		    ? colors[slot].desc.view_info.base_level : sample_mip;
 		const uint32_t bpp = bytes_per_pixel(backing.format);
 		const bool compressed = backing.format == vk::Format::eBc1RgbaSrgbBlock ||
 		    backing.format == vk::Format::eBc1RgbaUnormBlock ||
@@ -1055,12 +1061,12 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		if (!(backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) { ++no_transfer; continue; }
 		// Sample precisely the native view bound to the shader, not the owner image's
 		// first layer. Some PS5 texture descriptors alias a nonzero depth array slice.
-		if (sample_layer >= backing.layers || sample_mip >= backing.mip_levels) {
+		if (view_layer >= backing.layers || view_mip >= backing.mip_levels) {
 			Log::WriteToConsoleAndLog(fmt::sprintf(
 			    "[DS_PIXEL_PROBE_REJECT] path=%s shader=0x%016" PRIx64
 			    " layer=%u/%u mip=%u/%u reason=invalid_subresource\n",
 			    compute ? "compute" : "graphics", shader_hash,
-			    sample_layer, backing.layers, sample_mip, backing.mip_levels));
+			    view_layer, backing.layers, view_mip, backing.mip_levels));
 			continue;
 		}
 		++probed;
@@ -1072,8 +1078,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			continue;
 		}
 		download.Commit();
-		const uint32_t w = std::max(backing.extent.width >> sample_mip, 1u);
-		const uint32_t h = std::max(backing.extent.height >> sample_mip, 1u);
+		const uint32_t w = std::max(backing.extent.width >> view_mip, 1u);
+		const uint32_t h = std::max(backing.extent.height >> view_mip, 1u);
 		const std::array<std::pair<uint32_t,uint32_t>,5> xy {
 		    std::pair{w/2u,h/2u}, {w/4u,h/4u}, {3u*w/4u,h/4u},
 		    {w/4u,3u*h/4u}, {3u*w/4u,3u*h/4u}};
@@ -1082,8 +1088,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			regions[i].bufferOffset = offset + i * bpp;
 			regions[i].imageSubresource.aspectMask = depth ? vk::ImageAspectFlagBits::eDepth
 			                                                 : vk::ImageAspectFlagBits::eColor;
-			regions[i].imageSubresource.mipLevel = sample_mip;
-			regions[i].imageSubresource.baseArrayLayer = sample_layer;
+			regions[i].imageSubresource.mipLevel = view_mip;
+			regions[i].imageSubresource.baseArrayLayer = view_layer;
 			regions[i].imageSubresource.layerCount = 1;
 			regions[i].imageOffset = vk::Offset3D{
 			    static_cast<int32_t>(compressed ? (xy[i].first & ~3u) : xy[i].first),
@@ -1117,7 +1123,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		     " second=%08x,%08x,%08x,%08x,%08x\n",
 		     compute ? "compute" : "graphics", capture, shader_hash,
 		     context.GetGpu().GetFrameNum(), slot, image.info.data.address,
-		     static_cast<uint32_t>(backing.format), w, h, sample_layer, sample_mip, compressed ? 1u : 0u,
+		     static_cast<uint32_t>(backing.format), w, h, view_layer, view_mip, compressed ? 1u : 0u,
 		     depth ? 1u : 0u, zero, zero_rgb,
 		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4],
 		     second_words[0],second_words[1],second_words[2],second_words[3],second_words[4]));
@@ -2059,7 +2065,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.color_count != 0u) {
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
 		static std::atomic_uint32_t phases {0};
-		const uint32_t phase = frame >= 850 ? 2u : frame >= 700 ? 1u : 0u;
+		const uint32_t phase = frame >= 780 ? 2u : frame >= 735 ? 1u : 0u;
 		if (phase != 0u && !(phases.fetch_or(phase, std::memory_order_relaxed) & phase)) {
 			const auto& ps_images = state.ps_input_info.stage.program->info.images;
 			const auto& bound = bindings.pixel->images;
@@ -2421,7 +2427,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.ps_input_info.stage.program->shader_hash == 0x3265b01ed00a5c01ull &&
 	    state.color_count != 0u) {
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 850 ? 2u : frame >= 700 ? 1u : 0u;
+		const uint32_t phase = frame >= 780 ? 2u : frame >= 735 ? 1u : 0u;
 		static std::atomic_uint32_t phases_done {0};
 		if (phase && !(phases_done.fetch_or(phase, std::memory_order_relaxed) & phase)) {
 			std::array<RenderColorInfo, 2> sources {};
@@ -2429,7 +2435,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			const auto& bound_images = bindings.pixel->images;
 			for (uint32_t i = 0; i < bound_images.size() && count < sources.size(); ++i) {
 				if (bound_images[i].image_id) {
-					sources[count++].image_id = bound_images[i].image_id;
+					sources[count].image_id = bound_images[i].image_id;
+					sources[count].desc = bound_images[i].desc;
+					++count;
 				}
 			}
 			const auto shader_hash = state.ps_input_info.stage.program->shader_hash;
@@ -2453,7 +2461,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.color_info[0].image_id) {
 		const uint64_t target = state.color_info[0].desc.info.data.address;
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 850 ? 2u : frame >= 700 ? 1u : 0u;
+		const uint32_t phase = frame >= 780 ? 2u : frame >= 735 ? 1u : 0u;
 		static std::atomic_uint32_t scene_color_phases {0};
 		static std::atomic_uint32_t scene_overlay_phases {0};
 		static std::atomic_uint32_t scene_hdr_phases {0};
