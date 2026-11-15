@@ -2059,7 +2059,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.color_count != 0u) {
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
 		static std::atomic_uint32_t phases {0};
-		const uint32_t phase = frame >= 490 ? 2u : frame >= 280 ? 1u : 0u;
+		const uint32_t phase = frame >= 850 ? 2u : frame >= 700 ? 1u : 0u;
 		if (phase != 0u && !(phases.fetch_or(phase, std::memory_order_relaxed) & phase)) {
 			const auto& ps_images = state.ps_input_info.stage.program->info.images;
 			const auto& bound = bindings.pixel->images;
@@ -2421,7 +2421,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.ps_input_info.stage.program->shader_hash == 0x3265b01ed00a5c01ull &&
 	    state.color_count != 0u) {
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 490 ? 2u : frame >= 280 ? 1u : 0u;
+		const uint32_t phase = frame >= 850 ? 2u : frame >= 700 ? 1u : 0u;
 		static std::atomic_uint32_t phases_done {0};
 		if (phase && !(phases_done.fetch_or(phase, std::memory_order_relaxed) & phase)) {
 			std::array<RenderColorInfo, 2> sources {};
@@ -2439,6 +2439,34 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			if (count != 0u) {
 				ProbeDsColorOutputs(m_context, sources.data(), count, shader_hash, false, true);
 			}
+			ProbeDsColorOutputs(m_context, state.color_info, state.color_count,
+			                    shader_hash, false, true);
+		}
+	}
+	// Two gameplay-phase snapshots of the confirmed Demon scene passes.
+	// The previous 280/490 probes saw intro frames before the 1600x900
+	// geometry/lighting graph first ran at frame 651. These captures are
+	// restricted to actual color outputs of the three observed scene targets,
+	// so zero-valued compositor inputs can be traced back to their producer.
+	if (ds_compositor_pixel_probe && state.ps_active && state.color_count != 0u &&
+	    state.ps_input_info.stage.program != nullptr &&
+	    state.color_info[0].image_id) {
+		const uint64_t target = state.color_info[0].desc.info.data.address;
+		const int32_t frame = m_context.GetGpu().GetFrameNum();
+		const uint32_t phase = frame >= 850 ? 2u : frame >= 700 ? 1u : 0u;
+		static std::atomic_uint32_t scene_color_phases {0};
+		static std::atomic_uint32_t scene_overlay_phases {0};
+		static std::atomic_uint32_t scene_hdr_phases {0};
+		std::atomic_uint32_t* phase_mask = nullptr;
+		if (target == 0x281300000ull) phase_mask = &scene_color_phases;
+		if (target == 0x2b2a40000ull) phase_mask = &scene_overlay_phases;
+		if (target == 0x287ae0000ull) phase_mask = &scene_hdr_phases;
+		if (phase_mask != nullptr && phase != 0u &&
+		    !(phase_mask->fetch_or(phase, std::memory_order_relaxed) & phase)) {
+			const auto shader_hash = state.ps_input_info.stage.program->shader_hash;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_SCENE_PIXEL_PHASE] frame={} phase={} target=0x{:x} shader=0x{:016x}\n",
+			    frame, phase, target, shader_hash));
 			ProbeDsColorOutputs(m_context, state.color_info, state.color_count,
 			                    shader_hash, false, true);
 		}
