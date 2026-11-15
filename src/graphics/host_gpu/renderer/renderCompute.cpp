@@ -381,17 +381,33 @@ static void ProbeDsComputeWrites(RenderContext& context,
 		const auto match = std::find(target_hashes.begin(), target_hashes.end(), hash);
 		const auto ordinal = static_cast<size_t>(match - target_hashes.begin());
 		const int32_t frame = context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 280 ? 2u : 1u;
+		const uint32_t phase = frame >= 735 ? 4u : frame >= 280 ? 2u : 1u;
+		// The prior targeted mode suppressed *all* compute readbacks; the
+		// black 0x281300000 image could therefore never be traced to its producer.
+		// Permit at most two representative writers after gameplay begins.
+		const bool gameplay_writer = hash == 0xe75589aa0bb3ae52ull ||
+		                             hash == 0xc2e01fbe98f5ebabull;
+		static const bool targeted = [] {
+			const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
+		}();
+		const bool probe_this_phase = !targeted || (phase == 4u && gameplay_writer);
 		if (match != target_hashes.end() &&
 		    context.GetTextureCache().GetImage(target_id).info.data.address == 0x281300000ull &&
+		    (phase != 4u || gameplay_writer) &&
 		    !(captured[ordinal].fetch_or(phase, std::memory_order_relaxed) & phase)) {
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_TARGET_WRITER] shader=0x{:016x} output=0x{:x} "
-			    "frame={} phase={} image_resources={} output_binding={}\n",
-			    hash, 0x281300000ull, frame, phase == 1u ? "init" : "scene", images.size(), i));
-			ProbeDsComputeImage(context, target_id, hash, true,
-			                    bindings.images[i].desc.view_info.base_layer,
-			                    bindings.images[i].desc.view_info.base_level);
+			    "frame={} phase={} image_resources={} output_binding={} "
+			    "indirect=0x{:x} group_pack={}\n",
+			    hash, 0x281300000ull, frame, phase == 1u ? "init" : phase == 2u ? "scene" : "gameplay",
+			    images.size(), i, input.indirect_args_address,
+			    input.stage.program->info.group_pack));
+			if (probe_this_phase) {
+				ProbeDsComputeImage(context, target_id, hash, true,
+				                    bindings.images[i].desc.view_info.base_layer,
+				                    bindings.images[i].desc.view_info.base_level);
+			}
 			// The previous diagnostic stopped after four inputs. For all six
 			// affected shaders those were mostly the same black 4x4 image.
 			// Log every *read* image descriptor, even an unbound one, but spend
@@ -449,7 +465,10 @@ static void ProbeDsComputeWrites(RenderContext& context,
 				    repeated ? 1 : 0, is_tiny ? 1 : 0,
 				    source.image_id == target_id ? 1 : 0,
 				    texture.IsGpuModified() ? 1 : 0, texture.IsCpuDirty() ? 1 : 0));
-				if (!repeated && !is_tiny && source.image_id != target_id && probed < 6u) {
+				if (probe_this_phase && !repeated && !is_tiny &&
+				    texture.backing.extent.width >= 960u &&
+				    texture.backing.extent.height >= 540u &&
+				    source.image_id != target_id && probed < (targeted ? 2u : 6u)) {
 					ProbeDsComputeImage(context, source.image_id, hash, true,
 					                    source.desc.view_info.base_layer,
 					                    source.desc.view_info.base_level);
