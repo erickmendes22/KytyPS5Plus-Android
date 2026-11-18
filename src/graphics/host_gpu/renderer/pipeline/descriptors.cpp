@@ -43,6 +43,9 @@
 #include <bit>
 #include <fmt/format.h>
 #include <limits>
+#include <mutex>
+#include <set>
+#include <tuple>
 #include <span>
 #include <vector>
 
@@ -1077,6 +1080,27 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 		const auto& program  = *prepared.runtime->program;
 		const auto& snapshot = *prepared.runtime->resources;
 		const auto& layout = program.bindings;
+		// PPSA01341: observe the shader that really writes the two GPU-generated
+		// indirect argument records. This is provenance, not a guest-memory
+		// overwrite or a change to dispatch dimensions.
+		static const bool trace_ds_indirect_sources = [] {
+			const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
+		}();
+		const int32_t ds_frame = trace_ds_indirect_sources ?
+		    m_context.GetGpu().GetFrameNum() : -1;
+		const bool trace_ds_frame = ds_frame >= 650 && ds_frame <= 820;
+		if (trace_ds_frame && program.has_address_writes) {
+			static std::mutex address_mutex;
+			static std::set<uint64_t> reported_address_programs;
+			std::lock_guard guard(address_mutex);
+			if (reported_address_programs.size() < 40u &&
+			    reported_address_programs.insert(program.shader_hash).second) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_INDIRECT_ADDRESS_WRITER_CANDIDATE] frame={} shader=0x{:016x} stage={} address_writes=1 unknown_destination=1\n",
+				    ds_frame, program.shader_hash, static_cast<uint32_t>(program.stage)));
+			}
+		}
 		prepared.buffer_sources.resize(layout.BufferSlotCount());
 		if (layout.BufferSlotCount() == 0) {
 			continue;
@@ -1132,6 +1156,27 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			    metadata.chunk_bytes % BufferCache::CACHING_PAGESIZE == 0 &&
 			    address % BufferCache::CACHING_PAGESIZE == 0 && size > metadata.chunk_bytes;
 			source = {address, size, split_chunks ? BufferId {} : cache.FindBuffer(address, size)};
+			if (trace_ds_frame && metadata.written) {
+				constexpr std::array<uint64_t,2> watched {{
+				    0x21c77f7dcull, 0x21c77f974ull
+				}};
+				for (const auto site: watched) {
+					if (address > site || site - address >= size ||
+					    size - (site - address) < sizeof(vk::DispatchIndirectCommand))
+						continue;
+					static std::mutex producer_mutex;
+					static std::set<std::tuple<uint64_t,uint64_t,uint32_t>> producers;
+					std::lock_guard guard(producer_mutex);
+					if (producers.size() < 96u &&
+					    producers.emplace(program.shader_hash, site, resource).second) {
+						Log::WriteToConsoleAndLog(fmt::format(
+						    "[DS_INDIRECT_PRODUCER] frame={} site=0x{:x} shader=0x{:016x} stage={} buffer_index={} source={} range=0x{:x}+{}\n",
+						    ds_frame, site, program.shader_hash,
+						    static_cast<uint32_t>(program.stage), resource, metadata.source,
+						    address, size));
+					}
+				}
+			}
 		}
 	}
 }
