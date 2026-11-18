@@ -210,17 +210,18 @@ vk::DeviceAddress IndirectDrawFixup::AcquireFeedback(uint32_t& slot) {
 }
 
 void IndirectDrawFixup::CommitFeedback(uint32_t slot, uint64_t site, bool mesh, uint32_t reserved,
-                                       bool dispatch) {
+                                       bool dispatch, bool trace_groups) {
 	m_feedback[slot] = {.tick     = m_context.GetCommandScheduler().CurrentTick(),
 	                    .site     = site,
 	                    .reserved = reserved,
 	                    .mesh     = mesh,
-	                    .dispatch = dispatch};
+	                    .dispatch = dispatch,
+	                    .trace_groups = trace_groups};
 }
 
 IndirectDrawFixup::DispatchRecord IndirectDrawFixup::RecordDispatchClamp(
     CommandBuffer& buffer, vk::DeviceAddress args, const std::array<uint32_t, 3>& limits,
-    uint64_t site) {
+    uint64_t site, bool trace_groups) {
 	EXIT_IF(args == 0);
 	PollFeedback();
 	uint32_t    feedback_slot = 0;
@@ -232,9 +233,13 @@ IndirectDrawFixup::DispatchRecord IndirectDrawFixup::RecordDispatchClamp(
 	params.max_groups    = limits[0];
 	params.max_instances = limits[1];
 	params.max_z         = limits[2];
+	params.padding       = trace_groups ? 1u : 0u;
+	if (trace_groups && params.feedback == 0) {
+		Log::WriteToConsoleAndLog(fmt::format("[DS_INDIRECT_GROUPS_UNAVAILABLE] site=0x{:x} reason=feedback_slots_busy\n", site));
+	}
 	const auto output    = Dispatch(buffer, sizeof(vk::DispatchIndirectCommand), &params, 1);
 	if (params.feedback != 0) {
-		CommitFeedback(feedback_slot, site, false, 0, true);
+		CommitFeedback(feedback_slot, site, false, 0, true, trace_groups);
 	}
 	return {.buffer = output.buffer, .offset = output.offset};
 }
@@ -265,8 +270,21 @@ void IndirectDrawFixup::PollFeedback() {
 		std::memcpy(&requested, m_feedback_buffer->Mapped().data() + slot * sizeof(uint32_t),
 		            sizeof(requested));
 		if (feedback.dispatch) {
+			if (feedback.trace_groups) {
+				const uint32_t x = requested & 1023u;
+				const uint32_t y = (requested >> 10u) & 1023u;
+				const uint32_t z = (requested >> 20u) & 1023u;
+				const bool saturated = (requested & (1u << 31u)) != 0;
+				const bool clamped = (requested & (1u << 30u)) != 0;
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_INDIRECT_GROUPS] site=0x{:x} x={} y={} z={} saturated={} clamped={} executable={}\n",
+				    feedback.site, x, y, z, saturated ? 1 : 0, clamped ? 1 : 0,
+				    x != 0 && y != 0 && z != 0 ? 1 : 0));
+			}
 			static std::atomic<uint32_t> clamp_count {0};
-			if (requested != 0 && clamp_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			const bool clamped = feedback.trace_groups
+			    ? (requested & (1u << 30u)) != 0 : requested != 0;
+			if (clamped && clamp_count.fetch_add(1, std::memory_order_relaxed) < 16) {
 				LOGF("GPU indirect dispatch: guest record 0x%016" PRIx64 " asked for more "
 				     "workgroups than maxComputeWorkGroupCount; clamped (work dropped)\n",
 				     feedback.site);

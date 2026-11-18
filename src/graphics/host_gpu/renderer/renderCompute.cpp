@@ -961,12 +961,32 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			RebindBuffers(bindings);
 		}
 	}
+	// These two gameplay compute writers produce a sampled-black scene target.
+	// Measure their actual GPU-written groups rather than guessing from CPU backing.
+	// The original clamp and dispatch commands remain untouched.
+	static const bool ds_trace_groups = [] {
+		const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
+	static std::array<std::atomic_uint32_t, 2> ds_trace_samples {};
+	const uint64_t hash = program.shader_hash;
+	const int target = hash == 0xc2e01fbe98f5ebabull ? 0 :
+	                   hash == 0xe75589aa0bb3ae52ull ? 1 : -1;
+	const bool ds_trace_this = ds_trace_groups && target >= 0 &&
+	    m_context.GetGpu().GetFrameNum() >= 735 &&
+	    ds_trace_samples[static_cast<size_t>(target)].fetch_add(1, std::memory_order_relaxed) < 4u;
+	if (ds_trace_this && cpu_args) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_INDIRECT_GROUPS] site=0x{:x} shader=0x{:016x} x={} y={} z={} source=cpu\n",
+		    args_addr, hash, args.x, args.y, args.z));
+	}
 	vk::Buffer indirect_buffer = args_buffer->Handle();
 	uint64_t   indirect_offset = args_offset;
 	if (!cpu_args && IndirectDispatchClampEnabled()) {
 		// Recorded before the guest bindings: the fix-up binds its own pipeline and push data.
 		const auto clamped = GetIndirectDrawFixup().RecordDispatchClamp(
-		    buffer, args_buffer->BufferDeviceAddress() + args_offset, limits, args_addr);
+		    buffer, args_buffer->BufferDeviceAddress() + args_offset, limits, args_addr,
+		    ds_trace_this);
 		indirect_buffer = clamped.buffer;
 		indirect_offset = clamped.offset;
 	}
