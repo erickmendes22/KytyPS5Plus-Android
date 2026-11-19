@@ -352,13 +352,41 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	                       vk::PipelineStageFlagBits::eAllCommands |
 	                           vk::PipelineStageFlagBits::eHost,
 	                       {}, 0, nullptr, 1, &after, 0, nullptr);
-	auto publish = [this, mapped, offset, total_size, buffer_address,
+	// Exact ranges awaiting asynchronous publication remain GPU-owned for
+	// indirect argument checks. A download clears the dirty-byte ledger when
+	// it is QUEUED, before its deferred WriteBacking has actually completed.
+	// Keep this bounded and title-scoped; it does not initiate readbacks.
+	std::optional<uint64_t> publication_token;
+	if constexpr (async) {
+		static const bool track_publications = [] {
+			const char* value = std::getenv("KYTY_DS_GPU_ZERO_INDIRECT");
+			return value != nullptr && value[0] == '1' && value[1] == '\0';
+		}();
+		if (track_publications) {
+			BackingPublication publication;
+			publication.ranges.reserve(copies.size());
+			for (const auto& copy: copies) {
+				publication.ranges.push_back({buffer_address + copy.srcOffset, copy.size});
+			}
+			const std::scoped_lock lock(m_pending_publication_mutex);
+			publication.token = ++m_next_publication_token;
+			publication_token = publication.token;
+			m_pending_publications.push_back(std::move(publication));
+		}
+	}
+	auto publish = [this, mapped, offset, total_size, buffer_address, publication_token,
 	                copies = std::move(copies), owner = std::move(temporary)] {
 		(owner ? *owner : m_download_buffer).Invalidate(offset, total_size);
 		for (const auto& copy: copies) {
 			Libs::LibKernel::Memory::WriteBacking(buffer_address + copy.srcOffset,
 			                                      mapped + (copy.dstOffset - offset), copy.size);
 			WalkFan::NoteBackingWrite(Kernel::AddressFold::Fold(buffer_address + copy.srcOffset), copy.size);
+		}
+		if (publication_token) {
+			const std::scoped_lock lock(m_pending_publication_mutex);
+			std::erase_if(m_pending_publications, [token = *publication_token](const BackingPublication& p) {
+				return p.token == token;
+			});
 		}
 	};
 	if constexpr (async) {
@@ -1489,6 +1517,18 @@ bool BufferCache::HasGpuDirtyBytes(uint64_t vaddr, uint64_t size) {
 	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	const std::shared_lock lock(m_gpu_modified_mutex);
 	return m_gpu_modified_ranges.Intersects(vaddr, size);
+}
+
+bool BufferCache::HasPendingBackingPublication(uint64_t vaddr, uint64_t size) const {
+	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
+	if (size == 0 || vaddr > UINT64_MAX - size) return false;
+	const std::scoped_lock lock(m_pending_publication_mutex);
+	const uint64_t end = vaddr + size;
+	return std::ranges::any_of(m_pending_publications, [&](const BackingPublication& publication) {
+		return std::ranges::any_of(publication.ranges, [&](const GuestRange& range) {
+			return range.address < end && vaddr < range.address + range.size;
+		});
+	});
 }
 
 bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {

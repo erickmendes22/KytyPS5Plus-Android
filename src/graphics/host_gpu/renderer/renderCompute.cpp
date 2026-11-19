@@ -898,6 +898,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	const bool host_args_current =
 	    !indirect_cache.HasGpuDirtyBytes(args_addr, sizeof(args)) &&
 	    !indirect_cache.IsRegionGpuModified(args_addr, sizeof(args)) &&
+	    !(ds_gpu_zero_indirect && indirect_cache.HasPendingBackingPublication(args_addr, sizeof(args))) &&
 	    !image_gpu_owned &&
 	    LibKernel::Memory::TryReadBacking(args_addr, &args, sizeof(args));
 	const bool host_zero = args.x == 0 || args.y == 0 || args.z == 0;

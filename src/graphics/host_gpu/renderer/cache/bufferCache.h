@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <map>
+#include <mutex>
 #include <unordered_map>
 #include <shared_mutex>
 #include <memory>
@@ -112,6 +113,9 @@ public:
 	// Cache-index and exact dirty-range queries require GPU-thread serialization.
 	[[nodiscard]] bool IsRegionRegistered(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool HasGpuDirtyBytes(uint64_t vaddr, uint64_t size);
+	// While an asynchronous GPU readback is awaiting publication, the exact
+	// GPU-dirty ledger may be empty even though guest backing is still stale.
+	[[nodiscard]] bool HasPendingBackingPublication(uint64_t vaddr, uint64_t size) const;
 	// Bumped whenever bytes become GPU-written (GPU thread): a page seen without GPU-written
 	// bytes stays so while this is unchanged.
 	[[nodiscard]] uint64_t UnregisterEpoch() const noexcept { return m_unregister_epoch; }
@@ -249,6 +253,13 @@ private:
 	RangeSet                                          m_gpu_modified_ranges;
 	std::atomic<uint64_t>                             m_gpu_dirty_generation {0};
 	mutable std::shared_mutex                         m_gpu_modified_mutex;
+	struct BackingPublication {
+		uint64_t token = 0;
+		std::vector<GuestRange> ranges;
+	};
+	mutable std::mutex                                m_pending_publication_mutex;
+	std::vector<BackingPublication>                    m_pending_publications;
+	uint64_t                                           m_next_publication_token = 0;
 	WalkReader::WriteJournal*                         m_walk_journal         = nullptr;
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
