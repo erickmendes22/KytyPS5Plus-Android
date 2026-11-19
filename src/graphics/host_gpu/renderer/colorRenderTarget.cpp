@@ -267,7 +267,7 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	r             = {};
 	r.target_slot = rt_slot;
 
-	if (rt.base.addr == 0 || mask == 0) {
+	if (rt.base.addr == 0 || mask == 0 || rt.info.format == Prospero::ChannelLayout::kInvalid) {
 		if (graphics_debug_dump_enabled()) {
 			static std::atomic_uint log_count = 0;
 			const auto              log_id    = log_count.fetch_add(1, std::memory_order_relaxed);

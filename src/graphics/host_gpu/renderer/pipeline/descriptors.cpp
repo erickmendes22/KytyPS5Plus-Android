@@ -43,9 +43,6 @@
 #include <bit>
 #include <fmt/format.h>
 #include <limits>
-#include <mutex>
-#include <set>
-#include <tuple>
 #include <span>
 #include <vector>
 
@@ -670,27 +667,8 @@ static TextureDescEntry ComputeTextureDesc(const ShaderRecompiler::IR::ImageReso
 		desc.info.UpdateSize();
 	}
 	const auto alignment = desc.info.DataAlignment();
-	const bool invalid_size_or_alignment = desc.info.data.size == 0 || alignment == 0 ||
-	    (address & (static_cast<uint64_t>(alignment) - 1u)) != 0;
-	if (invalid_size_or_alignment) {
-		// A malformed runtime descriptor appeared around CS929 in Demon's
-		// Souls. Do not silently bind an unrelated null texture: retain the
-		// strict validity contract and report the actual guest descriptor.
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "[DS_TEXTURE_DESCRIPTOR_INVALID] source={} class={} read={} written={} "
-		    "address=0x{:x} size={} align={} extent={}x{}x{} levels={} "
-		    "tile={} type={} format={} r128={} "
-		    "words={:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}\n",
-		    resource.source, static_cast<uint32_t>(resource.resource_class),
-		    resource.read ? 1 : 0, resource.written ? 1 : 0,
-		    address, desc.info.data.size, alignment, width, height, depth,
-		    levels, static_cast<uint32_t>(tile), static_cast<uint32_t>(type),
-		    static_cast<uint32_t>(format), resource.r128 ? 1 : 0,
-		    descriptor.fields[0], descriptor.fields[1], descriptor.fields[2],
-		    descriptor.fields[3], descriptor.fields[4], descriptor.fields[5],
-		    descriptor.fields[6], descriptor.fields[7]));
-	}
-	EXIT_NOT_IMPLEMENTED(invalid_size_or_alignment);
+	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
+	                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
 	if (storage) {
 		ValidateStorageTexture(resource, descriptor, desc.info.data.size);
 	}
@@ -1099,27 +1077,6 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 		const auto& program  = *prepared.runtime->program;
 		const auto& snapshot = *prepared.runtime->resources;
 		const auto& layout = program.bindings;
-		// PPSA01341: observe the shader that really writes the two GPU-generated
-		// indirect argument records. This is provenance, not a guest-memory
-		// overwrite or a change to dispatch dimensions.
-		static const bool trace_ds_indirect_sources = [] {
-			const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
-			return v != nullptr && v[0] == '1' && v[1] == '\0';
-		}();
-		const int32_t ds_frame = trace_ds_indirect_sources ?
-		    m_context.GetGpu().GetFrameNum() : -1;
-		const bool trace_ds_frame = ds_frame >= 650 && ds_frame <= 820;
-		if (trace_ds_frame && program.has_address_writes) {
-			static std::mutex address_mutex;
-			static std::set<uint64_t> reported_address_programs;
-			std::lock_guard guard(address_mutex);
-			if (reported_address_programs.size() < 40u &&
-			    reported_address_programs.insert(program.shader_hash).second) {
-				Log::WriteToConsoleAndLog(fmt::format(
-				    "[DS_INDIRECT_ADDRESS_WRITER_CANDIDATE] frame={} shader=0x{:016x} stage={} address_writes=1 unknown_destination=1\n",
-				    ds_frame, program.shader_hash, static_cast<uint32_t>(program.stage)));
-			}
-		}
 		prepared.buffer_sources.resize(layout.BufferSlotCount());
 		if (layout.BufferSlotCount() == 0) {
 			continue;
@@ -1175,27 +1132,6 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			    metadata.chunk_bytes % BufferCache::CACHING_PAGESIZE == 0 &&
 			    address % BufferCache::CACHING_PAGESIZE == 0 && size > metadata.chunk_bytes;
 			source = {address, size, split_chunks ? BufferId {} : cache.FindBuffer(address, size)};
-			if (trace_ds_frame && metadata.written) {
-				constexpr std::array<uint64_t,2> watched {{
-				    0x21c77f7dcull, 0x21c77f974ull
-				}};
-				for (const auto site: watched) {
-					if (address > site || site - address >= size ||
-					    size - (site - address) < sizeof(vk::DispatchIndirectCommand))
-						continue;
-					static std::mutex producer_mutex;
-					static std::set<std::tuple<uint64_t,uint64_t,uint32_t>> producers;
-					std::lock_guard guard(producer_mutex);
-					if (producers.size() < 96u &&
-					    producers.emplace(program.shader_hash, site, resource).second) {
-						Log::WriteToConsoleAndLog(fmt::format(
-						    "[DS_INDIRECT_PRODUCER] frame={} site=0x{:x} shader=0x{:016x} stage={} buffer_index={} source={} range=0x{:x}+{}\n",
-						    ds_frame, site, program.shader_hash,
-						    static_cast<uint32_t>(program.stage), resource, metadata.source,
-						    address, size));
-					}
-				}
-			}
 		}
 	}
 }

@@ -81,7 +81,7 @@ public:
 	};
 	[[nodiscard]] DispatchRecord RecordDispatchClamp(CommandBuffer& buffer, vk::DeviceAddress args,
 	                                                 const std::array<uint32_t, 3>& limits,
-	                                                 uint64_t site, bool trace_groups = false);
+	                                                 uint64_t site);
 	// Records the draw itself inside the open render pass.
 	void Draw(vk::CommandBuffer pass, const Records& records, bool indexed) const;
 
@@ -114,7 +114,6 @@ private:
 		uint32_t reserved = 0; // mesh: reserved workgroup slots, 0 for draws
 		bool     mesh     = false;
 		bool     dispatch = false; // RecordDispatchClamp: the word is 1 if it clamped
-		bool     trace_groups = false; // Opt-in encoded groups for diagnostic only
 	};
 	static constexpr uint32_t FeedbackSlots = 64;
 
@@ -124,7 +123,7 @@ private:
 	// A zeroed host-visible word for the next fix-up's feedback, or 0 if none is free.
 	[[nodiscard]] vk::DeviceAddress AcquireFeedback(uint32_t& slot);
 	void CommitFeedback(uint32_t slot, uint64_t site, bool mesh, uint32_t reserved,
-	                    bool dispatch = false, bool trace_groups = false);
+	                    bool dispatch = false);
 
 	RenderContext&                         m_context;
 	vk::PipelineLayout                     m_layout     = nullptr;

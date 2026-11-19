@@ -137,10 +137,10 @@ object LaunchArgs {
                     // The separate CB_SHADER_MASK write gating prevents depth-only
                     // passes from damaging those attached surfaces.
                     "--env", "KYTY_DS_GUEST_COLOR_TARGETS=1",
-                    // Two bounded compositor readbacks reveal whether scene inputs
-                    // or the final output are black; no periodic per-draw probing.
-                    "--env", "KYTY_DS_COLOR_PROBE=1",
-                    "--env", "KYTY_DS_COLOR_PROBE_TARGETED=1",
+                    // Diagnostics are opt-in: avoid GPU readbacks during gameplay.
+                    "--env", "KYTY_DS_COLOR_PROBE=0",
+                    "--env", "KYTY_DS_COLOR_PROBE_TARGETED=0",
+                    "--env", "KYTY_DS_FRAME_TRACE=0",
                     "--env", "KYTY_DS_CB_MASK_PREPARE=1",
                     "--env", "KYTY_DS_STABLE_IMAGE_BINDINGS=1",
 
@@ -150,21 +150,14 @@ object LaunchArgs {
                 arrayOf(FLAG_TESSELLATION) else emptyArray())
 }
 
-/**
- * Demon's Souls diagnostics are launch-scoped. The default title preset in
- * LaunchArgs enables exactly two compositor probes. Per-game full tracing
- * deliberately overrides that mode; disabled full tracing must NOT append
- * a second COLOR_PROBE=0 that silently cancels the targeted probes.
- */
+/** Explicit full-trace opt-in only; no automatic frame tracing. */
 object DemonsSoulsDiagnosticArgs {
     fun append(base: Array<String>, fullPixelTrace: Boolean, perFaceBias: Boolean): Array<String> {
-        val always = arrayOf(
-            "--env", "KYTY_DS_FRAME_TRACE=1",
-            "--env", if (perFaceBias) "KYTY_DS_PER_FACE_BIAS=1"
-                     else "KYTY_DS_PER_FACE_BIAS=0",
-        )
-        return base + always + (if (fullPixelTrace) {
-            arrayOf("--env", "KYTY_DS_COLOR_PROBE_TARGETED=0",
+        val bias = arrayOf("--env", if (perFaceBias) "KYTY_DS_PER_FACE_BIAS=1"
+                               else "KYTY_DS_PER_FACE_BIAS=0")
+        return base + bias + (if (fullPixelTrace) {
+            arrayOf("--env", "KYTY_DS_FRAME_TRACE=1",
+                    "--env", "KYTY_DS_COLOR_PROBE_TARGETED=0",
                     "--env", "KYTY_DS_COLOR_PROBE=1")
         } else emptyArray())
     }

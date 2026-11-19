@@ -2025,9 +2025,12 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 		         ? 0xffffffffu : ctx.GetShaderRegisters().m_cbShaderMask);
 		const uint32_t guest_slot_mask =
 		    render_target_mask_slot(guest_mask, colors[i].target_slot);
-		static_params.color_mask[slot] =
-		    colors[i].export_mapping.ApplyMask(guest_slot_mask);
-		if ((colors[i].desc.info.guest_format == Prospero::BufferFormat::k11_11_10UNorm ||
+		// Binding a guest attachment during a depth-only draw must never
+		// imply color writes when the pixel shader stage is absent.
+		static_params.color_mask[slot] = ps_active
+		    ? colors[i].export_mapping.ApplyMask(guest_slot_mask) : 0u;
+		if (ps_active &&
+		    (colors[i].desc.info.guest_format == Prospero::BufferFormat::k11_11_10UNorm ||
 		     colors[i].desc.info.guest_format == Prospero::BufferFormat::k2_10_10_10UNorm)) {
 			static_params.color_mask[slot] = guest_slot_mask != 0u ? 1u : 0u;
 		}

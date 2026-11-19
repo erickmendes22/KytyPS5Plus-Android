@@ -1070,29 +1070,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			continue;
 		}
 		++probed;
-		const uint32_t w = std::max(backing.extent.width >> view_mip, 1u);
-		const uint32_t h = std::max(backing.extent.height >> view_mip, 1u);
-		// Five isolated points can all land on background; the previous log
-		// could not prove an entire render target was black. Sample a bounded
-		// 8x8 screen grid on the known scene chain, retaining the original 5
-		// points for backwards comparison. Never run this for periodic probes.
-		const uint64_t guest_address = image.info.data.address;
-		const bool ds_scene_grid = forced && !compressed &&
-		    context.GetGpu().GetFrameNum() >= 730 && w >= 128u && h >= 128u &&
-		    (guest_address == 0x281300000ull || guest_address == 0x281a80000ull ||
-		     guest_address == 0x2b2a40000ull || guest_address == 0x287ae0000ull ||
-		     guest_address == 0x284830000ull);
-		std::vector<std::pair<uint32_t,uint32_t>> xy {
-		    {w/2u,h/2u}, {w/4u,h/4u}, {3u*w/4u,h/4u},
-		    {w/4u,3u*h/4u}, {3u*w/4u,3u*h/4u}};
-		if (ds_scene_grid) {
-			xy.reserve(69u);
-			for (uint32_t gy = 0; gy < 8u; ++gy) {
-				for (uint32_t gx = 0; gx < 8u; ++gx)
-					xy.emplace_back((2u*gx + 1u)*w/16u, (2u*gy + 1u)*h/16u);
-			}
-		}
-		const uint64_t length = bpp * xy.size();
+		const uint64_t length = bpp * 5u;
 		auto [mapped, offset] = download.Map(length, 16u, true);
 		if (mapped == nullptr) {
 			Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE] path=%s shader=0x%016" PRIx64 " slot=%u result=staging_unavailable\n",
@@ -1100,7 +1078,12 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			continue;
 		}
 		download.Commit();
-		std::vector<vk::BufferImageCopy> regions(xy.size());
+		const uint32_t w = std::max(backing.extent.width >> view_mip, 1u);
+		const uint32_t h = std::max(backing.extent.height >> view_mip, 1u);
+		const std::array<std::pair<uint32_t,uint32_t>,5> xy {
+		    std::pair{w/2u,h/2u}, {w/4u,h/4u}, {3u*w/4u,h/4u},
+		    {w/4u,3u*h/4u}, {3u*w/4u,3u*h/4u}};
+		std::array<vk::BufferImageCopy,5> regions {};
 		for (size_t i = 0; i < regions.size(); ++i) {
 			regions[i].bufferOffset = offset + i * bpp;
 			regions[i].imageSubresource.aspectMask = depth ? vk::ImageAspectFlagBits::eDepth
@@ -1120,7 +1103,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		download.Invalidate(offset, length);
 		uint32_t zero = 0, zero_rgb = 0;
 		std::array<uint32_t,5> first_words {}, second_words {};
-		for (size_t i = 0; i < xy.size(); ++i) {
+		for (uint32_t i = 0; i < 5; ++i) {
 			bool empty = true, rgb_black = true;
 			for (uint32_t b = 0; b < bpp; ++b) {
 				empty &= mapped[i*bpp+b] == 0u;
@@ -1130,19 +1113,17 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			}
 			zero += empty;
 			zero_rgb += rgb_black;
-			if (i < first_words.size()) {
-				std::memcpy(&first_words[i], mapped + i*bpp, std::min<uint32_t>(bpp,4u));
-				if (bpp > 4u)
-					std::memcpy(&second_words[i], mapped + i*bpp + 4u, std::min<uint32_t>(bpp-4u,4u));
-			}
+			std::memcpy(&first_words[i], mapped + i*bpp, std::min<uint32_t>(bpp,4u));
+			if (bpp > 4u)
+				std::memcpy(&second_words[i], mapped + i*bpp + 4u, std::min<uint32_t>(bpp-4u,4u));
 		}
 		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE] path=%s capture=%u shader=0x%016" PRIx64
 		     " frame=%d slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
-		     " layer=%u mip=%u samples=%zu compressed_blocks=%u depth=%u zero=%u rgb_black=%u first=%08x,%08x,%08x,%08x,%08x"
+		     " layer=%u mip=%u samples=5 compressed_blocks=%u depth=%u zero=%u rgb_black=%u first=%08x,%08x,%08x,%08x,%08x"
 		     " second=%08x,%08x,%08x,%08x,%08x\n",
 		     compute ? "compute" : "graphics", capture, shader_hash,
 		     context.GetGpu().GetFrameNum(), slot, image.info.data.address,
-		     static_cast<uint32_t>(backing.format), w, h, view_layer, view_mip, xy.size(), compressed ? 1u : 0u,
+		     static_cast<uint32_t>(backing.format), w, h, view_layer, view_mip, compressed ? 1u : 0u,
 		     depth ? 1u : 0u, zero, zero_rgb,
 		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4],
 		     second_words[0],second_words[1],second_words[2],second_words[3],second_words[4]));
@@ -1626,40 +1607,25 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		}
 	}
 	mrt_mask &= color_output_mask;
-	// The Chen PPSA01341 renderer binds all enabled guest color targets before
-	// compiling pixel output assignments. On the Android path an unrecognized
-	// translated MRT can instead remove that attachment entirely; the draw
-	// still "succeeds" but the scene compositor samples a blank image.
-	// Retain only REAL enabled CB targets with backing memory. This is strictly
-	// scoped to the title's compatibility preset and never changes other games.
+	// Match the reference PS5 renderer: attachment lifetime follows guest
+	// CB_TARGET_MASK, not the subset of PS exports the translator detects.
+	// Static/dynamic write masks still honor CB_SHADER_MASK. Even depth-only
+	// passes may have a live color attachment that must stay attached.
 	static const bool ds_guest_color_targets = [] {
 		const char* setting = std::getenv("KYTY_DS_GUEST_COLOR_TARGETS");
-		return setting != nullptr && setting[0] == '1' && setting[1] == '\0';
+		return setting && setting[0] == '1' && setting[1] == '\0';
 	}();
-	if (ds_guest_color_targets && state.ps_active) {
-		uint32_t eligible = 0;
+	if (ds_guest_color_targets) {
 		const auto& ctx = buffer.GetRegisters();
+		uint32_t guest_mask = 0;
 		for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; ++slot) {
-			if (ctx.GetRenderTarget(slot).base.addr != 0 &&
-			    render_target_mask_slot(ctx.GetRenderTargetMask(), slot) != 0) {
-				eligible |= 1u << slot;
-			}
+			const auto& rt = ctx.GetRenderTarget(slot);
+			if (rt.base.addr != 0 &&
+			    rt.info.format != Prospero::ChannelLayout::kInvalid &&
+			    render_target_mask_slot(ctx.GetRenderTargetMask(), slot) != 0)
+				guest_mask |= 1u << slot;
 		}
-		const uint32_t expanded = RecoverGuestColorTargets(mrt_mask, color_output_mask, eligible);
-		const uint32_t recovered = expanded & ~mrt_mask;
-		if (recovered != 0) {
-			static std::atomic_uint32_t recovered_logs {0};
-			const uint32_t n = recovered_logs.fetch_add(1u, std::memory_order_relaxed);
-			if (n < 32u || (n % 4096u) == 0u) {
-				Log::WriteToConsoleAndLog(fmt::format(
-				    "[DS_GUEST_MRT_RECOVERY] frame={} ps=0x{:016x} missing=0x{:x} "
-				    "translated=0x{:x} guest=0x{:x} valid=0x{:x} effective=0x{:x}\n",
-				    m_context.GetGpu().GetFrameNum(),
-				    state.ps_input_info.stage.program->shader_hash, recovered,
-				    mrt_mask, color_output_mask, eligible, expanded));
-			}
-		}
-		mrt_mask = expanded;
+		mrt_mask = guest_mask;
 	}
 	if (draw.IsIndexed()) {
 		LogDrawPhase(draw.Name(), "ResolveRenderColorTarget");

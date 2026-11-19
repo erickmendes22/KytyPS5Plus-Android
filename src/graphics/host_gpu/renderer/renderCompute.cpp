@@ -50,99 +50,6 @@
 #include <vector>
 
 namespace Libs::Graphics {
-
-/*
- * PPSA01341: the only proven black-scene dispatches have X=0.  Two separate
- * compute programs bind writable ranges covering their arguments.  Snapshot
- * the actual Vulkan buffer before/after each candidate shader, in submission
- * order.  Never infer GPU values from stale guest CPU backing; never patch
- * the guest's indirect commands.
- *
- * Strict opt-in, two candidate shaders, one before/after pair at 650-734 and
- * one at 735-820 per shader (eight bounded GPU waits in total).
- */
-static void ProbeDsIndirectProducerGpu(RenderContext& context, CommandBuffer& command,
-                                       uint64_t shader_hash, bool after) {
-	static const bool enabled = [] {
-		const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
-		return v != nullptr && v[0] == '1' && v[1] == '\0';
-	}();
-	if (!enabled) return;
-	const uint32_t frame = context.GetGpu().GetFrameNum();
-	if (frame < 650u || frame > 820u) return;
-	const int shader = shader_hash == 0xb02af9131dd67f13ull ? 0 :
-	                   shader_hash == 0x6cbfe18ea2005263ull ? 1 : -1;
-	if (shader < 0) return;
-	const uint32_t phase = frame < 735u ? 0u : 1u;
-	static std::array<std::atomic_uint32_t, 8> captured {};
-	const uint32_t index = static_cast<uint32_t>(shader)*4u + phase*2u +
-	                       (after ? 1u : 0u);
-	if (captured[index].fetch_add(1u, std::memory_order_relaxed) != 0u) return;
-
-	constexpr uint64_t first_site = 0x21c77f7dcull;
-	constexpr uint64_t second_site = 0x21c77f974ull;
-	constexpr uint64_t gap = second_site - first_site;
-	constexpr uint64_t bytes = gap + sizeof(vk::DispatchIndirectCommand);
-	auto& cache = context.GetBufferCache();
-	auto [source, src_offset] = cache.ObtainBuffer(first_site, bytes, false);
-	if (source == nullptr || src_offset > source->Size() ||
-	    bytes > source->Size() - src_offset) {
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "[DS_INDIRECT_PRODUCER_GPU] frame={} shader=0x{:016x} stage={} source_unavailable=1\n",
-		    frame, shader_hash, after ? "after" : "before"));
-		return;
-	}
-	auto& download = cache.GetUtilityBuffer(MemoryUsage::Download);
-	auto [mapped, dst_offset] = download.Map(24u, 16u, true);
-	if (mapped == nullptr) {
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "[DS_INDIRECT_PRODUCER_GPU] frame={} shader=0x{:016x} stage={} staging_unavailable=1\n",
-		    frame, shader_hash, after ? "after" : "before"));
-		return;
-	}
-	download.Commit();
-	command.EndRendering(PassEnd::Buffer);
-	auto native = command.Handle();
-	vk::BufferMemoryBarrier before {};
-	before.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
-	before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
-	before.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	before.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	before.buffer = source->Handle();
-	before.offset = src_offset;
-	before.size = bytes;
-	native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-	                       vk::PipelineStageFlagBits::eTransfer, {},
-	                       0, nullptr, 1, &before, 0, nullptr);
-	const std::array<vk::BufferCopy, 2> copies {{
-	    {src_offset, dst_offset, 12u},
-	    {src_offset + gap, dst_offset + 12u, 12u}
-	}};
-	native.copyBuffer(source->Handle(), download.Handle(),
-	                  static_cast<uint32_t>(copies.size()), copies.data());
-	vk::BufferMemoryBarrier host_read {};
-	host_read.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-	host_read.dstAccessMask = vk::AccessFlagBits::eHostRead;
-	host_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	host_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	host_read.buffer = download.Handle();
-	host_read.offset = dst_offset;
-	host_read.size = 24u;
-	native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-	                       vk::PipelineStageFlagBits::eHost | vk::PipelineStageFlagBits::eAllCommands,
-	                       {}, 0, nullptr, 1, &host_read, 0, nullptr);
-	context.GetCommandScheduler().Finish();
-	download.Invalidate(dst_offset, 24u);
-	std::array<uint32_t, 6> groups {};
-	std::memcpy(groups.data(), mapped, sizeof(groups));
-	Log::WriteToConsoleAndLog(fmt::format(
-	    "[DS_INDIRECT_PRODUCER_GPU] frame={} shader=0x{:016x} stage={} "
-	    "site0=0x{:x} groups0={},{},{} site1=0x{:x} groups1={},{},{}\n",
-	    frame, shader_hash, after ? "after" : "before",
-	    first_site, groups[0], groups[1], groups[2],
-	    second_site, groups[3], groups[4], groups[5]));
-}
-
 static bool FillSourcesDisjoint(std::span<const ShaderRecompiler::IR::DescriptorValue> sources,
                                  GuestRange destination, uint32_t output_buffer = UINT32_MAX) {
 	for (uint32_t i = 0; i < sources.size(); ++i) {
@@ -842,7 +749,6 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 
 	buffer.EndRendering(PassEnd::Compute);
-	ProbeDsIndirectProducerGpu(m_context, buffer, program.shader_hash, false);
 	auto& pipeline =
 	    m_context.GetPipelineCache().GetComputePipeline(input_info, compute_program);
 	auto& bindings = m_compute_bindings;
@@ -963,7 +869,6 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	// The removed host fence also ordered read-only dispatches before later writers.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
-	ProbeDsIndirectProducerGpu(m_context, buffer, program.shader_hash, true);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
 	ResetBindings();
 }
@@ -1014,7 +919,6 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		return;
 	}
 	buffer.EndRendering(PassEnd::Compute);
-	ProbeDsIndirectProducerGpu(m_context, buffer, input_info.stage.program->shader_hash, false);
 	// rt_half=2 (two dispatches, shader/halfRateTiles.h): pass 1 starts an empty compact list.
 	auto* const retrace = m_context.GetBufferCache().RetraceBuffer();
 	const bool  two_pass = retrace != nullptr && !HalfRateTiles::LoopDiagnostic() &&
@@ -1057,32 +961,12 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			RebindBuffers(bindings);
 		}
 	}
-	// These two gameplay compute writers produce a sampled-black scene target.
-	// Measure their actual GPU-written groups rather than guessing from CPU backing.
-	// The original clamp and dispatch commands remain untouched.
-	static const bool ds_trace_groups = [] {
-		const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
-		return v != nullptr && v[0] == '1' && v[1] == '\0';
-	}();
-	static std::array<std::atomic_uint32_t, 2> ds_trace_samples {};
-	const uint64_t hash = program.shader_hash;
-	const int target = hash == 0xc2e01fbe98f5ebabull ? 0 :
-	                   hash == 0xe75589aa0bb3ae52ull ? 1 : -1;
-	const bool ds_trace_this = ds_trace_groups && target >= 0 &&
-	    m_context.GetGpu().GetFrameNum() >= 735 &&
-	    ds_trace_samples[static_cast<size_t>(target)].fetch_add(1, std::memory_order_relaxed) < 4u;
-	if (ds_trace_this && cpu_args) {
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "[DS_INDIRECT_GROUPS] site=0x{:x} shader=0x{:016x} x={} y={} z={} source=cpu\n",
-		    args_addr, hash, args.x, args.y, args.z));
-	}
 	vk::Buffer indirect_buffer = args_buffer->Handle();
 	uint64_t   indirect_offset = args_offset;
 	if (!cpu_args && IndirectDispatchClampEnabled()) {
 		// Recorded before the guest bindings: the fix-up binds its own pipeline and push data.
 		const auto clamped = GetIndirectDrawFixup().RecordDispatchClamp(
-		    buffer, args_buffer->BufferDeviceAddress() + args_offset, limits, args_addr,
-		    ds_trace_this);
+		    buffer, args_buffer->BufferDeviceAddress() + args_offset, limits, args_addr);
 		indirect_buffer = clamped.buffer;
 		indirect_offset = clamped.offset;
 	}
@@ -1120,7 +1004,6 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().NoteWork();
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
-	ProbeDsIndirectProducerGpu(m_context, buffer, program.shader_hash, true);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
 	ResetBindings();
 	if (two_pass) {
