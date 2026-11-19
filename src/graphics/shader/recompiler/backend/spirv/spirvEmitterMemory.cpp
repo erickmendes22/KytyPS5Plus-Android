@@ -1733,8 +1733,11 @@ uint32_t LoadUniformConstant(ValueEmitContext& ctx, const IR::Inst& inst, const 
 		ctx.Fail(inst, "uniform constant buffer load needs a constant offset");
 	}
 	const auto u32 = TypeU32(state);
-	// Scalar buffer addressing aligns the base and each offset independently.
-	const uint64_t dword = (offset_arg.U32() >> 2u) + (mem.offset >> 2u);
+	// Scalar SRT addresses carry between dynamic and instruction-immediate
+	// low bits before aligning to a DWORD. This bound uniform variant must
+	// agree with the host SrtWalker and GPU storage/BDA scalar paths.
+	const uint32_t combined_offset = offset_arg.U32() + mem.offset;
+	const uint64_t dword = combined_offset >> 2u;
 	if ((dword >> 2u) >= IR::UniformBufferVec4Count) {
 		return ConstantU32(state, 0); // past every uniform-eligible guest buffer
 	}
