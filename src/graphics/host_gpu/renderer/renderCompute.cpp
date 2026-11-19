@@ -65,7 +65,7 @@ static void ProbeDsIndirectProducerGpu(RenderContext& context, CommandBuffer& co
                                        uint64_t shader_hash, bool after) {
 	static const bool enabled = [] {
 		const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
-		return v != nullptr && v[0] == '1' && v[1] == '\\0';
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
 	}();
 	if (!enabled) return;
 	const uint32_t frame = context.GetGpu().GetFrameNum();
