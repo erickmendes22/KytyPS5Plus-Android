@@ -227,7 +227,10 @@ class LaunchArgsTest {
             assertEquals(-1, args.indexOf("--gpu-indirect"))
             assertEquals(-1, args.indexOf("--targeted-readback"))
             assertEquals(1, args.count { it == "KYTY_REBIND_AFTER_JOIN=1" })
-            assertEquals(-1, args.indexOf("--readback-linear-images"))
+            // U59's PPSA01341 reference preset uses GPU-written linear image
+            // readback for guest coherency; this is not diagnostic tracing.
+            assertEquals("true", args.getOrNull(args.indexOf("--readback-linear-images") + 1))
+            assertEquals(1, args.count { it == LaunchArgs.FLAG_TESSELLATION })
             assertEquals(1, args.count { it == "KYTY_DS_GPU_LAYER_KEEP=1" })
             // The experimental frame fence stalled queues 17/49 for 2 s in the device log.
             // Normal GPU ordering remains; do not impose this additional gate by default.
