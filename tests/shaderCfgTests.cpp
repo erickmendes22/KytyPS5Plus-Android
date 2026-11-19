@@ -16530,14 +16530,16 @@ void TestSrtWalkerRealSBufferTranslation() {
   const auto plan = ShaderRecompiler::IR::ExtractResourcePlan(ir);
   const auto walked = ShaderRecompiler::IR::SrtWalker(plan, runtime).RefreshFlatBuffer(flat);
   Check(walked, "SRT walk failed");
+  // SMEM computes (SOFFSET=2 + immediate=2) and then aligns the sum,
+  // rather than aligning each operand independently and losing the carry.
   Check(flat.size() == 4 &&
-            std::equal(flat.begin(), flat.end(), table.begin()),
-        "real S_BUFFER_LOAD walk did not align offset components independently");
+            std::equal(flat.begin(), flat.end(), table.begin() + 1u),
+        "real S_BUFFER_LOAD walk lost the byte-offset carry");
 
   user_data[10] = 3 * sizeof(uint32_t);
   const auto bounds_walked = ShaderRecompiler::IR::SrtWalker(plan, runtime).RefreshFlatBuffer(flat);
-  Check(bounds_walked && flat == std::vector<uint32_t>{table[0], table[1], table[2], 0u},
-        "real S_BUFFER_LOAD walk did not zero only the out-of-bounds DWORD");
+  Check(bounds_walked && flat == std::vector<uint32_t>{table[1], table[2], 0u, 0u},
+        "real S_BUFFER_LOAD walk used stale bounds after byte-offset carry");
   CheckFlattenedReadSlots(
       ir, 4, "real S_BUFFER_LOAD patch used the wrong flat offsets");
 
