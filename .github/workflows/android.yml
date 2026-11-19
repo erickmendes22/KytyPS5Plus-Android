@@ -358,7 +358,9 @@ jobs:
           print("Demon frame-order integration assertions: OK")
           PY
       - name: Host build dependencies
-        timeout-minutes: 10
+        # Ubuntu package mirrors can be slow even when the packages are available.
+        # Do not mistake network download latency for a shader regression.
+        timeout-minutes: 30
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
