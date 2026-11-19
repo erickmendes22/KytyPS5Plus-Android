@@ -2822,10 +2822,13 @@ bool TextureCache::IsRegionGpuModified(uint64_t address, uint64_t size) {
 	if (!GuestRange {address, size}.Valid()) return false;
 	std::scoped_lock lock {m_lock};
 	const auto images = FindImagesInRegion(address, size, false);
-	return std::ranges::any_of(images, [&](ImageId id) {
+	for (const auto id: images) {
 		const auto* image = m_slot_images.try_get(id);
-		return image != nullptr && image->registered && image->IsGpuModified();
-	});
+		if (image != nullptr && image->registered && image->IsGpuModified()) {
+			return true;
+		}
+	}
+	return false;
 }
 
 void TextureCache::RestoreMappedProtection(uint64_t address, uint64_t size) {
