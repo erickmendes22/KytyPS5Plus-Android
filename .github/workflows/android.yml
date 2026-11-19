@@ -335,6 +335,10 @@ jobs:
           /tmp/descriptor-pool-policy
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_souls_frame_boundary_test.cpp -o /tmp/demons-frame-boundary
           /tmp/demons-frame-boundary
+      - name: Verify Demon indirect lighting dispatch keeps GPU-owned argument source
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_indirect_dispatch_test.cpp -o /tmp/demons-indirect-dispatch
+          /tmp/demons-indirect-dispatch
       - name: Verify Demon PC-parity integration without weakening fence dependencies
         run: |
           python3 - <<'PY'

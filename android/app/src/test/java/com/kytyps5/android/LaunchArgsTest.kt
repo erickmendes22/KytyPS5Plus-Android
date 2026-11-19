@@ -106,9 +106,11 @@ class LaunchArgsTest {
         assertEquals(1, demons.count { it == LaunchArgs.FLAG_TESSELLATION })
         val readback = demons.indexOf("--readback-linear-images")
         assertEquals("true", demons.getOrNull(readback + 1))
+        assertEquals(1, demons.count { it == "KYTY_DS_GPU_ZERO_INDIRECT=1" })
         val other = LaunchArgs.forGame("/g", Resolution.HD_720, titleId = "PPSA99999")
         assertEquals(-1, other.indexOf(LaunchArgs.FLAG_TESSELLATION))
         assertEquals(-1, other.indexOf("--readback-linear-images"))
+        assertEquals(-1, other.indexOf("KYTY_DS_GPU_ZERO_INDIRECT=1"))
     }
 
     @Test

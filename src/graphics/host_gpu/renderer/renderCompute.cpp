@@ -14,6 +14,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/host_gpu/renderer/dispatchSplit.h"
+#include "graphics/host_gpu/renderer/indirectDispatchPolicy.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/gpuPipelineItems.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
@@ -883,11 +884,27 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	                    0, mode, buffer.GetShaders().GetCs().cs_regs.data_addr);
 	Common::LockGuard lock(m_context.GetMutex());
 	vk::DispatchIndirectCommand args {};
-	const bool cpu_args = !m_context.GetBufferCache().HasGpuDirtyBytes(args_addr, sizeof(args)) &&
-	                      LibKernel::Memory::TryReadBacking(args_addr, &args, sizeof(args));
-	if (cpu_args && (args.x == 0 || args.y == 0 || args.z == 0)) {
+	auto& indirect_cache = m_context.GetBufferCache();
+	// A backing copy can be stale while an earlier GPU write is pending or a
+	// readback has not published. In particular, Demon's Souls creates indirect
+	// lighting work on the GPU: the host seeing X=0 is not proof that the GPU
+	// dispatch buffer still contains zero. Preserve the real Vulkan command
+	// instead of discarding it; do not fabricate nonzero group counts.
+	const bool host_args_current =
+	    !indirect_cache.HasGpuDirtyBytes(args_addr, sizeof(args)) &&
+	    !indirect_cache.IsRegionGpuModified(args_addr, sizeof(args)) &&
+	    LibKernel::Memory::TryReadBacking(args_addr, &args, sizeof(args));
+	static const bool ds_gpu_zero_indirect = [] {
+		const char* value = std::getenv("KYTY_DS_GPU_ZERO_INDIRECT");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	const bool host_zero = args.x == 0 || args.y == 0 || args.z == 0;
+	const auto args_source =
+	    ChooseIndirectDispatchSource(host_args_current, host_zero, ds_gpu_zero_indirect);
+	if (args_source == IndirectDispatchSource::Skip) {
 		return;
 	}
+	const bool cpu_args = args_source == IndirectDispatchSource::Cpu;
 	const auto limits = ComputeGroupLimits(m_context.GetGraphics());
 	// Arguments the CPU knows past the host limits: recorded as direct vkCmdDispatchBase pieces.
 	// GPU-written ones: clamped to the limits by a fix-up pass (logged when it clamps).

@@ -137,6 +137,10 @@ object LaunchArgs {
                     // readback of GPU-written linear images. This is guest
                     // memory coherency, not the disabled diagnostic readbacks.
                     "--readback-linear-images", "true",
+                    // A guest-memory zero is not authoritative for a GPU-produced
+                    // indirect lighting dispatch. Vulkan still reads the actual
+                    // arguments; the existing clamp handles device limits.
+                    "--env", "KYTY_DS_GPU_ZERO_INDIRECT=1",
                     "--env", "KYTY_DS_NATIVE_TSC=1",
                     "--async-shaders", "0", "--env", "KYTY_REBIND_AFTER_JOIN=1",
                     "--env", "KYTY_PRESENT_COMPACT=1", "--env", "KYTY_DS_GPU_LAYER_KEEP=1",
