@@ -133,6 +133,10 @@ object LaunchArgs {
                     // Demon's Souls. Without this flag GetDrawTopology(kPatch)
                     // returns false, silently discarding the scene's patch draws.
                     FLAG_TESSELLATION,
+                    // U59's PPSA01341 compatibility preset also requires
+                    // readback of GPU-written linear images. This is guest
+                    // memory coherency, not the disabled diagnostic readbacks.
+                    "--readback-linear-images", "true",
                     "--env", "KYTY_DS_NATIVE_TSC=1",
                     "--async-shaders", "0", "--env", "KYTY_REBIND_AFTER_JOIN=1",
                     "--env", "KYTY_PRESENT_COMPACT=1", "--env", "KYTY_DS_GPU_LAYER_KEEP=1",

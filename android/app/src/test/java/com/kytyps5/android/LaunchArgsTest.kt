@@ -101,6 +101,17 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun demonsSoulsReferenceRequiresTessellationAndLinearImageReadback() {
+        val demons = LaunchArgs.forGame("/g", Resolution.HD_720, titleId = "PPSA01341")
+        assertEquals(1, demons.count { it == LaunchArgs.FLAG_TESSELLATION })
+        val readback = demons.indexOf("--readback-linear-images")
+        assertEquals("true", demons.getOrNull(readback + 1))
+        val other = LaunchArgs.forGame("/g", Resolution.HD_720, titleId = "PPSA99999")
+        assertEquals(-1, other.indexOf(LaunchArgs.FLAG_TESSELLATION))
+        assertEquals(-1, other.indexOf("--readback-linear-images"))
+    }
+
+    @Test
     fun renderScaleRoundTripsThroughStorageAndGameSettingsJson() {
         assertEquals(RenderScale.NATIVE, RenderScale.fromStorage(null))
         assertEquals(RenderScale.NATIVE, RenderScale.fromStorage("bogus"))
