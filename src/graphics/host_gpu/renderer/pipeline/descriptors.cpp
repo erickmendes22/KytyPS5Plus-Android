@@ -670,8 +670,27 @@ static TextureDescEntry ComputeTextureDesc(const ShaderRecompiler::IR::ImageReso
 		desc.info.UpdateSize();
 	}
 	const auto alignment = desc.info.DataAlignment();
-	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
-	                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
+	const bool invalid_size_or_alignment = desc.info.data.size == 0 || alignment == 0 ||
+	    (address & (static_cast<uint64_t>(alignment) - 1u)) != 0;
+	if (invalid_size_or_alignment) {
+		// A malformed runtime descriptor appeared around CS929 in Demon's
+		// Souls. Do not silently bind an unrelated null texture: retain the
+		// strict validity contract and report the actual guest descriptor.
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_TEXTURE_DESCRIPTOR_INVALID] source={} class={} read={} written={} "
+		    "address=0x{:x} size={} align={} extent={}x{}x{} levels={} "
+		    "tile={} type={} format={} r128={} "
+		    "words={:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}\n",
+		    resource.source, static_cast<uint32_t>(resource.resource_class),
+		    resource.read ? 1 : 0, resource.written ? 1 : 0,
+		    address, desc.info.data.size, alignment, width, height, depth,
+		    levels, static_cast<uint32_t>(tile), static_cast<uint32_t>(type),
+		    static_cast<uint32_t>(format), resource.r128 ? 1 : 0,
+		    descriptor.fields[0], descriptor.fields[1], descriptor.fields[2],
+		    descriptor.fields[3], descriptor.fields[4], descriptor.fields[5],
+		    descriptor.fields[6], descriptor.fields[7]));
+	}
+	EXIT_NOT_IMPLEMENTED(invalid_size_or_alignment);
 	if (storage) {
 		ValidateStorageTexture(resource, descriptor, desc.info.data.size);
 	}
