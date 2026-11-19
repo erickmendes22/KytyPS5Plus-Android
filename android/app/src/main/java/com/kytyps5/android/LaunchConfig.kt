@@ -141,6 +141,9 @@ object LaunchArgs {
                     // indirect lighting dispatch. Vulkan still reads the actual
                     // arguments; the existing clamp handles device limits.
                     "--env", "KYTY_DS_GPU_ZERO_INDIRECT=1",
+                    // Turnip lacks native shared 64-bit atomics. Only compute
+                    // programs actually using them take StorageBuffer-backed LDS.
+                    "--env", "KYTY_DS_LDS64_STORAGE=1",
                     "--env", "KYTY_DS_NATIVE_TSC=1",
                     "--async-shaders", "0", "--env", "KYTY_REBIND_AFTER_JOIN=1",
                     "--env", "KYTY_PRESENT_COMPACT=1", "--env", "KYTY_DS_GPU_LAYER_KEEP=1",

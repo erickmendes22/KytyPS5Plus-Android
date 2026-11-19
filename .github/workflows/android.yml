@@ -339,6 +339,10 @@ jobs:
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_indirect_dispatch_test.cpp -o /tmp/demons-indirect-dispatch
           /tmp/demons-indirect-dispatch
+      - name: Verify Demon 64-bit LDS atomic storage-buffer fallback
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_lds_int64_storage_test.cpp -o /tmp/demons-lds-int64
+          /tmp/demons-lds-int64
       - name: Verify Demon PC-parity integration without weakening fence dependencies
         run: |
           python3 - <<'PY'

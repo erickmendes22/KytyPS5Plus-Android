@@ -3,6 +3,7 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/backend/spirv/laneBranches.h"
+#include "graphics/shader/recompiler/backend/spirv/ldsInt64StoragePolicy.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
@@ -358,8 +359,23 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	EmitterState state(program, input_info, maintenance8_enabled, device_features);
 	state.device_quirks = device_quirks;
 	state.soft_float64 = software_float64;
+	// The Android Turnip path provides Vulkan buffer int64 atomics, but not
+	// shaderSharedInt64Atomics. Compute shaders needing DS 64-bit LDS atomics can
+	// use the already implemented per-workgroup StorageBuffer LDS instead.
+	// This changes the actual compiled descriptor layout, so ValidateNativeProgram
+	// must inspect state.lds_storage_class rather than the input's size-only hint.
+	static const bool ds_lds64_storage = [] {
+		const char* value = std::getenv("KYTY_DS_LDS64_STORAGE");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	if (ShouldUseStorageLdsForInt64(ds_lds64_storage, program.stage == ShaderType::Compute,
+	                               program.info.uses_lds, program.info.shared_int64_atomics,
+	                               device_features.shader_shared_int64_atomics,
+	                               state.lds_storage_class == spv::StorageClassWorkgroup)) {
+		state.lds_storage_class = spv::StorageClassStorageBuffer;
+	}
 	// 64-bit atomics on StorageBuffer-backed LDS only need shaderBufferInt64Atomics, which is
-	// always required. Workgroup-class LDS additionally needs shaderSharedInt64Atomics.
+	// required by the renderer. Workgroup-class LDS additionally needs shaderSharedInt64Atomics.
 	if (program.info.shared_int64_atomics && state.lds_storage_class == spv::StorageClassWorkgroup &&
 	    !device_features.shader_shared_int64_atomics) {
 		RejectUnsupportedShader(program, "64-bit LDS atomics (shaderSharedInt64Atomics)");
@@ -385,8 +401,7 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 		}
 	}
 	DefineModule(state);
-	ValidateNativeProgram(program, program.stage == ShaderType::Compute &&
-	                                   input_info.compute != nullptr && input_info.compute->lds_storage);
+	ValidateNativeProgram(program, state.lds_storage_class == spv::StorageClassStorageBuffer);
 	EmitProgram(state);
 	state.builder.AddEntryPoint(MeshEmulated(state) ? spv::ExecutionModelGLCompute
 	                                                : ExecutionModelForStage(state.program.stage),
