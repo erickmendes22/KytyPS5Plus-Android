@@ -74,6 +74,10 @@ public:
 	void               InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
 	                                           RefreshCause::Source source = RefreshCause::Source::GpuBuffer);
 	[[nodiscard]] bool IsRegionRegistered(uint64_t address, uint64_t size);
+	// A GPU-authored image may still own the bytes while the CPU backing
+	// contains an older copy. Never treat that backing as current indirect
+	// dispatch arguments merely because the buffer dirty ledger is clean.
+	[[nodiscard]] bool IsRegionGpuModified(uint64_t address, uint64_t size);
 
 	[[nodiscard]] bool IsMeta(uint64_t address);
 	// Whether [address, address + size) lies inside the DCC/CMask range of a color surface that

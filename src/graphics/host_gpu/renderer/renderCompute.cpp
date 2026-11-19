@@ -885,19 +885,21 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	Common::LockGuard lock(m_context.GetMutex());
 	vk::DispatchIndirectCommand args {};
 	auto& indirect_cache = m_context.GetBufferCache();
-	// A backing copy can be stale while an earlier GPU write is pending or a
-	// readback has not published. In particular, Demon's Souls creates indirect
-	// lighting work on the GPU: the host seeing X=0 is not proof that the GPU
-	// dispatch buffer still contains zero. Preserve the real Vulkan command
-	// instead of discarding it; do not fabricate nonzero group counts.
-	const bool host_args_current =
-	    !indirect_cache.HasGpuDirtyBytes(args_addr, sizeof(args)) &&
-	    !indirect_cache.IsRegionGpuModified(args_addr, sizeof(args)) &&
-	    LibKernel::Memory::TryReadBacking(args_addr, &args, sizeof(args));
+	// The buffer ledger alone cannot prove CPU backing is current: a GPU
+	// image can own these bytes. Demon's Souls keeps the Vulkan indirect
+	// arguments authoritative when an overlapping image is GPU-modified.
+	// This check never changes the GPU's workgroup counts.
 	static const bool ds_gpu_zero_indirect = [] {
 		const char* value = std::getenv("KYTY_DS_GPU_ZERO_INDIRECT");
 		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
+	const bool image_gpu_owned = ds_gpu_zero_indirect &&
+	    m_context.GetTextureCache().IsRegionGpuModified(args_addr, sizeof(args));
+	const bool host_args_current =
+	    !indirect_cache.HasGpuDirtyBytes(args_addr, sizeof(args)) &&
+	    !indirect_cache.IsRegionGpuModified(args_addr, sizeof(args)) &&
+	    !image_gpu_owned &&
+	    LibKernel::Memory::TryReadBacking(args_addr, &args, sizeof(args));
 	const bool host_zero = args.x == 0 || args.y == 0 || args.z == 0;
 	const auto args_source =
 	    ChooseIndirectDispatchSource(host_args_current, host_zero, ds_gpu_zero_indirect);

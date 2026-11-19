@@ -2817,6 +2817,17 @@ bool TextureCache::IsRegionRegistered(uint64_t address, uint64_t size) {
 	return !FindImagesInRegion(address, size, false).empty();
 }
 
+bool TextureCache::IsRegionGpuModified(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
+	if (!GuestRange {address, size}.Valid()) return false;
+	std::scoped_lock lock {m_lock};
+	const auto images = FindImagesInRegion(address, size, false);
+	return std::ranges::any_of(images, [&](ImageId id) {
+		const auto* image = m_slot_images.try_get(id);
+		return image != nullptr && image->registered && image->IsGpuModified();
+	});
+}
+
 void TextureCache::RestoreMappedProtection(uint64_t address, uint64_t size) {
 	// This compatibility path is enabled only for PPSA01341. No other title's
 	// kernel map protections or image-cache tracking are altered.
