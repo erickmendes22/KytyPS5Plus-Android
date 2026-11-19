@@ -1776,13 +1776,17 @@ void EmitReadConstBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto& state        = ctx.state;
 	mem.kind           = IR::ResourceKind::ScalarBuffer;
 	const auto offset = inst.Arg(1).Resolve();
-	auto       index  = offset.IsImmediate()
-	                        ? ConstantU32(state, (offset.U32() >> 2u) + (mem.offset >> 2u))
-	                        : Binary(state, spv::OpShiftRightLogical, TypeU32(state),
-	                                 ctx.Arg(inst, 1), ConstantU32(state, 2));
-	if (!offset.IsImmediate() && mem.offset >= 4u) {
-		index = Binary(state, spv::OpIAdd, TypeU32(state), index, ConstantU32(state, mem.offset >> 2u));
-	}
+	// Match the indirect scalar BDA path and the host SRT walker:
+	// (dynamic byte offset + instruction immediate) is aligned once.
+	// Separate >>2 operations discard carries between low two bits.
+	const auto combined = offset.IsImmediate()
+	    ? ConstantU32(state, offset.U32() + mem.offset)
+	    : Binary(state, spv::OpIAdd, TypeU32(state), ctx.Arg(inst, 1),
+	             ConstantU32(state, mem.offset));
+	auto index = offset.IsImmediate()
+	    ? ConstantU32(state, (offset.U32() + mem.offset) >> 2u)
+	    : Binary(state, spv::OpShiftRightLogical, TypeU32(state),
+	             combined, ConstantU32(state, 2));
 	const auto access    = PrepareMemoryResourceAccess(state, mem);
 	// Scalar buffer addressing aligns the base and each offset independently.
 	const auto element = Binary(

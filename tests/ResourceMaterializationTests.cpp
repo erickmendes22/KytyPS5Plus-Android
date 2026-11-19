@@ -641,6 +641,58 @@ void TestNullPageSrtReadsZero() {
         "captured SRT read from a null table pointer did not read zero untracked");
 }
 
+
+// Runtime-selected SRT scalar dword loads must sum dynamic and immediate
+// byte offsets before aligning. The shader-side BDA and host specialization
+// paths must agree even when the two low-bit fields carry into the next dword.
+void TestSrtScalarOffsetCarry() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  constexpr uint64_t base = 0x210000000ull;
+  for (const auto [dynamic, immediate] :
+       {std::pair{1u, 3u}, std::pair{3u, 1u}, std::pair{0u, 4u},
+        std::pair{2u, 6u}}) {
+    Program program;
+    program.stage = Libs::Graphics::ShaderType::Compute;
+    program.srt_plan_complete = true;
+    program.resource_tracking_complete = true;
+    auto &block = AddValueBlock(program);
+    MemoryInfo mem;
+    mem.kind = ResourceKind::ScalarBuffer;
+    mem.offset = immediate;
+    mem.data_bits = 32;
+    mem.data_dwords = 1;
+    mem.planning_only = true;
+    program.memory_info.push_back(mem);
+    auto &handle = block.AppendNewInst(ValueOpcode::GetBufferResource,
+        {Value(static_cast<uint32_t>(base)), Value(static_cast<uint32_t>(base >> 32u)),
+         Value(64u), Value(0u)});
+    auto &read = block.AppendNewInst(ValueOpcode::ReadConstBuffer,
+        {Value(&handle), Value(dynamic)});
+    read.SetFlags(MemoryFlags{.index = 0, .pc = 0x101u});
+    program.srt_reads.push_back({Value(&read), 0u});
+    auto plan = ExtractResourcePlan(program);
+
+    struct Capture {
+      uint64_t expected;
+      uint32_t calls = 0;
+    } capture{base + ((dynamic + immediate) & ~3u)};
+    const SrtRuntime runtime{
+        .read_memory = +[](void *userdata, uint64_t addr,
+                           std::span<uint32_t> words) {
+          auto &probe = *static_cast<Capture *>(userdata);
+          ++probe.calls;
+          if (addr != probe.expected || words.size() != 1u) return false;
+          words[0] = 0xbadc0ffeu;
+          return true;
+        },
+        .userdata = &capture};
+    uint32_t value = 0;
+    Check(SrtWalker(plan, runtime).Evaluate(plan.srt_reads[0].value, value) &&
+              value == 0xbadc0ffeu && capture.calls == 1,
+          "SRT scalar address lost carry from byte offset plus immediate");
+  }
+}
+
 void TestNativeNestedSrtRefresh() {
   using namespace Libs::Graphics::ShaderRecompiler::IR;
   std::array<uint32_t, 3> first{0u, 0x12345678u, 0xabcdef01u};
@@ -2046,6 +2098,7 @@ void DbgExit(int) { std::abort(); }
 int main() {
   TestMappedSrtUsesDirectReaderByDefault();
   TestNullPageSrtReadsZero();
+  TestSrtScalarOffsetCarry();
   TestNativeNestedSrtRefresh();
   TestIntegerRuntimeValueFollowsSrtReads();
   TestSrtAliasesRetainReadPolicy();

@@ -1038,8 +1038,13 @@ bool SrtWalker::EvaluateRawRead(const Inst& inst, uint64_t& result) {
 		if (immediate < 0) {
 			return false;
 		}
-		const auto byte_offset =
-		    (static_cast<uint64_t>(immediate) & ~uint64_t {3}) + (static_cast<uint32_t>(offset) & ~3u);
+		// RDNA2 scalar loads add their two byte offsets *before* discarding
+		// the low address bits. Rounding each operand individually loses the
+		// carry (e.g. a SRT table word at dynamic 1 + immediate 3 is at +4).
+		// Keep the host SRT walker in agreement with the shader-side BDA path.
+		const uint64_t raw_offset = static_cast<uint64_t>(immediate) +
+		                            static_cast<uint32_t>(offset);
+		const uint64_t byte_offset = raw_offset & ~uint64_t {3};
 		const auto stride  = (static_cast<uint32_t>(high) >> 16u) & 0x3fffu;
 		if (vector) {
 			// Only the uniform, unswizzled structured DWORD address is evaluated on the host.
@@ -1057,7 +1062,7 @@ bool SrtWalker::EvaluateRawRead(const Inst& inst, uint64_t& result) {
 			result = 0u;
 			return true;
 		}
-		address = (base & ~uint64_t {3}) + byte_offset;
+		address = ((base & ~uint64_t {3}) + raw_offset) & ~uint64_t {3};
 	} else {
 		const auto relative = (immediate & ~int64_t {3}) +
 		                      static_cast<int64_t>(static_cast<uint32_t>(offset) & ~3u);
