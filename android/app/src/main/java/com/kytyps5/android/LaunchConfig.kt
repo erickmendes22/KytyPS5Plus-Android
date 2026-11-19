@@ -128,7 +128,12 @@ object LaunchArgs {
             // BPE mixes raw RDTSC with sceKernelGetTscFrequency. Disable FEX's
             // minimum-1GHz scaling only for this title; native APIs use CNTFRQ.
             (if (titleId.equals("PPSA01341", ignoreCase = true))
-                arrayOf("--env", "KYTY_DS_NATIVE_TSC=1",
+                arrayOf(
+                    // The PC Kyty compatibility preset requires tessellation for
+                    // Demon's Souls. Without this flag GetDrawTopology(kPatch)
+                    // returns false, silently discarding the scene's patch draws.
+                    FLAG_TESSELLATION,
+                    "--env", "KYTY_DS_NATIVE_TSC=1",
                     "--async-shaders", "0", "--env", "KYTY_REBIND_AFTER_JOIN=1",
                     "--env", "KYTY_PRESENT_COMPACT=1", "--env", "KYTY_DS_GPU_LAYER_KEEP=1",
                     // Chen's renderer keeps the guest's backed CB color targets
