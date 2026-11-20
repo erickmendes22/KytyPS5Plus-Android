@@ -1583,12 +1583,27 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 		}
 		for (const auto* writer: prepared_bindings) {
 			const auto& program = *writer->runtime->program;
-			for (const auto& resource: program.info.buffers) {
+			const auto& snapshot = *writer->runtime->resources;
+			for (uint32_t i = 0; i < program.info.buffers.size(); ++i) {
+				const auto& resource = program.info.buffers[i];
 				if (!resource.written || resource.descriptor_index == UINT32_MAX) continue;
-				const auto& written = writer->buffer_sources[resource.descriptor_index];
-				if (written.size != 0) {
-					written_ranges.push_back({written.address, written.size, true});
+				const auto& bound = writer->buffer_sources[resource.descriptor_index];
+				if (bound.size == 0) continue;
+				uint64_t address = bound.address;
+				uint64_t size = bound.size;
+				const auto descriptor =
+				    DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[i]);
+				const uint64_t slack = resource.written_slack;
+				if (!resource.written_dynamic && resource.written_begin < resource.written_end &&
+				    !descriptor.AddTid() && !descriptor.SwizzleEnabled() &&
+				    uint64_t {resource.written_end} + slack <= bound.size &&
+				    bound.address >= slack) {
+					// Expand constant-offset writes by the word-alignment slack, retaining
+					// the conservative whole-descriptor check if the proof is incomplete.
+					address = bound.address + resource.written_begin - slack;
+					size = uint64_t {resource.written_end} - resource.written_begin + 2u * slack;
 				}
+				written_ranges.push_back({address, size, true});
 			}
 		}
 	}
