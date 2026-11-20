@@ -225,9 +225,11 @@ void Apply(int mode) {
 		LOGF("ThreadPlacement: fastest cores now %d at %ld kHz\n", cpus.fast_count, cpus.best_khz);
 	}
 	const bool  split = (mode & kSplit) != 0 && cpus.prime_count > 0;
-	const bool  pin   = !split && (mode & kPin) != 0 && cpus.fast_count > 0;
+	const bool  prefer_prime = !split && (mode & kPreferPrime) != 0 && cpus.prime_count > 0;
+	const bool  pin   = !split && !prefer_prime && (mode & kPin) != 0 &&
+	                    cpus.fast_count > 0;
 	for (const auto tid: g_critical) {
-		SetAffinity(tid, split ? cpus.prime : (pin ? cpus.fast : cpus.all));
+		SetAffinity(tid, (split || prefer_prime) ? cpus.prime : (pin ? cpus.fast : cpus.all));
 	}
 	const bool exclusive = split || (pin && (mode & kExclusive) != 0);
 	if (exclusive || (g_applied_mode & (kExclusive | kSplit)) != 0) {
@@ -243,9 +245,10 @@ void Apply(int mode) {
 		OpenSession();
 	}
 	if (mode != g_applied_mode || g_applied_critical != g_critical.size()) {
-		LOGF("ThreadPlacement: mode %d (pin=%d exclusive=%d hint=%d split=%d over %d prime cores) over %zu "
+		LOGF("ThreadPlacement: mode %d (pin=%d exclusive=%d hint=%d split=%d prime_prefer=%d over %d prime cores) over %zu "
 		     "critical threads\n",
-		     mode, pin ? 1 : 0, exclusive ? 1 : 0, hint_now ? 1 : 0, split ? 1 : 0, cpus.prime_count,
+		     mode, pin ? 1 : 0, exclusive ? 1 : 0, hint_now ? 1 : 0, split ? 1 : 0,
+	     prefer_prime ? 1 : 0, cpus.prime_count,
 		     g_critical.size());
 	}
 	g_applied_mode     = mode;
@@ -326,7 +329,8 @@ void Poll(int64_t mode) {
 	// Exclusive placement is re-applied every poll: threads created since inherit their creator's set.
 	// With pinning on, re-applied every poll: the fastest cores follow the thermal limits, and
 	// threads created since inherit their creator's set.
-	if (wanted != g_applied_mode || g_applied_critical != g_critical.size() || (wanted & (kPin | kSplit)) != 0) {
+	if (wanted != g_applied_mode || g_applied_critical != g_critical.size() ||
+	    (wanted & (kPin | kSplit | kPreferPrime)) != 0) {
 		Apply(wanted);
 	}
 }

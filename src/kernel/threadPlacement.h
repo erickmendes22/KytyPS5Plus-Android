@@ -14,6 +14,11 @@
 //   2  an ADPF performance-hint session over the critical threads, told every frame that the
 //      frame took longer than its target, so the scheduler raises their clocks
 //   4  keep every other thread of the process off the fastest cores (with 1)
+//  16  prefer the hardware prime cluster for critical threads *without* excluding
+//      guest/FEX threads from it. Use together with 1 for a fallback to the
+//      fastest currently available cluster when hardware maxima are missing.
+//      Intended for UFC6: the GPU front may run single-stage (fan-auto off),
+//      while the game can still require fast guest threads on the prime cores.
 //   8  split: the critical threads get the prime cluster (the cores with the highest hardware
 //      maximum, cpuinfo_max_freq: cpu6-7 on a Snapdragon 8 Elite) to themselves, every other
 //      thread of the process (guest threads, SRT walk workers, ...) the remaining cores; overrides
@@ -30,7 +35,7 @@
 // ';' or '|' separated).
 namespace Kernel::ThreadPlacement {
 
-inline constexpr int kModeBits = 15;
+inline constexpr int kModeBits = 31;
 #if defined(__ANDROID__)
 inline constexpr int kAndroidDefaultMode = 8;
 #else
@@ -63,6 +68,11 @@ void ReportFrame(int64_t frame_ns);
 // The start mode from the environment string (nullptr = unset): unset = kAndroidDefaultMode on
 // Android, 0 elsewhere; an invalid value = 0.
 [[nodiscard]] int StartModeFrom(const char* value, bool android);
+
+// Bit 16 selects the prime cluster without limiting non-critical guest threads.
+// The core set is chosen by cpuinfo_max_freq (silicon capability), not
+// scaling_max_freq, which is a current policy limit rather than core topology.
+inline constexpr int kPreferPrime = 16;
 
 // The prime cluster from per-core hardware maxima (kHz, <= 0 = unknown): bit i set for every core
 // at the highest maximum. 0 when every known core has the same maximum (nothing to split), when

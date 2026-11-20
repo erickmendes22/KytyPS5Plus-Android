@@ -37,6 +37,14 @@ jobs:
           key: native-ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
             native-ccache-${{ runner.os }}-
+      - name: Validate independent Demon depth owners and UFC6 non-exclusive prime scheduling
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+            tests/manual/demons_view_placement_test.cpp -o /tmp/demons-distinct-depth
+          /tmp/demons-distinct-depth
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+            tests/manual/thread_prime_preference_test.cpp -o /tmp/ufc-prime-preference
+          /tmp/ufc-prime-preference
       - name: Compile and run actual Bluepoint poll thunk on x86 synthetic guest memory
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -O2 -Isrc \

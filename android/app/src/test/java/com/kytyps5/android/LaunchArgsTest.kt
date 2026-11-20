@@ -134,13 +134,13 @@ class LaunchArgsTest {
 
     @Test
     fun ufc6KeepsPrimeCpuAccessForGuestWorkersWithoutChangingOtherTitles() {
-        // Native default 8 splits the prime cluster away from guest/FEX workers
-        // when fan-auto turns the GPU record pipeline on. Mode 1 reserves no
-        // cluster exclusively; it pins only the critical GPU stages.
+        // Mode 17 prefers hardware prime cores for the GPU gate threads without
+        // excluding any guest/FEX workers from using those same cores.
         for (title in listOf("PPSA23566", "ppsa23566")) {
             val args = LaunchArgs.forGame("/games/ufc", Resolution.HD_720, titleId = title)
-            assertEquals(1, args.count { it == "KYTY_CPU_PLACE=1" })
+            assertEquals(1, args.count { it == "KYTY_CPU_PLACE=17" })
             assertEquals(-1, args.indexOf("KYTY_CPU_PLACE=8"))
+            assertEquals(-1, args.indexOf("KYTY_CPU_PLACE=1"))
             assertEquals(-1, args.indexOf("KYTY_CPU_PLACE=4"))
             assertEquals(1, args.count { it == "KYTY_BIND_MEMO=11" })
             assertEquals("0", args[args.indexOf("--async-shaders") + 1])

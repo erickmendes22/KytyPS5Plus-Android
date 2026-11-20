@@ -369,7 +369,8 @@ jobs:
             demons_view_placement_test \
             demons_lighting_memory_policy_test \
             ufc6_output_resolution_test \
-            compute_uncached_fill_policy_test; do
+            compute_uncached_fill_policy_test \
+            thread_prime_preference_test; do
             if test -f "tests/manual/${file}.cpp"; then
               g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
                 "tests/manual/${file}.cpp" -o "/tmp/${file}"
