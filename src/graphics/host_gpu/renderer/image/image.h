@@ -97,7 +97,8 @@ public:
 	            uint64_t size);
 	void Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer, uint64_t offset,
 	              uint64_t size);
-	void CopyImage(Image& source);
+	// Copy the depth/color aspect, or only stencil when requested.
+	void CopyImage(Image& source, bool stencil = false);
 	void Resolve(Image& source, const ImageSubresourceRange& source_range,
 	             const ImageSubresourceRange& destination_range);
 	void CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tiler);
