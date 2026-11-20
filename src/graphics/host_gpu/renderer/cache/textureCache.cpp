@@ -539,11 +539,28 @@ void TextureCache::DeleteImage(ImageId id) {
 		EXIT("TextureCache: deleting a GPU-modified image without resolving its contents\n");
 	}
 	m_download_images.erase(id);
-	// Guest HTile clear state belongs to the mapped guest allocation, not to
-	// one Vulkan image. When this image retires, release only its ownership ID:
-	// a replacement depth target must still see the clear_mask until unmap.
-	if (image->info.HasMetadata() &&
-	    image->info.metadata.kind == ImageMetadataKind::Htile) {
+	// HTile clear states belong to a guest depth surface, not to an
+	// individual D32/D32S8 native image. Retain states through the
+	// variant switch while a depth owner of this surface is registered,
+	// and drop them when the surface is finally retired.
+	if (image->info.IsDepth() && !image->depth_id) {
+		const uint64_t surface = image->info.data.address;
+		bool retained = false;
+		for (const auto other: FindImagesInRegion(surface, image->info.data.size, false)) {
+			const auto* owner = m_slot_images.try_get(other);
+			retained |= other != id && owner != nullptr && owner->registered &&
+			            !owner->depth_id && owner->info.IsDepth() &&
+			            owner->info.metadata.kind == ImageMetadataKind::Htile &&
+			            owner->info.data.address == surface;
+		}
+		if (!retained) {
+			std::erase_if(m_surface_metas, [&](const auto& metadata) {
+				return metadata.second.type == MetaDataInfo::Type::HTile &&
+				       metadata.second.depth_address == surface;
+			});
+		}
+	}
+	if (image->info.metadata.kind == ImageMetadataKind::Htile) {
 		auto metadata = m_surface_metas.find(image->info.metadata.range.address);
 		if (metadata != m_surface_metas.end() &&
 		    metadata->second.type == MetaDataInfo::Type::HTile &&
@@ -971,6 +988,27 @@ void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
 	destination.ClearBufferModified();
 }
 
+void TextureCache::CopyStencil(ImageId destination_id, ImageId source_id) {
+	// A resized D32S8 render target must carry its GPU-authored stencil plane.
+	// CopyImage transfers depth only; without this, masks disappear on the next bind.
+	auto& source = m_slot_images[source_id];
+	const auto it = std::ranges::find_if(source.stencil_ids, [&](ImageId id) {
+		return m_slot_images[id].info.data == source.info.stencil;
+	});
+	if (it == source.stencil_ids.end()) return;
+	const auto source_stencil_id = *it;
+	RefreshImage(source_stencil_id);
+	auto& destination = m_slot_images[destination_id];
+	destination.stencil_subresources = source.stencil_subresources;
+	const auto stencil_id = AssociateStencil(destination_id, source.info.stencil);
+	RefreshImage(stencil_id);
+	destination.CopyImage(source, true);
+	if (m_slot_images[source_stencil_id].IsGpuModified()) {
+		TrackImage(stencil_id);
+		CommitGpuWrite(m_slot_images[stencil_id]);
+	}
+}
+
 void TextureCache::CopyImageMip(ImageId destination_id, ImageId source_id, uint32_t mip,
                                 uint32_t layer) {
 	RefreshCopySource(source_id);
@@ -1043,6 +1081,12 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	    requested.pitch == cached.info.pitch &&
 	    (full_raw_layout || retain_cached_layout) &&
 	    !IsSupportedSampledDepthFormat(cached.info.pixel_format, requested.pixel_format);
+	// A padded pitch can alias an existing smaller depth backing at the
+	// same base. Vulkan requires an attachment at least as large as the
+	// requested render area; otherwise all uncovered pixels are undefined.
+	const bool grown_depth_target = binding == BindingType::DepthTarget &&
+	                                (requested.extent.width > cached.info.extent.width ||
+	                                 requested.extent.height > cached.info.extent.height);
 	bool recreate = cached.info.resources < requested.resources ||
 	                requested.IsVolume() != cached.info.IsVolume();
 	switch (binding) {
@@ -1055,6 +1099,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		case BindingType::DepthTarget:
 			recreate |= !cached.info.IsDepth();
 			recreate |= cached.info.IsDepth() && !(stencil_match && bpp_match);
+			recreate |= grown_depth_target;
 			break;
 		case BindingType::VideoOut: recreate |= cached.info.IsDepth(); break;
 	}
@@ -1085,7 +1130,16 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		    (!cached.info.IsDepth() && !replacement.info.IsDepth() &&
 		     ImageViewOps::FormatsCompatible(cached.backing.format, replacement.backing.format));
 		if (copy_supported) {
+			// First import the entire destination from guest RAM, then overlay
+			// only the GPU-authored common extent. Preserve padded rows.
+			if (grown_depth_target) RefreshImage(replacement_id);
 			CopyImage(replacement_id, cached_id);
+			if (binding == BindingType::DepthTarget && cached.info.IsDepth() &&
+			    cached.info.HasStencil() && requested.HasStencil() &&
+			    requested.stencil == cached.info.stencil &&
+			    cached.backing.format == replacement.backing.format) {
+				CopyStencil(replacement_id, cached_id);
+			}
 		} else {
 			LOGF_COLOR(Log::Color::BrightYellow,
 			           "TextureCache: unsupported cross-format multisample depth copy\n");
@@ -2133,14 +2187,15 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 	image.info.metadata = desc.info.metadata;
 	if (desc.info.HasMetadata()) {
 		const auto [metadata, inserted] = m_surface_metas.try_emplace(desc.info.metadata.range.address);
-		if (inserted) {
-			metadata->second.type = MetaDataInfo::Type::HTile;
-			if (image.info.htile_initial_clear) {
-				metadata->second.clear_mask.set();
-			}
+		if (inserted || metadata->second.type != MetaDataInfo::Type::HTile ||
+		    metadata->second.depth_address != image.info.data.address) {
+			// The same metadata address may be reused for a different depth
+			// surface. Never inherit the previous surface's clear state.
+			metadata->second.clear_mask.reset();
+			if (image.info.htile_initial_clear) metadata->second.clear_mask.set();
+			metadata->second.depth_address = image.info.data.address;
 		}
-		// A reused HTile range belongs to the latest acquired depth image;
-		// do not reinitialize any slices that were already consumed.
+		metadata->second.type  = MetaDataInfo::Type::HTile;
 		metadata->second.owner = id;
 	}
 	RefreshImage(id);
