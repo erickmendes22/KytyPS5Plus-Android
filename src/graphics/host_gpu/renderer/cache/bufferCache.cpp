@@ -461,9 +461,27 @@ BufferCache::ReadBackInPlace(Buffer& buffer, const std::vector<std::pair<uint64_
 	return mode;
 }
 
+bool BufferCache::ShaderWriteRetickEnabled() {
+	static const bool enabled = [] {
+		const char* v = std::getenv("KYTY_DS_SHADER_WRITE_RETICK");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
+	return enabled;
+}
+
+void BufferCache::RetagShaderWrite(uint64_t vaddr, uint64_t size, uint64_t preparation_tick) {
+	if (!ShaderWriteRetickEnabled() || preparation_tick == m_scheduler.CurrentTick() ||
+	    !GuestRange {vaddr, size}.Valid()) return;
+	// The producer's range was already marked GPU-written during binding.
+	// Only update its final command tick; do not expand protected/dirty bytes.
+	StampPendingWrites();
+	SetWriteTick(vaddr, vaddr + size, m_scheduler.CurrentTick());
+}
+
 void BufferCache::MarkWritten(uint64_t vaddr, uint64_t size) {
 	PipelineProbe::OnGpuWrite(vaddr, size);
-	if (!m_targeted_readback && !Common::PerfStats::Enabled()) {
+	if (!m_targeted_readback && !Common::PerfStats::Enabled() &&
+	    !ShaderWriteRetickEnabled()) {
 		return;
 	}
 	const auto end = vaddr + size;

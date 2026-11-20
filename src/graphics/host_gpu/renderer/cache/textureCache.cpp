@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/cache/stencilAssociationPolicy.h"
+#include "graphics/host_gpu/renderer/cache/gpuImagePublishPolicy.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
 #include "graphics/host_gpu/renderer/pipeline/bindMemo.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
@@ -2368,6 +2369,7 @@ void TextureCache::CommitGpuWrite(Image& image) {
 		image.RefreshComplete();
 	}
 	image.MarkGpuModified();
+	image.gpu_write_order = ++m_gpu_image_write_order;
 }
 
 bool TextureCache::HasCachedImageOverlap(uint64_t address, uint64_t size) {
@@ -3095,13 +3097,26 @@ bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t siz
 	ImageId selected {};
 	for (const auto id: FindImagesInRegion(address, size, false)) {
 		const auto* image = m_slot_images.try_get(id);
-		if (!image || !image->registered || !image->IsGpuModified()) continue;
+		if (!image || !image->registered || !image->IsGpuModified() || image->depth_id) continue;
 		const auto& range = image->info.data;
 		if (range.address > address || range.size < size ||
 		    address - range.address > range.size - size) continue;
-		// Do not guess which of two aliased GPU images contains the latest args.
-		if (selected) return false;
-		selected = id;
+		if (selected) {
+			const auto* previous = m_slot_images.try_get(selected);
+			const bool exact_layout = previous != nullptr &&
+			    range.address == address && range.size == size &&
+			    previous->info.data.address == address && previous->info.data.size == size &&
+			    SameBacking(previous->info, image->info, true);
+			switch (GpuImagePublishPolicy::ChooseAlias(
+			    previous != nullptr ? previous->gpu_write_order : 0u,
+			    image->gpu_write_order, exact_layout)) {
+				case GpuImagePublishPolicy::Decision::Replace: selected = id; break;
+				case GpuImagePublishPolicy::Decision::Keep: break;
+				case GpuImagePublishPolicy::Decision::Refuse: return false;
+			}
+		} else {
+			selected = id;
+		}
 	}
 	if (!selected) return false;
 	auto& image = m_slot_images[selected];

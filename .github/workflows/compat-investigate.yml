@@ -137,6 +137,9 @@ jobs:
             tests/manual/demons_lighting_memory_policy_test.cpp -o /tmp/demons-lighting-srt
           /tmp/demons-lighting-srt
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+            tests/manual/demons_gpu_image_publish_policy_test.cpp -o /tmp/demons-alias-owner
+          /tmp/demons-alias-owner
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
             tests/manual/demons_view_placement_test.cpp -o /tmp/demons-view-placement
           /tmp/demons-view-placement
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc \

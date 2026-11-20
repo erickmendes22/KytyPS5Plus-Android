@@ -368,6 +368,7 @@ jobs:
           for file in \
             demons_view_placement_test \
             demons_lighting_memory_policy_test \
+            demons_gpu_image_publish_policy_test \
             ufc6_output_resolution_test \
             compute_uncached_fill_policy_test \
             thread_prime_preference_test; do
@@ -385,6 +386,8 @@ jobs:
           patch = Path("android/app/src/main/assets/presets/PPSA23566/nocrowd/launch/ufc6_crowd_off.json")
           assert 'KYTY_DS_VIEW_PLACEMENT=1' in launch
           assert 'KYTY_DS_STABLE_IMAGE_BINDINGS=1' in launch
+          assert 'KYTY_DS_BVH_SRT_COHERENCE=1' in launch
+          assert 'KYTY_DS_SHADER_WRITE_RETICK=1' in launch
           assert 'KYTY_UFC6_HD_OUTPUT=1' in launch
           assert 'HasCachedImageOverlap' in cache and 'HasCachedImageOverlap' in compute
           assert 'owner->binding.is_bound || owner->binding.is_target' in cache

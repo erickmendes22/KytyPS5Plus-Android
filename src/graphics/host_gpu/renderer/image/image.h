@@ -209,6 +209,7 @@ public:
 	// The current stencil plane's mapping into the depth image, also retained by its association.
 	ImageSubresourceRange stencil_subresources;
 	uint64_t         tick_accessed_last = 0;
+	uint64_t         gpu_write_order = 0; // assigned when TextureCache commits GPU writes
 	size_t           lru_id             = 0;
 	// CommandBuffer::PassSerial() of the last render pass a draw used this image in.
 	uint64_t         pass_serial        = 0;

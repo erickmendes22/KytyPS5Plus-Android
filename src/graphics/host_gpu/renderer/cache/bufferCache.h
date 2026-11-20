@@ -151,6 +151,8 @@ public:
 	[[nodiscard]] uint64_t MeshRingCapacity() const noexcept;
 	// --targeted-readback: GPU writes acquired since the last call are recorded by now; give them
 	// the open command buffer's tick. The command processor calls this between PM4 packets.
+	[[nodiscard]] static bool ShaderWriteRetickEnabled();
+	void RetagShaderWrite(uint64_t vaddr, uint64_t size, uint64_t preparation_tick);
 	void StampPendingWrites() {
 		if (!m_pending_writes.empty()) {
 			StampPendingWritesSlow();

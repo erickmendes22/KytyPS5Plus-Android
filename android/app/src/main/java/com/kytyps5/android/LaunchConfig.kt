@@ -208,6 +208,11 @@ object LaunchArgs {
                     // resources. Publish the image backing to the buffer-cache GPU timeline
                     // before read-only shader storage buffer bindings.
                     "--env", "KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS=1",
+                    // Existing software BVH and indirect SRT resources consume
+                    // prior GPU writes; preserve cross-stage visibility.
+                    "--env", "KYTY_DS_BVH_SRT_COHERENCE=1",
+                    // Stamp actual writer tick when preparation submits early.
+                    "--env", "KYTY_DS_SHADER_WRITE_RETICK=1",
                     // Indirect geometry consumes GPU-generated draw records and counts;
                     // the LDS64 fallback must size shared storage from GPU-authoritative
                     // dispatch arguments rather than an obsolete guest RAM zero.

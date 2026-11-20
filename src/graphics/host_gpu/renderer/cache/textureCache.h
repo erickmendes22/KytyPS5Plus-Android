@@ -239,6 +239,7 @@ private:
 	uint64_t                                          m_pressure_gc_memory = 1536ull * 1024 * 1024;
 	uint64_t         m_critical_gc_memory     = 3ull * 1024 * 1024 * 1024;
 	uint64_t         m_gc_tick                = 0;
+	uint64_t         m_gpu_image_write_order  = 0; // monotonic GPU recording order
 	bool             m_budget_mode            = false;
 	bool             m_evict_written          = false;
 	bool             m_gt_prealloc_reclaim    = false;

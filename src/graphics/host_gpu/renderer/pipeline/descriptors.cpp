@@ -1177,6 +1177,8 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 
 void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	KYTY_PROFILER_FUNCTION();
+	prepared.write_preparation_tick = BufferCache::ShaderWriteRetickEnabled()
+	    ? m_context.GetCommandScheduler().CurrentTick() : UINT64_MAX;
 	EXIT_IF(prepared.runtime == nullptr || !*prepared.runtime);
 	const auto& program   = *prepared.runtime->program;
 	const auto& snapshot  = *prepared.runtime->resources;
@@ -1322,10 +1324,16 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	};
 	// A cached view can remain registered after the descriptor lookup switches
 	// to another owner (e.g. a storage image supersedes a sampled snapshot).
-	// Check the actual lookup again for the seven lighting/composite programs,
-	// even if the previous owner is still alive. Other games keep the fast path.
+	// Hash-only coverage missed lighting variants generated for other
+	// material and scene settings. Rescan sampled compute and composite views.
+	const auto sampled = static_cast<uint32_t>(std::count_if(
+	    program.info.images.begin(), program.info.images.end(), [](const auto& image) {
+		    return image.resource_class == ShaderRecompiler::IR::ImageResourceClass::Sampled;
+	    }));
 	const bool verify_lighting_images = ds_stable_image_bindings &&
-	    DemonsLightingMemoryPolicy::NeedsCoherentScalarReads(program.shader_hash);
+	    DemonsLightingMemoryPolicy::NeedsStableSampledImages(
+	        program.shader_hash, program.stage == ShaderType::Compute,
+	        program.stage == ShaderType::Pixel, sampled);
 	const uint32_t passes = ds_stable_image_bindings ? 8u : 1u;
 	for (uint32_t attempt = 0; attempt < passes; ++attempt) {
 		for (uint32_t i = 0; i < program.info.images.size(); i++) {
@@ -1538,6 +1546,23 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
                                           const PipelineCache::Pipeline&     pipeline,
                                           std::span<PreparedBindings* const> prepared_bindings) {
 	KYTY_PROFILER_FUNCTION();
+	if (BufferCache::ShaderWriteRetickEnabled()) {
+		const auto tick = m_context.GetCommandScheduler().CurrentTick();
+		for (auto* prepared: prepared_bindings) {
+			EXIT_IF(prepared == nullptr || prepared->runtime == nullptr || !*prepared->runtime);
+			if (prepared->write_preparation_tick == UINT64_MAX ||
+			    prepared->write_preparation_tick == tick) continue;
+			for (const auto& resource: prepared->runtime->program->info.buffers) {
+				if (!resource.written || resource.descriptor_index == UINT32_MAX ||
+				    resource.descriptor_index >= prepared->buffer_sources.size()) continue;
+				const auto& source = prepared->buffer_sources[resource.descriptor_index];
+				if (source.address == 0 || source.size == 0) continue;
+				m_context.GetBufferCache().RetagShaderWrite(
+				    source.address, source.size, prepared->write_preparation_tick);
+			}
+			prepared->write_preparation_tick = tick;
+		}
+	}
 	// Transitions below may end the open render pass; they always target the primary buffer.
 	auto   vk_buffer        = buffer.Handle();
 	size_t image_descriptor_count = 0;

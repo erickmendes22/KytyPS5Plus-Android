@@ -22,6 +22,7 @@
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/shader/halfRateTiles.h"
+#include "graphics/host_gpu/renderer/pipeline/demonsLightingMemoryPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -540,6 +541,15 @@ static bool ComputeGroupPackEnabled(bool turnip) {
 	return LiveKnobs::Int("cs_pack", default_on ? 1 : 0) != 0;
 }
 
+// Title-specific native SPIR-V BVH/SRT producer ordering (no ray stub).
+static bool DemonsBvhSrtCoherence() {
+	static const bool enabled = [] {
+		const char* v = std::getenv("KYTY_DS_BVH_SRT_COHERENCE");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
+	return enabled;
+}
+
 // KYTY_LIVE_KNOBS bvh_opt=<0..31>: BVH emulation bits for programs compiled from now on
 // (ShaderComputeInputInfo::bvh_live); absent keeps KYTY_BVH_OPT / KYTY_BVH_VEC.
 static uint8_t LiveBvhOptions() {
@@ -810,10 +820,14 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		                           ShaderRecompiler::IR::ImageResourceClass::Storage;
 	                }) ||
 	    has_storage_writes;
-	if (has_storage_writes) {
+	const bool ds_bvh_dependency = DemonsLightingMemoryPolicy::NeedsBvhProducerBarrier(
+	    DemonsBvhSrtCoherence(), program.info.bvh);
+	if (has_storage_writes || ds_bvh_dependency) {
 		// A host fence used to serialize every dispatch. Preserve its read-before-write ordering
 		// while allowing the queue to execute asynchronously.
-		ShaderWriteHazardBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+		ShaderWriteHazardBarrier(vk_buffer,
+		    ds_bvh_dependency ? vk::PipelineStageFlagBits::eAllCommands
+		                      : vk::PipelineStageFlagBits::eComputeShader);
 	}
 	if (Config::GraphicsDebugDumpEnabled()) {
 		const auto sampled_images = std::count_if(
@@ -1029,8 +1043,12 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		    return image.written && image.resource_class ==
 		                                ShaderRecompiler::IR::ImageResourceClass::Storage;
 	    });
-	if (has_storage_writes) {
-		ShaderWriteHazardBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	const bool ds_bvh_dependency = DemonsLightingMemoryPolicy::NeedsBvhProducerBarrier(
+	    DemonsBvhSrtCoherence(), program.info.bvh);
+	if (has_storage_writes || ds_bvh_dependency) {
+		ShaderWriteHazardBarrier(vk_buffer,
+		    ds_bvh_dependency ? vk::PipelineStageFlagBits::eAllCommands
+		                      : vk::PipelineStageFlagBits::eComputeShader);
 	}
 	vk::MemoryBarrier barrier {};
 	barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite;

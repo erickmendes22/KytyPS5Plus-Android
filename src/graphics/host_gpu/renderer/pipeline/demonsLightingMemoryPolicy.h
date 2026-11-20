@@ -20,4 +20,20 @@ namespace Libs::Graphics::DemonsLightingMemoryPolicy {
     }
 }
 
+// Previously recognized only seven captured hash variants. Revalidate all
+// sampled compute light passes and multi-input pixel composites for the
+// title-specific stable-view path. Other games retain their normal cache.
+[[nodiscard]] constexpr bool NeedsStableSampledImages(uint64_t hash, bool compute,
+                                                       bool pixel, uint32_t sampled_images) noexcept {
+    return NeedsCoherentScalarReads(hash) ||
+           (compute && sampled_images != 0u) ||
+           (pixel && sampled_images >= 2u);
+}
+
+// Existing SPIR-V software BVH reads GPU-built indirect SRT/BVH buffers.
+// A producer barrier is necessary; never silently stub out ray intersections.
+[[nodiscard]] constexpr bool NeedsBvhProducerBarrier(bool demons_title,
+                                                     bool bvh_program) noexcept {
+    return demons_title && bvh_program;
+}
 } // namespace Libs::Graphics::DemonsLightingMemoryPolicy
