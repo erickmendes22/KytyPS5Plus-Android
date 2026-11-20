@@ -12799,6 +12799,68 @@ void TestIndirectMeshBaseInstanceIsNotDoubleApplied() {
   Check(instance_vgpr == 2u && instance_sgpr == 7u,
         "indirect mesh applied baseInstance to both the instance VGPR and user SGPR");
 }
+void TestIndirectFastMeshBaseInstanceIsNotDoubleApplied() {
+  // PPSA01341 builds indirect NGG draws whose base instance is also written into
+  // a GS user SGPR. The instance-ID VGPR starts from zero, independently of that
+  // base: adding it twice selects the wrong geometry/G-buffer records (fast-launch path).
+  using namespace ShaderRecompiler;
+  using namespace ShaderRecompiler::IR;
+  ShaderVertexInputInfo input{};
+  auto &mesh = input.mesh;
+  mesh.input_primitive = static_cast<uint32_t>(Prospero::PrimitiveType::kTriList);
+  mesh.wave_size = 64;
+  mesh.fast_launch = true;
+  mesh.primitives_per_group = 1;
+  mesh.vertices_per_group = 3;
+  mesh.threads_num[0] = 64;
+  mesh.threads_num[1] = mesh.threads_num[2] = 1;
+  input.indirect.enabled = true;
+  input.indirect.instance_sgpr = 10;
+
+  Decoder::Program decoded;
+  CFG::Graph graph;
+  CFG::BasicBlock block;
+  block.id = 0;
+  block.terminator.kind = CFG::TerminatorKind::Return;
+  graph.blocks.push_back(std::move(block));
+  graph.entry_block = 0;
+
+  Frontend::TranslateOptions options{};
+  options.stage = ShaderType::Mesh;
+  options.wave_size = 64;
+  options.user_data_count = 0;
+  options.input_info.vertex = &input;
+  auto program = Frontend::TranslateProgram(decoded, graph, options);
+  std::array<uint32_t, 12> draw{};
+  draw[0] = 3;
+  draw[IR::PushData::MeshIndirectBaseInstanceDword] = 7;
+  for (auto &inst : *program.blocks.front()) {
+    if (inst.GetOpcode() == ValueOpcode::MeshDrawParameter) {
+      const auto index = inst.Arg(0).U32();
+      Check(index < draw.size(), "mesh draw parameter overflow");
+      inst.ReplaceUsesWith(Value(draw[index]));
+    } else if (inst.GetOpcode() == ValueOpcode::GetBuiltin) {
+      const auto kind = static_cast<StageInputKind>(inst.Arg(0).U32());
+      const uint32_t value = kind == StageInputKind::LocalInvocationIndex ? 0u :
+                             kind == StageInputKind::WorkgroupId && inst.Arg(1).U32() == 1u ? 2u : 0u;
+      inst.ReplaceUsesWith(Value(value));
+    }
+  }
+  ConstantPropagationPass(program.blocks);
+  uint32_t instance_vgpr = UINT32_MAX;
+  uint32_t instance_sgpr = UINT32_MAX;
+  for (const auto &inst : *program.blocks.front()) {
+    if (inst.GetOpcode() == ValueOpcode::SetVectorRegister &&
+        RegIndex(inst.Arg(0).VectorRegister()) == 6u) {
+      instance_vgpr = inst.Arg(1).Resolve().U32();
+    } else if (inst.GetOpcode() == ValueOpcode::SetScalarRegister &&
+               RegIndex(inst.Arg(0).ScalarRegister()) == 10u) {
+      instance_sgpr = inst.Arg(1).Resolve().U32();
+    }
+  }
+  Check(instance_vgpr == 2u && instance_sgpr == 7u,
+        "indirect fast-launch mesh applied baseInstance to both the instance VGPR and user SGPR");
+}
 
 void TestNewShaderRecompilerSetpcJumpTable() {
   const uint32_t shader[] = {
@@ -18109,6 +18171,7 @@ int main() {
   TestMergedShaderUserDataSnapshot();
   TestMeshInputAssembly();
   TestIndirectMeshBaseInstanceIsNotDoubleApplied();
+  TestIndirectFastMeshBaseInstanceIsNotDoubleApplied();
   TestEmbeddedFetchPreservesSharedScalarLoad();
   TestEmbeddedVertexFormatSwizzle();
   TestNewShaderRecompilerSetpcJumpTable();
