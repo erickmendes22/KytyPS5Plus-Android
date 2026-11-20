@@ -1233,6 +1233,7 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	// their combined D32/S8 Vulkan image, with different view aspect masks.
 	// Never apply the color G-buffer distinct-owner rule to those planes.
 	if (ViewPlacementEnabled() && !requested.IsDepth() && !owner->info.IsDepth() &&
+	    !requested.HasStencil() && !owner->info.HasStencil() && !owner->depth_id &&
 	    requested.pixel_format != vk::Format::eS8Uint &&
 	    owner->info.pixel_format != vk::Format::eS8Uint) {
 		const auto surface = [](const ImageInfo& info) -> ViewPlacementPolicy::Surface {
@@ -1245,6 +1246,8 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 			    .type = static_cast<uint32_t>(info.type),
 			    .samples = info.samples,
 			    .tile = static_cast<uint32_t>(info.tile_mode),
+			    .depth_or_stencil = info.IsDepth() || info.HasStencil() ||
+			        info.pixel_format == vk::Format::eS8Uint,
 			};
 		};
 		if (ViewPlacementPolicy::KeepDistinct(surface(requested), surface(owner->info)))
