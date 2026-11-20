@@ -647,7 +647,10 @@ static TextureDescEntry ComputeTextureDesc(const ShaderRecompiler::IR::ImageReso
 	const auto view_format         = storage && storage_view_format != vk::Format::eUndefined
 	                                     ? storage_view_format
 	                                     : pixel_format;
-	const auto block_bytes         = Prospero::BlockCompressedBytesPerBlock(format);
+	const auto block_bytes = Prospero::BlockCompressedBytesPerBlock(format);
+	// BC textures cannot carry delta-colour compression; MetaAddr is
+	// undefined when a sampled BC descriptor retains COMPRESSION_EN.
+	const bool meta_compress = block_bytes == 0 && !resource.r128 && descriptor.MetaCompress();
 	TextureCache::ImageDesc desc {};
 	desc.info.data         = {address, 0};
 	desc.info.pixel_format = pixel_format;
@@ -659,12 +662,12 @@ static TextureDescEntry ComputeTextureDesc(const ShaderRecompiler::IR::ImageReso
 	    block_bytes != 0 ? block_bytes : Prospero::NumBytesPerElement(format);
 	desc.info.samples   = samples;
 	desc.info.tile_mode = tile;
-	if (!resource.r128 && descriptor.MetaCompress() && tile != Prospero::TileMode::kDepth) {
+	if (meta_compress && tile != Prospero::TileMode::kDepth) {
 		desc.info.metadata.kind = ImageMetadataKind::Dcc;
 	}
 	if (levels > physical_levels) {
 		if (!ResolveTextureMipView(desc.info, physical_levels,
-		                           !resource.r128 && descriptor.MetaCompress(), view_levels,
+		                           meta_compress, view_levels,
 		                           view_base)) {
 			EXIT("unsupported texture mip view changes physical layout: base=%u last=%u max=%u "
 			     "extent=%ux%ux%u tile=%u\n",
@@ -680,7 +683,7 @@ static TextureDescEntry ComputeTextureDesc(const ShaderRecompiler::IR::ImageReso
 	if (storage) {
 		ValidateStorageTexture(resource, descriptor, desc.info.data.size);
 	}
-	if (!resource.r128 && descriptor.MetaCompress() && tile != Prospero::TileMode::kDepth) {
+	if (meta_compress && tile != Prospero::TileMode::kDepth) {
 		TileSizeAlign metadata_size {};
 		(void)TileGetDccSize(width, height, volume ? depth : image_layers,
 		                     desc.info.bytes_per_block, physical_levels, tile, metadata_size,
