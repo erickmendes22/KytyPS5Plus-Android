@@ -113,10 +113,13 @@ jobs:
             demons_souls_idle_arm64_tests --parallel 2
           ctest --test-dir _Build/compat --output-on-failure --timeout 180 \
             -R '^(shader_cfg|resource_materialization|demons_souls_idle_arm64)
-          timeout 600 _Build/compat/shader_recompiler_compute_tests --compile-only
-      - name: Compile complete Kyty emulator host so bindless Vulkan additions are type-checked
-        run: cmake --build _Build/compat --target kyty_emulator --parallel 2
 
           timeout 600 _Build/compat/shader_recompiler_compute_tests --compile-only
+          # Indirect lighting workgroup records are GPU-owned even after
+          # publication clears their buffer-cache dirty bits. Validate the
+          # nonblocking full-LDS policy without packaging another APK.
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+            tests/manual/demons_indirect_dispatch_test.cpp -o /tmp/demons-indirect-dispatch
+          /tmp/demons-indirect-dispatch
       - name: Compile complete Kyty emulator host so bindless Vulkan additions are type-checked
         run: cmake --build _Build/compat --target kyty_emulator --parallel 2
