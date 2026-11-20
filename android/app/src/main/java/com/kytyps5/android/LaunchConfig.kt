@@ -133,7 +133,15 @@ object LaunchArgs {
             // Make graphics and pipeline creation synchronous for this title.
             // Preserve the user's GPU driver, all render-target fixes and other titles.
             (if (titleId.equals("PPSA23566", ignoreCase = true))
-                arrayOf("--async-shaders", "0") else emptyArray()) +
+                arrayOf(
+                    "--async-shaders", "0",
+                    // CPU-side memo of pure CB register -> render target descriptions.
+                    // Keep TextureDesc (bit 0) and ColorClearScan (bit 3) enabled;
+                    // RenderTargetDesc (bit 1) only avoids repeated decoding of
+                    // *identical* registers and slice offsets. No shader, Vulkan
+                    // attachment, HTile, or depth/stencil state is bypassed.
+                    "--env", "KYTY_BIND_MEMO=11"
+                ) else emptyArray()) +
             // BPE mixes raw RDTSC with sceKernelGetTscFrequency. Disable FEX's
             // minimum-1GHz scaling only for this title; native APIs use CNTFRQ.
             (if (titleId.equals("PPSA01341", ignoreCase = true))
