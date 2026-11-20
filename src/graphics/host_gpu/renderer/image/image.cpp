@@ -510,8 +510,11 @@ std::pair<uint32_t, uint32_t> Image::SanitizeCopyLayers(const Image& source,
 	return {source_layers, destination_layers};
 }
 
-void Image::CopyImage(Image& source) {
+void Image::CopyImage(Image& source, bool stencil) {
 	EXIT_IF(source.backing.samples != backing.samples);
+	EXIT_IF(stencil &&
+	        (!(FullAspectMask(source.backing.format) & vk::ImageAspectFlagBits::eStencil) ||
+	         !(FullAspectMask(backing.format) & vk::ImageAspectFlagBits::eStencil)));
 	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	const uint32_t levels     = std::min(source.backing.mip_levels, backing.mip_levels);
 	const uint32_t base_depth = source.backing.image_type == backing.image_type
@@ -519,10 +522,12 @@ void Image::CopyImage(Image& source) {
 	                            : backing.image_type == vk::ImageType::e3D
 	                                ? backing.extent.depth
 	                                : source.backing.extent.depth;
-	const auto     source_aspect =
-	    FullAspectMask(source.backing.format) & ~vk::ImageAspectFlagBits::eStencil;
-	const auto destination_aspect =
-	    FullAspectMask(backing.format) & ~vk::ImageAspectFlagBits::eStencil;
+	const auto source_aspect = stencil
+	    ? vk::ImageAspectFlags {vk::ImageAspectFlagBits::eStencil}
+	    : FullAspectMask(source.backing.format) & ~vk::ImageAspectFlagBits::eStencil;
+	const auto destination_aspect = stencil
+	    ? vk::ImageAspectFlags {vk::ImageAspectFlagBits::eStencil}
+	    : FullAspectMask(backing.format) & ~vk::ImageAspectFlagBits::eStencil;
 	const auto                 source_block      = vk::blockExtent(source.backing.format);
 	const auto                 destination_block = vk::blockExtent(backing.format);
 	std::vector<vk::ImageCopy> copies;
