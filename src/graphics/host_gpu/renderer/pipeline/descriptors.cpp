@@ -1645,6 +1645,33 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			}
 		}
 	}
+	// Final image views can differ from the ones first resolved in PrepareBindings.
+	// In particular, RebindImages may reset a retired owner's binding state while
+	// rescuing overlapping G-buffer aliases. Reconstruct read/write alias intent
+	// from the FINAL image ids, not the original discovery order. A sampled image
+	// that is also a storage output in this dispatch must use GENERAL in *both*
+	// descriptors; recording READ_ONLY for the sample and then transitioning the
+	// same VkImage to GENERAL for the store makes the sample layout invalid.
+	// Demon's Souls lighting has precisely this sampled/storage feedback topology.
+	for (const auto* stage: prepared_bindings) {
+		const auto& final_images = stage->images;
+		for (size_t i = 0; i < final_images.size(); ++i) {
+			const auto& writer = final_images[i];
+			if (!writer.image_id ||
+			    writer.desc.type != TextureCache::BindingType::Storage) continue;
+			for (size_t j = 0; j < final_images.size(); ++j) {
+				const auto& reader = final_images[j];
+				if (i == j || !reader.image_id || reader.image_id != writer.image_id ||
+				    reader.desc.type != TextureCache::BindingType::Texture) continue;
+				auto* image = m_context.GetTextureCache().m_slot_images.try_get(writer.image_id);
+				if (image != nullptr && !image->info.IsDepth()) {
+					image->binding.is_bound = true;
+					image->binding.shader_write = true;
+					image->binding.force_general = true;
+				}
+			}
+		}
+	}
 	RefreshBindingViews(prepared_bindings);
 	m_descriptor_images.resize(image_descriptor_count);
 	m_descriptor_writes.clear();
