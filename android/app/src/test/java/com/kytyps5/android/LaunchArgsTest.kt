@@ -105,6 +105,10 @@ class LaunchArgsTest {
         for (title in listOf("PPSA23566", "ppsa23566")) {
             val args = LaunchArgs.forGame("/games/ufc", Resolution.HD_720, titleId = title)
             assertEquals(1, args.count { it == "KYTY_BIND_MEMO=11" })
+            assertEquals(1, args.count { it == LaunchArgs.FLAG_VMA_BLOCK_SIZE })
+            assertEquals("32", args[args.indexOf(LaunchArgs.FLAG_VMA_BLOCK_SIZE) + 1])
+            // Never trade UFC6 rendering correctness for cache reclaim.
+            assertEquals(-1, args.indexOf(LaunchArgs.FLAG_GPU_EVICT_WRITTEN))
             assertEquals("0", args[args.indexOf("--async-shaders") + 1])
         }
         for (title in listOf("PPSA01341", "PPSA24156", null)) {
