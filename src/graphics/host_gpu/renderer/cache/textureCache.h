@@ -78,6 +78,9 @@ public:
 	// contains an older copy. Never treat that backing as current indirect
 	// dispatch arguments merely because the buffer dirty ledger is clean.
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t address, uint64_t size);
+	// Demon indirect dispatch: publish a GPU-owned image covering an arbitrary subrange
+	// into the buffer cache without reading the image back to guest CPU memory.
+	[[nodiscard]] bool PublishGpuImageForIndirectArgs(uint64_t address, uint64_t size);
 
 	[[nodiscard]] bool IsMeta(uint64_t address);
 	// Whether [address, address + size) lies inside the DCC/CMask range of a color surface that
