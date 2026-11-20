@@ -1137,7 +1137,7 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 				const char* env = std::getenv("KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS");
 				return env && env[0] == '1' && env[1] == '\0';
 			}();
-			if (ds_shader_buffer_alias && !metadata.written &&
+			if (ds_shader_buffer_alias && metadata.read &&
 			    descriptor.NumRecords() != UINT32_MAX &&
 			    size <= (uint64_t {256} << 20u) &&
 			    m_context.GetTextureCache().IsRegionGpuModified(address, size) &&
