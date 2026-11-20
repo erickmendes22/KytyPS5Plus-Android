@@ -5,10 +5,10 @@ name: Compatibility investigation — native only
 # a focused source branch and never executes Gradle/NDK packaging.
 on:
   push:
-    branches: [investigate/wolverine-bindless-demons-jobs]
+    branches: [investigate/wolverine-bindless-demons-jobs, test/wolverine-demons-android-20261105]
     paths:
-      - "src/**"
-      - "tests/**"
+      # One-shot CI on this branch: editing this workflow starts native-only tests.
+      # Subsequent source changes cannot create APK or trigger this job.
       - ".github/workflows/compat-investigate.yml"
   workflow_dispatch:
 
@@ -109,10 +109,14 @@ jobs:
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build _Build/compat --target \
-            shader_recompiler_compute_tests resource_materialization_tests \
+            shader_cfg_tests shader_recompiler_compute_tests resource_materialization_tests \
             demons_souls_idle_arm64_tests --parallel 2
           ctest --test-dir _Build/compat --output-on-failure --timeout 180 \
-            -R '^(resource_materialization|demons_souls_idle_arm64)$'
+            -R '^(shader_cfg|resource_materialization|demons_souls_idle_arm64)
+          timeout 600 _Build/compat/shader_recompiler_compute_tests --compile-only
+      - name: Compile complete Kyty emulator host so bindless Vulkan additions are type-checked
+        run: cmake --build _Build/compat --target kyty_emulator --parallel 2
+
           timeout 600 _Build/compat/shader_recompiler_compute_tests --compile-only
       - name: Compile complete Kyty emulator host so bindless Vulkan additions are type-checked
         run: cmake --build _Build/compat --target kyty_emulator --parallel 2
