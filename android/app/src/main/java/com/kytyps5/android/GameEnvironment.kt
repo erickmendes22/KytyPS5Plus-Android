@@ -27,9 +27,14 @@ object GameEnvironment {
         "KYTY_GT_LARGE_DEPTH_HALF", "KYTY_GT_HDR_HALF",
         "KYTY_GT_TURNIP_VISUAL_RESTORE",
     )
-    // Native UFC6 --env is title-specific. A reused SDL process must not
-    // retain its CPU-placement policy when launching a different game.
-    internal val ufc6PlacementKeys = setOf("KYTY_CPU_PLACE")
+    // Native UFC6 --env flags are title-specific. A reused SDL process
+    // must not retain CPU, descriptor, fan policy or profiling settings
+    // when launching a different game, particularly Demon's Souls.
+    internal val ufc6PlacementKeys = setOf(
+        "KYTY_CPU_PLACE", "KYTY_UFC6_HD_OUTPUT",
+        "KYTY_UFC6_DESCRIPTOR_REUSE", "KYTY_UFC6_PERF",
+        "KYTY_FAN_AUTO_ON_US", "KYTY_FAN_AUTO_OFF_US",
+    )
 
     fun apply(lines: Array<String>?) {
         val vars = EnvVars.parse(lines?.joinToString("\n").orEmpty()).vars
