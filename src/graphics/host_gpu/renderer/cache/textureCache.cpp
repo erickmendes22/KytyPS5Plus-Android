@@ -2831,6 +2831,32 @@ bool TextureCache::IsRegionGpuModified(uint64_t address, uint64_t size) {
 	return false;
 }
 
+// A Vulkan image can be authoritative for indirect-dispatch words at an offset
+// inside its guest backing. FindImageFromRange only accepts an exact base address,
+// so the texel-buffer synchronization path does not cover that situation.
+// Publish at most one unambiguous, GPU-modified image through the existing
+// GPU-to-GPU detiling/download path. Nothing is read back by the CPU.
+bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address);
+	if (!GuestRange {address, size}.Valid()) return false;
+	std::scoped_lock lock {m_lock};
+	ImageId selected {};
+	for (const auto id: FindImagesInRegion(address, size, false)) {
+		const auto* image = m_slot_images.try_get(id);
+		if (!image || !image->registered || !image->IsGpuModified()) continue;
+		const auto& range = image->info.data;
+		if (range.address > address || range.size < size ||
+		    address - range.address > range.size - size) continue;
+		// Do not guess which of two aliased GPU images contains the latest args.
+		if (selected) return false;
+		selected = id;
+	}
+	if (!selected) return false;
+	auto& image = m_slot_images[selected];
+	if (!image.SafeToDownload() || !CanDownload(image)) return false;
+	return BcAlias::Publish(*this, image);
+}
+
 void TextureCache::RestoreMappedProtection(uint64_t address, uint64_t size) {
 	// This compatibility path is enabled only for PPSA01341. No other title's
 	// kernel map protections or image-cache tracking are altered.
