@@ -392,6 +392,8 @@ jobs:
           assert 'KYTY_UFC6_HD_OUTPUT=1' in launch
           assert 'KYTY_UFC6_DESCRIPTOR_REUSE=1' not in launch
           assert 'KYTY_UFC6_PERF=1' in launch
+          assert 'KYTY_UFC6_SUBMIT_BATCH=1' in launch
+          assert 'KYTY_DS_START_INSTANCE_SGPR=1' in launch
           assert 'KYTY_FAN_AUTO_ON_US=40' in launch
           assert 'HasCachedImageOverlap' in cache and 'HasCachedImageOverlap' in compute
           assert 'owner->binding.is_bound || owner->binding.is_target' in cache

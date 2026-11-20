@@ -148,7 +148,14 @@ jobs:
           scheduler = (root / "commandScheduler.cpp").read_text()
           assert 'QueueSubmitBatch' in scheduler
           assert 'queue.submit(static_cast<uint32_t>(batch.size()), infos.data(), nullptr)' in scheduler
-          assert 'm_master.MarkSubmitted(pending.tick)' in scheduler
+          assert 'm_master.MarkSubmitted(batch.back().tick)' in scheduler
+          assert 'm_master.MarkSubmitted(pending.tick)' not in scheduler
+          cache = (root / "cache/textureCache.cpp").read_text()
+          assert 'GpuImagePublishPolicy::ChooseAlias(prior->gpu_write_order' in cache
+          shader_regression = Path("tests/shaderCfgTests.cpp").read_text()
+          assert 'TestNewShaderRecompilerVertexCpuIndirectBaseInstanceSgpr();' in shader_regression
+          shader_metadata = Path("src/graphics/shader/shader.cpp").read_text()
+          assert 'info.start_instance_sgpr = info.fetch_embedded ? start_instance_sgpr : -1;' in shader_metadata
           assert 'KYTY_DS_START_INSTANCE_SGPR=1' in launch
           cp = Path("src/graphics/guest_gpu/command_processor/pm4Handlers.cpp").read_text()
           vs = Path("src/graphics/shader/recompiler/frontend/translate/Translate.cpp").read_text()
