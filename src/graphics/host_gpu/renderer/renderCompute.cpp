@@ -226,7 +226,23 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 		return;
 	}
 	auto& cache = context.GetBufferCache();
-	if (indirect_args != 0) {
+	// On Demon's Souls, the lighting-list dispatch can generate its own indirect
+	// group counts with a GPU shader. Guest RAM may still contain an older zero
+	// even when the Vulkan argument buffer is authoritative. Reading it to size
+	// the emulated LDS would allocate just four bytes and make every workgroup
+	// access out of bounds. The shader indexes its LDS by gl_NumWorkGroups:
+	// reserve the available GPU storage range instead of trusting stale host
+	// counts. Do not add a GPU->CPU readback or a fence to this path.
+	static const bool ds_gpu_lds_groups = [] {
+		const char* value = std::getenv("KYTY_DS_GPU_LDS_GROUPS");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	const bool gpu_owned_args = indirect_args != 0 && ds_gpu_lds_groups &&
+	    (cache.HasGpuDirtyBytes(indirect_args, sizeof(vk::DispatchIndirectCommand)) ||
+	     cache.HasPendingBackingPublication(indirect_args, sizeof(vk::DispatchIndirectCommand)) ||
+	     cache.IsRegionGpuModified(indirect_args, sizeof(vk::DispatchIndirectCommand)) ||
+	     context.GetTextureCache().IsRegionGpuModified(indirect_args, sizeof(vk::DispatchIndirectCommand)));
+	if (indirect_args != 0 && !gpu_owned_args) {
 		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemIndirectArgs);
 		cache.ReadMemory(indirect_args, sizeof(vk::DispatchIndirectCommand));
 		std::memcpy(input.workgroup_counts, reinterpret_cast<const void*>(indirect_args),
@@ -237,8 +253,9 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 	auto& storage = cache.GetUtilityBuffer(MemoryUsage::DeviceLocal);
 	const auto limit = std::min<uint64_t>(storage.Size(),
 	    context.GetGraphics().GetPhysicalDeviceProperties().limits.maxStorageBufferRange);
-	uint64_t size = sizeof(uint32_t);
-	if (std::ranges::find(input.workgroup_counts, 0u) == std::end(input.workgroup_counts)) {
+	uint64_t size = gpu_owned_args ? limit : sizeof(uint32_t);
+	if (!gpu_owned_args &&
+	    std::ranges::find(input.workgroup_counts, 0u) == std::end(input.workgroup_counts)) {
 		size = uint64_t {input.lds_size_dwords} * sizeof(uint32_t);
 		EXIT_IF(size == 0 || size > limit);
 		for (const auto count: input.workgroup_counts) {
