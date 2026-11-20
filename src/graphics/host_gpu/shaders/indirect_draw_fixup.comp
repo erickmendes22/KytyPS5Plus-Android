@@ -111,8 +111,22 @@ void EmitDispatchClamp() {
         clamped = clamped || groups > limits[axis];
         destination.words[axis] = min(groups, limits[axis]);
     }
-    if (params.feedback != 0ul && clamped) {
-        FeedbackWord(params.feedback).word = 1u;
+    if (params.feedback != 0ul) {
+        if (params.padding == 1u) {
+            // PPSA01341: nonblocking evidence of the GPU's ORIGINAL indirect
+            // groups, before min() clamps them. 10 bits/axis; high bits mark
+            // saturation and clamping. A zero in any axis means no dispatch.
+            const uint packed = min(source.words[0], 1023u) |
+                                (min(source.words[1], 1023u) << 10u) |
+                                (min(source.words[2], 1023u) << 20u) |
+                                ((source.words[0] > 1023u ||
+                                  source.words[1] > 1023u ||
+                                  source.words[2] > 1023u) ? 0x40000000u : 0u) |
+                                (clamped ? 0x80000000u : 0u);
+            FeedbackWord(params.feedback).word = packed;
+        } else if (clamped) {
+            FeedbackWord(params.feedback).word = 1u;
+        }
     }
 }
 

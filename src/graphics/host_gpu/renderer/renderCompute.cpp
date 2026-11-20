@@ -426,6 +426,17 @@ static void ProbeDsComputeWrites(RenderContext& context,
 			    hash, 0x281300000ull, frame, phase == 1u ? "init" : phase == 2u ? "scene" : "gameplay",
 			    images.size(), i, input.indirect_args_address,
 			    input.stage.program->info.group_pack));
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_LIGHTING_FEATURES] shader=0x{:016x} bvh={} uses_dma={} "
+			    "uses_lds={} shared_int64_atomics={} buffer_int64_atomics={} "
+			    "fp64={} output=0x{:x}\n", hash,
+			    input.stage.program->info.bvh ? 1 : 0,
+			    input.stage.program->info.uses_dma ? 1 : 0,
+			    input.stage.program->info.uses_lds ? 1 : 0,
+			    input.stage.program->info.shared_int64_atomics ? 1 : 0,
+			    input.stage.program->info.buffer_int64_atomics ? 1 : 0,
+			    input.stage.program->info.float64 ? 1 : 0,
+			    0x281300000ull));
 			if (probe_this_phase) {
 				ProbeDsComputeImage(context, target_id, hash, true,
 				                    bindings.images[i].desc.view_info.base_layer,
@@ -1030,7 +1041,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (!cpu_args && IndirectDispatchClampEnabled()) {
 		// Recorded before the guest bindings: the fix-up binds its own pipeline and push data.
 		const auto clamped = GetIndirectDrawFixup().RecordDispatchClamp(
-		    buffer, args_buffer->BufferDeviceAddress() + args_offset, limits, args_addr);
+		    buffer, args_buffer->BufferDeviceAddress() + args_offset, limits, args_addr,
+		    program.shader_hash);
 		indirect_buffer = clamped.buffer;
 		indirect_offset = clamped.offset;
 	}

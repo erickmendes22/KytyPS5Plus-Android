@@ -232,9 +232,10 @@ vk::DeviceAddress IndirectDrawFixup::AcquireFeedback(uint32_t& slot) {
 }
 
 void IndirectDrawFixup::CommitFeedback(uint32_t slot, uint64_t site, bool mesh, uint32_t reserved,
-                                       bool dispatch) {
+                                       bool dispatch, uint64_t shader_hash) {
 	m_feedback[slot] = {.tick     = m_context.GetCommandScheduler().CurrentTick(),
 	                    .site     = site,
+	                    .shader_hash = shader_hash,
 	                    .reserved = reserved,
 	                    .mesh     = mesh,
 	                    .dispatch = dispatch};
@@ -242,7 +243,7 @@ void IndirectDrawFixup::CommitFeedback(uint32_t slot, uint64_t site, bool mesh, 
 
 IndirectDrawFixup::DispatchRecord IndirectDrawFixup::RecordDispatchClamp(
     CommandBuffer& buffer, vk::DeviceAddress args, const std::array<uint32_t, 3>& limits,
-    uint64_t site) {
+    uint64_t site, uint64_t shader_hash) {
 	EXIT_IF(args == 0);
 	PollFeedback();
 	uint32_t    feedback_slot = 0;
@@ -254,9 +255,26 @@ IndirectDrawFixup::DispatchRecord IndirectDrawFixup::RecordDispatchClamp(
 	params.max_groups    = limits[0];
 	params.max_instances = limits[1];
 	params.max_z         = limits[2];
-	const auto output    = Dispatch(buffer, sizeof(vk::DispatchIndirectCommand), &params, 1);
+	// Only the six known PPSA01341 lighting kernels, during explicit frame
+	// tracing, request extra information. All other games retain the exact
+	// old GPU command and one-bit clamp feedback semantics.
+	static const bool ds_trace = [] {
+		const char* v = std::getenv("KYTY_DS_FRAME_TRACE");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
+	constexpr std::array<uint64_t, 6> lighting_hashes {{
+	    0xc2e01fbe98f5ebabull, 0x23056085c1120461ull,
+	    0x3dfe402653925fbfull, 0xfabe0bcb275a3005ull,
+	    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull
+	}};
+	const bool lighting = ds_trace &&
+	    std::find(lighting_hashes.begin(), lighting_hashes.end(), shader_hash) !=
+	        lighting_hashes.end();
+	params.padding = lighting ? 1u : 0u;
+	const auto output = Dispatch(buffer, sizeof(vk::DispatchIndirectCommand), &params, 1);
 	if (params.feedback != 0) {
-		CommitFeedback(feedback_slot, site, false, 0, true);
+		CommitFeedback(feedback_slot, site, false, lighting ? 1u : 0u, true,
+		               lighting ? shader_hash : 0ull);
 	}
 	return {.buffer = output.buffer, .offset = output.offset};
 }
@@ -288,7 +306,24 @@ void IndirectDrawFixup::PollFeedback() {
 		            sizeof(requested));
 		if (feedback.dispatch) {
 			static std::atomic<uint32_t> clamp_count {0};
-			if (requested != 0 && clamp_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			const bool clamped = feedback.reserved == 1u
+			                         ? (requested & 0x80000000u) != 0 : requested != 0;
+			if (feedback.reserved == 1u) {
+				const uint32_t x = requested & 1023u;
+				const uint32_t y = (requested >> 10u) & 1023u;
+				const uint32_t z = (requested >> 20u) & 1023u;
+				static std::atomic<uint32_t> lighting_samples {0};
+				const auto index = lighting_samples.fetch_add(1u, std::memory_order_relaxed);
+				if (index < 36u || (index % 4096u) == 0u) {
+					LOGF("[DS_LIGHTING_GROUPS] shader=0x%016" PRIx64
+					     " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=%u "
+					     "clamped=%u zero=%u\n",
+					     feedback.shader_hash, feedback.site, x, y, z,
+					     (requested >> 30u) & 1u, clamped ? 1u : 0u,
+					     (x == 0u || y == 0u || z == 0u) ? 1u : 0u);
+				}
+			}
+			if (clamped && clamp_count.fetch_add(1, std::memory_order_relaxed) < 16) {
 				LOGF("GPU indirect dispatch: guest record 0x%016" PRIx64 " asked for more "
 				     "workgroups than maxComputeWorkGroupCount; clamped (work dropped)\n",
 				     feedback.site);

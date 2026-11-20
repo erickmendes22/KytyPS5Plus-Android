@@ -81,7 +81,7 @@ public:
 	};
 	[[nodiscard]] DispatchRecord RecordDispatchClamp(CommandBuffer& buffer, vk::DeviceAddress args,
 	                                                 const std::array<uint32_t, 3>& limits,
-	                                                 uint64_t site);
+	                                                 uint64_t site, uint64_t shader_hash = 0);
 	// Records the draw itself inside the open render pass.
 	void Draw(vk::CommandBuffer pass, const Records& records, bool indexed) const;
 
@@ -111,6 +111,7 @@ private:
 	struct Feedback {
 		uint64_t tick     = 0; // 0: free
 		uint64_t site     = 0; // guest record address
+		uint64_t shader_hash = 0; // nonblocking DS lighting feedback attribution
 		uint32_t reserved = 0; // mesh: reserved workgroup slots, 0 for draws
 		bool     mesh     = false;
 		bool     dispatch = false; // RecordDispatchClamp: the word is 1 if it clamped
@@ -123,7 +124,7 @@ private:
 	// A zeroed host-visible word for the next fix-up's feedback, or 0 if none is free.
 	[[nodiscard]] vk::DeviceAddress AcquireFeedback(uint32_t& slot);
 	void CommitFeedback(uint32_t slot, uint64_t site, bool mesh, uint32_t reserved,
-	                    bool dispatch = false);
+	                    bool dispatch = false, uint64_t shader_hash = 0);
 
 	RenderContext&                         m_context;
 	vk::PipelineLayout                     m_layout     = nullptr;
