@@ -158,9 +158,6 @@ public:
 
 	void RelocateAll();
 	void RelocateProgram(Program* program);
-	// Preload game-local PRX dependencies before relocating and entering guest code.
-	void PreloadAdjacentPrograms();
-	void StartAllModules();
 
 	void  Execute(const std::filesystem::path& game_patch = {});
 	int   StartModule(Program* program, size_t args, const void* argp, module_func_t func);
