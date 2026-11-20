@@ -1229,7 +1229,12 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	// frame-280 log), so six lighting kernels sampled the same input twice.
 	// Decide before any candidate is merged or retired; merely checking
 	// final view placement cannot undo a destructive overlap resolution.
-	if (ViewPlacementEnabled()) {
+	// Depth and stencil often have two guest plane addresses but MUST share
+	// their combined D32/S8 Vulkan image, with different view aspect masks.
+	// Never apply the color G-buffer distinct-owner rule to those planes.
+	if (ViewPlacementEnabled() && !requested.IsDepth() && !owner->info.IsDepth() &&
+	    requested.pixel_format != vk::Format::eS8Uint &&
+	    owner->info.pixel_format != vk::Format::eS8Uint) {
 		const auto surface = [](const ImageInfo& info) -> ViewPlacementPolicy::Surface {
 			return {
 			    .address = info.data.address, .size = info.data.size,
