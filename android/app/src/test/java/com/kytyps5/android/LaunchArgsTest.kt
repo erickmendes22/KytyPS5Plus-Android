@@ -101,6 +101,21 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun ufc6NeverDropsUncompiledGraphicsDraws() {
+        // A shader that is not compiled yet cannot be silently skipped when
+        // later depth/stencil and composite passes consume its output.
+        for (title in listOf("PPSA23566", "ppsa23566")) {
+            val args = LaunchArgs.forGame("/games/ufc6", Resolution.HD_720, titleId = title)
+            assertEquals(1, args.count { it == "--async-shaders" })
+            assertEquals("0", args[args.indexOf("--async-shaders") + 1])
+        }
+        for (title in listOf("PPSA24156", "PPSA21564", null)) {
+            val args = LaunchArgs.forGame("/games/ufc6", Resolution.HD_720, titleId = title)
+            assertEquals(-1, args.indexOf("--async-shaders"))
+        }
+    }
+
+    @Test
     fun demonsSoulsReferenceRequiresTessellationAndLinearImageReadback() {
         val demons = LaunchArgs.forGame("/g", Resolution.HD_720, titleId = "PPSA01341")
         assertEquals(1, demons.count { it == LaunchArgs.FLAG_TESSELLATION })
