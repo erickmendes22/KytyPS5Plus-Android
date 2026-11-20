@@ -3149,8 +3149,13 @@ void TextureCache::RunGarbageCollector() {
 		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
 			const auto owner = m_slot_images.try_get(id);
 			// Protected entries must not consume every pass's candidate budget.
-			if (owner != nullptr && owner->registered && !owner->bindless_pinned && !owner->depth_id &&
-			    owner->SafeToDownload() && (owner->info.IsTiled() || !pressured)) return false;
+			if (owner != nullptr && owner->registered && !owner->bindless_pinned && !owner->depth_id) {
+				// GPU-modified but not SafeToDownload means GPU-only data and
+				// partial CPU alias dirtiness can coexist. Do not delete those
+				// image bytes (scene/depth/lighting) without a safe merge.
+				if (owner->IsGpuModified() && !owner->SafeToDownload()) return false;
+				if (owner->SafeToDownload() && (owner->info.IsTiled() || !pressured)) return false;
+			}
 			candidates.push_back(id);
 			return candidates.size() == deletions;
 		});
@@ -3165,6 +3170,7 @@ void TextureCache::RunGarbageCollector() {
 			}
 			if (owner->IsGpuModified()) {
 				const bool safe = owner->SafeToDownload();
+				if (!safe) continue; // unsafe mixed GPU/CPU ownership must not be discarded
 				if (safe && owner->info.IsTiled()) {
 					continue;
 				}
