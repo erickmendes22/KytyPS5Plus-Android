@@ -895,6 +895,15 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}();
 	const bool image_gpu_owned = ds_gpu_zero_indirect &&
 	    m_context.GetTextureCache().IsRegionGpuModified(args_addr, sizeof(args));
+	if (image_gpu_owned) {
+		// Selecting the Vulkan indirect path is not enough when a previous shader
+		// wrote these bytes through an image alias. ObtainBuffer can otherwise
+		// return an old GPU buffer (or stream an old CPU copy) with zero groups.
+		// Publish the owning image into the buffer cache on the GPU timeline first.
+		// Unsupported or ambiguous aliases retain the original behavior.
+		buffer.EndRendering(PassEnd::Compute);
+		(void)m_context.GetTextureCache().PublishGpuImageForIndirectArgs(args_addr, sizeof(args));
+	}
 	const bool host_args_current =
 	    !indirect_cache.HasGpuDirtyBytes(args_addr, sizeof(args)) &&
 	    !indirect_cache.IsRegionGpuModified(args_addr, sizeof(args)) &&
