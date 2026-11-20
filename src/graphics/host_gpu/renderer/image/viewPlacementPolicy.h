@@ -15,4 +15,30 @@ namespace Libs::Graphics::ViewPlacementPolicy {
            uint64_t{static_cast<uint32_t>(place_layer)} + own_layer + layer_count <= owner_layers;
 }
 
+// Requested and cached Vulkan images cannot represent the same single
+// native mip/layer when their guest base addresses differ. Even if their
+// guest ranges overlap (a packed deferred-renderer heap), neither is a
+// subresource of the other and merging them would alias two G-buffers.
+struct Surface {
+    uint64_t address = 0, size = 0;
+    uint32_t width = 0, height = 0, depth = 0;
+    uint32_t levels = 0, layers = 0;
+    uint32_t format = 0, type = 0, samples = 0, tile = 0;
+};
+
+[[nodiscard]] constexpr bool KeepDistinct(const Surface& requested,
+                                           const Surface& cached) noexcept {
+    return requested.address != cached.address &&
+           requested.size != 0 && requested.size == cached.size &&
+           requested.width == cached.width &&
+           requested.height == cached.height &&
+           requested.depth == cached.depth &&
+           requested.levels == 1u && cached.levels == 1u &&
+           requested.layers == 1u && cached.layers == 1u &&
+           requested.format == cached.format &&
+           requested.type == cached.type &&
+           requested.samples == cached.samples &&
+           requested.tile == cached.tile;
+}
+
 } // namespace Libs::Graphics::ViewPlacementPolicy
