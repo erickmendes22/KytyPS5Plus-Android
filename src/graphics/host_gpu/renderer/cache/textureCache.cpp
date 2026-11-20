@@ -2350,6 +2350,17 @@ void TextureCache::CommitGpuWrite(Image& image) {
 	image.MarkGpuModified();
 }
 
+bool TextureCache::HasCachedImageOverlap(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address);
+	if (!GuestRange {address, size}.Valid()) return true; // conservative on invalid ranges
+	std::scoped_lock lock {m_lock};
+	for (const auto id: FindImagesInRegion(address, size, false)) {
+		const auto* owner = m_slot_images.try_get(id);
+		if (owner != nullptr && owner->registered) return true;
+	}
+	return false;
+}
+
 bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address, uint64_t size,
                                         uint32_t packed_clear) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
@@ -3370,7 +3381,11 @@ void TextureCache::RunGarbageCollector() {
 		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
 			const auto owner = m_slot_images.try_get(id);
 			// Protected entries must not consume every pass's candidate budget.
-			if (owner != nullptr && owner->registered && !owner->bindless_pinned && !owner->depth_id) {
+			if (owner != nullptr && owner->registered && !owner->bindless_pinned && !owner->depth_id &&
+			    !owner->usage.video_out && !owner->binding.is_bound && !owner->binding.is_target) {
+				// A render-state discovery already captured bound/target ids: evicting
+				// them before the draw records produces a missing G-buffer/attachment.
+				// Backport the PC KytyPlus 82627d95 bound-target safeguard.
 				// GPU-modified but not SafeToDownload means GPU-only data and
 				// partial CPU alias dirtiness can coexist. Do not delete those
 				// image bytes (scene/depth/lighting) without a safe merge.
@@ -3386,7 +3401,8 @@ void TextureCache::RunGarbageCollector() {
 			}
 			--deletions;
 			auto owner = m_slot_images.try_get(id);
-			if (owner == nullptr || !owner->registered || owner->depth_id || owner->bindless_pinned) {
+			if (owner == nullptr || !owner->registered || owner->depth_id || owner->bindless_pinned ||
+			    owner->usage.video_out || owner->binding.is_bound || owner->binding.is_target) {
 				continue;
 			}
 			if (owner->IsGpuModified()) {

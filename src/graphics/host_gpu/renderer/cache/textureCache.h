@@ -69,6 +69,9 @@ public:
 
 	[[nodiscard]] bool ClearImageFromBuffer(CommandBuffer& command, uint64_t address, uint64_t size,
 	                                        uint32_t packed_clear);
+	// Never consume a uniform compute fill if its destination overlaps a cached
+	// image: UFC6 aliases a live storage image with a stencil plane.
+	[[nodiscard]] bool HasCachedImageOverlap(uint64_t address, uint64_t size);
 	void               InvalidateMemory(uint64_t address, uint64_t size,
 	                                    RefreshCause::Source source = RefreshCause::Source::Other);
 	void               InvalidateMemoryFromGPU(uint64_t address, uint64_t size,

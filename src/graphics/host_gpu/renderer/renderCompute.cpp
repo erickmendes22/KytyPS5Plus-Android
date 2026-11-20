@@ -14,6 +14,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/host_gpu/renderer/dispatchSplit.h"
+#include "graphics/host_gpu/renderer/computeBufferFillPolicy.h"
 #include "graphics/host_gpu/renderer/indirectDispatchPolicy.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/gpuPipelineItems.h"
@@ -199,13 +200,13 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 		return false;
 	}
 	if (!cache.ClearImageFromBuffer(command, descriptor.Base48(), size, packed_clear)) {
-		// A uniform fill of color metadata (a guest fast clear writing DCC/CMask keys). Running
-		// it on the GPU marks the keys GPU-written, and binding the surface then reads them back
-		// on the CPU (MaterializeColorClear), which drains the whole GPU queue every time.
-		// Fill them the way a DMA fill does: on the CPU when the range is not GPU-written.
-		if ((size & 3u) != 0 || !cache.IsColorMetadataRange(descriptor.Base48(), size)) {
+		// PC KytyPlus 8744c436: proven uniform fills of uncached buffers need no
+		// guest compute dispatch. Keep ownership and ordering via BufferCache.
+		// UFC6's overlapping stencil/storage owners must keep the original shader:
+		// it can have additional writes beyond the packed stencil clear.
+		const bool overlap = cache.HasCachedImageOverlap(descriptor.Base48(), size);
+		if (!ComputeBufferFillPolicy::UseUncachedBufferFill(descriptor.Base48(), size, overlap))
 			return false;
-		}
 		command.GetContext().GetBufferCache().FillBuffer(descriptor.Base48(), size, packed_clear,
 		                                                 false);
 		return true;
