@@ -14728,6 +14728,43 @@ void TestNewShaderRecompilerVertexSystemInputsWithoutMirrors() {
         "vertex system values were routed through guest VGPR mirrors");
 }
 
+// Demon’s Souls CPU-fallback DRAW_INDEX_INDIRECT: the packet's firstInstance
+// belongs in the guest's GS user SGPR, while VGPR8 remains relative to the
+// instance base. Exercise the actual vertex translator + SPIR-V validator.
+void TestNewShaderRecompilerVertexCpuIndirectBaseInstanceSgpr() {
+  using StageInputKind = ShaderRecompiler::IR::StageInputKind;
+  const uint32_t shader[] = {
+      EncodeVop1(0x01, 0, 8),          // v_mov_b32 v0, s8 (START_INST_LOC)
+      EncodeVop1(0x01, 1, 8 + 256),    // v_mov_b32 v1, v8 (relative instance)
+      EncodeExp0(0x0c, 0xf),
+      EncodeExp1(0, 1, 0, 1),          // POS0
+      EncodeSopp(0x01),
+  };
+  ShaderVertexInputInfo baseline{};
+  auto options = MakeCompileOptions(ShaderType::Vertex);
+  options.input_info.vertex = &baseline;
+  auto normal = RecompileForTest(shader, options);
+  CheckSpirvBinaryValidates(normal.spirv);
+
+  auto indirect = baseline;
+  indirect.start_instance_sgpr = 8;
+  Check(MakeStageStaticKey(baseline) != MakeStageStaticKey(indirect),
+        "START_INST_LOC did not invalidate the static shader key");
+  options.input_info.vertex = &indirect;
+  auto compiled = RecompileForTest(shader, options);
+  CheckSpirvBinaryValidates(compiled.spirv);
+  Check(ProgramHasInput(compiled.program, StageInputKind::BaseInstance),
+        "CPU-indirect firstInstance is not a vertex shader input");
+  Check(ProgramHasInput(compiled.program, StageInputKind::InstanceIndex),
+        "CPU-indirect VGPR8 lost the current instance");
+  Check(!ProgramHasInput(normal.program, StageInputKind::BaseInstance),
+        "ordinary draws unexpectedly depend on indirect firstInstance");
+  const auto spv = DisassembleSpirvBinary(compiled.spirv);
+  Check(spv.find("gl_BaseInstance") != std::string::npos &&
+            spv.find("OpISub") != std::string::npos,
+        "CPU-indirect did not route BaseInstance to SGPR and remove it from VGPR8");
+}
+
 void TestNewShaderRecompilerVertexExportUsesInvocationExecMask() {
   const uint32_t shader[] = {
       EncodeSop1(0x04, 126, 129), // s_mov_b64 exec, 1
@@ -18195,6 +18232,7 @@ int main() {
 #endif
   TestNewShaderRecompilerZeroInitialRegisterState();
   TestNewShaderRecompilerVertexSystemInputsWithoutMirrors();
+  TestNewShaderRecompilerVertexCpuIndirectBaseInstanceSgpr();
   TestNewShaderRecompilerVertexExportUsesInvocationExecMask();
   TestNewShaderRecompilerPerInvocationMasksWithoutMirrors();
   TestNewShaderRecompilerPerInvocationU64Complement();
