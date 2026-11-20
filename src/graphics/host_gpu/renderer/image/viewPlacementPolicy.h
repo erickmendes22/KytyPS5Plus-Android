@@ -24,11 +24,15 @@ struct Surface {
     uint32_t width = 0, height = 0, depth = 0;
     uint32_t levels = 0, layers = 0;
     uint32_t format = 0, type = 0, samples = 0, tile = 0;
+    bool depth_or_stencil = false;
 };
 
 [[nodiscard]] constexpr bool KeepDistinct(const Surface& requested,
                                            const Surface& cached) noexcept {
-    return requested.address != cached.address &&
+    // Depth and stencil legitimately use different guest-plane addresses but
+    // share one D32S8 Vulkan image. Never split that association.
+    return !requested.depth_or_stencil && !cached.depth_or_stencil &&
+           requested.address != cached.address &&
            requested.size != 0 && requested.size == cached.size &&
            requested.width == cached.width &&
            requested.height == cached.height &&
