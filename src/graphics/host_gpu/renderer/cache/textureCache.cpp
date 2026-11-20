@@ -20,6 +20,7 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/viewPlacementPolicy.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -30,6 +31,7 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <atomic>
 #include <fmt/format.h>
 #include <array>
 #include <bit>
@@ -1928,6 +1930,63 @@ ImageId TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
 	return association;
 }
 
+// The game can describe a texture by an address inside an existing larger G-buffer
+// allocation. The old overlap scan kept the *last* candidate's layer even when
+// the requested descriptor was a different slice (Demon's Souls black lighting).
+// Enable only through the title's explicit launch setting. Do not affect UFC6.
+bool TextureCache::ViewPlacementEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("KYTY_DS_VIEW_PLACEMENT");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    return enabled;
+}
+
+void TextureCache::PlaceBindingView(const ImageDesc& desc, ImageId& result, bool loop_own,
+                                    int32_t& view_mip, int32_t& view_layer) const {
+    const auto* image = m_slot_images.try_get(result);
+    if (image == nullptr || !image->registered || image->depth_id) {
+        result = {};
+        view_mip = view_layer = -1;
+        return;
+    }
+    const auto& found = image->info;
+    const auto last_mip = view_mip;
+    const auto last_layer = view_layer;
+    view_mip = view_layer = -1;
+
+    if (found.data.address == desc.info.data.address) {
+        // Direct binding: its BASE_LEVEL / BASE_ARRAY already describe the
+        // correct subresources, unless the last overlap explicitly placed it.
+        if (loop_own) {
+            view_mip = last_mip;
+            view_layer = last_layer;
+        }
+        return;
+    }
+
+    // 'requested.MipOf(container)' (not container.MipOf(requested)): the
+    // requested guest offset must map into THIS exact final native image.
+    const auto mip = desc.info.MipOf(found);
+    if (mip >= 0) {
+        view_mip = mip;
+        view_layer = desc.info.SliceOf(found, mip);
+    } else if (loop_own) {
+        view_mip = last_mip;
+        view_layer = last_layer;
+    }
+    if (!ViewPlacementPolicy::Fits(view_mip, view_layer, desc.view_info.base_level,
+                                   desc.view_info.base_layer, desc.view_info.level_count,
+                                   desc.view_info.layer_count, found.resources.levels,
+                                   found.resources.layers)) {
+        // The two descriptors cannot be proved to refer to the same native
+        // view: keep separate image owners rather than silently sample the
+        // first G-buffer in place of the second.
+        view_mip = view_layer = -1;
+        result = {};
+    }
+}
+
 ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 	auto& command = m_scheduler.Current();
 	if (command.IsInvalid()) {
@@ -1972,17 +2031,32 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 
 		int32_t view_mip   = -1;
 		int32_t view_layer = -1;
+		const bool placement = ViewPlacementEnabled();
 		if (!result) {
+			ImageId placed_in {};
+			bool placed_raw = false;
 			for (const auto candidate: candidates) {
-				view_mip                = -1;
-				view_layer              = -1;
-				const auto& merged_info = result ? m_slot_images[result].info : desc.info;
-				const auto  overlap     = ResolveOverlap(merged_info, desc.type, candidate, result);
-				if (overlap.image) {
-					result     = overlap.image;
-					view_mip   = overlap.mip;
-					view_layer = overlap.layer;
+				if (!placement) {
+					view_mip = -1;
+					view_layer = -1;
 				}
+				const auto& merged_info = result ? m_slot_images[result].info : desc.info;
+				const bool direct = merged_info.data.address == desc.info.data.address;
+				const auto overlap = ResolveOverlap(merged_info, desc.type, candidate, result);
+				if (overlap.image) {
+					result = overlap.image;
+					if (!placement || overlap.mip >= 0 || overlap.layer >= 0) {
+						view_mip = overlap.mip;
+						view_layer = overlap.layer;
+					}
+					placed_in = overlap.mip >= 0 || overlap.layer >= 0
+					    ? overlap.image : ImageId {};
+					placed_raw = direct;
+				}
+			}
+			if (result && placement) {
+				PlaceBindingView(desc, result, placed_in == result && placed_raw,
+				                 view_mip, view_layer);
 			}
 		} else if (block_alias) {
 			for (const auto candidate: candidates) {
@@ -2006,6 +2080,8 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			}
 		}
 		if (!result) {
+			// A separate image has no placement inside the previous owner's layout.
+			if (placement) { view_mip = -1; view_layer = -1; }
 			const bool target = desc.type == BindingType::RenderTarget ||
 			                    desc.type == BindingType::DepthTarget;
 			result         = InsertImage(desc.info, {}, target);
@@ -2029,10 +2105,20 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 		}
 		auto& image = m_slot_images[result];
 		if (view_mip >= 0) {
-			desc.view_info.base_level = static_cast<uint32_t>(view_mip);
+			uint32_t start = static_cast<uint32_t>(view_mip);
+			if (placement && uint64_t{start} + desc.view_info.base_level +
+			    desc.view_info.level_count <= image.info.resources.levels) {
+				start += desc.view_info.base_level;
+			}
+			desc.view_info.base_level = start;
 		}
 		if (view_layer >= 0) {
-			desc.view_info.base_layer = static_cast<uint32_t>(view_layer);
+			uint32_t start = static_cast<uint32_t>(view_layer);
+			if (placement && uint64_t{start} + desc.view_info.base_layer +
+			    desc.view_info.layer_count <= image.info.resources.layers) {
+				start += desc.view_info.base_layer;
+			}
+			desc.view_info.base_layer = start;
 		}
 		image.tick_accessed_last = m_scheduler.CurrentTick();
 		TouchImage(image);
