@@ -5,7 +5,7 @@ name: Android APK
 # No GitHub Releases are created. Signing uses the repository's KYTY_* secrets.
 on:
   push:
-    branches: [ fix/demons-chen-render-backports-20261113, experiment/demons-souls-nexus-route, fix/wolverine-ds-validated-20261105, experiment/demons-souls-idle-poll-arm64, experiment/demons-souls-written-buffer-fix, experiment/demons-souls-gpu-frame-fence, experiment/demons-souls-self-verified-android, experiment/demons-souls-first-boot-skip-android, experiment/demons-souls-demo-flow-android, experiment/neptunia-capy-compat, experiment/capy-global-render-scale, experiment/pc-fork-shader-performance, experimental/neptunia-game-category-resolution, experimental/neptunia-fex-lookup-cache, android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64, investigate/mfgt-reference-port, investigate/mfgt-graphics-pipeline-crash, investigate/mfgt-spv-crash-capture, investigate/mfgt-vertex64-tess, recovery/mfgt-d43e258f-no-tess-workarounds, experiment/mfgt-written-image-reclaim, experiment/mfgt-memory-collector-v2 ]
+    branches: [ test/wolverine-demons-android-20261105, fix/demons-chen-render-backports-20261113, experiment/demons-souls-nexus-route, fix/wolverine-ds-validated-20261105, experiment/demons-souls-idle-poll-arm64, experiment/demons-souls-written-buffer-fix, experiment/demons-souls-gpu-frame-fence, experiment/demons-souls-self-verified-android, experiment/demons-souls-first-boot-skip-android, experiment/demons-souls-demo-flow-android, experiment/neptunia-capy-compat, experiment/capy-global-render-scale, experiment/pc-fork-shader-performance, experimental/neptunia-game-category-resolution, experimental/neptunia-fex-lookup-cache, android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64, investigate/mfgt-reference-port, investigate/mfgt-graphics-pipeline-crash, investigate/mfgt-spv-crash-capture, investigate/mfgt-vertex64-tess, recovery/mfgt-d43e258f-no-tess-workarounds, experiment/mfgt-written-image-reclaim, experiment/mfgt-memory-collector-v2 ]
     paths-ignore: [ 'docs/**', '**.md' ]
   workflow_dispatch:
 
@@ -361,6 +361,34 @@ jobs:
           assert "m_last_boundary = m_next_sequence - 1;" in p
           assert "if (!m_ds_prefix_mode.load(std::memory_order_acquire)) cp.Reset();" in s
           print("Demon frame-order integration assertions: OK")
+          PY
+      - name: Verify complete Demon G-buffer and UFC6 performance policy before APK
+        run: |
+          set -euo pipefail
+          for file in \
+            demons_view_placement_test \
+            demons_lighting_memory_policy_test \
+            ufc6_output_resolution_test \
+            compute_uncached_fill_policy_test; do
+            if test -f "tests/manual/${file}.cpp"; then
+              g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+                "tests/manual/${file}.cpp" -o "/tmp/${file}"
+              "/tmp/${file}"
+            fi
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          launch = Path("android/app/src/main/java/com/kytyps5/android/LaunchConfig.kt").read_text()
+          cache = Path("src/graphics/host_gpu/renderer/cache/textureCache.cpp").read_text()
+          compute = Path("src/graphics/host_gpu/renderer/renderCompute.cpp").read_text()
+          patch = Path("android/app/src/main/assets/presets/PPSA23566/nocrowd/launch/ufc6_crowd_off.json")
+          assert 'KYTY_DS_VIEW_PLACEMENT=1' in launch
+          assert 'KYTY_DS_STABLE_IMAGE_BINDINGS=1' in launch
+          assert 'KYTY_UFC6_HD_OUTPUT=1' in launch
+          assert 'HasCachedImageOverlap' in cache and 'HasCachedImageOverlap' in compute
+          assert 'owner->binding.is_bound || owner->binding.is_target' in cache
+          assert patch.is_file()
+          print("Final Demon/UFC source policies: OK")
           PY
       - name: Host build dependencies
         # Ubuntu package mirrors can be slow even when the packages are available.
