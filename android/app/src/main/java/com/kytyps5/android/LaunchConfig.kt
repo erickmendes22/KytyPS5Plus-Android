@@ -190,6 +190,10 @@ object LaunchArgs {
                     "--env", "KYTY_DS_FRAME_TRACE=1",
                     "--env", "KYTY_DS_CB_MASK_PREPARE=1",
                     "--env", "KYTY_DS_STABLE_IMAGE_BINDINGS=1",
+                    // Source-derived view placement: different guest G-buffer
+                    // addresses must not silently become the same sampled
+                    // mip/layer after the image overlap/merge scan.
+                    "--env", "KYTY_DS_VIEW_PLACEMENT=1",
                     // The lighting graph uses both buffer and image views of GPU-authored
                     // resources. Publish the image backing to the buffer-cache GPU timeline
                     // before read-only shader storage buffer bindings.
