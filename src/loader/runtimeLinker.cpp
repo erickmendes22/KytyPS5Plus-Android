@@ -17,6 +17,7 @@
 #include "cpu/guestCpu.h"
 #include "cpu/guestCpuSelfTest.h"
 #include "graphics/host_gpu/pageManager.h"
+#include "graphics/host_gpu/hostMemory.h"
 #include "kernel/addressFold.h"
 #include "kernel/addressLayout.h"
 #include "kernel/fileSystem.h"
@@ -1659,6 +1660,59 @@ void RuntimeLinker::SaveProgram(Program* program, const std::filesystem::path& e
 	}
 }
 
+// UFC 6 (PPSA23566): its verified startup allocator at eboot+0x1b471bf
+// tries to map a 16-KiB registry block at 0xfc00000000, then in a 16-MiB
+// window below it (the PS5 guest user-space ceiling). Android ARM64 uses a
+// 39-bit host VA with a 0x5f00000000 user ceiling. Every attempted fixed map
+// in UFC's original 0xfb... range is therefore *impossible*, even though
+// sceKernelAllocateDirectMemory succeeds. The allocator returns nullptr and
+// eboot+0x2744a50 later writes to [nullptr+0x18].
+//
+// Relocate only this single verified guest address constant to the ARM64 user
+// window. The game's original search, allocation, mapping, errors, and lifetime
+// remain untouched. Do not fake an object, catch the SIGSEGV, alter memory APIs
+// for other games, or patch arbitrary UFC versions.
+static void InstallUfc6HostAddressWindowFix(Program* program) {
+#if KYTY_HOST_ARM64
+	if (program == nullptr || program->elf == nullptr || program->elf->IsShared())
+		return;
+	std::string title;
+	if (!SystemContentParamSfoGetString("TITLE_ID", &title) || title != "PPSA23566")
+		return;
+	constexpr uint64_t site_rva = 0x1b471bf;
+	constexpr std::array<uint8_t, 10> audited {
+	    0x49, 0xbd, 0xff, 0xbf, 0xff, 0xef, 0xfb, 0x00, 0x00, 0x00};
+	if (program->mapped_size < site_rva + audited.size() ||
+	    program->base_vaddr > UINT64_MAX - site_rva - audited.size()) {
+		LOGF("[UFC6_ADDRESS_FIX] site outside executable; original code retained\n");
+		return;
+	}
+	const uint64_t site = program->base_vaddr + site_rva;
+	if (!Libs::Graphics::HostMemoryRangeIsReadable(site, audited.size()) ||
+	    std::memcmp(reinterpret_cast<const void*>(site), audited.data(), audited.size()) != 0) {
+		LOGF("[UFC6_ADDRESS_FIX] executable signature mismatch; original code retained\n");
+		return;
+	}
+	// Existing x86 code computes r14=r13+0x10000001 and searches down.
+	// Keep that algorithm; point its upper boundary at the ARM64 user ceiling.
+	constexpr uint64_t host_limit = Common::AddressLayout::kHostUserEnd;
+	constexpr uint64_t new_base   = host_limit - 0x10000001ULL;
+	static_assert(new_base + 0x10000001ULL == host_limit);
+	const uint64_t immediate = site + 2; // movabs r13, imm64
+	std::memcpy(reinterpret_cast<void*>(immediate), &new_base, sizeof(new_base));
+	if (!Common::VirtualMemory::FlushInstructionCache(site, audited.size())) {
+		std::memcpy(reinterpret_cast<void*>(site), audited.data(), audited.size());
+		(void)Common::VirtualMemory::FlushInstructionCache(site, audited.size());
+		LOGF("[UFC6_ADDRESS_FIX] instruction-cache flush failed; restored\n");
+		return;
+	}
+	LOGF("[UFC6_ADDRESS_FIX] verified eboot window: 0xfc00000000 -> 0x%016" PRIx64
+	     " (16-MiB retry range; original kernel allocator preserved)\n", host_limit);
+#else
+	(void)program;
+#endif
+}
+
 void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	KYTY_PROFILER_THREAD("Thread_Main");
 
@@ -1681,6 +1735,7 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	const auto libc_path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/libc.prx");
 	auto* libc = Common::File::IsFileExisting(libc_path) ? LoadProgram(libc_path) : nullptr;
 	RelocateAll();
+	InstallUfc6HostAddressWindowFix(m_programs.empty() ? nullptr : m_programs.front());
 #if KYTY_HOST_ARM64
 	InstallMfgtCatalogDiagnostic();
 	for (auto* program: m_programs)
