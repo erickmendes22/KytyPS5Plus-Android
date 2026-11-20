@@ -21,6 +21,8 @@
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/hostShaderQuirks.h"
 #include "graphics/host_gpu/renderer/pipeline/deadLaneDefaults.h"
+#include "graphics/host_gpu/renderer/pipeline/demonsLightingMemoryPolicy.h"
+#include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/pipeline/laneBranchDefaults.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
@@ -160,9 +162,24 @@ bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) 
 // Using the guest backing avoids host SIGSEGV on GPU-protected/unmapped pages
 // without synchronizing unrelated GPU writes.
 bool ReadShaderScalarMemory(void*, uint64_t address, std::span<uint32_t> values) {
-	if (!Libs::LibKernel::Memory::TryReadBacking(address, values.data(), values.size_bytes())) {
-		std::ranges::fill(values, 0u);
-	}
+	// The six Demon's Souls deferred-lighting kernels and scene composite use
+	// scalar resource tables that earlier GPU passes can rewrite. The legacy
+	// raw CPU backing read may return stale descriptor words, even when
+	// BufferCache owns newer GPU-written bytes. On the GPU command thread,
+	// refresh *only these shader resources* before evaluating their SRT.
+	// Other titles and all other shaders retain the zero-readback fast path.
+	static const bool demons = [] {
+		std::string title;
+		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		       title == "PPSA01341";
+	}();
+	const bool coherent = demons && GuestGpu::IsGpuThread() &&
+	    DemonsLightingMemoryPolicy::NeedsCoherentScalarReads(
+	        Common::PerfStats::CurrentTraceShader());
+	const bool ok = coherent
+	    ? Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes())
+	    : Libs::LibKernel::Memory::TryReadBacking(address, values.data(), values.size_bytes());
+	if (!ok) std::ranges::fill(values, 0u);
 	return true;
 }
 
