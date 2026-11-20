@@ -1,0 +1,33 @@
+{
+  "id": "PPSA23566",
+  "version": "@ufc6-crowd-signatures-v1",
+  "process": "eboot.bin",
+  "mods": [
+    {
+      "name": "UFC 6 - eliminar os 4 trabalhos de renderização da plateia (assinatura verificada)",
+      "enabled": true,
+      "memory": [
+        {
+          "offset": "0x04a634ce",
+          "off": "83bf180e0000000f8447030000",
+          "on": "83bf180e00000090e947030000"
+        },
+        {
+          "offset": "0x04a63e94",
+          "off": "83bf180e0000000f8453010000",
+          "on": "83bf180e00000090e953010000"
+        },
+        {
+          "offset": "0x04a642a5",
+          "off": "83bf180e0000000f84ab010000",
+          "on": "83bf180e00000090e9ab010000"
+        },
+        {
+          "offset": "0x04a65da5",
+          "off": "83bf180e0000000f84a0010000",
+          "on": "83bf180e00000090e9a0010000"
+        }
+      ]
+    }
+  ]
+}
