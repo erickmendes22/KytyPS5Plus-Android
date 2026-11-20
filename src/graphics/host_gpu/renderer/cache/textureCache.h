@@ -117,6 +117,8 @@ private:
 		// Last depth image to acquire this HTile address. Superseded depth
 		// backings may be retired later without dropping its clear history.
 		ImageId owner {};
+		// PS5 HTile belongs to the source depth surface, across D32/D32S8 variants.
+		uint64_t depth_address = 0;
 	};
 
 	struct OverlapResult {
@@ -198,6 +200,7 @@ private:
 	void RefreshCopySource(ImageId id);
 	[[nodiscard]] bool CopyD16(Image& destination, Image& source);
 	void               CopyImage(ImageId destination, ImageId source);
+	void               CopyStencil(ImageId destination, ImageId source);
 	[[nodiscard]] ImageId AssociateStencil(ImageId depth, GuestRange stencil);
 	void CopyImageMip(ImageId destination, ImageId source, uint32_t mip, uint32_t layer);
 	void ValidateImageDesc(const ImageDesc& desc) const;
