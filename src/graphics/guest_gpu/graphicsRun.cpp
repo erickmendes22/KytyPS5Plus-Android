@@ -1221,8 +1221,19 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		                          static_cast<uint32_t>(execution.m_buffer_stack.size()),
 		                          opcode == Pm4::IT_NOP ? opcode | ((KYTY_PM4_R(packet_header) & 0xffu) << 8u) : opcode);
 		ProcessWatchdog::SetPhase(ProcessWatchdog::Phase::Handler);
+		// UFC6-only low-overhead sampling of real PM4 handler CPU time.
+		// This includes the renderer work that QueueSubmit batching could
+		// never remove, without synchronizing or modifying a guest packet.
+		const bool pm4_sample = UfcPerf::SamplePm4Handler();
+		const auto pm4_start = pm4_sample ? std::chrono::steady_clock::now()
+		                                  : std::chrono::steady_clock::time_point {};
 		const auto packet_dw =
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
+		if (pm4_sample) {
+			const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+			    std::chrono::steady_clock::now() - pm4_start).count();
+			UfcPerf::NotePm4Handler(opcode, static_cast<uint64_t>(ns));
+		}
 		ProcessWatchdog::SetPhase(ProcessWatchdog::Phase::Process);
 		Common::PerfStats::SetPm4Opcode(0);
 		EXIT_IF(packet_dw > remaining_dw);

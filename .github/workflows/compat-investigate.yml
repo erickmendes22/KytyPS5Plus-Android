@@ -55,7 +55,12 @@ jobs:
           assert 'feedback.frame >= 735' in code
           assert '[DS_LIGHTING_FEATURES]' in compute
           assert 'FeedbackWord(params.feedback).word = packed' in shader
-          print('Focused DS GPU workgroup and feature diagnostics: OK')
+          perf = Path('src/graphics/host_gpu/renderer/ufcPerf.cpp').read_text()
+          graphics = Path('src/graphics/guest_gpu/graphicsRun.cpp').read_text()
+          assert 'pm4_top_samples=' in perf
+          assert 'UfcPerf::SamplePm4Handler()' in graphics
+          assert 'UfcPerf::NotePm4Handler(opcode' in graphics
+          print('Focused DS GPU workgroup and UFC6 handler-cost diagnostics: OK')
           PY
 
   source-and-unit:
