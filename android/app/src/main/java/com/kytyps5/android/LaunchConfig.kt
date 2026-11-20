@@ -125,6 +125,15 @@ object LaunchArgs {
                     "--gpu-memory-budget", "auto", "--gpu-evict-written", "1",
                     "--vma-block-size", "32", "--env", "KYTY_STAGING_MIB=32",
                     "--env", "KYTY_PRESENT_COMPACT=1", "--env", "KYTY_WOLVERINE_RT_ALIAS_RECLAIM=1") else emptyArray()) +
+            // UFC 6 (PPSA23566) uses persistent depth and stencil state across
+            // dependent graphics passes. Asynchronous shader translation skips a
+            // draw whenever a shader/pipeline is still being built; that draw is
+            // NOT replayed for the same game frame. The skipped depth/geometry
+            // pass leaves holes in the following lighting/composite pass.
+            // Make graphics and pipeline creation synchronous for this title.
+            // Preserve the user's GPU driver, all render-target fixes and other titles.
+            (if (titleId.equals("PPSA23566", ignoreCase = true))
+                arrayOf("--async-shaders", "0") else emptyArray()) +
             // BPE mixes raw RDTSC with sceKernelGetTscFrequency. Disable FEX's
             // minimum-1GHz scaling only for this title; native APIs use CNTFRQ.
             (if (titleId.equals("PPSA01341", ignoreCase = true))
