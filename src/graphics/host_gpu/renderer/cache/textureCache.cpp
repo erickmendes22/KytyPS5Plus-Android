@@ -2270,6 +2270,54 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 			continue;
 		}
 		if (selected && (selected != candidate_id || subresources != candidate_subresources)) {
+			// UFC 6 reuses the exact stencil-plane allocation as a live storage
+			// image. Preserve both native owners: reinterpreting storage as S8
+			// destroys the image, while silently dropping the stencil clear
+			// leaves previous-frame masks in the depth target.
+			//
+			// A proven uniform byte fill can update the stencil attachment AND
+			// still run the original shader on the storage image. Returning false
+			// deliberately retains the compute dispatch and its buffer writes.
+			const ImageId association =
+			    stencil_id ? stencil_id :
+			    candidate == vk::ImageAspectFlagBits::eStencil ? id : ImageId {};
+			if (association) {
+				const auto* plane = m_slot_images.try_get(association);
+				const auto* depth = plane && plane->depth_id
+				                        ? m_slot_images.try_get(plane->depth_id) : nullptr;
+				bool storage_owner = false;
+				bool unsafe_alias = false;
+				if (depth != nullptr && depth->info.HasStencil() &&
+				    depth->info.stencil == GuestRange {address, size}) {
+					for (const auto other_id: FindImagesInRegion(address, size, false)) {
+						if (other_id == association) continue;
+						const auto* other = m_slot_images.try_get(other_id);
+						if (other == nullptr || other->info.data != GuestRange {address, size}) {
+							unsafe_alias = true;
+							break;
+						}
+						if (other->usage.storage && !other->depth_id && !other->info.IsDepth() &&
+						    !other->usage.render_target && !other->usage.video_out) {
+							storage_owner = true;
+						} else {
+							unsafe_alias = true;
+							break;
+						}
+					}
+				}
+				uint8_t value = 0;
+				if (storage_owner && !unsafe_alias &&
+				    DecodePackedStencilClear(packed_clear, value)) {
+					vk::ClearValue stencil_clear {};
+					stencil_clear.depthStencil = vk::ClearDepthStencilValue {0.0f, value};
+					ClearImage(command, plane->depth_id, depth->backing.format,
+					           {vk::ImageAspectFlagBits::eStencil,
+					            plane->stencil_subresources.base_level,
+					            plane->stencil_subresources.level_count,
+					            plane->stencil_subresources.base_layer,
+					            plane->stencil_subresources.layer_count}, stencil_clear);
+				}
+			}
 			return false;
 		}
 		selected     = candidate_id;
