@@ -1,4 +1,5 @@
 #include "graphics/presentation/videoOut.h"
+#include "graphics/presentation/videoOutResolutionPolicy.h"
 
 #include "common/abi.h"
 #include "cpu/hleThreadDiagnostics.h"
@@ -1912,9 +1913,19 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 	const bool hdr_allowed = !Loader::SystemContentParamSfoGetInt("ATTRIBUTE", &attribute) ||
 	                         (attribute & 0x20000000) != 0;
 	ctx->mutex.Lock();
-	// Primary output reports 4K unless param.json Video-out Info enables resolution detection.
-	status->resolution =
-	    ((attribute3 & 4) != 0 && ctx->width < 3840 && ctx->height < 2160 ? 1u : 2u);
+	// UFC 6 was seeing a UHD-capable display even when Android requested 720p.
+	// Frostbite therefore could select a more expensive UHD render preset.
+	// Only this title, only when launched with the HD-output policy, and only
+	// when the actual Android output is <=1080p may override the guest status.
+	// This leaves image/attachment sizes to the game, not a host-side fake.
+	static const bool ufc6_hd_status = [] {
+		const char* enabled = std::getenv("KYTY_UFC6_HD_OUTPUT");
+		if (enabled == nullptr || enabled[0] != '1' || enabled[1] != '\0') return false;
+		std::string title;
+		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) && title == "PPSA23566";
+	}();
+	status->resolution = OutputResolutionPolicy::Select(
+	    ctx->width, ctx->height, (attribute3 & 4) != 0, ufc6_hd_status);
 	status->dynamicRange = hdr_allowed && DriverState().IsHdrSupported() ? 2u : 1u;
 	status->refreshRate =
 	    (ctx->output_mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ || Config::GetVblankFrequency() >= 119
