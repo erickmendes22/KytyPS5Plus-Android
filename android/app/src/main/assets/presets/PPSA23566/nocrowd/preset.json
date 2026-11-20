@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "id": "nocrowd",
+  "name": "UFC 6 — sem plateia (mais FPS)",
+  "description": "Opcional. Salta exclusivamente 4 jobs da plateia, sem desativar a animação. Usa 4 assinaturas de 13 bytes conferidas contra eboot.bin fornecido, sem mudar o arquivo. Jogo/execução incompatível: não aplica. Não inclui patch de relógio nem altera renderização de lutadores.",
+  "launch": {
+    "gamePatch": "ufc6_crowd_off.json"
+  }
+}
