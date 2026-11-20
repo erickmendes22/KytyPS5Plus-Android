@@ -1677,9 +1677,24 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	}
 #endif
 
-	// The runtime automatically loads libc; other PRXs are requested by the application.
-	const auto libc_path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/libc.prx");
-	auto* libc = Common::File::IsFileExisting(libc_path) ? LoadProgram(libc_path) : nullptr;
+	// PPSA23566 enters guest code with a null module-owned singleton at offset
+	// +0x18 (deterministic FEXMemJIT fault). The upstream loader preloads adjacent
+	// PRXs and runs their init functions before main. Restore that *full* module
+	// initialization contract here; keep the old behavior for other titles.
+	static const bool complete_guest_module_start = [] {
+		const char* option = std::getenv("KYTY_PRELOAD_GUEST_MODULES");
+		if (option != nullptr) return option[0] == '1' && option[1] == '\0';
+		std::string title;
+		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+		       title == "PPSA23566";
+	}();
+	Program* libc = nullptr;
+	if (complete_guest_module_start) {
+		PreloadAdjacentPrograms();
+	} else {
+		const auto libc_path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/libc.prx");
+		libc = Common::File::IsFileExisting(libc_path) ? LoadProgram(libc_path) : nullptr;
+	}
 	RelocateAll();
 #if KYTY_HOST_ARM64
 	InstallMfgtCatalogDiagnostic();
@@ -1696,7 +1711,9 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	// Install only when the on-disk EBOOT code signatures match the audited
 	// Bluepoint worker-poll. This hook invokes the host via FEX HLE on ARM64.
 	DemonsSoulsIdle::Install(m_programs.empty() ? nullptr : m_programs.front());
-	if (libc != nullptr && libc->dynamic_info->init_vaddr != 0) {
+	if (complete_guest_module_start) {
+		StartAllModules();
+	} else if (libc != nullptr && libc->dynamic_info->init_vaddr != 0) {
 		StartModule(libc, 0, nullptr, nullptr);
 	}
 
@@ -1965,6 +1982,98 @@ void RuntimeLinker::StackTrace(uint64_t frame_ptr, uint64_t stack_ptr) {
 		          ? "???"
 		          : Common::FilenameWithoutDirectory(Common::PathToGenericString(p->file_name))
 		                .c_str()));
+	}
+}
+
+// The normal console loader starts game-local PRX modules before entering the
+// executable. Historically this Android branch started only libc.prx here; an
+// engine that expects another module's constructor to install a singleton can
+// then dereference a null global soon after entering the FEX-translated code.
+void RuntimeLinker::PreloadAdjacentPrograms() {
+	if (m_programs.empty()) return;
+	const auto root = m_programs.front()->file_name.parent_path();
+	if (root.empty()) return;
+	std::vector<std::filesystem::path> pending;
+	const auto loaded = [this](const std::filesystem::path& path) {
+		const auto candidate = Common::PathToGenericString(path);
+		return std::ranges::any_of(m_programs, [&](const Program* program) {
+			return Common::EqualNoCase(Common::PathToGenericString(program->file_name), candidate);
+		});
+	};
+	for (const auto& directory: {root, root / "sce_module", root / "sce_modules"}) {
+		if (!Common::File::IsDirectoryExisting(directory)) continue;
+		for (const auto& entry: Common::File::GetDirEntries(directory)) {
+			if (!entry.is_file) continue;
+			const auto name = Common::ToLower(entry.name);
+			if (!(name.ends_with(".prx") || name.ends_with(".sprx")) ||
+			    name == "libkernel.prx" || name == "libkernel_sys.prx") continue;
+			const auto path = directory / entry.name;
+			if (loaded(path) || std::ranges::any_of(pending, [&](const auto& queued) {
+				return Common::EqualNoCase(Common::PathToGenericString(queued),
+				                           Common::PathToGenericString(path));
+			})) continue;
+			pending.push_back(path);
+		}
+	}
+	std::ranges::sort(pending, [](const auto& a, const auto& b) {
+		return Common::PathToGenericString(a) < Common::PathToGenericString(b);
+	});
+	for (const auto& path: pending) {
+		auto* module = LoadProgram(path);
+		// The system libraries remain HLE imports. Guest modules can import those
+		// libraries, so a missing host-side export is not grounds to reject loading.
+		module->fail_if_global_not_resolved = false;
+		LOGF("[GUEST_MODULE_PRELOAD] %s\n", Common::PathToString(path).c_str());
+	}
+	LOGF("[GUEST_MODULE_PRELOAD] total=%zu\n", pending.size());
+}
+
+void RuntimeLinker::StartAllModules() {
+	Common::LockGuard lock(m_mutex);
+	std::vector<Program*> started;
+	const auto matches = [](const Program* module, const std::string& needed) {
+		if (Common::EqualNoCase(module->file_name.filename().string(), needed))
+			return true;
+		for (const auto& exported: module->dynamic_info->export_modules)
+			if (Common::EqualNoCase(exported.name, needed)) return true;
+		return false;
+	};
+	const auto dependencies_ready = [&](const Program* program) {
+		for (const auto& needed: program->dynamic_info->import_modules) {
+			for (auto* other: m_programs) {
+				if (other == program || !other->elf->IsShared() ||
+				    other->dynamic_info->init_vaddr == 0 ||
+				    !matches(other, needed.name)) continue;
+				if (std::ranges::find(started, other) == started.end()) return false;
+			}
+		}
+		return true;
+	};
+	for (;;) {
+		bool progress = false;
+		for (auto* module: m_programs) {
+			if (!module->elf->IsShared() || module->dynamic_info->init_vaddr == 0 ||
+			    std::ranges::find(started, module) != started.end() ||
+			    !dependencies_ready(module)) continue;
+			const int status = StartModule(module, 0, nullptr, nullptr);
+			LOGF("[GUEST_MODULE_START] name=%s status=%d\n",
+			     Common::PathToString(module->file_name).c_str(), status);
+			module->load_count = 1; // sceKernelLoadStartModule must not rerun the initializer.
+			started.push_back(module);
+			progress = true;
+		}
+		if (!progress) break;
+	}
+	// A cyclic or implicit dependency cannot prevent initialization altogether;
+	// this is the reference loader's bounded final startup pass.
+	for (auto* module: m_programs) {
+		if (!module->elf->IsShared() || module->dynamic_info->init_vaddr == 0 ||
+		    std::ranges::find(started, module) != started.end()) continue;
+		const int status = StartModule(module, 0, nullptr, nullptr);
+		LOGF("[GUEST_MODULE_START] fallback=%s status=%d\n",
+		     Common::PathToString(module->file_name).c_str(), status);
+		module->load_count = 1;
+		started.push_back(module);
 	}
 }
 
