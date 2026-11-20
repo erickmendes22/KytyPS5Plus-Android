@@ -101,6 +101,19 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun demonsSoulsCorrectsGuestGbufferPlacementWithoutChangingUfc6() {
+        for (title in listOf("PPSA01341", "ppsa01341")) {
+            val flags = LaunchArgs.forGame("/games/demons", Resolution.HD_720, titleId = title)
+            assertEquals(1, flags.count { it == "KYTY_DS_VIEW_PLACEMENT=1" })
+            assertEquals(1, flags.count { it == "KYTY_DS_STABLE_IMAGE_BINDINGS=1" })
+        }
+        for (title in listOf("PPSA23566", "PPSA24156", null)) {
+            val flags = LaunchArgs.forGame("/games/other", Resolution.HD_720, titleId = title)
+            assertEquals(-1, flags.indexOf("KYTY_DS_VIEW_PLACEMENT=1"))
+        }
+    }
+
+    @Test
     fun ufc6CanCacheRenderTargetDescriptionsWithoutChangingOtherTitles() {
         for (title in listOf("PPSA23566", "ppsa23566")) {
             val args = LaunchArgs.forGame("/games/ufc", Resolution.HD_720, titleId = title)
