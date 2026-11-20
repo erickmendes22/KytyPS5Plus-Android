@@ -1135,7 +1135,7 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			// cause a scan across the whole guest address space.
 			static const bool ds_shader_buffer_alias = [] {
 				const char* env = std::getenv("KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS");
-				return env && env[0] == '1' && env[1] == '\\0';
+				return env && env[0] == '1' && env[1] == '\0';
 			}();
 			if (ds_shader_buffer_alias && !metadata.written &&
 			    descriptor.NumRecords() != UINT32_MAX &&
@@ -1147,7 +1147,7 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 				if (n < 16u || (n & 4095u) == 4095u) {
 					LOGF("[DS_BUFFER_IMAGE_ALIAS] shader=0x%016" PRIx64
 					     " addr=0x%016" PRIx64 " bytes=%" PRIu64
-					     " published=%u\\n",
+					     " published=%u\n",
 					     program.shader_hash, address, size, n + 1u);
 				}
 			}
