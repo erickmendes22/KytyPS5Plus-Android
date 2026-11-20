@@ -5,6 +5,7 @@
 #include "gpu_tiler_shaders/indirect_draw_fixup_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/cache/meshEmulationRing.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
@@ -120,6 +121,27 @@ IndirectDrawFixup::Sources IndirectDrawFixup::AcquireSources(const IndirectDrawA
 	auto&      cache = m_context.GetBufferCache();
 	const auto size  = GuestRecordsSize(args);
 	EXIT_IF(size == 0);
+	// The same GPU image/buffer alias issue affects GPU-culled geometry draws.
+	// A stale argument or count buffer can remove the entire opaque scene,
+	// while separately generated HUD/particle paths remain visible.
+	// Only synchronize genuine GPU-image-owned ranges; do not synthesize
+	// nonzero draw counts or read the arguments synchronously on the CPU.
+	static const bool ds_draw_args_gpu_owned = [] {
+		const char* flag = std::getenv("KYTY_DS_GPU_DRAW_ARGS");
+		return flag != nullptr && flag[0] == '1' && flag[1] == '\0';
+	}();
+	if (ds_draw_args_gpu_owned) {
+		auto& images = m_context.GetTextureCache();
+		const auto publish = [&](uint64_t address, uint64_t bytes) {
+			if (address != 0 && bytes <= (uint64_t {256} << 20u) &&
+			    images.IsRegionGpuModified(address, bytes)) {
+				m_context.GetCommandScheduler().EndRendering(PassEnd::Compute);
+				(void)images.PublishGpuImageForIndirectArgs(address, bytes);
+			}
+		};
+		publish(args.args_addr, size);
+		if (args.count_addr != 0) publish(args.count_addr, sizeof(uint32_t));
+	}
 	Sources sources;
 	const auto [records, records_offset] = cache.ObtainBuffer(args.args_addr, size, false);
 	EXIT_IF(records == nullptr);
