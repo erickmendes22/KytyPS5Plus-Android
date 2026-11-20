@@ -1514,9 +1514,15 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			if (mesh.fast_launch) {
 				// Fast launch broadcasts the subgroup's base vertex and instance to every lane.
 				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5), entry_ir.IAdd(draw(1), group));
-				entry_ir.SetVectorReg(
-				    static_cast<IR::VectorReg>(6),
-				    entry_ir.IAdd(draw(2), builtin(IR::StageInputKind::WorkgroupId, 1)));
+				// Fast-launch NGG uses VGPR6 for the instance ID. On GPU-indirect
+				// draws the guest START_INST_LOC SGPR already receives draw(2);
+				// adding draw(2) here would double-offset the index just as in
+				// the regular mesh path.
+				auto instance_id = builtin(IR::StageInputKind::WorkgroupId, 1);
+				if (!options.input_info.vertex->indirect.enabled) {
+					instance_id = entry_ir.IAdd(draw(2), instance_id);
+				}
+				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(6), instance_id);
 			} else {
 				// GS adjacency addresses local ES records in LDS. Fans retain the draw's
 				// center in every subgroup; strip winding follows the global primitive.
