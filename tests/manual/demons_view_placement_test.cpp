@@ -26,6 +26,14 @@ constexpr Surface a {0x2831e0000ull, 0x6c0000ull, 1600, 900, 1, 1, 1, 130, 2, 1,
 constexpr Surface b {0x282b60000ull, 0x6c0000ull, 1600, 900, 1, 1, 1, 130, 2, 1, 4};
 static_assert(KeepDistinct(a, b));
 static_assert(!KeepDistinct(a, a));
+// A guest S8 plane and its depth owner can have different base addresses;
+// they are deliberately views of the same depth/stencil Vulkan allocation.
+static_assert(!KeepDistinct(
+    Surface{a.address, a.size, a.width, a.height, a.depth, 1, 1,
+            a.format, a.type, a.samples, a.tile, true}, b));
+static_assert(!KeepDistinct(a,
+    Surface{b.address, b.size, b.width, b.height, b.depth, 1, 1,
+            b.format, b.type, b.samples, b.tile, true}));
 static_assert(!KeepDistinct(Surface{a.address, a.size, a.width, a.height, 1,
     1, 2, a.format, a.type, a.samples, a.tile}, b));
 static_assert(!KeepDistinct(Surface{a.address, a.size, a.width, a.height, 1,
