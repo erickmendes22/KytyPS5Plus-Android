@@ -7,7 +7,7 @@ on:
   push:
     branches: [investigate/wolverine-bindless-demons-jobs, test/wolverine-demons-android-20261105]
     paths:
-      # One-shot source verification of distinct G-buffer ownership and UFC crowd byte guards.
+      # Revalidate current depth/stencil-safe G-buffer split, UFC patch signatures and Android presets.
       # Subsequent source changes cannot create APK or trigger this job.
       - ".github/workflows/compat-investigate.yml"
   workflow_dispatch:
