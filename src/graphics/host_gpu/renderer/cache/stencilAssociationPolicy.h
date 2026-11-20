@@ -12,4 +12,14 @@ namespace Libs::Graphics {
     return !color_target && !storage && !video_out && !depth_target;
 }
 
+// A stencil bookkeeping image that was attached to another depth owner may
+// not be stolen for this depth target, even when the plane's guest address
+// and dimensions coincide. Guest depth images can alternate every frame;
+// retaining each owner's own record prevents the second reparent from
+// invalidating a stencil view still needed by the first depth attachment.
+[[nodiscard]] constexpr bool CanUseStencilForOwner(bool has_depth_parent,
+                                                   bool parent_is_this_depth) noexcept {
+    return !has_depth_parent || parent_is_this_depth;
+}
+
 } // namespace Libs::Graphics

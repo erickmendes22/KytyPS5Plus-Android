@@ -45,6 +45,11 @@ jobs:
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
             tests/manual/thread_prime_preference_test.cpp -o /tmp/ufc-prime-preference
           /tmp/ufc-prime-preference
+      - name: Validate per-depth stencil plane ownership
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+            tests/manual/demons_stencil_alias_test.cpp -o /tmp/demons-stencil-owners
+          /tmp/demons-stencil-owners
       - name: Compile and run actual Bluepoint poll thunk on x86 synthetic guest memory
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -O2 -Isrc \

@@ -1902,8 +1902,20 @@ ImageId TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
 		EXIT("TextureCache: stencil association requires a depth/stencil image\n");
 	}
 
+	// Jetsku KytyPS5 84419aef: reuse the current depth's own stencil
+	// bookkeeping plane first. An identically addressed plane belonging
+	// to another depth owner must not be reparented while that owner is
+	// still an active GPU depth attachment (Demon's Souls G-buffer).
 	ImageId association {};
-	for (const auto id: FindImagesInRegion(stencil.address, stencil.size, false)) {
+	for (const auto id: depth.stencil_ids) {
+		const auto* owned = m_slot_images.try_get(id);
+		if (owned != nullptr && owned->depth_id == depth_id &&
+		    owned->info.data == stencil) {
+			association = id;
+			break;
+		}
+	}
+	if (!association) for (const auto id: FindImagesInRegion(stencil.address, stencil.size, false)) {
 		const auto owner = m_slot_images.try_get(id);
 		if (owner == nullptr || owner->info.data != stencil ||
 		    owner->info.extent != depth.info.extent) {
@@ -1917,7 +1929,9 @@ ImageId TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
 		// Only a bookkeeping/standalone stencil record may be associated.
 		if (!ReusableAsStencilRecord(owner->usage.render_target,
 		                            owner->usage.storage, owner->usage.video_out,
-		                            owner->info.IsDepth())) {
+		                            owner->info.IsDepth()) ||
+		    !CanUseStencilForOwner(static_cast<bool>(owner->depth_id),
+		                           owner->depth_id == depth_id)) {
 			static std::atomic_uint32_t rejected {0};
 			const uint32_t n = rejected.fetch_add(1u, std::memory_order_relaxed);
 			if (n < 24u || (n % 4096u) == 0u) {
