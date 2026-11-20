@@ -166,6 +166,11 @@ object LaunchArgs {
                     // resources. Publish the image backing to the buffer-cache GPU timeline
                     // before read-only shader storage buffer bindings.
                     "--env", "KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS=1",
+                    // Indirect geometry consumes GPU-generated draw records and counts;
+                    // the LDS64 fallback must size shared storage from GPU-authoritative
+                    // dispatch arguments rather than an obsolete guest RAM zero.
+                    "--env", "KYTY_DS_GPU_DRAW_ARGS=1",
+                    "--env", "KYTY_DS_GPU_LDS_GROUPS=1",
 
                     "--vma-block-size", "32") else emptyArray()) +
             // The GT reference fork enables LS/HS/TES explicitly. Keep it title-scoped.
