@@ -197,6 +197,8 @@ class LaunchArgsTest {
             assertEquals(1, env.count { it == "KYTY_DS_COLOR_PROBE_TARGETED=0" })
             assertEquals(1, env.count { it == "KYTY_DS_FRAME_TRACE=1" })
             assertEquals(1, env.count { it == "KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS=1" })
+            assertEquals(1, env.count { it == "KYTY_DS_GPU_LDS_GROUPS=1" })
+            assertEquals(1, env.count { it == "KYTY_DS_GPU_DRAW_ARGS=1" })
             assertEquals(1, env.count { it == "KYTY_DS_CB_MASK_PREPARE=1" })
             assertEquals(1, env.count { it == "KYTY_DS_STABLE_IMAGE_BINDINGS=1" })
         }
@@ -205,6 +207,8 @@ class LaunchArgsTest {
             val env = args.indices.filter { args[it] == "--env" }.map { args[it + 1] }
             assertEquals(0, env.count { it.startsWith("KYTY_DS_GUEST_COLOR_TARGETS=") })
             assertEquals(0, env.count { it.startsWith("KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS=") })
+            assertEquals(0, env.count { it.startsWith("KYTY_DS_GPU_LDS_GROUPS=") })
+            assertEquals(0, env.count { it.startsWith("KYTY_DS_GPU_DRAW_ARGS=") })
         }
     }
 
