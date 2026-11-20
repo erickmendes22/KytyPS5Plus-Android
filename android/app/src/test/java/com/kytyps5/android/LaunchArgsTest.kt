@@ -101,6 +101,19 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun ufc6CanCacheRenderTargetDescriptionsWithoutChangingOtherTitles() {
+        for (title in listOf("PPSA23566", "ppsa23566")) {
+            val args = LaunchArgs.forGame("/games/ufc", Resolution.HD_720, titleId = title)
+            assertEquals(1, args.count { it == "KYTY_BIND_MEMO=11" })
+            assertEquals("0", args[args.indexOf("--async-shaders") + 1])
+        }
+        for (title in listOf("PPSA01341", "PPSA24156", null)) {
+            val args = LaunchArgs.forGame("/games/other", Resolution.HD_720, titleId = title)
+            assertEquals(-1, args.indexOf("KYTY_BIND_MEMO=11"))
+        }
+    }
+
+    @Test
     fun ufc6NeverDropsUncompiledGraphicsDraws() {
         // A shader that is not compiled yet cannot be silently skipped when
         // later depth/stencil and composite passes consume its output.
