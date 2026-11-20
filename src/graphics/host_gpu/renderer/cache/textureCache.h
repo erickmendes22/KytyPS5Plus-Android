@@ -180,6 +180,11 @@ private:
 	                                           ImageId cached, ImageId merged);
 	[[nodiscard]] ImageId       ResolveDepthOverlap(const ImageInfo& requested, BindingType binding,
 	                                                ImageId cached);
+	// Demon's Souls deferred G-buffer: preserve the requested base mip/layer
+	// when a binding resolves to a larger cached image through an overlap.
+	[[nodiscard]] static bool ViewPlacementEnabled();
+	void PlaceBindingView(const ImageDesc& desc, ImageId& result, bool loop_own,
+	                      int32_t& view_mip, int32_t& view_layer) const;
 	[[nodiscard]] ImageId       ExpandImage(const ImageInfo& info, ImageId source);
 	void                        RefreshImage(ImageId id);
 	void                        MaterializeColorClear(ImageId id, const ImageDesc& desc,
