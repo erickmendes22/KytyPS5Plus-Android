@@ -120,5 +120,8 @@ jobs:
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
             tests/manual/ufc6_output_resolution_test.cpp -o /tmp/ufc6-output-resolution
           /tmp/ufc6-output-resolution
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+            tests/manual/demons_lighting_memory_policy_test.cpp -o /tmp/demons-lighting-srt
+          /tmp/demons-lighting-srt
       - name: Compile complete Kyty emulator host so bindless Vulkan additions are type-checked
         run: cmake --build _Build/compat --target kyty_emulator --parallel 2
