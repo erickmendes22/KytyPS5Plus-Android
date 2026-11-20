@@ -162,6 +162,15 @@ jobs:
           assert 'DsStartInstanceUserSgpr' in cp
           assert 'options.input_info.vertex->start_instance_sgpr >= 0' in vs
           assert 'StageInputKind::BaseInstance' in vs
+          depth = Path("src/graphics/host_gpu/renderer/image/viewPlacementPolicy.h").read_text()
+          assert 'requested.size != 0 && cached.size != 0' in depth
+          assert 'KeepDistinctDepth' in cache
+          assert 'ViewPlacementPolicy::KeepDistinctDepth(' in cache
+          assert 'padded_depth_b' in Path("tests/manual/demons_view_placement_test.cpp").read_text()
+          shader_key = Path("src/graphics/shader/shader.cpp").read_text()
+          assert 'if (info.start_instance_sgpr >= 0)' in shader_key
+          assert '0xd5000000u' in shader_key
+          print("Demon distinct-depth ownership / title-only shader-cache keys: OK")
           print("UFC6 Vulkan batching / Demon CPU-indirect SGPR wiring: OK")
           PY
       - name: Compile and test real shader resource specialization plus Bluepoint HLE
