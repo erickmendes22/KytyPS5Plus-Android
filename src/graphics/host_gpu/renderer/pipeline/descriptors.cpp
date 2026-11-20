@@ -24,6 +24,7 @@
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/bindMemo.h"
+#include "graphics/host_gpu/renderer/pipeline/demonsLightingMemoryPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/sampledDepthMetadataPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -1319,16 +1320,30 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 		}
 		return true;
 	};
+	// A cached view can remain registered after the descriptor lookup switches
+	// to another owner (e.g. a storage image supersedes a sampled snapshot).
+	// Check the actual lookup again for the seven lighting/composite programs,
+	// even if the previous owner is still alive. Other games keep the fast path.
+	const bool verify_lighting_images = ds_stable_image_bindings &&
+	    DemonsLightingMemoryPolicy::NeedsCoherentScalarReads(program.shader_hash);
 	const uint32_t passes = ds_stable_image_bindings ? 8u : 1u;
 	for (uint32_t attempt = 0; attempt < passes; ++attempt) {
 		for (uint32_t i = 0; i < program.info.images.size(); i++) {
 	        if (program.info.images[i].bindless) continue;
 			if (!images[i].image_id) continue;
 			const auto old_image = texture_cache.m_slot_images.try_get(images[i].image_id);
-			if (old_image == nullptr || (!old_image->registered && !old_image->info.data.Empty()) ||
-			    old_image->binding.needs_rebind ||
-			    (ds_stable_image_bindings && old_image->depth_id)) {
-				if (old_image != nullptr) {
+			const bool retired = old_image == nullptr ||
+			    (!old_image->registered && !old_image->info.data.Empty()) ||
+			    (old_image != nullptr && old_image->binding.needs_rebind) ||
+			    (old_image != nullptr && ds_stable_image_bindings && old_image->depth_id);
+			const bool verify = verify_lighting_images &&
+			    program.info.images[i].resource_class ==
+			        ShaderRecompiler::IR::ImageResourceClass::Sampled &&
+			    !images[i].placeholder;
+			if (retired || verify) {
+				// A fresh lookup does NOT mean the old native view is invalid.
+				// Only reset binding state when an actual retirement was observed.
+				if (retired && old_image != nullptr) {
 					old_image->binding = {};
 				}
 				auto* slots = (BindMemo::Bits() & BindMemo::TextureDesc) != 0
