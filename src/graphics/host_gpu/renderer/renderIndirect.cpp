@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/renderer/cache/meshEmulationRing.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/guest_gpu/graphicsRun.h" // GetGpu().GetFrameNum() needs complete GuestGpu
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/pipeline/bindMemo.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
