@@ -1945,7 +1945,7 @@ bool TextureCache::ViewPlacementEnabled() {
 void TextureCache::PlaceBindingView(const ImageDesc& desc, ImageId& result, bool loop_own,
                                     int32_t& view_mip, int32_t& view_layer) const {
     const auto* image = m_slot_images.try_get(result);
-    if (image == nullptr || !image->registered || image->depth_id) {
+    if (image == nullptr || !image->registered) {
         result = {};
         view_mip = view_layer = -1;
         return;
