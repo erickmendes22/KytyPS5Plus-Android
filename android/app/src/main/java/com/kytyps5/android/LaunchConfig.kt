@@ -135,6 +135,11 @@ object LaunchArgs {
             (if (titleId.equals("PPSA23566", ignoreCase = true))
                 arrayOf(
                     "--async-shaders", "0",
+                    // Give Frostbite the correct <=1080p display status when
+                    // the user selects 720p/1080p in Android. It can then
+                    // choose its own HD render preset instead of receiving
+                    // the emulator's old default UHD status.
+                    "--env", "KYTY_UFC6_HD_OUTPUT=1",
                     // CPU-side memo of pure CB register -> render target descriptions.
                     // Keep TextureDesc (bit 0) and ColorClearScan (bit 3) enabled;
                     // RenderTargetDesc (bit 1) only avoids repeated decoding of
