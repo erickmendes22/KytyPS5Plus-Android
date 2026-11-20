@@ -4,6 +4,7 @@ import java.io.File
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -17,7 +18,7 @@ class Ufc6CrowdPatchTest {
         val preset = presets.single { it.id == "nocrowd" }
         assertTrue(preset.launch.gamePatch == "ufc6_crowd_off.json")
         assertTrue(preset.launch.env.isEmpty())
-        assertEquals(null, preset.launch.renderScale)
+        assertNull(preset.launch.renderScale)
 
         val json = JSONObject(String(catalog.launchFileBytes(preset, requireNotNull(
             preset.launch.gamePatch)), Charsets.UTF_8))
