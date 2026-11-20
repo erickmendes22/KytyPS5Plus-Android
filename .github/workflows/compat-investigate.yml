@@ -1,18 +1,18 @@
 name: Compatibility investigation — native only
 
-# Do not build or publish an APK until BOTH title fixes have working backend
-# implementations and device-test acceptance evidence. This workflow validates
-# a focused source branch and never executes Gradle/NDK packaging.
+# Fast DS/UFC source checks on push; full host compile/regressions only by
+# manual workflow_dispatch. Neither job builds or publishes an APK.
 on:
   push:
     branches: [investigate/wolverine-bindless-demons-jobs, test/wolverine-demons-android-20261105]
     paths:
-      # Revalidate current depth/stencil-safe G-buffer split, UFC patch signatures and Android presets.
-      # Subsequent source changes cannot create APK or trigger this job.
       - ".github/workflows/compat-investigate.yml"
+      - "src/graphics/**"
+      - "tests/manual/**"
+      - "android/app/src/main/java/com/kytyps5/android/LaunchConfig.kt"
   workflow_dispatch:
 
-# Only the newest source state needs expensive native compilation.
+# Cancel obsolete quick checks; manual full regressions remain opt-in.
 concurrency:
   group: compat-${{ github.ref }}
   cancel-in-progress: true
@@ -21,8 +21,42 @@ permissions:
   contents: read
 
 jobs:
+  quick-demons-ufc:
+    name: Fast Demon lighting / UFC6 policy verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 1
+      - name: Focused GPU memory, indirect dispatch and UFC6 policy tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test in demons_view_placement_test demons_stencil_alias_test \
+                      demons_indirect_dispatch_test demons_lds_int64_storage_test \
+                      demons_lighting_memory_policy_test demons_gpu_image_publish_policy_test \
+                      ufc6_fan_policy_test ufc6_output_resolution_test; do
+            g++ -std=c++20 -Wall -Wextra -Werror -Isrc "tests/manual/${test}.cpp" -o "/tmp/${test}"
+            "/tmp/${test}"
+          done
+      - name: Check actual GPU-side lighting measurements are connected
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          code = Path('src/graphics/host_gpu/renderer/renderIndirect.cpp').read_text()
+          compute = Path('src/graphics/host_gpu/renderer/renderCompute.cpp').read_text()
+          shader = Path('src/graphics/host_gpu/shaders/indirect_draw_fixup.comp').read_text()
+          assert '[DS_LIGHTING_GROUPS]' in code
+          assert '[DS_LIGHTING_FEATURES]' in compute
+          assert 'FeedbackWord(params.feedback).word = packed' in shader
+          print('Focused DS GPU workgroup and feature diagnostics: OK')
+          PY
+
   source-and-unit:
-    name: ARM64 FEX policy and Wolverine bindless source contract
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Full host shader / Bluepoint regression compilation (manual only)
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
