@@ -77,13 +77,17 @@ void TextureCache::CollectWithinBudget(uint64_t tick, uint64_t used_memory) {
 		return image;
 	};
 
-	// Images whose contents guest memory already holds (never GPU-written, or overwritten by the
-	// CPU or a buffer since). Collect first: deleting depth also deletes its stencil associations.
+	// Collect only images which no longer own GPU-authored bytes. SafeToDownload()
+	// is not an ownership test: an image can be GPU-modified and simultaneously
+	// CPU-/buffer-dirty after a partial alias update. Those mixed states must
+	// not be discarded without reconciling the remaining GPU-authored pixels.
+	// This is essential for G-buffer/depth/lighting intermediate preservation.
+	// Delete depth associations only after their parent is no longer GPU-owned.
 	std::vector<ImageId> plain;
 	plain.reserve(limit);
 	m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
 		const auto* image = evictable(id);
-		if (image != nullptr && !image->SafeToDownload()) {
+		if (image != nullptr && !image->IsGpuModified()) {
 			plain.push_back(id);
 		}
 		return plain.size() == limit;
