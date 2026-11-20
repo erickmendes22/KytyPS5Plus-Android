@@ -212,6 +212,17 @@ void Run(const RunOptions& options) {
 	}
 	if (!title_id.empty()) {
 		Log::WriteToConsoleAndLog(fmt::format("Title ID: {}\n", title_id));
+		// Shader/renderer workarounds are version-sensitive. Log the guest
+		// version alongside the title so a scene failure is attributable to
+		// the exact executable without scanning or patching its game code.
+		if (title_id == "PPSA01341") {
+			std::string app_version;
+			if (Loader::SystemContentParamSfoGetString("APP_VER", &app_version)) {
+				Log::WriteToConsoleAndLog(fmt::format("[DS_GAME_VERSION] {}\n", app_version));
+			} else {
+				Log::WriteToConsoleAndLog("[DS_GAME_VERSION] unavailable\n");
+			}
+		}
 	}
 
 	int ok = atexit(KytyClose);
