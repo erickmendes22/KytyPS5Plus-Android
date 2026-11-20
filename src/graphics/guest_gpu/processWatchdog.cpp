@@ -92,6 +92,9 @@ State& Get() {
 
 void BeginProcess() {
 	auto& s = Get();
+	// Each completed Process flushes its counters; Reset guards any aborted
+	// prior scope so a new submission never inherits its diagnostic samples.
+	PacketCounters().Reset();
 	s.packets.store(0, std::memory_order_relaxed);
 	s.ib_switches.store(0, std::memory_order_relaxed);
 	s.draws.store(0, std::memory_order_relaxed);
@@ -103,6 +106,7 @@ void BeginProcess() {
 
 void EndProcess() {
 	auto& s = Get();
+	PacketCounters().Flush(s);
 	s.start_ns.store(0, std::memory_order_release);
 	s.phase.store(static_cast<uint32_t>(Phase::Idle), std::memory_order_relaxed);
 }

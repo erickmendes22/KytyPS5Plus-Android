@@ -43,6 +43,46 @@ struct State {
 
 State& Get();
 
+// The PM4 thread used to perform two atomic read/modify/writes per packet
+// solely to count watchdog packets and opcode histograms. These counters are
+// diagnostic (never used for execution decisions); publish them in bounded
+// batches instead. The watchdog's exact PC, IB and last opcode continue to
+// update on EVERY packet, including the packet on which a shader hangs.
+// A watchdog report may lag by at most 1023 packets in its histogram.
+struct PacketCounterBatch {
+    static constexpr uint32_t FlushEvery = 1024;
+    uint32_t queued = 0;
+    uint32_t used = 0;
+    std::array<uint32_t, 256> count {};
+    std::array<uint8_t, 256> indices {};
+
+    void Reset() noexcept {
+        for (uint32_t i = 0; i < used; ++i) count[indices[i]] = 0;
+        queued = used = 0;
+    }
+
+    void Flush(State& state) noexcept {
+        if (queued == 0) return;
+        state.packets.fetch_add(queued, std::memory_order_relaxed);
+        for (uint32_t i = 0; i < used; ++i) {
+            const auto index = indices[i];
+            state.ops[index].fetch_add(count[index], std::memory_order_relaxed);
+        }
+        Reset();
+    }
+
+    void Note(State& state, uint32_t key) noexcept {
+        const auto opcode = key & 255u;
+        if (count[opcode]++ == 0u) indices[used++] = static_cast<uint8_t>(opcode);
+        if (++queued == FlushEvery) Flush(state);
+    }
+};
+
+inline PacketCounterBatch& PacketCounters() noexcept {
+    static thread_local PacketCounterBatch batch;
+    return batch;
+}
+
 // GPU thread.
 void BeginProcess();
 void EndProcess();
@@ -57,8 +97,7 @@ inline void OnPacket(const uint32_t* ib, uint32_t offset_dw, uint32_t size_dw, u
 	s.ib_size_dw.store(size_dw, std::memory_order_relaxed);
 	s.ib_depth.store(depth, std::memory_order_relaxed);
 	s.last_opcode.store(opcode_key, std::memory_order_relaxed);
-	s.packets.fetch_add(1, std::memory_order_relaxed);
-	s.ops[opcode_key & 0xffu].fetch_add(1, std::memory_order_relaxed);
+	PacketCounters().Note(s, opcode_key);
 }
 inline void OnIbSwitch() {
 	Get().ib_switches.fetch_add(1, std::memory_order_relaxed);

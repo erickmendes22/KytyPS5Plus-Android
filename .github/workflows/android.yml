@@ -312,6 +312,7 @@ jobs:
             thread_prime_preference_test
             descriptor_pool_policy_test
             compute_uncached_fill_policy_test
+            process_watchdog_packet_batch_test
           )
           for test in "${tests[@]}"; do
             g++ -std=c++20 -Wall -Wextra -Werror -Isrc "tests/manual/${test}.cpp" -o "/tmp/${test}"
