@@ -1229,17 +1229,21 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	// frame-280 log), so six lighting kernels sampled the same input twice.
 	// Decide before any candidate is merged or retired; merely checking
 	// final view placement cannot undo a destructive overlap resolution.
-	if (ViewPlacementEnabled() &&
-	    requested.data.address != owner->info.data.address &&
-	    requested.data.size == owner->info.data.size &&
-	    requested.extent == owner->info.extent &&
-	    requested.resources.levels == 1u && requested.resources.layers == 1u &&
-	    owner->info.resources.levels == 1u && owner->info.resources.layers == 1u &&
-	    requested.type == owner->info.type &&
-	    requested.pixel_format == owner->info.pixel_format &&
-	    requested.samples == owner->info.samples &&
-	    requested.tile_mode == owner->info.tile_mode) {
-		return {merged_id};
+	if (ViewPlacementEnabled()) {
+		const auto surface = [](const ImageInfo& info) -> ViewPlacementPolicy::Surface {
+			return {
+			    .address = info.data.address, .size = info.data.size,
+			    .width = info.extent.width, .height = info.extent.height,
+			    .depth = info.extent.depth, .levels = info.resources.levels,
+			    .layers = info.resources.layers,
+			    .format = static_cast<uint32_t>(info.pixel_format),
+			    .type = static_cast<uint32_t>(info.type),
+			    .samples = info.samples,
+			    .tile = static_cast<uint32_t>(info.tile_mode),
+			};
+		};
+		if (ViewPlacementPolicy::KeepDistinct(surface(requested), surface(owner->info)))
+			return {merged_id};
 	}
 	if (BcAlias::Matches(requested, owner->info) && !owner->IsCpuDirty()) {
 		BcAlias::Resolve(*this, cached_id, merged_id);
