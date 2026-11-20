@@ -2130,8 +2130,37 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 				}
 			}
 			if (result && placement) {
-				PlaceBindingView(desc, result, placed_in == result && placed_raw,
-				                 view_mip, view_layer);
+				// Postcondition: an overlapping image search must not resolve a
+				// complete sampled depth target to the other full depth target
+				// in the same guest heap. ResolveOverlap can select a later
+				// candidate after the initial KeepDistinctDepth check; catch
+				// the alias here, before the VkImage view is materialized.
+				const auto* owner = m_slot_images.try_get(result);
+				if (desc.type == BindingType::Texture && desc.info.IsDepth() &&
+				    owner != nullptr && owner->registered && !owner->depth_id &&
+				    owner->info.IsDepth()) {
+					const auto surface = [](const ImageInfo& i) {
+						return ViewPlacementPolicy::Surface {
+						    .address = i.data.address, .size = i.data.size,
+						    .width = i.extent.width, .height = i.extent.height,
+						    .depth = i.extent.depth, .levels = i.resources.levels,
+						    .layers = i.resources.layers,
+						    .format = static_cast<uint32_t>(i.pixel_format),
+						    .type = static_cast<uint32_t>(i.type),
+						    .samples = i.samples, .tile = static_cast<uint32_t>(i.tile_mode),
+						    .depth_or_stencil = true,
+						};
+					};
+					if (ViewPlacementPolicy::KeepDistinctDepth(
+					        surface(desc.info), surface(owner->info), true)) {
+						result = {};
+						view_mip = view_layer = -1;
+					}
+				}
+				if (result) {
+					PlaceBindingView(desc, result, placed_in == result && placed_raw,
+					                 view_mip, view_layer);
+				}
 			}
 		} else if (block_alias) {
 			for (const auto candidate: candidates) {

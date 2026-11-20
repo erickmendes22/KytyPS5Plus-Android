@@ -45,6 +45,11 @@ constexpr Surface depth_a {a.address, a.size, a.width, a.height, a.depth,
 constexpr Surface depth_b {b.address, b.size, b.width, b.height, b.depth,
                            1, 1, b.format, b.type, b.samples, b.tile, true};
 static_assert(KeepDistinctDepth(depth_a, depth_b, true));
+// The actual G-buffer depth owner may include a different padding/metadata
+// span. Identical full-depth geometry still cannot be the same VkImage.
+constexpr Surface padded_depth_b {b.address, b.size + 0x10000u, b.width,
+    b.height, b.depth, 1, 1, b.format, b.type, b.samples, b.tile, true};
+static_assert(KeepDistinctDepth(depth_a, padded_depth_b, true));
 static_assert(!KeepDistinctDepth(depth_a, depth_b, false)); // S8 association
 static_assert(!KeepDistinctDepth(depth_a, depth_a, true));
 static_assert(!KeepDistinctDepth(a, depth_b, true)); // color vs depth

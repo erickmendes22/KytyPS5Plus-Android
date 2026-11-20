@@ -56,9 +56,23 @@ struct Surface {
                                                bool independent_depth_images) noexcept {
     if (!independent_depth_images || !requested.depth_or_stencil ||
         !cached.depth_or_stencil) return false;
-    requested.depth_or_stencil = false;
-    cached.depth_or_stencil = false;
-    return KeepDistinct(requested, cached);
+    // A full D32 depth texture may have different byte spans because
+    // the owner includes alignment/metadata padding. The equal-size
+    // condition of KeepDistinct (for color) is too strict here: it let
+    // PPSA01341 select 0x282b60000 for the guest depth 0x2831e0000.
+    // Equal native geometry and separate base addresses are sufficient:
+    // these are complete one-mip/one-layer depth images, not S8 planes.
+    return requested.address != cached.address &&
+           requested.size != 0 && cached.size != 0 &&
+           requested.width == cached.width &&
+           requested.height == cached.height &&
+           requested.depth == cached.depth &&
+           requested.levels == 1u && cached.levels == 1u &&
+           requested.layers == 1u && cached.layers == 1u &&
+           requested.format == cached.format &&
+           requested.type == cached.type &&
+           requested.samples == cached.samples &&
+           requested.tile == cached.tile;
 }
 
 } // namespace Libs::Graphics::ViewPlacementPolicy
