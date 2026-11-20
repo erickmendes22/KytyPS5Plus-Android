@@ -41,6 +41,7 @@
 #include <cstdlib>
 #include <atomic>
 #include <bit>
+#include <cinttypes>
 #include <fmt/format.h>
 #include <limits>
 #include <span>
@@ -1122,6 +1123,33 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			// Finite GPU descriptors can span sparse PRT holes; clamp only oversized/sentinel ranges.
 			if (size >= (uint64_t {1} << 30u) || descriptor.NumRecords() == UINT32_MAX) {
 				size = Libs::LibKernel::Memory::ClampRangeSize(address, size);
+			}
+			// Demon's Souls light-list and G-buffer compute stages can read an address
+			// as a shader buffer after a previous pass wrote it as an image.
+			// The buffer's dirty-page ledger does not represent image ownership:
+			// without publication FindBuffer/ObtainBuffer can bind stale GPU bytes.
+			// Publish only real GPU-modified, downloadable image aliases through
+			// TextureCache's existing GPU->GPU detile/copy path, before discovering
+			// any buffer. Never fabricate values or substitute a null descriptor.
+			// Large sentinel/segmented views cannot be one image and should not
+			// cause a scan across the whole guest address space.
+			static const bool ds_shader_buffer_alias = [] {
+				const char* env = std::getenv("KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS");
+				return env && env[0] == '1' && env[1] == '\\0';
+			}();
+			if (ds_shader_buffer_alias && !metadata.written &&
+			    descriptor.NumRecords() != UINT32_MAX &&
+			    size <= (uint64_t {256} << 20u) &&
+			    m_context.GetTextureCache().IsRegionGpuModified(address, size) &&
+			    m_context.GetTextureCache().PublishGpuImageForIndirectArgs(address, size)) {
+				static std::atomic_uint32_t published {0};
+				const auto n = published.fetch_add(1u, std::memory_order_relaxed);
+				if (n < 16u || (n & 4095u) == 4095u) {
+					LOGF("[DS_BUFFER_IMAGE_ALIAS] shader=0x%016" PRIx64
+					     " addr=0x%016" PRIx64 " bytes=%" PRIu64
+					     " published=%u\\n",
+					     program.shader_hash, address, size, n + 1u);
+				}
 			}
 			// A segmented shader needs distinct descriptor bindings, not a single multi-GiB
 			// GPU allocation. Defer lookup for page-aligned large ranges: RebindBuffers
