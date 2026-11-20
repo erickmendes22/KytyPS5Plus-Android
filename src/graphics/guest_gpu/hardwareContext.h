@@ -638,6 +638,7 @@ struct VertexShaderInfo {
 	GsStageRegisters gs_regs;
 	UserSgprInfo     hs_user_sgpr;
 	UserSgprInfo     gs_user_sgpr;
+	int32_t         start_instance_user_sgpr = -1; // indirect START_INST_LOC
 };
 
 struct PixelShaderInfo {
@@ -1097,6 +1098,8 @@ public:
 		m_vs.gs_user_sgpr.count =
 		    ((id + 1) > m_vs.gs_user_sgpr.count ? (id + 1) : m_vs.gs_user_sgpr.count);
 	}
+
+	void SetStartInstanceUserSgpr(int32_t index) { m_vs.start_instance_user_sgpr = index; }
 
 	[[nodiscard]] const PixelShaderInfo&   GetPs() const { return m_ps; }
 	[[nodiscard]] const VertexShaderInfo&  GetVs() const { return m_vs; }

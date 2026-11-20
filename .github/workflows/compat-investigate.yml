@@ -144,6 +144,18 @@ jobs:
           assert 'vkQueueSubmit' not in probe
           assert '--perf-stats' not in launch[launch.index('KYTY_UFC6_PERF=1')-80:launch.index('KYTY_UFC6_PERF=1')+120]
           print("UFC6 profiling, exact descriptor set cache, fan policy: OK")
+          assert 'KYTY_UFC6_SUBMIT_BATCH=1' in launch
+          scheduler = (root / "commandScheduler.cpp").read_text()
+          assert 'QueueSubmitBatch' in scheduler
+          assert 'queue.submit(static_cast<uint32_t>(batch.size()), infos.data(), nullptr)' in scheduler
+          assert 'm_master.MarkSubmitted(pending.tick)' in scheduler
+          assert 'KYTY_DS_START_INSTANCE_SGPR=1' in launch
+          cp = Path("src/graphics/guest_gpu/command_processor/pm4Handlers.cpp").read_text()
+          vs = Path("src/graphics/shader/recompiler/frontend/translate/Translate.cpp").read_text()
+          assert 'DsStartInstanceUserSgpr' in cp
+          assert 'options.input_info.vertex->start_instance_sgpr >= 0' in vs
+          assert 'StageInputKind::BaseInstance' in vs
+          print("UFC6 Vulkan batching / Demon CPU-indirect SGPR wiring: OK")
           PY
       - name: Compile and test real shader resource specialization plus Bluepoint HLE
         run: |

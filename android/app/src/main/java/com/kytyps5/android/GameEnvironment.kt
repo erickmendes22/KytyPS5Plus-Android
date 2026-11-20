@@ -37,10 +37,12 @@ object GameEnvironment {
         "KYTY_FAN_AUTO_ON_US", "KYTY_FAN_AUTO_OFF_US",
     )
 
+    internal val demonsSoulsPresetKeys = setOf("KYTY_DS_START_INSTANCE_SGPR")
+
     fun apply(lines: Array<String>?) {
         val vars = EnvVars.parse(lines?.joinToString("\n").orEmpty()).vars
         val (unset, set) = EnvVars.plan(appliedKeys, vars)
-        (unset + silentHillPresetKeys + granTurismoPresetKeys + ufc6PlacementKeys).distinct().forEach { key ->
+        (unset + silentHillPresetKeys + granTurismoPresetKeys + ufc6PlacementKeys + demonsSoulsPresetKeys).distinct().forEach { key ->
             try {
                 Os.unsetenv(key)
             } catch (e: ErrnoException) {

@@ -1520,7 +1520,12 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				// the regular mesh path.
 				auto instance_id = builtin(IR::StageInputKind::WorkgroupId, 1);
 				if (!options.input_info.vertex->indirect.enabled) {
-					instance_id = entry_ir.IAdd(draw(2), instance_id);
+					if (options.input_info.vertex->start_instance_sgpr >= 0) {
+						entry_ir.SetScalarReg(
+						    static_cast<IR::ScalarReg>(options.input_info.vertex->start_instance_sgpr), draw(2));
+					} else {
+						instance_id = entry_ir.IAdd(draw(2), instance_id);
+					}
 				}
 				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(6), instance_id);
 			} else {
@@ -1578,7 +1583,12 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				// Preserve legacy direct mesh draw semantics until they are migrated.
 				auto instance_id = builtin(IR::StageInputKind::WorkgroupId, 1);
 				if (!options.input_info.vertex->indirect.enabled) {
-					instance_id = entry_ir.IAdd(draw(2), instance_id);
+					if (options.input_info.vertex->start_instance_sgpr >= 0) {
+						entry_ir.SetScalarReg(
+						    static_cast<IR::ScalarReg>(options.input_info.vertex->start_instance_sgpr), draw(2));
+					} else {
+						instance_id = entry_ir.IAdd(draw(2), instance_id);
+					}
 				}
 				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(8), instance_id);
 			}
@@ -1687,6 +1697,12 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 					entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(indirect.instance_sgpr),
 					                      base_instance);
 				}
+			} else if (options.input_info.vertex->start_instance_sgpr >= 0) {
+				// CPU fallback: native firstInstance is not added to guest VGPR8.
+				const auto first = builtin(IR::StageInputKind::BaseInstance);
+				instance_id = entry_ir.ISub(instance_id, first);
+				entry_ir.SetScalarReg(
+				    static_cast<IR::ScalarReg>(options.input_info.vertex->start_instance_sgpr), first);
 			}
 			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5), vertex_id);
 			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(8), instance_id);

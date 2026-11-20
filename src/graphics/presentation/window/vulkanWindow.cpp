@@ -629,7 +629,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	features12.pNext = workgroup_layout_extension ? static_cast<void*>(&workgroup_layout)
 	                                             : static_cast<void*>(&depth_clip_control);
 	auto features11 = WindowContext::RequiredVulkan11Features();
-	features11.shaderDrawParameters = optional.gpu_indirect_draws ? VK_TRUE : VK_FALSE;
+	// CPU-fallback indirect shaders also use BaseInstance when supported.
+	features11.shaderDrawParameters = supported_features11.shaderDrawParameters;
 	features11.pNext = features12.pNext;
 	features12.pNext = &features11;
 	optional.shader_shared_int64_atomics = features12.shaderSharedInt64Atomics == VK_TRUE &&

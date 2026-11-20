@@ -1561,8 +1561,18 @@ KYTY_CP_OP_PARSER(CpOpDmaData) {
 	return 6;
 }
 
+// chenxiao/U59 START_INST_LOC semantics, kept title-specific on Android.
+static int32_t DsStartInstanceUserSgpr(uint32_t location) {
+	const char* v = std::getenv("KYTY_DS_START_INSTANCE_SGPR");
+	if (v == nullptr || v[0] != '1' || v[1] != '\0') return -1;
+	if (location < Pm4::SPI_SHADER_USER_DATA_GS_0 ||
+	    location > Pm4::SPI_SHADER_USER_DATA_GS_31) return -1;
+	return static_cast<int32_t>(location - Pm4::SPI_SHADER_USER_DATA_GS_0);
+}
+
 KYTY_CP_OP_PARSER(CpOpDrawIndex) {
 	KYTY_PROFILER_FUNCTION();
+	cp.GetShCtx().SetStartInstanceUserSgpr(-1);
 
 	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0073a00 && cmd_id != 0xc0042700);
 
@@ -1610,6 +1620,7 @@ KYTY_CP_OP_PARSER(CpOpDrawIndirect) {
 	const auto data_offset    = buffer[0];
 	const auto draw_initiator = buffer[3];
 	const bool indexed        = (cmd_id == 0xc0032500);
+	cp.GetShCtx().SetStartInstanceUserSgpr(DsStartInstanceUserSgpr(buffer[2] & 0xffffu));
 	// The native indexed packet enables the high-half first-index destination in word 3.
 	const IndirectDrawRegisters registers {
 	    buffer[1] & 0xffffu, buffer[2] & 0xffffu,
@@ -1633,6 +1644,7 @@ KYTY_CP_OP_PARSER(CpOpDrawIndirectMulti) {
 	const auto stride_in_bytes = buffer[7];
 	const auto draw_initiator  = buffer[8];
 	const bool indexed         = (cmd_id == 0xc0083800);
+	cp.GetShCtx().SetStartInstanceUserSgpr(DsStartInstanceUserSgpr(buffer[2] & 0xffffu));
 	// Multi-draw moves the first-index enable to word 4; the destinations stay in 2/3.
 	const IndirectDrawRegisters registers {
 	    buffer[1] & 0xffffu, buffer[2] & 0xffffu,
@@ -1650,6 +1662,7 @@ KYTY_CP_OP_PARSER(CpOpDrawIndirectMulti) {
 
 KYTY_CP_OP_PARSER(CpOpDrawIndexOffset) {
 	KYTY_PROFILER_FUNCTION();
+	cp.GetShCtx().SetStartInstanceUserSgpr(-1);
 
 	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0033500);
 
@@ -1668,6 +1681,7 @@ KYTY_CP_OP_PARSER(CpOpDrawIndexOffset) {
 
 KYTY_CP_OP_PARSER(CpOpDrawIndexAuto) {
 	KYTY_PROFILER_FUNCTION();
+	cp.GetShCtx().SetStartInstanceUserSgpr(-1);
 
 	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0012d00);
 

@@ -190,6 +190,7 @@ class LaunchArgsTest {
     @Test
     fun demonsSoulsReferenceRequiresTessellationAndLinearImageReadback() {
         val demons = LaunchArgs.forGame("/g", Resolution.HD_720, titleId = "PPSA01341")
+        assertEquals(1, demons.count { it == "KYTY_DS_START_INSTANCE_SGPR=1" })
         assertEquals(1, demons.count { it == LaunchArgs.FLAG_TESSELLATION })
         val readback = demons.indexOf("--readback-linear-images")
         assertEquals("true", demons.getOrNull(readback + 1))

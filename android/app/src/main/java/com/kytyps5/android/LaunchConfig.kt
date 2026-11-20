@@ -210,6 +210,7 @@ object LaunchArgs {
                     // The separate CB_SHADER_MASK write gating prevents depth-only
                     // passes from damaging those attached surfaces.
                     "--env", "KYTY_DS_GUEST_COLOR_TARGETS=1",
+                    "--env", "KYTY_DS_START_INSTANCE_SGPR=1",
                     // Diagnostics are opt-in: avoid GPU readbacks during gameplay.
                     "--env", "KYTY_DS_COLOR_PROBE=0",
                     "--env", "KYTY_DS_COLOR_PROBE_TARGETED=0",

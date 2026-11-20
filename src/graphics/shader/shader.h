@@ -183,6 +183,7 @@ struct ShaderVertexInputInfo {
 	bool                    fetch_external      = false;
 	bool                    fetch_embedded      = false;
 	ShaderIndirectDrawInfo  indirect;
+	int32_t                start_instance_sgpr = -1; // CPU-fallback indirect
 	ShaderPackedVaryingRequest packed_varyings;
 };
 
