@@ -156,6 +156,20 @@ object LaunchArgs {
                     // *identical* registers and slice offsets. No shader, Vulkan
                     // attachment, HTile, or depth/stencil state is bypassed.
                     "--env", "KYTY_BIND_MEMO=11",
+                    // Jetsku U59: exact-content, same-recording descriptor sets
+                    // can be rebound without allocating/updating new Vulkan sets.
+                    // Every binding and image view is included in the key.
+                    "--env", "KYTY_UFC6_DESCRIPTOR_REUSE=1",
+                    // UFC6 measured fan-auto switches at 5.5, 34.4 and
+                    // 14.7 us/walk. Avoid costly record/walk handoffs until
+                    // walks exceed 40us, without disabling parallelism when
+                    // the scene genuinely needs it.
+                    "--env", "KYTY_FAN_AUTO_ON_US=40",
+                    "--env", "KYTY_FAN_AUTO_OFF_US=18",
+                    // One low-overhead summary each second: PM4, Vulkan submit,
+                    // timeline waits, descriptor work and GC. No sampler
+                    // signals, per-draw logs, readbacks or GPU instrumentation.
+                    "--env", "KYTY_UFC6_PERF=1",
                     // The diagnostic shows ~1 GiB reserved beyond VMA's live
                     // allocation bytes under a 4.5 GiB device budget. Smaller
                     // pooled blocks reduce idle allocator reservations; leave

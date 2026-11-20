@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
+#include "graphics/host_gpu/renderer/ufcPerf.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 
 #include "common/assert.h"
@@ -228,6 +229,7 @@ void RenderContext::PrepareBda() {
 }
 
 void RenderContext::RunGarbageCollector() {
+	const UfcPerf::Scoped measured(UfcPerf::Site::GarbageCollect);
 	if (m_fault_process_pending) {
 		m_fault_process_pending = false;
 		m_buffer_cache.ProcessFaultBuffer();

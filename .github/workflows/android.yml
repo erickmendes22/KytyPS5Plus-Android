@@ -5,7 +5,7 @@ name: Android APK
 # No GitHub Releases are created. Signing uses the repository's KYTY_* secrets.
 on:
   push:
-    branches: [ test/wolverine-demons-android-20261105, fix/demons-chen-render-backports-20261113, experiment/demons-souls-nexus-route, fix/wolverine-ds-validated-20261105, experiment/demons-souls-idle-poll-arm64, experiment/demons-souls-written-buffer-fix, experiment/demons-souls-gpu-frame-fence, experiment/demons-souls-self-verified-android, experiment/demons-souls-first-boot-skip-android, experiment/demons-souls-demo-flow-android, experiment/neptunia-capy-compat, experiment/capy-global-render-scale, experiment/pc-fork-shader-performance, experimental/neptunia-game-category-resolution, experimental/neptunia-fex-lookup-cache, android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64, investigate/mfgt-reference-port, investigate/mfgt-graphics-pipeline-crash, investigate/mfgt-spv-crash-capture, investigate/mfgt-vertex64-tess, recovery/mfgt-d43e258f-no-tess-workarounds, experiment/mfgt-written-image-reclaim, experiment/mfgt-memory-collector-v2 ]
+    branches: [ fix/demons-chen-render-backports-20261113, experiment/demons-souls-nexus-route, fix/wolverine-ds-validated-20261105, experiment/demons-souls-idle-poll-arm64, experiment/demons-souls-written-buffer-fix, experiment/demons-souls-gpu-frame-fence, experiment/demons-souls-self-verified-android, experiment/demons-souls-first-boot-skip-android, experiment/demons-souls-demo-flow-android, experiment/neptunia-capy-compat, experiment/capy-global-render-scale, experiment/pc-fork-shader-performance, experimental/neptunia-game-category-resolution, experimental/neptunia-fex-lookup-cache, android-boot-wip, investigate/sh-short-memory, investigate/mfgt-fp64, investigate/mfgt-reference-port, investigate/mfgt-graphics-pipeline-crash, investigate/mfgt-spv-crash-capture, investigate/mfgt-vertex64-tess, recovery/mfgt-d43e258f-no-tess-workarounds, experiment/mfgt-written-image-reclaim, experiment/mfgt-memory-collector-v2 ]
     paths-ignore: [ 'docs/**', '**.md' ]
   workflow_dispatch:
 
@@ -371,7 +371,8 @@ jobs:
             demons_gpu_image_publish_policy_test \
             ufc6_output_resolution_test \
             compute_uncached_fill_policy_test \
-            thread_prime_preference_test; do
+            thread_prime_preference_test \
+            ufc6_fan_policy_test; do
             if test -f "tests/manual/${file}.cpp"; then
               g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
                 "tests/manual/${file}.cpp" -o "/tmp/${file}"
@@ -389,6 +390,9 @@ jobs:
           assert 'KYTY_DS_BVH_SRT_COHERENCE=1' in launch
           assert 'KYTY_DS_SHADER_WRITE_RETICK=1' in launch
           assert 'KYTY_UFC6_HD_OUTPUT=1' in launch
+          assert 'KYTY_UFC6_DESCRIPTOR_REUSE=1' in launch
+          assert 'KYTY_UFC6_PERF=1' in launch
+          assert 'KYTY_FAN_AUTO_ON_US=40' in launch
           assert 'HasCachedImageOverlap' in cache and 'HasCachedImageOverlap' in compute
           assert 'owner->binding.is_bound || owner->binding.is_target' in cache
           assert patch.is_file()

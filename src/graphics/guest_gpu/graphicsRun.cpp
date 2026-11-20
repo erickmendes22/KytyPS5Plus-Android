@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/renderer/pipeline/walkReader.h"
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
 #include "graphics/host_gpu/renderer/cache/streamDefaults.h"
+#include "graphics/host_gpu/renderer/ufcPerf.h"
 
 #include "common/assert.h"
 #include "common/guestTrace.h"
@@ -855,6 +856,7 @@ void GuestGpu::ThreadRun(void* data) {
 					gpu->m_processing = false;
 					{
 						const Common::PerfStats::ScopedWait wait_timing(Common::PerfStats::Wait::GpuBlocked);
+						const UfcPerf::Scoped measured(UfcPerf::Site::GpuQueueBlocked);
 						gpu->m_work_available.WaitFor(&gpu->m_queue_mutex, 100);
 					}
 					for (auto& queue: gpu->m_queues) {
@@ -901,10 +903,12 @@ void GuestGpu::ThreadRun(void* data) {
 		bool complete = false;
 		{
 			const Common::PerfStats::ScopedWait process_timing(Common::PerfStats::Wait::GpuProcess);
+			const UfcPerf::Scoped measured(UfcPerf::Site::Pm4);
 			ProcessWatchdog::BeginProcess();
 			complete = gpu->Process(submission);
 			ProcessWatchdog::EndProcess();
 		}
+		UfcPerf::ReportMaybe();
 
 		Common::LockGuard lock(gpu->m_queue_mutex);
 		if (!complete) {
@@ -1083,6 +1087,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 	// KYTY_GPU_PIPELINE: draws and dispatches are recorded by the record thread; every other packet
 	// drains it first (gpuPipeline.h), and so does leaving this function.
 	m_fan_on     = WalkFan::Enabled();
+	UfcPerf::NoteFan(m_fan_on);
 	m_pipe_on    = m_fan_on || GpuPipeline::Enabled();
 	m_drain_lite = m_pipe_on && DrainLiteEnabled(m_renderer.GetGraphics().IsMesaTurnip());
 	Kernel::ThreadPlacement::NotePipelined(m_pipe_on); // KYTY_CPU_PLACE split mode follows the pipeline

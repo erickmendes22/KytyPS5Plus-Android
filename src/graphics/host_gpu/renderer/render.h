@@ -6,6 +6,7 @@
 #include "common/common.h"
 #include "graphics/host_gpu/renderer/colorTargetMemo.h"
 #include "graphics/host_gpu/renderer/pipeline/textureDescMemo.h"
+#include "graphics/host_gpu/renderer/pipeline/descriptorSetReuse.h"
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
 #include "graphics/host_gpu/renderer/registerOverride.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
@@ -416,6 +417,9 @@ private:
 	std::vector<uint64_t>                 m_written_max_end;
 	std::vector<vk::DescriptorImageInfo>  m_descriptor_images;
 	std::vector<vk::WriteDescriptorSet>   m_descriptor_writes;
+	// Jetsku U59 exact-content descriptor reuse, limited to one GPU submit tick.
+	// No image/view or buffer handle survives cache validation into a later tick.
+	DescriptorSetReuse                    m_descriptor_set_reuse;
     int64_t m_bindless_frame = -1;
     std::vector<uint32_t> m_bindless_requests;
     std::vector<ImageId> m_bindless_used;

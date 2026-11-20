@@ -152,6 +152,26 @@ class LaunchArgsTest {
     }
 
     @Test
+    fun ufc6EnablesExactDescriptorReuseAndLowOverheadGargaloCounters() {
+        for (title in listOf("PPSA23566", "ppsa23566")) {
+            val args = LaunchArgs.forGame("/games/ufc6", Resolution.HD_720, titleId = title)
+            for (flag in listOf(
+                "KYTY_UFC6_DESCRIPTOR_REUSE=1", "KYTY_UFC6_PERF=1",
+                "KYTY_FAN_AUTO_ON_US=40", "KYTY_FAN_AUTO_OFF_US=18"
+            )) {
+                assertEquals(1, args.count { it == flag })
+            }
+            assertEquals(-1, args.indexOf("--perf-stats")) // heavyweight signal sampler off
+            assertEquals(-1, args.indexOf("--gpu-evict-written")) // preserve live UFC6 targets
+        }
+        for (title in listOf("PPSA01341", "PPSA24156", "PPSA21564", null)) {
+            val args = LaunchArgs.forGame("/games/other", Resolution.HD_720, titleId = title)
+            assertEquals(0, args.count { it.startsWith("KYTY_UFC6_") })
+            assertEquals(0, args.count { it.startsWith("KYTY_FAN_AUTO_") })
+        }
+    }
+
+    @Test
     fun ufc6NeverDropsUncompiledGraphicsDraws() {
         // A shader that is not compiled yet cannot be silently skipped when
         // later depth/stencil and composite passes consume its output.

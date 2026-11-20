@@ -29,6 +29,7 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/ufcPerf.h"
 #include "graphics/host_gpu/renderer/rtTrace.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/ir/BindlessBindings.h"
@@ -1546,6 +1547,7 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
                                           const PipelineCache::Pipeline&     pipeline,
                                           std::span<PreparedBindings* const> prepared_bindings) {
 	KYTY_PROFILER_FUNCTION();
+	const UfcPerf::Scoped descriptor_prep(UfcPerf::Site::DescriptorPrepare);
 	if (BufferCache::ShaderWriteRetickEnabled()) {
 		const auto tick = m_context.GetCommandScheduler().CurrentTick();
 		for (auto* prepared: prepared_bindings) {
@@ -1973,14 +1975,39 @@ void RenderExecutor::RecordBindings(vk::CommandBuffer              target,
 			                            static_cast<uint32_t>(m_descriptor_writes.size()),
 			                            m_descriptor_writes.data());
 		} else {
-			const auto set = m_context.GetDescriptorHeap().Commit(pipeline.descriptor_set_layout,
-			                                                pipeline.descriptor_pool_requirements);
-			for (auto& write: m_descriptor_writes) {
-				write.dstSet = set;
+			// Jetsku U59: retain a previously written descriptor set only when
+			// every layout, binding, image/sampler and buffer descriptor matches.
+			// One recording tick is the maximum lifetime of a cached entry.
+			// The array is direct-mapped and bounded (64 entries).
+			static const bool reuse = [] {
+				const char* v = std::getenv("KYTY_UFC6_DESCRIPTOR_REUSE");
+				return v != nullptr && v[0] == '1' && v[1] == '\0';
+			}();
+			const auto tick = m_context.GetCommandScheduler().CurrentTick();
+			const auto hash = reuse
+			    ? DescriptorSetReuse::Hash(pipeline.descriptor_set_layout, m_descriptor_writes)
+			    : uint64_t {0};
+			auto set = reuse
+			    ? m_descriptor_set_reuse.Find(tick, pipeline.descriptor_set_layout,
+			                                  m_descriptor_writes, hash)
+			    : vk::DescriptorSet {};
+			const bool hit = set != nullptr;
+			UfcPerf::NoteDescriptor(hit);
+			if (!hit) {
+				set = m_context.GetDescriptorHeap().Commit(pipeline.descriptor_set_layout,
+				                                                pipeline.descriptor_pool_requirements);
+				for (auto& write: m_descriptor_writes) {
+					write.dstSet = set;
+				}
+				{
+					const UfcPerf::Scoped update(UfcPerf::Site::DescriptorUpdate);
+					m_context.GetGraphics().device.updateDescriptorSets(
+					    static_cast<uint32_t>(m_descriptor_writes.size()),
+					    m_descriptor_writes.data(), 0, nullptr);
+				}
+				if (reuse) m_descriptor_set_reuse.Insert(
+				    tick, pipeline.descriptor_set_layout, m_descriptor_writes, hash, set);
 			}
-			m_context.GetGraphics().device.updateDescriptorSets(
-			    static_cast<uint32_t>(m_descriptor_writes.size()), m_descriptor_writes.data(), 0,
-			    nullptr);
 			target.bindDescriptorSets(pipeline_bind_point, pipeline.pipeline_layout, 0, 1, &set, 0,
 			                          nullptr);
 		}

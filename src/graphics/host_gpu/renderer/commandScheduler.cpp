@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/submitStats.h"
+#include "graphics/host_gpu/renderer/ufcPerf.h"
 #include <chrono>
 
 #include "common/assert.h"
@@ -203,6 +204,7 @@ void CommandScheduler::Flush(SubmitInfo& submit) {
 }
 
 void CommandScheduler::FlushAndWait() {
+	const UfcPerf::Scoped measured(UfcPerf::Site::TimelineWait);
 	SubmitStats::NoteCaller(__builtin_return_address(0));
 	const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemFlush);
 	const auto tick = Submit();
@@ -211,6 +213,7 @@ void CommandScheduler::FlushAndWait() {
 }
 
 void CommandScheduler::Finish() {
+	const UfcPerf::Scoped measured(UfcPerf::Site::Finish);
 	const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemFinish);
 	CheckActive();
 	if (!m_command.IsInvalid()) {
@@ -223,6 +226,7 @@ void CommandScheduler::Finish() {
 }
 
 void CommandScheduler::Wait(uint64_t tick) {
+	const UfcPerf::Scoped measured(UfcPerf::Site::TimelineWait);
 	EXIT_IF(tick > CurrentTick());
 	if (tick == CurrentTick()) {
 		CheckActive();
@@ -455,6 +459,7 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 }
 
 void CommandScheduler::QueueSubmit(const PendingSubmit& pending) {
+	UfcPerf::NoteSubmit(pending.work);
 	const auto& submit = pending.info;
 	const auto  buffer = pending.buffer;
 	auto&       graphics = m_graphics;
@@ -480,7 +485,10 @@ void CommandScheduler::QueueSubmit(const PendingSubmit& pending) {
 		Common::LockGuard                   lock(graphics.queue_mutex);
 		const Common::PerfStats::ScopedWait timing(Common::PerfStats::Wait::QueueSubmit);
 		const auto submit_start = std::chrono::steady_clock::now();
-		result = graphics.queue.submit(1, &submit_info, nullptr);
+		{
+			const UfcPerf::Scoped measured(UfcPerf::Site::VkQueueSubmit);
+			result = graphics.queue.submit(1, &submit_info, nullptr);
+		}
 		SubmitStats::NoteSubmit(pending.work, static_cast<uint64_t>(
 		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - submit_start).count()));
 		Common::PerfStats::Count(Common::PerfStats::Counter::Submits);
@@ -525,6 +533,7 @@ void CommandScheduler::SubmitThread(const std::stop_token& stop) {
 }
 
 void CommandScheduler::DrainSubmitThread() {
+	const UfcPerf::Scoped measured(UfcPerf::Site::SubmitDrain);
 	if (!m_submit_thread.joinable()) {
 		return;
 	}

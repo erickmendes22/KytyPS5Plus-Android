@@ -115,6 +115,36 @@ jobs:
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
             tests/manual/bindless_capability_test.cpp -o /tmp/bindless-capability
           /tmp/bindless-capability
+      - name: UFC6 non-flapping walk policy and performance source contract
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+            tests/manual/ufc6_fan_policy_test.cpp -o /tmp/ufc6-fan-policy
+          /tmp/ufc6-fan-policy
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path("src/graphics/host_gpu/renderer")
+          launch = Path("android/app/src/main/java/com/kytyps5/android/LaunchConfig.kt").read_text()
+          descriptors = (root / "pipeline/descriptors.cpp").read_text()
+          reuse = (root / "pipeline/descriptorSetReuse.cpp").read_text()
+          hdr = (root / "ufcPerf.h").read_text()
+          probe = (root / "ufcPerf.cpp").read_text()
+          assert 'KYTY_UFC6_DESCRIPTOR_REUSE=1' in launch
+          assert 'KYTY_UFC6_PERF=1' in launch
+          assert 'KYTY_FAN_AUTO_ON_US=40' in launch
+          assert 'DescriptorSetReuse::Hash' in descriptors
+          assert 'm_descriptor_set_reuse.Find' in descriptors
+          assert 'm_descriptor_set_reuse.Insert' in descriptors
+          assert 'entry.tick != tick' in reuse
+          assert 'm_descriptor_set_reuse' in (root / "render.h").read_text()
+          for marker in ('Pm4', 'GpuQueueBlocked', 'VkQueueSubmit', 'TimelineWait',
+                         'DescriptorPrepare', 'DescriptorUpdate', 'GarbageCollect'):
+              assert marker in hdr, marker
+          assert '[UFC6_PERF]' in probe
+          assert 'vkQueueSubmit' not in probe
+          assert '--perf-stats' not in launch[launch.index('KYTY_UFC6_PERF=1')-80:launch.index('KYTY_UFC6_PERF=1')+120]
+          print("UFC6 profiling, exact descriptor set cache, fan policy: OK")
+          PY
       - name: Compile and test real shader resource specialization plus Bluepoint HLE
         run: |
           cmake -S . -B _Build/compat -G Ninja \
