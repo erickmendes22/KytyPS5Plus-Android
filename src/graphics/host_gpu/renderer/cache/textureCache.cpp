@@ -1221,19 +1221,14 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	if (owner == nullptr || !owner->registered) {
 		return {merged_id};
 	}
-	// Demon's Souls deferred-lighting G-buffer: two full, single-mip,
-	// single-layer guest surfaces with equal formats/extents and *different*
-	// addresses are two images, not mips or layers of one image. The old
-	// overlapping-range resolver could keep the earlier VkImage owner for
-	// both T# descriptors (0x2831e0000 and 0x282b60000 in the supplied
-	// frame-280 log), so six lighting kernels sampled the same input twice.
-	// Decide before any candidate is merged or retired; merely checking
-	// final view placement cannot undo a destructive overlap resolution.
-	// Depth and stencil often have two guest plane addresses but MUST share
-	// their combined D32/S8 Vulkan image, with different view aspect masks.
-	// Never apply the color G-buffer distinct-owner rule to those planes.
-	if (ViewPlacementEnabled() && !requested.IsDepth() && !owner->info.IsDepth() &&
-	    !requested.HasStencil() && !owner->info.HasStencil() && !owner->depth_id &&
+	// In the Demon's Souls deferred-lighting chain, exact full-sized
+	// single-mip surfaces at different guest bases must keep distinct
+	// VkImages even if their padded allocation ranges overlap.
+	// This applies to both color G-buffers AND to the two full depth
+	// inputs (0x2831e0000 / 0x282b60000 in the supplied frame-280 log).
+	// Do not split depth/stencil planes: their S8 records have depth_id,
+	// and a depth target's own combined aspects share its native backing.
+	if (ViewPlacementEnabled() && !owner->depth_id &&
 	    requested.pixel_format != vk::Format::eS8Uint &&
 	    owner->info.pixel_format != vk::Format::eS8Uint) {
 		const auto surface = [](const ImageInfo& info) -> ViewPlacementPolicy::Surface {
@@ -1250,8 +1245,19 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 			        info.pixel_format == vk::Format::eS8Uint,
 			};
 		};
-		if (ViewPlacementPolicy::KeepDistinct(surface(requested), surface(owner->info)))
-			return {merged_id};
+		const auto req = surface(requested);
+		const auto old = surface(owner->info);
+		const bool distinct_color =
+		    !requested.IsDepth() && !owner->info.IsDepth() &&
+		    !requested.HasStencil() && !owner->info.HasStencil() &&
+		    ViewPlacementPolicy::KeepDistinct(req, old);
+		// Only a full sampled depth descriptor may be kept independent of
+		// another full native depth image. Attachment reuse / stencil
+		// association / reinterpreted color-storage paths remain unchanged.
+		const bool distinct_depth = binding == BindingType::Texture &&
+		    requested.IsDepth() && owner->info.IsDepth() &&
+		    ViewPlacementPolicy::KeepDistinctDepth(req, old, true);
+		if (distinct_color || distinct_depth) return {merged_id};
 	}
 	if (BcAlias::Matches(requested, owner->info) && !owner->IsCpuDirty()) {
 		BcAlias::Resolve(*this, cached_id, merged_id);

@@ -19,6 +19,7 @@ static_assert(!Fits(INT32_MAX, INT32_MAX, UINT32_MAX, UINT32_MAX,
                     UINT32_MAX, UINT32_MAX, 2, 2));
 using Libs::Graphics::ViewPlacementPolicy::Surface;
 using Libs::Graphics::ViewPlacementPolicy::KeepDistinct;
+using Libs::Graphics::ViewPlacementPolicy::KeepDistinctDepth;
 
 // Log frame 280: distinct 1600x900 G-buffer source T#s, incorrectly
 // resolved to the same VkImage at 0x282b60000 for six compute shaders.
@@ -34,6 +35,23 @@ static_assert(!KeepDistinct(
 static_assert(!KeepDistinct(a,
     Surface{b.address, b.size, b.width, b.height, b.depth, 1, 1,
             b.format, b.type, b.samples, b.tile, true}));
+
+// Frame-280 real input was a full depth texture at 0x2831e0000
+// resolved incorrectly to the equally shaped depth target at
+// 0x282b60000. Both are D32/S8, but both represent depth, not a
+// request for the S8 plane of one owner. Do not merge these images.
+constexpr Surface depth_a {a.address, a.size, a.width, a.height, a.depth,
+                           1, 1, a.format, a.type, a.samples, a.tile, true};
+constexpr Surface depth_b {b.address, b.size, b.width, b.height, b.depth,
+                           1, 1, b.format, b.type, b.samples, b.tile, true};
+static_assert(KeepDistinctDepth(depth_a, depth_b, true));
+static_assert(!KeepDistinctDepth(depth_a, depth_b, false)); // S8 association
+static_assert(!KeepDistinctDepth(depth_a, depth_a, true));
+static_assert(!KeepDistinctDepth(a, depth_b, true)); // color vs depth
+static_assert(!KeepDistinctDepth(depth_a,
+    Surface{b.address, b.size, b.width, b.height, 1, 1, 2,
+            b.format, b.type, b.samples, b.tile, true}, true));
+
 static_assert(!KeepDistinct(Surface{a.address, a.size, a.width, a.height, 1,
     1, 2, a.format, a.type, a.samples, a.tile}, b));
 static_assert(!KeepDistinct(Surface{a.address, a.size, a.width, a.height, 1,

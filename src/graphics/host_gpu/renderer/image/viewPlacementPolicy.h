@@ -45,4 +45,20 @@ struct Surface {
            requested.tile == cached.tile;
 }
 
+// Two full D32/S8 *depth* render surfaces may overlap within a guest heap
+// despite separate physical base addresses. They are not two aspects of the
+// same native VkImage: aspect association is already represented by depth_id,
+// with a separate S8 bookkeeping image. This policy is called only when the
+// caller has proved BOTH descriptors are complete depth images (not S8 views).
+// Reuse the same strict no-mip/no-array geometry predicate as the color rule.
+[[nodiscard]] constexpr bool KeepDistinctDepth(Surface requested,
+                                               Surface cached,
+                                               bool independent_depth_images) noexcept {
+    if (!independent_depth_images || !requested.depth_or_stencil ||
+        !cached.depth_or_stencil) return false;
+    requested.depth_or_stencil = false;
+    cached.depth_or_stencil = false;
+    return KeepDistinct(requested, cached);
+}
+
 } // namespace Libs::Graphics::ViewPlacementPolicy
