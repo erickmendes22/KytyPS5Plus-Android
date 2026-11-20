@@ -195,7 +195,8 @@ class LaunchArgsTest {
             assertEquals(0, env.count { it == "KYTY_DS_GUEST_COLOR_TARGETS=0" })
             assertEquals(1, env.count { it == "KYTY_DS_COLOR_PROBE=0" })
             assertEquals(1, env.count { it == "KYTY_DS_COLOR_PROBE_TARGETED=0" })
-            assertEquals(1, env.count { it == "KYTY_DS_FRAME_TRACE=0" })
+            assertEquals(1, env.count { it == "KYTY_DS_FRAME_TRACE=1" })
+            assertEquals(1, env.count { it == "KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS=1" })
             assertEquals(1, env.count { it == "KYTY_DS_CB_MASK_PREPARE=1" })
             assertEquals(1, env.count { it == "KYTY_DS_STABLE_IMAGE_BINDINGS=1" })
         }
@@ -203,6 +204,7 @@ class LaunchArgsTest {
             val args = LaunchArgs.forGame("/games/other", Resolution.HD_720, titleId = title)
             val env = args.indices.filter { args[it] == "--env" }.map { args[it + 1] }
             assertEquals(0, env.count { it.startsWith("KYTY_DS_GUEST_COLOR_TARGETS=") })
+            assertEquals(0, env.count { it.startsWith("KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS=") })
         }
     }
 
@@ -212,7 +214,7 @@ class LaunchArgsTest {
         val normal = DemonsSoulsDiagnosticArgs.append(base, fullPixelTrace = false, perFaceBias = false)
         val normalEnv = normal.indices.filter { normal[it] == "--env" }.map { normal[it + 1] }
         assertEquals("KYTY_DS_COLOR_PROBE=0", normalEnv.last { it.startsWith("KYTY_DS_COLOR_PROBE=") })
-        assertEquals("KYTY_DS_FRAME_TRACE=0", normalEnv.last { it.startsWith("KYTY_DS_FRAME_TRACE=") })
+        assertEquals("KYTY_DS_FRAME_TRACE=1", normalEnv.last { it.startsWith("KYTY_DS_FRAME_TRACE=") })
         val traced = DemonsSoulsDiagnosticArgs.append(base, fullPixelTrace = true, perFaceBias = true)
         val env = traced.indices.filter { traced[it] == "--env" }.map { traced[it + 1] }
         assertEquals("KYTY_DS_COLOR_PROBE=1", env.last { it.startsWith("KYTY_DS_COLOR_PROBE=") })
