@@ -129,7 +129,7 @@ jobs:
           reuse = (root / "pipeline/descriptorSetReuse.cpp").read_text()
           hdr = (root / "ufcPerf.h").read_text()
           probe = (root / "ufcPerf.cpp").read_text()
-          assert 'KYTY_UFC6_DESCRIPTOR_REUSE=1' in launch
+          assert 'KYTY_UFC6_DESCRIPTOR_REUSE=1' not in launch
           assert 'KYTY_UFC6_PERF=1' in launch
           assert 'KYTY_FAN_AUTO_ON_US=40' in launch
           assert 'DescriptorSetReuse::Hash' in descriptors

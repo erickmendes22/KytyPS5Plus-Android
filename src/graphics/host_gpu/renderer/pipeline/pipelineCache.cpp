@@ -1505,6 +1505,11 @@ void PipelineCache::InitializeDriverCache() {
 		return;
 	}
 	if (!initial_data.empty()) {
+		// createPipelineCache accepted the validated on-disk snapshot.
+		// A later byte-identical checkpoint must not rewrite this file.
+		m_last_driver_cache_hash = XXH3_64bits(initial_data.data(), initial_data.size());
+		m_last_driver_cache_size = initial_data.size();
+		m_last_driver_cache_valid = true;
 		PipelineCacheLog("Vulkan pipeline cache: loaded {} bytes from {}", initial_data.size(),
 		                 path);
 	} else {
@@ -1593,6 +1598,13 @@ bool PipelineCache::WriteDriverCacheFile() const {
 	payload.resize(size);
 	auto       prefix       = DriverCacheSignature(m_graphics.GetPhysicalDeviceProperties());
 	const auto payload_hash = XXH3_64bits(payload.data(), payload.size());
+	if (m_last_driver_cache_valid && m_last_driver_cache_hash == payload_hash &&
+	    m_last_driver_cache_size == payload.size() &&
+	    Common::File::IsFileExisting(m_driver_cache_path)) {
+		// Exact same cache contents are already durable. Preserve the existing
+		// file and skip write, flush and atomic rename (no stale .tmp files).
+		return true;
+	}
 	prefix.append(reinterpret_cast<const char*>(&payload_hash), sizeof(payload_hash));
 	if (!Common::File::CreateDirectories(m_driver_cache_path.parent_path())) {
 		PipelineCacheLog("Vulkan pipeline cache: failed to create cache directory");
@@ -1619,6 +1631,9 @@ bool PipelineCache::WriteDriverCacheFile() const {
 		                 Common::PathToString(m_driver_cache_path));
 		return false;
 	}
+	m_last_driver_cache_hash = payload_hash;
+	m_last_driver_cache_size = payload.size();
+	m_last_driver_cache_valid = true;
 	PipelineCacheLog("Vulkan pipeline cache: saved {} bytes to {}", payload.size(),
 	                 Common::PathToString(m_driver_cache_path));
 	return true;

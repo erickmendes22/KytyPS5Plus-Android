@@ -210,6 +210,12 @@ private:
 	std::filesystem::path         m_driver_cache_path;
 	std::chrono::steady_clock::time_point m_next_driver_cache_save;
 	bool                                  m_driver_cache_dirty = false;
+	// Last confirmed durable snapshot. Avoid rewriting unchanged driver blobs
+	// at each Android checkpoint (Demon's Souls: ~72 MiB; UFC6: ~29 MiB).
+	// Only WriteDriverCacheFile reads or updates these, after prior flush joins.
+	mutable uint64_t                      m_last_driver_cache_hash = 0;
+	mutable size_t                        m_last_driver_cache_size = 0;
+	mutable bool                          m_last_driver_cache_valid = false;
 	// During PPSA24156 loading Android was serializing the ~72 MB Vulkan
 	// driver cache repeatedly at ten-second intervals (including identical
 	// snapshots). Never call vkGetPipelineCacheData on the live GT path;

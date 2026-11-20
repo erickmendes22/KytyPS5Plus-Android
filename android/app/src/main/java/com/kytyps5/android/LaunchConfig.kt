@@ -156,10 +156,10 @@ object LaunchArgs {
                     // *identical* registers and slice offsets. No shader, Vulkan
                     // attachment, HTile, or depth/stencil state is bypassed.
                     "--env", "KYTY_BIND_MEMO=11",
-                    // Jetsku U59: exact-content, same-recording descriptor sets
-                    // can be rebound without allocating/updating new Vulkan sets.
-                    // Every binding and image view is included in the key.
-                    "--env", "KYTY_UFC6_DESCRIPTOR_REUSE=1",
+                    // Keep Jetsku U59 descriptor reuse available by explicit
+                    // custom --env only. Android gameplay logged zero hits in
+                    // 34,316 descriptor writes; auto-enabling it pays hashing,
+                    // array copies and cache insertions for no avoided updates.
                     // UFC6 measured fan-auto switches at 5.5, 34.4 and
                     // 14.7 us/walk. Avoid costly record/walk handoffs until
                     // walks exceed 40us, without disabling parallelism when

@@ -152,15 +152,16 @@ class LaunchArgsTest {
     }
 
     @Test
-    fun ufc6EnablesExactDescriptorReuseAndLowOverheadGargaloCounters() {
+    fun ufc6DoesNotEnableZeroHitDescriptorCacheAndKeepsPerformanceCounters() {
         for (title in listOf("PPSA23566", "ppsa23566")) {
             val args = LaunchArgs.forGame("/games/ufc6", Resolution.HD_720, titleId = title)
             for (flag in listOf(
-                "KYTY_UFC6_DESCRIPTOR_REUSE=1", "KYTY_UFC6_PERF=1",
+                "KYTY_UFC6_PERF=1",
                 "KYTY_FAN_AUTO_ON_US=40", "KYTY_FAN_AUTO_OFF_US=18"
             )) {
                 assertEquals(1, args.count { it == flag })
             }
+            assertEquals(0, args.count { it.startsWith("KYTY_UFC6_DESCRIPTOR_REUSE=") })
             assertEquals(-1, args.indexOf("--perf-stats")) // heavyweight signal sampler off
             assertEquals(-1, args.indexOf("--gpu-evict-written")) // preserve live UFC6 targets
         }
