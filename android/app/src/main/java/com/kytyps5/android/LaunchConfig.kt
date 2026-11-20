@@ -140,7 +140,13 @@ object LaunchArgs {
                     // RenderTargetDesc (bit 1) only avoids repeated decoding of
                     // *identical* registers and slice offsets. No shader, Vulkan
                     // attachment, HTile, or depth/stencil state is bypassed.
-                    "--env", "KYTY_BIND_MEMO=11"
+                    "--env", "KYTY_BIND_MEMO=11",
+                    // The diagnostic shows ~1 GiB reserved beyond VMA's live
+                    // allocation bytes under a 4.5 GiB device budget. Smaller
+                    // pooled blocks reduce idle allocator reservations; leave
+                    // GPU-authored render targets resident (no written-image
+                    // eviction or forced readback).
+                    FLAG_VMA_BLOCK_SIZE, "32"
                 ) else emptyArray()) +
             // BPE mixes raw RDTSC with sceKernelGetTscFrequency. Disable FEX's
             // minimum-1GHz scaling only for this title; native APIs use CNTFRQ.
