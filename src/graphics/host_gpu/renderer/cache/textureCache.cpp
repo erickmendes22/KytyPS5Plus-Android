@@ -2075,6 +2075,28 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 				break;
 			}
 			if (SameBacking(image.info, desc.info, exact_format)) {
+				// PPSA01341: two registered images can describe the same guest
+				// surface while an earlier sampled snapshot competes with a later
+				// GPU-written storage/RT owner. The former is still registered, so
+				// binding validation alone cannot reject it. Only for exact,
+				// bidirectionally identical backings with known GPU write order and
+				// no CPU-dirty data, keep the newest native writer. No guest reads,
+				// driver calls, invalidation or forced GPU synchronization here.
+				if (ViewPlacementEnabled() &&
+				    (desc.type == BindingType::Texture || desc.type == BindingType::Storage) &&
+				    result && image.registered && !image.depth_id && !image.IsCpuDirty() &&
+				    image.IsGpuModified()) {
+					const auto* prior = m_slot_images.try_get(result);
+					if (prior != nullptr && prior->registered && !prior->depth_id &&
+					    !prior->IsCpuDirty() && prior->IsGpuModified() &&
+					    SameBacking(prior->info, image.info, true) &&
+					    SameBacking(image.info, prior->info, true) &&
+					    GpuImagePublishPolicy::ChooseAlias(prior->gpu_write_order,
+					        image.gpu_write_order, true) ==
+					            GpuImagePublishPolicy::Decision::Keep) {
+						continue;
+					}
+				}
 				result = id;
 			} else if (image.SafeToDownload() &&
 			           BcAlias::Matches(desc.info, image.info)) {

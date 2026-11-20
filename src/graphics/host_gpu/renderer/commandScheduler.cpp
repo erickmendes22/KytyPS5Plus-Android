@@ -520,9 +520,11 @@ void CommandScheduler::QueueSubmitBatch(std::span<const PendingSubmit> batch) {
 	}
 	if (GpuFatalTestDue()) result = vk::Result::eErrorDeviceLost;
 	CheckGpuResult("vkQueueSubmit", result);
-	// The submit API call has accepted the entire ordered batch. Advance
-	// the host-submitted watermark one tick at a time as before.
-	for (const auto& pending: batch) m_master.MarkSubmitted(pending.tick);
+	// One successful Vulkan submit call accepted every ordered timeline
+	// signal in the batch. The submitted watermark is monotonic, so the
+	// last tick proves all earlier ticks were handed to vkQueueSubmit.
+	// This avoids N mutex acquisitions and condition-variable broadcasts.
+	m_master.MarkSubmitted(batch.back().tick);
 }
 
 void CommandScheduler::SubmitThread(const std::stop_token& stop) {
