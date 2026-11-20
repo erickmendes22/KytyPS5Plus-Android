@@ -150,3 +150,14 @@ jobs:
           PY
       - name: Compile complete Kyty emulator host so bindless Vulkan additions are type-checked
         run: cmake --build _Build/compat --target kyty_emulator --parallel 2
+      - name: Java 21 for Android Kotlin preset regression tests
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Test Android UFC6 crowd preset and Demons Souls launch flags (no APK)
+        working-directory: android
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          ./gradlew --no-daemon testDebugUnitTest --console=plain \
+            -PkytyNativeDir="$RUNNER_TEMP/kyty-native-tests"
