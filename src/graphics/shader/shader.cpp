@@ -635,7 +635,13 @@ ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context&
 		}
 		info.wave_size = (context.GetShaderStages() & 0x00400000u) != 0 ? 32u : 64u;
 		info.lds_size_dwords = static_cast<uint32_t>(regs.gs_regs.rsrc2.lds_size) * 128u;
-		info.start_instance_sgpr = start_instance_sgpr;
+		// On Android the native-fetch CPU fallback intentionally calls Vulkan
+		// with firstInstance=0: the guest's indirect packet already patched
+		// the GS user SGPR. Overwriting that SGPR with gl_BaseInstance (=0)
+		// would erase a correct instance offset. Only embedded/re-written
+		// vertex fetch uses Vulkan's nonzero firstInstance and needs to
+		// synthesize the guest SGPR from gl_BaseInstance in the prologue.
+		info.start_instance_sgpr = info.fetch_embedded ? start_instance_sgpr : -1;
 		return params;
 	}
 	// NGG user SGPRs start at s8; a separately compiled GS back half also receives
