@@ -1221,6 +1221,26 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	if (owner == nullptr || !owner->registered) {
 		return {merged_id};
 	}
+	// Demon's Souls deferred-lighting G-buffer: two full, single-mip,
+	// single-layer guest surfaces with equal formats/extents and *different*
+	// addresses are two images, not mips or layers of one image. The old
+	// overlapping-range resolver could keep the earlier VkImage owner for
+	// both T# descriptors (0x2831e0000 and 0x282b60000 in the supplied
+	// frame-280 log), so six lighting kernels sampled the same input twice.
+	// Decide before any candidate is merged or retired; merely checking
+	// final view placement cannot undo a destructive overlap resolution.
+	if (ViewPlacementEnabled() &&
+	    requested.data.address != owner->info.data.address &&
+	    requested.data.size == owner->info.data.size &&
+	    requested.extent == owner->info.extent &&
+	    requested.resources.levels == 1u && requested.resources.layers == 1u &&
+	    owner->info.resources.levels == 1u && owner->info.resources.layers == 1u &&
+	    requested.type == owner->info.type &&
+	    requested.pixel_format == owner->info.pixel_format &&
+	    requested.samples == owner->info.samples &&
+	    requested.tile_mode == owner->info.tile_mode) {
+		return {merged_id};
+	}
 	if (BcAlias::Matches(requested, owner->info) && !owner->IsCpuDirty()) {
 		BcAlias::Resolve(*this, cached_id, merged_id);
 		return {merged_id};
