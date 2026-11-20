@@ -236,6 +236,7 @@ void IndirectDrawFixup::CommitFeedback(uint32_t slot, uint64_t site, bool mesh, 
 	m_feedback[slot] = {.tick     = m_context.GetCommandScheduler().CurrentTick(),
 	                    .site     = site,
 	                    .shader_hash = shader_hash,
+	                    .frame = shader_hash != 0 ? m_context.GetGpu().GetFrameNum() : -1,
 	                    .reserved = reserved,
 	                    .mesh     = mesh,
 	                    .dispatch = dispatch};
@@ -312,13 +313,16 @@ void IndirectDrawFixup::PollFeedback() {
 				const uint32_t x = requested & 1023u;
 				const uint32_t y = (requested >> 10u) & 1023u;
 				const uint32_t z = (requested >> 20u) & 1023u;
-				static std::atomic<uint32_t> lighting_samples {0};
-				const auto index = lighting_samples.fetch_add(1u, std::memory_order_relaxed);
-				if (index < 36u || (index % 4096u) == 0u) {
-					LOGF("[DS_LIGHTING_GROUPS] shader=0x%016" PRIx64
+				// Distinct budgets ensure initialization cannot exhaust
+				// all useful samples before gameplay starts.
+				const uint32_t phase = feedback.frame >= 735 ? 1u : 0u;
+				static std::array<std::atomic<uint32_t>, 2> lighting_samples {};
+				const auto index = lighting_samples[phase].fetch_add(1u, std::memory_order_relaxed);
+				if (index < 48u || (index % 4096u) == 0u) {
+					LOGF("[DS_LIGHTING_GROUPS] source=gpu frame=%d shader=0x%016" PRIx64
 					     " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=%u "
 					     "clamped=%u zero=%u\n",
-					     feedback.shader_hash, feedback.site, x, y, z,
+					     feedback.frame, feedback.shader_hash, feedback.site, x, y, z,
 					     (requested >> 30u) & 1u, clamped ? 1u : 0u,
 					     (x == 0u || y == 0u || z == 0u) ? 1u : 0u);
 				}

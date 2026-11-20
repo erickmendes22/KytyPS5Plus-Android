@@ -112,6 +112,7 @@ private:
 		uint64_t tick     = 0; // 0: free
 		uint64_t site     = 0; // guest record address
 		uint64_t shader_hash = 0; // nonblocking DS lighting feedback attribution
+		int32_t  frame = -1; // submission frame, not the later GPU completion frame
 		uint32_t reserved = 0; // mesh: reserved workgroup slots, 0 for draws
 		bool     mesh     = false;
 		bool     dispatch = false; // RecordDispatchClamp: the word is 1 if it clamped

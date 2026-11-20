@@ -50,6 +50,9 @@ jobs:
           compute = Path('src/graphics/host_gpu/renderer/renderCompute.cpp').read_text()
           shader = Path('src/graphics/host_gpu/shaders/indirect_draw_fixup.comp').read_text()
           assert '[DS_LIGHTING_GROUPS]' in code
+          assert 'source=gpu frame=%d' in code
+          assert 'source=cpu frame=%d' in compute
+          assert 'feedback.frame >= 735' in code
           assert '[DS_LIGHTING_FEATURES]' in compute
           assert 'FeedbackWord(params.feedback).word = packed' in shader
           print('Focused DS GPU workgroup and feature diagnostics: OK')

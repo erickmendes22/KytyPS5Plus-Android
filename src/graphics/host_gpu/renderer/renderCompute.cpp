@@ -1013,6 +1013,34 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	PreparedBindings* descriptor_stage = &bindings;
 	FindBuffers(std::span {&descriptor_stage, 1u});
 	const auto& program = *input_info.stage.program;
+	// A CPU-current indirect command bypasses the Vulkan clamp feedback path.
+	// Log its real groups too, otherwise zero GPU samples can wrongly imply
+	// that the six lighting kernels never dispatched.
+	if (cpu_args) {
+		static const bool ds_trace = [] {
+			const char* v = std::getenv("KYTY_DS_FRAME_TRACE");
+			return v != nullptr && v[0] == '1' && v[1] == '\0';
+		}();
+		constexpr std::array<uint64_t, 6> lighting_hashes {{
+		    0xc2e01fbe98f5ebabull, 0x23056085c1120461ull,
+		    0x3dfe402653925fbfull, 0xfabe0bcb275a3005ull,
+		    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull
+		}};
+		const bool lighting = ds_trace &&
+		    std::find(lighting_hashes.begin(), lighting_hashes.end(), program.shader_hash) !=
+		        lighting_hashes.end();
+		if (lighting) {
+			const int32_t frame = m_context.GetGpu().GetFrameNum();
+			const uint32_t phase = frame >= 735 ? 1u : 0u;
+			static std::array<std::atomic<uint32_t>, 2> cpu_samples {};
+			const auto count = cpu_samples[phase].fetch_add(1u, std::memory_order_relaxed);
+			if (count < 48u || (count % 4096u) == 0u) {
+				LOGF("[DS_LIGHTING_GROUPS] source=cpu frame=%d shader=0x%016" PRIx64
+				     " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=0 clamped=0 zero=0\n",
+				     frame, program.shader_hash, args_addr, args.x, args.y, args.z);
+			}
+		}
+	}
 	if (program.info.uses_dma) {
 		m_context.PrepareBda();
 	}
