@@ -1565,9 +1565,16 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				     entry_ir.IMul(index_bytes, u32(8))}));
 				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5),
 				                      entry_ir.IAdd(draw(1), entry_ir.Select(indexed, index, input_vertex)));
-				entry_ir.SetVectorReg(
-				    static_cast<IR::VectorReg>(8),
-				    entry_ir.IAdd(draw(2), builtin(IR::StageInputKind::WorkgroupId, 1)));
+				// The guest's instance-ID VGPR starts at zero. Indirect records
+				// already provide startInstance separately in the named user SGPR
+				// (MeshIndirectBaseInstanceDword above). Adding it again here
+				// double-offsets GPU-culled instances and can discard scene geometry.
+				// Preserve legacy direct mesh draw semantics until they are migrated.
+				auto instance_id = builtin(IR::StageInputKind::WorkgroupId, 1);
+				if (!options.input_info.vertex->indirect.enabled) {
+					instance_id = entry_ir.IAdd(draw(2), instance_id);
+				}
+				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(8), instance_id);
 			}
 		} else if (options.stage == ShaderType::Local) {
 			entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(3), IR::U32(IR::Value(64u)));
