@@ -156,9 +156,16 @@ object LaunchArgs {
                     // Diagnostics are opt-in: avoid GPU readbacks during gameplay.
                     "--env", "KYTY_DS_COLOR_PROBE=0",
                     "--env", "KYTY_DS_COLOR_PROBE_TARGETED=0",
-                    "--env", "KYTY_DS_FRAME_TRACE=0",
+                    // Lightweight CPU-only scene-chain accounting. Explicitly disabled
+                    // GPU pixel capture above (COLOR_PROBE=0) to avoid synchronous
+                    // readbacks and the previous instrumented-build regressions.
+                    "--env", "KYTY_DS_FRAME_TRACE=1",
                     "--env", "KYTY_DS_CB_MASK_PREPARE=1",
                     "--env", "KYTY_DS_STABLE_IMAGE_BINDINGS=1",
+                    // The lighting graph uses both buffer and image views of GPU-authored
+                    // resources. Publish the image backing to the buffer-cache GPU timeline
+                    // before read-only shader storage buffer bindings.
+                    "--env", "KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS=1",
 
                     "--vma-block-size", "32") else emptyArray()) +
             // The GT reference fork enables LS/HS/TES explicitly. Keep it title-scoped.
