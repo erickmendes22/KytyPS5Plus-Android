@@ -8,9 +8,11 @@
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 #include "graphics/host_gpu/renderer/render.h"
 
+#include <array>
 #include <condition_variable>
 #include <mutex>
 #include <queue>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -118,6 +120,9 @@ private:
 
 	void BeginNext();
 	void QueueSubmit(const PendingSubmit& pending);
+	// Vulkan submitCount batches queue-ordered, timeline-signalling submits in one
+	// driver call; still retains a separate VkSubmitInfo per command buffer/tick.
+	void QueueSubmitBatch(std::span<const PendingSubmit> pending);
 	void SubmitThread(const std::stop_token& stop);
 	void DrainSubmitThread();
 	void StopSubmitThread();

@@ -170,6 +170,11 @@ object LaunchArgs {
                     // timeline waits, descriptor work and GC. No sampler
                     // signals, per-draw logs, readbacks or GPU instrumentation.
                     "--env", "KYTY_UFC6_PERF=1",
+                    // Threaded submit batches only an already-queued backlog,
+                    // using one Vulkan driver entry with multiple ordered
+                    // VkSubmitInfo/timeline signals. No extra waiting or frame
+                    // barriers; zero-backlog scenes retain the original path.
+                    "--env", "KYTY_UFC6_SUBMIT_BATCH=1",
                     // The diagnostic shows ~1 GiB reserved beyond VMA's live
                     // allocation bytes under a 4.5 GiB device budget. Smaller
                     // pooled blocks reduce idle allocator reservations; leave

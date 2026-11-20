@@ -14,6 +14,7 @@ constexpr size_t N = static_cast<size_t>(Site::Count);
 std::array<std::atomic<uint64_t>, N> g_count{};
 std::array<std::atomic<uint64_t>, N> g_ns{};
 std::atomic<uint64_t> g_reused{0}, g_written{0}, g_submits{0}, g_work{0};
+std::atomic<uint64_t> g_batches{0}, g_batch_buffers{0};
 std::atomic<uint64_t> g_fan_on{0}, g_fan_off{0};
 std::atomic<int64_t> g_last{0};
 int64_t NowNs() {
@@ -44,6 +45,11 @@ void NoteSubmit(uint32_t work) {
     g_submits.fetch_add(1, std::memory_order_relaxed);
     g_work.fetch_add(work, std::memory_order_relaxed);
 }
+void NoteBatch(uint32_t buffers) {
+    if (!Enabled() || buffers < 2) return;
+    g_batches.fetch_add(1, std::memory_order_relaxed);
+    g_batch_buffers.fetch_add(buffers, std::memory_order_relaxed);
+}
 void NoteFan(bool on) {
     if (!Enabled()) return;
     (on ? g_fan_on : g_fan_off).fetch_add(1, std::memory_order_relaxed);
@@ -70,6 +76,8 @@ void ReportMaybe() {
     const auto write = g_written.exchange(0, std::memory_order_relaxed);
     const auto submits = g_submits.exchange(0, std::memory_order_relaxed);
     const auto work = g_work.exchange(0, std::memory_order_relaxed);
+    const auto batches = g_batches.exchange(0, std::memory_order_relaxed);
+    const auto batch_buffers = g_batch_buffers.exchange(0, std::memory_order_relaxed);
     const auto fanon = g_fan_on.exchange(0, std::memory_order_relaxed);
     const auto fanoff = g_fan_off.exchange(0, std::memory_order_relaxed);
     Log::WriteToConsoleAndLog(fmt::format(
@@ -77,11 +85,11 @@ void ReportMaybe() {
         "submit_driver={:.1f}ms/s({:.1f}/s) submit_drain={:.1f}ms/s "
         "timeline_wait={:.1f}ms/s finish={:.1f}ms/s descriptor_prepare={:.1f}ms/s "
         "descriptor_update={:.1f}ms/s gc={:.1f}ms/s sets_reused={} sets_written={} "
-        "submits={} work={} fan_on={} fan_off={} gpu_busy=not_measured\n",
+        "submits={} work={} batches={} batch_buffers={} fan_on={} fan_off={} gpu_busy=not_measured\n",
         seconds, ms(Site::Pm4), ms(Site::GpuQueueBlocked),
         ms(Site::VkQueueSubmit), calls(Site::VkQueueSubmit), ms(Site::SubmitDrain),
         ms(Site::TimelineWait), ms(Site::Finish), ms(Site::DescriptorPrepare),
         ms(Site::DescriptorUpdate), ms(Site::GarbageCollect),
-        reuse, write, submits, work, fanon, fanoff));
+        reuse, write, submits, work, batches, batch_buffers, fanon, fanoff));
 }
 } // namespace Libs::Graphics::UfcPerf

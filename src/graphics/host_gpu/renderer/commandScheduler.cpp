@@ -459,57 +459,83 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 }
 
 void CommandScheduler::QueueSubmit(const PendingSubmit& pending) {
-	UfcPerf::NoteSubmit(pending.work);
-	const auto& submit = pending.info;
-	const auto  buffer = pending.buffer;
-	auto&       graphics = m_graphics;
+	QueueSubmitBatch(std::span {&pending, size_t {1}});
+}
 
-	vk::TimelineSemaphoreSubmitInfo timeline_info {};
-	timeline_info.waitSemaphoreValueCount   = submit.num_wait_semaphores;
-	timeline_info.pWaitSemaphoreValues      = submit.wait_ticks.data();
-	timeline_info.signalSemaphoreValueCount = submit.num_signal_semaphores;
-	timeline_info.pSignalSemaphoreValues    = submit.signal_ticks.data();
-
-	vk::SubmitInfo submit_info {};
-	submit_info.pNext                = &timeline_info;
-	submit_info.waitSemaphoreCount   = submit.num_wait_semaphores;
-	submit_info.pWaitSemaphores      = submit.wait_semaphores.data();
-	submit_info.pWaitDstStageMask    = submit.wait_stages.data();
-	submit_info.commandBufferCount   = 1;
-	submit_info.pCommandBuffers      = &buffer;
-	submit_info.signalSemaphoreCount = submit.num_signal_semaphores;
-	submit_info.pSignalSemaphores    = submit.signal_semaphores.data();
+void CommandScheduler::QueueSubmitBatch(std::span<const PendingSubmit> batch) {
+	// A single Vulkan queue.submit(count, infos) retains the ordering of every
+	// independent VkSubmitInfo, command buffer and timeline signal. This reduces
+	// host driver entry overhead ONLY when the submit thread has a backlog.
+	// Never merge different ticks into one VkSubmitInfo or move external
+	// presentation semaphores into this path: that would break guest completion.
+	constexpr size_t MaxBatch = 8;
+	EXIT_IF(batch.empty() || batch.size() > MaxBatch);
+	std::array<vk::TimelineSemaphoreSubmitInfo, MaxBatch> timeline {};
+	std::array<vk::SubmitInfo, MaxBatch> infos {};
+	for (size_t i = 0; i < batch.size(); ++i) {
+		const auto& pending = batch[i];
+		const auto& submit = pending.info;
+		UfcPerf::NoteSubmit(pending.work);
+		timeline[i].waitSemaphoreValueCount   = submit.num_wait_semaphores;
+		timeline[i].pWaitSemaphoreValues      = submit.wait_ticks.data();
+		timeline[i].signalSemaphoreValueCount = submit.num_signal_semaphores;
+		timeline[i].pSignalSemaphoreValues    = submit.signal_ticks.data();
+		auto& info                  = infos[i];
+		info.pNext                 = &timeline[i];
+		info.waitSemaphoreCount    = submit.num_wait_semaphores;
+		info.pWaitSemaphores       = submit.wait_semaphores.data();
+		info.pWaitDstStageMask     = submit.wait_stages.data();
+		info.commandBufferCount    = 1;
+		info.pCommandBuffers       = &pending.buffer;
+		info.signalSemaphoreCount  = submit.num_signal_semaphores;
+		info.pSignalSemaphores     = submit.signal_semaphores.data();
+	}
+	UfcPerf::NoteBatch(static_cast<uint32_t>(batch.size()));
 
 	vk::Result result;
 	{
-		Common::LockGuard                   lock(graphics.queue_mutex);
+		Common::LockGuard                   lock(m_graphics.queue_mutex);
 		const Common::PerfStats::ScopedWait timing(Common::PerfStats::Wait::QueueSubmit);
 		const auto submit_start = std::chrono::steady_clock::now();
 		{
 			const UfcPerf::Scoped measured(UfcPerf::Site::VkQueueSubmit);
-			result = graphics.queue.submit(1, &submit_info, nullptr);
+			result = m_graphics.queue.submit(static_cast<uint32_t>(batch.size()), infos.data(), nullptr);
 		}
-		SubmitStats::NoteSubmit(pending.work, static_cast<uint64_t>(
-		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - submit_start).count()));
-		Common::PerfStats::Count(Common::PerfStats::Counter::Submits);
+		const auto elapsed = static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(
+		        std::chrono::steady_clock::now() - submit_start).count());
+		// Existing work-bucket accounting is per recorded command buffer;
+		// divide the one driver call's total rather than counting it N times.
+		for (const auto& pending: batch) {
+			SubmitStats::NoteSubmit(pending.work, elapsed / batch.size());
+			Common::PerfStats::Count(Common::PerfStats::Counter::Submits);
+		}
 	}
 
 	if (result != vk::Result::eSuccess) {
-		ReportVulkanFatal("vkQueueSubmit", result, pending.tick, pending.debug_op,
-		                  pending.debug_submit_id, pending.debug_arg0, pending.debug_arg1,
-		                  pending.debug_arg2, pending.debug_arg3, pending.debug_arg4);
+		const auto& first = batch.front();
+		ReportVulkanFatal("vkQueueSubmit", result, first.tick, first.debug_op,
+		                  first.debug_submit_id, first.debug_arg0, first.debug_arg1,
+		                  first.debug_arg2, first.debug_arg3, first.debug_arg4);
 	}
-	if (GpuFatalTestDue()) {
-		result = vk::Result::eErrorDeviceLost;
-	}
+	if (GpuFatalTestDue()) result = vk::Result::eErrorDeviceLost;
 	CheckGpuResult("vkQueueSubmit", result);
-	m_master.MarkSubmitted(pending.tick);
+	// The submit API call has accepted the entire ordered batch. Advance
+	// the host-submitted watermark one tick at a time as before.
+	for (const auto& pending: batch) m_master.MarkSubmitted(pending.tick);
 }
 
 void CommandScheduler::SubmitThread(const std::stop_token& stop) {
 	KYTY_PROFILER_THREAD("Thread_Submit");
+	// UFC6-only: batch ALREADY-QUEUED submissions without waiting for more.
+	// The normal fast path remains one command buffer per driver call.
+	static const bool ufc6_batch = [] {
+		const char* v = std::getenv("KYTY_UFC6_SUBMIT_BATCH");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
 	for (;;) {
-		PendingSubmit pending;
+		std::array<PendingSubmit, 8> ready {};
+		size_t count = 0;
 		{
 			std::unique_lock lock(m_submit_mutex);
 			m_submit_available.wait(lock, [this, &stop] {
@@ -519,11 +545,14 @@ void CommandScheduler::SubmitThread(const std::stop_token& stop) {
 				// Stop only once everything queued has been submitted.
 				return;
 			}
-			pending = m_submit_queue.front();
-			m_submit_queue.pop();
+			const auto limit = ufc6_batch ? ready.size() : size_t {1};
+			while (!m_submit_queue.empty() && count < limit) {
+				ready[count++] = m_submit_queue.front();
+				m_submit_queue.pop();
+			}
 			m_submit_active = true;
 		}
-		QueueSubmit(pending);
+		QueueSubmitBatch(std::span {ready}.first(count));
 		{
 			const std::lock_guard lock(m_submit_mutex);
 			m_submit_active = false;

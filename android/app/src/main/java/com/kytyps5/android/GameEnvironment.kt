@@ -33,6 +33,7 @@ object GameEnvironment {
     internal val ufc6PlacementKeys = setOf(
         "KYTY_CPU_PLACE", "KYTY_UFC6_HD_OUTPUT",
         "KYTY_UFC6_DESCRIPTOR_REUSE", "KYTY_UFC6_PERF",
+        "KYTY_UFC6_SUBMIT_BATCH",
         "KYTY_FAN_AUTO_ON_US", "KYTY_FAN_AUTO_OFF_US",
     )
 

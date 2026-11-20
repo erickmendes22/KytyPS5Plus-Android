@@ -156,7 +156,7 @@ class LaunchArgsTest {
         for (title in listOf("PPSA23566", "ppsa23566")) {
             val args = LaunchArgs.forGame("/games/ufc6", Resolution.HD_720, titleId = title)
             for (flag in listOf(
-                "KYTY_UFC6_PERF=1",
+                "KYTY_UFC6_PERF=1", "KYTY_UFC6_SUBMIT_BATCH=1",
                 "KYTY_FAN_AUTO_ON_US=40", "KYTY_FAN_AUTO_OFF_US=18"
             )) {
                 assertEquals(1, args.count { it == flag })

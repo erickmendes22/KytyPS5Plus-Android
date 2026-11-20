@@ -16,6 +16,7 @@ enum class Site : uint8_t {
 void Add(Site site, uint64_t duration_ns);
 void NoteDescriptor(bool reused);
 void NoteSubmit(uint32_t work_items);
+void NoteBatch(uint32_t queued_command_buffers);
 void NoteFan(bool enabled);
 void ReportMaybe();
 
