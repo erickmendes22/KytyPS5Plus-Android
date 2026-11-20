@@ -9,6 +9,7 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -97,6 +98,41 @@ bool LoadPlan(const std::filesystem::path& path, Plan* plan, std::string* error)
 	return true;
 }
 
+// The supplied UFC 6 executable has a different layout from the original
+// 01.004.000 crowd patch. A version-independent preset is allowed ONLY for
+// these four exact, pre-validated instructions. Matches() still requires all
+// four complete signatures in one executable before ApplyWrites() can run.
+// Never treat the sentinel as a general bypass of executable version checks.
+bool IsSignatureCheckedUfc6CrowdPatch(const Plan& plan) {
+	if (plan.version != "@ufc6-crowd-signatures-v1" ||
+	    plan.title_id != "PPSA23566" || plan.process != "eboot.bin" ||
+	    plan.writes.size() != 4 || plan.mod_names.size() != 1) return false;
+	constexpr std::array<uint64_t, 4> addresses {
+	    0x04a634ceull, 0x04a63e94ull, 0x04a642a5ull, 0x04a65da5ull,
+	};
+	constexpr std::array<uint32_t, 4> displacement {
+	    0x347u, 0x153u, 0x1abu, 0x1a0u,
+	};
+	for (size_t i = 0; i < addresses.size(); ++i) {
+		const auto& w = plan.writes[i];
+		if (w.source_address != addresses[i] || w.off.size() != 13 ||
+		    w.on.size() != 13) return false;
+		constexpr std::array<uint8_t, 7> cmp {0x83, 0xbf, 0x18, 0x0e, 0, 0, 0};
+		if (!std::equal(cmp.begin(), cmp.end(), w.off.begin()) ||
+		    w.off[7] != 0x0f || w.off[8] != 0x84 ||
+		    w.off[9] != uint8_t(displacement[i]) ||
+		    w.off[10] != uint8_t(displacement[i] >> 8) ||
+		    w.off[11] != uint8_t(displacement[i] >> 16) ||
+		    w.off[12] != uint8_t(displacement[i] >> 24)) return false;
+		for (size_t j = 0; j < 13; ++j) {
+			const auto expected = j == 7 ? uint8_t {0x90} :
+			                      j == 8 ? uint8_t {0xe9} : w.off[j];
+			if (w.on[j] != expected) return false;
+		}
+	}
+	return true;
+}
+
 bool ValidateGame(const Plan& plan, const Program* main_program, std::string* error) {
 	if (main_program == nullptr || main_program->base_vaddr == 0) {
 		return Fail(error, "main executable is not loaded");
@@ -106,7 +142,8 @@ bool ValidateGame(const Plan& plan, const Program* main_program, std::string* er
 	if (!SystemContentParamSfoGetString("TITLE_ID", &title_id) ||
 	    !SystemContentParamSfoGetString("APP_VER", &version) ||
 	    !Common::EqualNoCase(main_program->file_name.filename().string(), plan.process) ||
-	    !Common::EqualNoCase(title_id, plan.title_id) || version != plan.version) {
+	    !Common::EqualNoCase(title_id, plan.title_id) ||
+	    (version != plan.version && !IsSignatureCheckedUfc6CrowdPatch(plan))) {
 		return Fail(error, "cheat file does not match the loaded game");
 	}
 	return true;
