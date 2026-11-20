@@ -123,5 +123,30 @@ jobs:
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
             tests/manual/demons_lighting_memory_policy_test.cpp -o /tmp/demons-lighting-srt
           /tmp/demons-lighting-srt
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc \
+            tests/manual/demons_view_placement_test.cpp -o /tmp/demons-view-placement
+          /tmp/demons-view-placement
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("android/app/src/main/assets/presets/PPSA23566/nocrowd")
+          manifest = json.loads((root / "preset.json").read_text())
+          data = json.loads((root / "launch/ufc6_crowd_off.json").read_text())
+          assert manifest["id"] == "nocrowd" and manifest["launch"]["gamePatch"] == "ufc6_crowd_off.json"
+          assert data["version"] == "@ufc6-crowd-signatures-v1"
+          writes = data["mods"][0]["memory"]
+          expected = [
+              (0x4a634ce, "47030000"), (0x4a63e94, "53010000"),
+              (0x4a642a5, "ab010000"), (0x4a65da5, "a0010000")
+          ]
+          assert len(writes) == len(expected)
+          for patch, (addr, disp) in zip(writes, expected):
+              off = bytes.fromhex(patch["off"])
+              on = bytes.fromhex(patch["on"])
+              assert int(patch["offset"], 16) == addr and len(off) == len(on) == 13
+              assert off == bytes.fromhex("83bf180e0000000f84" + disp)
+              assert on == bytes.fromhex("83bf180e00000090e9" + disp)
+          print("UFC6 no-crowd: exact 4 guarded 13-byte branches, no animation patch")
+          PY
       - name: Compile complete Kyty emulator host so bindless Vulkan additions are type-checked
         run: cmake --build _Build/compat --target kyty_emulator --parallel 2
