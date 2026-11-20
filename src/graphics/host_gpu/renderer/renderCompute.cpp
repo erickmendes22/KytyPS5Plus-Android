@@ -237,11 +237,14 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 		const char* value = std::getenv("KYTY_DS_GPU_LDS_GROUPS");
 		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
-	const bool gpu_owned_args = indirect_args != 0 && ds_gpu_lds_groups &&
-	    (cache.HasGpuDirtyBytes(indirect_args, sizeof(vk::DispatchIndirectCommand)) ||
-	     cache.HasPendingBackingPublication(indirect_args, sizeof(vk::DispatchIndirectCommand)) ||
-	     cache.IsRegionGpuModified(indirect_args, sizeof(vk::DispatchIndirectCommand)) ||
-	     context.GetTextureCache().IsRegionGpuModified(indirect_args, sizeof(vk::DispatchIndirectCommand)));
+	// Even after publishing GPU arguments into BufferCache, dirty tracking can
+	// become clean while CPU memory still holds the *old* group counts. The
+	// previous dirty-only test then read zero from RAM and bound a four-byte
+	// LDS descriptor for a valid vkCmdDispatchIndirect. Always reserve the
+	// existing GPU utility-buffer range for this title's indirect workgroups.
+	// Unlike forcing a CPU readback, this cannot stale the Vulkan arguments or
+	// add a GPU/CPU synchronization point.
+	const bool gpu_owned_args = ReserveIndirectLdsFromGpu(indirect_args, ds_gpu_lds_groups);
 	if (indirect_args != 0 && !gpu_owned_args) {
 		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemIndirectArgs);
 		cache.ReadMemory(indirect_args, sizeof(vk::DispatchIndirectCommand));
