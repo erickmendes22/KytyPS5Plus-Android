@@ -1660,25 +1660,30 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			}
 		}
 	}
-	// Final image views can differ from the ones first resolved in PrepareBindings.
-	// In particular, RebindImages may reset a retired owner's binding state while
-	// rescuing overlapping G-buffer aliases. Reconstruct read/write alias intent
-	// from the FINAL image ids, not the original discovery order. A sampled image
-	// that is also a storage output in this dispatch must use GENERAL in *both*
-	// descriptors; recording READ_ONLY for the sample and then transitioning the
-	// same VkImage to GENERAL for the store makes the sample layout invalid.
-	// Demon's Souls lighting has precisely this sampled/storage feedback topology.
+	// Rebound G-buffer images may have different owners than their original
+	// descriptor snapshots. Reconstruct sampled/storage feedback from the FINAL
+	// identities across every stage (VS/PS as well as a single compute stage).
+	// Collect only storage writers first: most draws have none or very few.
+	// Avoid the previous nested all-image-pairs scan on each draw; it could
+	// perform hundreds of comparisons per stage even with no feedback.
+	std::vector<ImageId> storage_writers;
 	for (const auto* stage: prepared_bindings) {
-		const auto& final_images = stage->images;
-		for (size_t i = 0; i < final_images.size(); ++i) {
-			const auto& writer = final_images[i];
-			if (!writer.image_id ||
-			    writer.desc.type != TextureCache::BindingType::Storage) continue;
-			for (size_t j = 0; j < final_images.size(); ++j) {
-				const auto& reader = final_images[j];
-				if (i == j || !reader.image_id || reader.image_id != writer.image_id ||
-				    reader.desc.type != TextureCache::BindingType::Texture) continue;
-				auto* image = m_context.GetTextureCache().m_slot_images.try_get(writer.image_id);
+		for (const auto& binding: stage->images) {
+			if (binding.image_id &&
+			    binding.desc.type == TextureCache::BindingType::Storage) {
+				storage_writers.push_back(binding.image_id);
+			}
+		}
+	}
+	if (!storage_writers.empty()) {
+		for (const auto* stage: prepared_bindings) {
+			for (const auto& binding: stage->images) {
+				if (!binding.image_id ||
+				    binding.desc.type != TextureCache::BindingType::Texture ||
+				    std::ranges::find(storage_writers, binding.image_id) == storage_writers.end()) {
+					continue;
+				}
+				auto* image = m_context.GetTextureCache().m_slot_images.try_get(binding.image_id);
 				if (image != nullptr && !image->info.IsDepth()) {
 					image->binding.is_bound = true;
 					image->binding.shader_write = true;
