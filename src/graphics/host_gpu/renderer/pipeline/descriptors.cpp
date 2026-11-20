@@ -624,9 +624,16 @@ static TextureDescEntry ComputeTextureDesc(const ShaderRecompiler::IR::ImageReso
 	const auto    image_layers = layered ? depth : 1u;
 	auto          view_base    = static_cast<uint32_t>(base_level);
 	auto pixel_format = surface_format.vk_format;
-	// Vulkan only guarantees depth attachments for 2D images. In particular,
-	// Adreno rejects 1D depth images created for a compare sample.
-	if (resource.depth_compare && TextureBaseType(type) == Prospero::ImageType::kColor2D) {
+	// OpImageSampleDref requires a sampled *depth* format, not a color
+	// R32_SFLOAT view. 2D-array and cube shadow maps are equally valid depth
+	// images in Vulkan.  Restricting this conversion to kColor2D left every
+	// array/cube comparison bound as color, and depth-filtered lighting reads
+	// had undefined results (KytyPS5 #1563). Match the working Chen/Jetsku
+	// renderer's descriptor policy for all Vulkan depth-capable dimensions.
+	if (resource.depth_compare &&
+	    TextureBaseType(type) != Prospero::ImageType::kColor1D &&
+	    TextureBaseType(type) != Prospero::ImageType::kColor1DArray &&
+	    TextureBaseType(type) != Prospero::ImageType::kColor3D) {
 		if (const auto* depth_format = FindGuestDepthFormatPolicy(format)) {
 			pixel_format = depth_format->depth_attachment_format;
 		}
