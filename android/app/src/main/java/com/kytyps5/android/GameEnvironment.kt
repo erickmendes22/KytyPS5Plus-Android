@@ -27,11 +27,14 @@ object GameEnvironment {
         "KYTY_GT_LARGE_DEPTH_HALF", "KYTY_GT_HDR_HALF",
         "KYTY_GT_TURNIP_VISUAL_RESTORE",
     )
+    // Native UFC6 --env is title-specific. A reused SDL process must not
+    // retain its CPU-placement policy when launching a different game.
+    internal val ufc6PlacementKeys = setOf("KYTY_CPU_PLACE")
 
     fun apply(lines: Array<String>?) {
         val vars = EnvVars.parse(lines?.joinToString("\n").orEmpty()).vars
         val (unset, set) = EnvVars.plan(appliedKeys, vars)
-        (unset + silentHillPresetKeys + granTurismoPresetKeys).distinct().forEach { key ->
+        (unset + silentHillPresetKeys + granTurismoPresetKeys + ufc6PlacementKeys).distinct().forEach { key ->
             try {
                 Os.unsetenv(key)
             } catch (e: ErrnoException) {

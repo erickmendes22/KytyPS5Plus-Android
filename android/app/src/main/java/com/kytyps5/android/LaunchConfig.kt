@@ -140,6 +140,16 @@ object LaunchArgs {
                     // choose its own HD render preset instead of receiving
                     // the emulator's old default UHD status.
                     "--env", "KYTY_UFC6_HD_OUTPUT=1",
+                    // The default Android KYTY_CPU_PLACE=8 reserves the prime
+                    // CPU cluster only for the GPU front/record threads once
+                    // fan-auto turns the two-stage pipeline on. The 17:09 UFC6
+                    // capture shows the remaining CPU cores saturated while
+                    // the prime cluster has idle capacity at 7 FPS. Mode 1
+                    // keeps the two GPU gate threads on the fastest available
+                    // cores but does NOT exclude guest/FEX/Frostbite workers
+                    // from them; no real-time priority, clock or GPU change.
+                    // Re-evaluated each second by ThreadPlacement::Poll.
+                    "--env", "KYTY_CPU_PLACE=1",
                     // CPU-side memo of pure CB register -> render target descriptions.
                     // Keep TextureDesc (bit 0) and ColorClearScan (bit 3) enabled;
                     // RenderTargetDesc (bit 1) only avoids repeated decoding of
