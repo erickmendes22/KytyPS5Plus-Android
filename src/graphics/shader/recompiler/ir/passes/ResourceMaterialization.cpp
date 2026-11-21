@@ -151,6 +151,19 @@ uint32_t DescriptorImageSwizzle(const DescriptorValue& descriptor) {
 	return descriptor.dwords[3] & 0xfffu;
 }
 
+// Upstream KytyPS5 0a87c6c + b4e48c7: storage images with absent
+// format channels expose zero/one regardless of their destination selectors.
+// Normalize only direct views: filtered indirect candidates must retain their
+// original swizzle for table compatibility.
+uint32_t FormatFillSwizzle(Prospero::BufferFormat format) {
+	switch (Format::GetFormatInfo(format).component_count) {
+		case 1: return DstSel(4, 0, 0, 1);
+		case 2: return DstSel(4, 5, 0, 1);
+		case 3: return DstSel(4, 5, 6, 1);
+		default: return ShaderImageIdentitySwizzle;
+	}
+}
+
 Prospero::BufferFormat ImageConversionFormat(Prospero::BufferFormat format) {
 	return Prospero::RemapTextureFormat(format) != format ? format
 	                                                      : Prospero::BufferFormat::kInvalid;
@@ -960,12 +973,18 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			}
 		}
 		image.conversion_format = ImageConversionFormat(format);
-		if (storage || image.conversion_format != Prospero::BufferFormat::kInvalid) {
-			image.shader_swizzle = DescriptorImageSwizzle(descriptor);
-		}
 		const auto raw_sint_format = RawSignedStorageFormat(base, format);
 		const bool raw_sint_storage = raw_sint_format != Prospero::BufferFormat::kInvalid;
 		if (raw_sint_format == Prospero::BufferFormat::k16UInt) image.conversion_format = format;
+		// An unconverted storage view ignores selectors for channels that
+		// do not exist. A filtered indirect table must preserve every
+		// candidate swizzle for exact resource-class comparisons.
+		const auto swizzle = DescriptorImageSwizzle(descriptor);
+		if (image.conversion_format != Prospero::BufferFormat::kInvalid ||
+		    (storage && (image.indirect_root != ImageResource::NoIndirectImage ||
+		                 swizzle != FormatFillSwizzle(format)))) {
+			image.shader_swizzle = swizzle;
+		}
 		image.numeric_class = Prospero::SampledTextureNumericClass(
 		    Prospero::RemapTextureFormat(format));
 		if (!storage && (format == Prospero::BufferFormat::k11_11_10UNorm ||
@@ -2127,10 +2146,9 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 				// which is what it would get if the marker had never been set.
 				images[memory.resource].indirect_root = ImageResource::NoIndirectImage;
 			}
-		}
-	}
-	for (auto& memory: memory_info) {
-		if (memory.kind == ResourceKind::Image && !memory.planning_only) {
+			// Upstream f27f421: only live image operations own resource IDs.
+			// A discarded op may leave a memory entry holding the original
+			// SGPR-table index, outside the compacted image array.
 			memory.resource = image_remap[memory.resource];
 		}
 	}

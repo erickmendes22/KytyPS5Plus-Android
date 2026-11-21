@@ -5377,6 +5377,15 @@ void TestFmaskLoadSpecialization() {
         "rebinding FMASK as a texture reused the metadata specialization");
 }
 
+// A folded image operation may leave an unreferenced MemoryInfo with a
+// raw SGPR table index. It must not be remapped through an empty image list.
+void TestFoldedImageOperationMemory() {
+  Fixture fixture;
+  fixture.AddMemory({.kind = ResourceKind::Image, .resource = 2}, 0);
+  fixture.PlanAndTrack();
+  ApplyResourceSpecialization(fixture.program, {});
+}
+
 void TestGatherLodSamplerValidation() {
   for (const bool explicit_lod : {false, true}) {
     for (const bool reverse : {false, true}) {
@@ -8694,6 +8703,7 @@ int main() {
     Run("independent image/sampler pairs", TestIndependentImageSamplerPairs);
     Run("SampleAdjust sampler scratch", TestSampleAdjustSamplerScratch);
     Run("FMASK load specialization", TestFmaskLoadSpecialization);
+    Run("folded image operation memory", TestFoldedImageOperationMemory);
     Run("gather LOD sampler validation", TestGatherLodSamplerValidation);
     Run("dynamic storage mips", TestDynamicStorageMipTracking);
     Run("invariant indirect images", [] { TestInvariantIndirectImageMaterialization(true); });

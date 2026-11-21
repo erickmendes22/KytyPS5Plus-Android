@@ -1839,6 +1839,84 @@ void TestMixedSamplerVariantsShareRuntimeDescriptor() {
         "sampler variants retained stale or duplicated descriptors after refresh");
 }
 
+// Upstream 0a87c6c: filling missing channels does not change the
+// data written by an unconverted storage-image operation.
+void TestStorageFillSwizzle() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  using Libs::Graphics::DstSel;
+  using F = Libs::Graphics::Prospero::BufferFormat;
+  Program program;
+  program.stage = Libs::Graphics::ShaderType::Compute;
+  program.srt_plan_complete = program.resource_tracking_complete = true;
+  program.user_data_count = 2u;
+  auto &block = AddValueBlock(program);
+  DescriptorSource source;
+  source.dword_count = 8u;
+  source.dwords.fill(Value(0u));
+  source.dwords[0] = Value(0x100u);
+  source.dwords[1] = Value(&block.AppendNewInst(ValueOpcode::GetUserData, {Value(ScalarReg(0))}));
+  source.dwords[3] = Value(&block.AppendNewInst(ValueOpcode::GetUserData, {Value(ScalarReg(1))}));
+  program.descriptor_sources.push_back(source);
+  program.info.images.push_back({.source = 0u, .resource_class = ImageResourceClass::Storage,
+      .dimension = Libs::Graphics::ShaderRecompiler::Decoder::ImageDimension::Dim2D,
+      .written = true});
+  auto plan = Extract(program);
+  std::array<uint32_t, 2> data{};
+  const SrtRuntime runtime{.user_data = data};
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization;
+  const auto x001 = DstSel(4, 0, 0, 1), xyz1 = DstSel(4, 5, 6, 1);
+  struct Case { F format; uint32_t swizzle; uint32_t expected; };
+  for (const auto test : {Case{F::k8UNorm, x001, ShaderImageIdentitySwizzle},
+                          Case{F::k8_8UNorm, DstSel(4, 5, 0, 1), ShaderImageIdentitySwizzle},
+                          Case{F::k8_8UNorm, x001, x001},
+                          Case{F::k11_11_10Float, xyz1, ShaderImageIdentitySwizzle},
+                          Case{F::k8_8_8_8UNorm, xyz1, xyz1},
+                          Case{F::k16SInt, x001, x001}}) {
+    data[0] = uint32_t(test.format) << 20u;
+    data[1] = test.swizzle |
+        (uint32_t(Libs::Graphics::Prospero::ImageType::kColor2D) << 28u);
+    Check(MaterializeResources(plan, runtime, snapshot, specialization) &&
+              specialization.images[0].shader_swizzle == test.expected,
+          "storage swizzle lost stored channels or retained missing-channel fill");
+  }
+}
+
+// Upstream b4e48c7: filtered indirect storage candidates must not collapse
+// different source swizzles into different resource classes.
+void TestIndirectStorageSwizzles() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  using F = Libs::Graphics::Prospero::BufferFormat;
+  Program program;
+  program.stage = Libs::Graphics::ShaderType::Compute;
+  program.srt_plan_complete = program.resource_tracking_complete = true;
+  const auto x001 = Libs::Graphics::DstSel(4, 0, 0, 1);
+  for (const auto format : {F::k8UNorm, F::k8_8UNorm}) {
+    DescriptorSource source;
+    source.dword_count = 8u;
+    source.dwords.fill(Value(0u));
+    source.dwords[0] = Value(0x100u);
+    source.dwords[1] = Value(uint32_t(format) << 20u);
+    source.dwords[3] = Value(x001 |
+        (uint32_t(Libs::Graphics::Prospero::ImageType::kColor2D) << 28u));
+    program.descriptor_sources.push_back(source);
+  }
+  DescriptorSource root;
+  root.dword_count = 8u;
+  root.dwords.fill(Value(0u));
+  root.indirect_descriptor.emplace(DescriptorSource::IndirectDescriptor{}).sources = {0, 1};
+  program.descriptor_sources.push_back(root);
+  program.info.images.push_back({.source = 2u, .resource_class = ImageResourceClass::Storage,
+      .dimension = Libs::Graphics::ShaderRecompiler::Decoder::ImageDimension::Dim2D,
+      .written = true, .unfiltered_access_only = false});
+  auto plan = Extract(program);
+  const SrtRuntime runtime{};
+  ResourceSnapshot snapshot;
+  ResourceSpecialization specialization;
+  Check(MaterializeResources(plan, runtime, snapshot, specialization),
+        "filtered indirect storage candidates with matching swizzle were incompatible");
+}
+
 void TestSignedStorageSpecialization() {
   using namespace Libs::Graphics::ShaderRecompiler::IR;
   using F = Libs::Graphics::Prospero::BufferFormat;
@@ -2121,6 +2199,8 @@ int main() {
   TestCyclicControlPredicatesRemainUnknown();
   TestEmptyScalarBufferSpecialization();
   TestMixedSamplerVariantsShareRuntimeDescriptor();
+  TestIndirectStorageSwizzles();
+  TestStorageFillSwizzle();
   TestSignedStorageSpecialization();
   for (const bool mixed : {false, true}) TestIndirectImageSamplerClasses(mixed);
   TestUndefinedImageFormatBindsNullImage();
