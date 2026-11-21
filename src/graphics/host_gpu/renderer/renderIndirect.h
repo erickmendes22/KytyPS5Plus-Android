@@ -123,7 +123,7 @@ private:
 	                              uint32_t groups);
 	void PollFeedback();
 	// A zeroed host-visible word for the next fix-up's feedback, or 0 if none is free.
-	[[nodiscard]] vk::DeviceAddress AcquireFeedback(uint32_t& slot);
+	[[nodiscard]] vk::DeviceAddress AcquireFeedback(uint32_t& slot, bool lighting = false);
 	void CommitFeedback(uint32_t slot, uint64_t site, bool mesh, uint32_t reserved,
 	                    bool dispatch = false, uint64_t shader_hash = 0);
 
@@ -134,6 +134,7 @@ private:
 	std::unique_ptr<Buffer>                m_feedback_buffer;
 	std::array<Feedback, FeedbackSlots>    m_feedback {};
 	uint32_t                               m_feedback_next = 0;
+	uint32_t                               m_lighting_feedback_next = 48;
 	uint32_t                               m_mesh_slots_seen = 0;
 	std::unordered_map<uint64_t, bool>     m_empty; // last result per guest record address
 };

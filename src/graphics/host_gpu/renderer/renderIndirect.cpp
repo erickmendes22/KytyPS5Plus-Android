@@ -220,16 +220,38 @@ IndirectDrawFixup::Records IndirectDrawFixup::Record(CommandBuffer& buffer,
 	        .count  = args.max_count};
 }
 
-vk::DeviceAddress IndirectDrawFixup::AcquireFeedback(uint32_t& slot) {
-	slot = m_feedback_next;
-	if (m_feedback[slot].tick != 0) {
-		return 0; // Still in flight (PollFeedback consumed every completed one).
-	}
-	m_feedback_next = (m_feedback_next + 1u) % FeedbackSlots;
-	const uint32_t zero = 0;
-	std::memcpy(m_feedback_buffer->Mapped().data() + slot * sizeof(uint32_t), &zero, sizeof(zero));
-	m_feedback_buffer->Flush(slot * sizeof(uint32_t), sizeof(uint32_t));
-	return m_feedback_buffer->BufferDeviceAddress() + slot * sizeof(uint32_t);
+vk::DeviceAddress IndirectDrawFixup::AcquireFeedback(uint32_t& slot, bool lighting) {
+    // The first 48 words record indirect draws and the final 16 words
+    // measure the six Demon's Souls indirect lighting passes. Otherwise
+    // thousands of draws can starve the lighting diagnostic completely.
+    // No guest command or GPU synchronization changes.
+    static const bool ds_trace = [] {
+        const char* v = std::getenv("KYTY_DS_FRAME_TRACE");
+        return v != nullptr && v[0] == '1' && v[1] == '\0';
+    }();
+    const uint32_t first = ds_trace && lighting ? 48u : 0u;
+    const uint32_t end   = ds_trace ? (lighting ? FeedbackSlots : 48u) : FeedbackSlots;
+    uint32_t& next = ds_trace && lighting ? m_lighting_feedback_next : m_feedback_next;
+    if (next < first || next >= end) next = first;
+    // Reuse any free slot, not just the cursor. Completed GPU work is
+    // released by PollFeedback; never stall waiting for an unfinished slot.
+    for (uint32_t attempt = 0; attempt < end - first; ++attempt) {
+        const uint32_t index = next;
+        next = index + 1u == end ? first : index + 1u;
+        if (m_feedback[index].tick != 0) continue;
+        slot = index;
+        const uint32_t zero = 0;
+        std::memcpy(m_feedback_buffer->Mapped().data() + slot * sizeof(uint32_t), &zero, sizeof(zero));
+        m_feedback_buffer->Flush(slot * sizeof(uint32_t), sizeof(uint32_t));
+        return m_feedback_buffer->BufferDeviceAddress() + slot * sizeof(uint32_t);
+    }
+    if (ds_trace && lighting) {
+        static std::atomic<uint32_t> missed {0};
+        const auto sample = missed.fetch_add(1u, std::memory_order_relaxed);
+        if (sample < 8u || (sample % 4096u) == 0u)
+            LOGF("[DS_LIGHTING_FEEDBACK] all 16 reserved GPU slots busy, missed=%u\n", sample);
+    }
+    return 0;
 }
 
 void IndirectDrawFixup::CommitFeedback(uint32_t slot, uint64_t site, bool mesh, uint32_t reserved,
@@ -251,7 +273,7 @@ IndirectDrawFixup::DispatchRecord IndirectDrawFixup::RecordDispatchClamp(
 	uint32_t    feedback_slot = 0;
 	FixupParams params {};
 	params.source        = args;
-	params.feedback      = AcquireFeedback(feedback_slot);
+	
 	params.max_count     = 1;
 	params.mode          = ModeDispatchClamp;
 	params.max_groups    = limits[0];
@@ -272,6 +294,7 @@ IndirectDrawFixup::DispatchRecord IndirectDrawFixup::RecordDispatchClamp(
 	const bool lighting = ds_trace &&
 	    std::find(lighting_hashes.begin(), lighting_hashes.end(), shader_hash) !=
 	        lighting_hashes.end();
+	params.feedback = AcquireFeedback(feedback_slot, lighting);
 	params.padding = lighting ? 1u : 0u;
 	const auto output = Dispatch(buffer, sizeof(vk::DispatchIndirectCommand), &params, 1);
 	if (params.feedback != 0) {
