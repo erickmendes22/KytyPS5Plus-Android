@@ -973,6 +973,19 @@ static_assert(IndirectScalarGuestAddressForTest(0x1001, 2, 1) == 0x1004);
 static_assert(IndirectScalarGuestAddressForTest(0x1000, 1, 3) == 0x1004);
 static_assert(IndirectScalarGuestAddressForTest(0x1000, 3, 0) == 0x1000);
 static_assert(IndirectScalarGuestAddressForTest(0x1000, 4, 0) == 0x1004);
+// Bounds must use the aligned effective address, not an independently
+// rounded offset: base+1 may cross a DWORD boundary even when offset<4.
+[[maybe_unused]] constexpr bool IndirectScalarRangeInBoundsForTest(
+    uint64_t base, uint64_t bytes, uint32_t offset) {
+    const uint64_t address = (base + offset) & ~uint64_t{3};
+    return address >= base && address + 4 >= address && address + 4 <= base + bytes;
+}
+static_assert(!IndirectScalarRangeInBoundsForTest(0x1003, 4, 0));
+static_assert(!IndirectScalarRangeInBoundsForTest(0x1003, 4, 1));
+static_assert(IndirectScalarRangeInBoundsForTest(0x1003, 5, 1));
+static_assert(IndirectScalarRangeInBoundsForTest(0x1000, 8, 4));
+static_assert(!IndirectScalarRangeInBoundsForTest(0x1000, 4, 4));
+
 
 uint32_t LoadIndirectScalarBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&       state  = ctx.state;
@@ -992,22 +1005,26 @@ uint32_t LoadIndirectScalarBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
 	// OFFSET+SOFFSET, exactly as for a host-bound scalar descriptor.
 	const auto raw_offset = Binary(state, spv::OpIAdd, TypeU32(state),
 	                               ctx.Arg(inst, 1), ConstantU32(state, ctx.Memory(inst).offset));
-	const auto aligned_offset = Binary(state, spv::OpBitwiseAnd, TypeU32(state),
-	                                   raw_offset, ConstantU32(state, ~3u));
-	const auto offset64 = Unary(state, spv::OpUConvert, TypeU64(state), aligned_offset);
-	const auto end = Binary(state, spv::OpIAdd, TypeU64(state),
-	                        offset64, ConstantU64(state, sizeof(uint32_t)));
-	return EmitValueOrZeroIfCondition(
-	    state, Binary(state, spv::OpULessThanEqual, TypeBool(state), end, size), [&]() {
-		    const auto base = PackU64(
-		        state, ctx.Arg(handle, 0),
-		        Binary(state, spv::OpBitwiseAnd, TypeU32(state), word1, ConstantU32(state, 0xffffu)));
-		    const auto address = Binary(state, spv::OpBitwiseAnd, TypeU64(state),
-		        Binary(state, spv::OpIAdd, TypeU64(state), base,
-		               Unary(state, spv::OpUConvert, TypeU64(state), raw_offset)),
-		        ConstantU64(state, ~uint64_t{3}));
-		    return LoadBdaDword(ctx, address);
-	    });
+	// Compute the real DWORD address first. When V#.BASE is not DWORD-aligned,
+	// bounding (OFFSET & ~3) instead of ((BASE + OFFSET) & ~3) permits
+	// out-of-descriptor loads; such reads must return zero.
+	const auto base = PackU64(
+	    state, ctx.Arg(handle, 0),
+	    Binary(state, spv::OpBitwiseAnd, TypeU32(state), word1, ConstantU32(state, 0xffffu)));
+	const auto address = Binary(state, spv::OpBitwiseAnd, TypeU64(state),
+	    Binary(state, spv::OpIAdd, TypeU64(state), base,
+	           Unary(state, spv::OpUConvert, TypeU64(state), raw_offset)),
+	    ConstantU64(state, ~uint64_t{3}));
+	const auto read_end = Binary(state, spv::OpIAdd, TypeU64(state),
+	                             address, ConstantU64(state, sizeof(uint32_t)));
+	const auto descriptor_end = Binary(state, spv::OpIAdd, TypeU64(state), base, size);
+	const auto in_bounds = AndCondition(
+	    state,
+	    Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), address, base),
+	    Binary(state, spv::OpULessThanEqual, TypeBool(state), read_end, descriptor_end));
+	return EmitValueOrZeroIfCondition(state, in_bounds, [&]() {
+	    return LoadBdaDword(ctx, address);
+	});
 }
 
 struct IndirectBufferAccess {
