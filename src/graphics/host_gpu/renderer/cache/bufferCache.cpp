@@ -1613,9 +1613,21 @@ void BufferCache::RunGarbageCollector() {
 		return;
 	}
 
-	const bool     aggressive = used_memory >= m_critical_gc_memory;
-	const uint64_t age        = std::min<uint64_t>(aggressive ? 80 : 160, tick);
-	const size_t   limit      = aggressive ? 64 : 32;
+	const bool aggressive = used_memory >= m_critical_gc_memory;
+	// Under sustained shared-VRAM pressure, keeping *clean* inactive guest
+	// buffers for 160 GC ticks makes the image collector download and evict
+	// more expensive GPU-produced targets first. Only two opted-in titles
+	// use the shorter LRU ages, and GPU-dirty buffer ownership is unchanged.
+	static const bool clean_buffers_first = [] {
+		const char* value = std::getenv("KYTY_GPU_CLEAN_BUFFER_FIRST");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	const uint64_t age = std::min<uint64_t>(
+	    clean_buffers_first && m_budget_mode ? (aggressive ? 24u : 48u)
+	                                        : (aggressive ? 80u : 160u), tick);
+	const size_t limit = clean_buffers_first && m_budget_mode
+	                       ? (aggressive ? 128u : 64u)
+	                       : (aggressive ? 64u : 32u);
 
 	std::vector<BufferId> dirty_buffers;
 	size_t                retire_count  = 0;

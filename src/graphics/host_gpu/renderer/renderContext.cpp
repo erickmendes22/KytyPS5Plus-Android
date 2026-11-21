@@ -235,8 +235,17 @@ void RenderContext::RunGarbageCollector() {
 		m_buffer_cache.ProcessFaultBuffer();
 	}
 	m_texture_cache.ProcessDownloadImages();
+	// Both affected titles are at the GPU budget in gameplay. Reclaim cold,
+	// CPU-authoritative buffers before evicting/downloading GPU-authored
+	// G-buffer, lighting or depth images. The regular order is unchanged
+	// for every other game. No waits or image invalidations are skipped.
+	static const bool clean_buffers_first = [] {
+		const char* value = std::getenv("KYTY_GPU_CLEAN_BUFFER_FIRST");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	if (clean_buffers_first) m_buffer_cache.RunGarbageCollector();
 	m_texture_cache.RunGarbageCollector();
-	m_buffer_cache.RunGarbageCollector();
+	if (!clean_buffers_first) m_buffer_cache.RunGarbageCollector();
 	m_buffer_cache.PollLoopGuardLog();
 	m_buffer_cache.PollRtHalfCheck();
 }

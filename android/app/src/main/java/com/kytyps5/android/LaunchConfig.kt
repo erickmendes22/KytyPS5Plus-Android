@@ -175,6 +175,9 @@ object LaunchArgs {
                     // VkSubmitInfo/timeline signals. No extra waiting or frame
                     // barriers; zero-backlog scenes retain the original path.
                     "--env", "KYTY_UFC6_SUBMIT_BATCH=1",
+                    // Free cold, clean guest buffers before force-evicting
+                    // GPU-written render targets at the shared 4.5-GiB budget.
+                    "--env", "KYTY_GPU_CLEAN_BUFFER_FIRST=1",
                     // 21:34 UFC6 report: fan_off≈300/s but pipe_on≈300/s,
                     // PM4 front ≈990ms/s. Forced recording/prefetch kept
                     // allocation and handoff overhead enabled against fan-auto.
@@ -238,6 +241,9 @@ object LaunchArgs {
                     "--env", "KYTY_DS_BVH_SRT_COHERENCE=1",
                     // Stamp actual writer tick when preparation submits early.
                     "--env", "KYTY_DS_SHADER_WRITE_RETICK=1",
+                    // Prioritize reclaiming cold buffers over G-buffer,
+                    // stencil and lighting image readbacks at GPU pressure.
+                    "--env", "KYTY_GPU_CLEAN_BUFFER_FIRST=1",
                     // Indirect geometry consumes GPU-generated draw records and counts;
                     // the LDS64 fallback must size shared storage from GPU-authoritative
                     // dispatch arguments rather than an obsolete guest RAM zero.
