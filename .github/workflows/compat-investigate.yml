@@ -53,6 +53,10 @@ jobs:
           assert 'source=gpu frame=%d' in code
           assert 'all 16 reserved GPU slots busy' in code
           assert 'source=cpu frame=%d' in compute
+          launch = Path('android/app/src/main/java/com/kytyps5/android/LaunchConfig.kt').read_text()
+          perf = Path('src/graphics/host_gpu/renderer/ufcPerf.cpp').read_text()
+          assert 'KYTY_GPU_PIPELINE=1' in launch and 'KYTY_PIPE_BATCH=1' in launch
+          assert 'pipe_on={}' in perf
           assert 'feedback.frame >= 735' in code
           assert '[DS_LIGHTING_FEATURES]' in compute
           assert 'FeedbackWord(params.feedback).word = packed' in shader

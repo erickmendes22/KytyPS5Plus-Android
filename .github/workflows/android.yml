@@ -333,6 +333,8 @@ jobs:
           assert 'KYTY_UFC6_SUBMIT_BATCH=1' in launch
           assert 'KYTY_UFC6_DESCRIPTOR_REUSE=1' not in launch
           assert 'QueueSubmitBatch' in scheduler
+          assert 'KYTY_GPU_PIPELINE=1' in launch
+          assert 'KYTY_PIPE_BATCH=1' in launch
           assert '[DS_LIGHTING_GROUPS]' in indirect
           assert '[DS_LIGHTING_FEATURES]' in compute
           assert 'FeedbackWord(params.feedback).word = packed' in shader

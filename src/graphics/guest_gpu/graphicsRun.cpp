@@ -1089,6 +1089,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 	m_fan_on     = WalkFan::Enabled();
 	UfcPerf::NoteFan(m_fan_on);
 	m_pipe_on    = m_fan_on || GpuPipeline::Enabled();
+	UfcPerf::NotePipeline(m_pipe_on);
 	m_drain_lite = m_pipe_on && DrainLiteEnabled(m_renderer.GetGraphics().IsMesaTurnip());
 	Kernel::ThreadPlacement::NotePipelined(m_pipe_on); // KYTY_CPU_PLACE split mode follows the pipeline
 	if (m_pipe_on) {

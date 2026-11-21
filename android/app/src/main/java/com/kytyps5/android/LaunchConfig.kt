@@ -175,6 +175,12 @@ object LaunchArgs {
                     // VkSubmitInfo/timeline signals. No extra waiting or frame
                     // barriers; zero-backlog scenes retain the original path.
                     "--env", "KYTY_UFC6_SUBMIT_BATCH=1",
+                    // UFC6: sampled DRAW_INDEX_2 handlers consume 20-40us each,
+                    // while the front PM4 thread is busy nearly 1000ms/s.
+                    // Keep ordered draw recording on the separate GPU record
+                    // thread even when low walk cost turns the fan workers off.
+                    "--env", "KYTY_GPU_PIPELINE=1",
+                    "--env", "KYTY_PIPE_BATCH=1",
                     // The diagnostic shows ~1 GiB reserved beyond VMA's live
                     // allocation bytes under a 4.5 GiB device budget. Smaller
                     // pooled blocks reduce idle allocator reservations; leave
