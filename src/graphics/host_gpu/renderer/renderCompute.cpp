@@ -1092,6 +1092,13 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	vk::MemoryBarrier barrier {};
 	barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite;
+	// The source may be a GPU-written color/depth attachment published
+	// through the overlapping image/buffer cache. Exclude UFC6 and other
+	// titles from this stronger dependency.
+	if (ds_gpu_zero_indirect) {
+		barrier.srcAccessMask |= vk::AccessFlagBits::eColorAttachmentWrite |
+		                         vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+	}
 	barrier.dstAccessMask = vk::AccessFlagBits::eIndirectCommandRead;
 	vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllGraphics |
 	                              vk::PipelineStageFlagBits::eComputeShader |

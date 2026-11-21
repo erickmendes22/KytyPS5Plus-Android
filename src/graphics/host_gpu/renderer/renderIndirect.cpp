@@ -174,6 +174,19 @@ IndirectDrawFixup::Output IndirectDrawFixup::Dispatch(CommandBuffer& buffer, uin
 	vk::MemoryBarrier before {};
 	before.srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite |
 	                       vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead;
+	// PPSA01341 may generate GPU indirect dispatch records through a
+	// color/depth attachment aliased into the guest argument buffer. Shader
+	// and transfer writes alone do not make such an attachment producer
+	// available to this shader-buffer-address fix-up. This is strictly the
+	// Demon's Souls indirect-dispatch path; don't globally serialize draws.
+	static const bool ds_gpu_indirect = [] {
+		const char* value = std::getenv("KYTY_DS_GPU_ZERO_INDIRECT");
+		return value && value[0] == '1' && value[1] == '\0';
+	}();
+	if (ds_gpu_indirect && fixup.mode == ModeDispatchClamp) {
+		before.srcAccessMask |= vk::AccessFlagBits::eColorAttachmentWrite |
+		                        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+	}
 	before.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
 	command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                        vk::PipelineStageFlagBits::eComputeShader, {}, 1, &before, 0, nullptr,
