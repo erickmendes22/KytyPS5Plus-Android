@@ -627,6 +627,104 @@ static void ProbeDsComputeWrites(RenderContext& context,
 	}
 }
 
+// Read the native Vulkan buffer, not stale guest backing, for the live Demon's Souls
+// lighting list and the two shaders that produce its inputs/indirect counts.
+// Uses the existing DS trace setting and is sampled across the entire run, not at
+// a hard-coded frame. One copy per matching bound range, no changes to guest memory.
+static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBindings& bindings) {
+	if (!DsTraceEnabled() || !bindings.runtime || !*bindings.runtime) return;
+	const auto& program = *bindings.runtime->program;
+	const uint64_t shader = program.shader_hash;
+	static constexpr std::array<uint64_t, 3> watched {
+	    0x3dfe402653925fbfull, 0x6cbfe18ea2005263ull, 0x1ce1a858f62b5a11ull
+	};
+	const auto which = std::find(watched.begin(), watched.end(), shader);
+	if (which == watched.end()) return;
+	static std::array<DemonsRollingProbe::FrameGate, 3> gates {};
+	const auto frame = context.GetGpu().GetFrameNum();
+	if (!gates[static_cast<size_t>(which - watched.begin())].Due(frame, 240)) return;
+	auto& scheduler = context.GetCommandScheduler();
+	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	uint32_t captured = 0;
+	for (uint32_t i = 0; i < program.info.buffers.size() && captured < 4; ++i) {
+		const auto& resource = program.info.buffers[i];
+		const uint32_t slot = resource.descriptor_index;
+		if (slot == UINT32_MAX || slot >= bindings.buffers.size() ||
+		    slot >= bindings.buffer_sources.size()) continue;
+		const auto& source = bindings.buffer_sources[slot];
+		const auto& native = bindings.buffers[slot];
+		if (source.address == 0 || source.size < 4 || !native.buffer ||
+		    native.range == VK_WHOLE_SIZE || native.range < 4) continue;
+		const bool reader = shader == watched[0] && !resource.written &&
+		                    (resource.source == 8u || resource.source == 11u);
+		const bool args_writer = shader == watched[1] && resource.written &&
+		                         source.size <= 65536u;
+		const bool list_writer = shader == watched[2] && resource.written &&
+		                         source.size >= 4096u;
+		if (!reader && !args_writer && !list_writer) continue;
+		const uint64_t size = (std::min<uint64_t>(
+		    {source.size, static_cast<uint64_t>(native.range), 512u * 1024u}) / 4u) * 4u;
+		if (size < 4) continue;
+		auto [mapped, dest] = download.Map(size, 16u, true);
+		if (mapped == nullptr) {
+			LOGF("[DS_GPU_BUFFER_CAPTURE] frame=%d shader=0x%016" PRIx64
+			     " source=%u error=staging_unavailable bytes=%" PRIu64 "\n",
+			     frame, shader, resource.source, size);
+			continue;
+		}
+		download.Commit();
+		scheduler.EndRendering(PassEnd::Buffer);
+		const auto command = scheduler.Current().Handle();
+		vk::MemoryBarrier before {};
+		before.srcAccessMask = vk::AccessFlagBits::eMemoryWrite |
+		                       vk::AccessFlagBits::eShaderWrite |
+		                       vk::AccessFlagBits::eTransferWrite;
+		before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+		command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+		                        vk::PipelineStageFlagBits::eTransfer, {}, 1, &before,
+		                        0, nullptr, 0, nullptr);
+		const vk::BufferCopy copy {native.offset, dest, size};
+		command.copyBuffer(native.buffer, download.Handle(), 1, &copy);
+		scheduler.Finish();
+		download.Invalidate(dest, size);
+		const uint64_t words = size / 4u;
+		uint64_t digest = 14695981039346656037ull;
+		for (uint64_t b = 0; b < size; ++b) {
+			digest = (digest ^ mapped[b]) * 1099511628211ull;
+		}
+		const auto at = [&](uint64_t index) {
+			uint32_t value {};
+			std::memcpy(&value, mapped + 4u * std::min(index, words - 1u), 4);
+			return value;
+		};
+		uint64_t active = 0;
+		for (uint64_t i = 0; i < words; ++i) active += at(i) != 0u;
+		std::array<uint32_t, 4> backing {};
+		const bool backing_ok = LibKernel::Memory::TryReadBacking(
+		    source.address, backing.data(), sizeof(backing));
+		LOGF("[DS_GPU_BUFFER_CAPTURE] frame=%d shader=0x%016" PRIx64
+		     " role=%s source=%u guest=0x%016" PRIx64
+		     " slot=%u declared=%" PRIu64 " copied=%" PRIu64
+		     " partial=%u active_words=%" PRIu64 "/%" PRIu64
+		     " digest=%016" PRIx64
+		     " first=%08x,%08x,%08x,%08x quarter=%08x half=%08x "
+		     "three_quarters=%08x last=%08x "
+		     "backing_ok=%u backing_first=%08x,%08x,%08x,%08x\n",
+		     frame, shader, resource.written ? "producer" : "consumer",
+		     resource.source, source.address, slot, source.size, size,
+		     size < source.size ? 1u : 0u, active, words, digest,
+		     at(0), at(1), at(2), at(3), at(words/4u), at(words/2u),
+		     at(words*3u/4u), at(words-1u), backing_ok ? 1u : 0u,
+		     backing[0], backing[1], backing[2], backing[3]);
+		++captured;
+	}
+	if (captured == 0) {
+		LOGF("[DS_GPU_BUFFER_CAPTURE] frame=%d shader=0x%016" PRIx64
+		     " no_matching_binding=1 resources=%zu\n", frame, shader,
+		     program.info.buffers.size());
+	}
+}
+
 // KYTY_CS_PACK runs two guest workgroups of at most 32 threads in one 64-lane host workgroup (the
 // recompiler decides per program: ShaderRecompiler.cpp ComputeGroupPack). Default on with Mesa
 // Turnip (Astro Bot: 74.8 -> 66.7 GPU ms/frame, research/clock_policy.md), off elsewhere;
@@ -1014,6 +1112,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
+	ProbeDsLightingBuffers(m_context, bindings);
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
@@ -1277,6 +1376,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	RememberDsBufferProducers(m_context, bindings, true);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
+	ProbeDsLightingBuffers(m_context, bindings);
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
@@ -1341,6 +1441,7 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 	buffer.MarkGpu("cs-retrace", input_info.stage.program->shader_hash);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
+	ProbeDsLightingBuffers(m_context, bindings);
 	if (input_info.stage.program->info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(input_info.stage.program->shader_hash);
 	}
