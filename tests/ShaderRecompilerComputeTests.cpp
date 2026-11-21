@@ -11343,7 +11343,9 @@ public:
         DispatchCase{{1, 0, 1}, 0x41u, 0},
         DispatchCase{{1, 1, 0}, 0x41u, 0},
         DispatchCase{{3, 1, 1}, 0x41u, 12, true},
-        DispatchCase{{8, 1, 1}, 0x61u, 8},
+        DispatchCase{{7, 1, 1}, 0x61u, 7},
+        DispatchCase{{5, 1, 1}, 0x61u, 5, true},
+        DispatchCase{{1, 0, 1}, 0x61u, 0, true},
     };
 
     // Separate DWORD descriptors preserve two owners until the indirect argument
@@ -11499,7 +11501,14 @@ public:
                   CpOpDispatchIndirect(processor, 0xc0011600u, packet.data(), 0, 0) == 2,
                   "the offset indirect packet was not consumed");
         }
-        if (test.mode == 0x41u) {
+        if (test.mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) {
+          std::array<u32, 3> backing{};
+          Require(name, "indirect thread counts preserve ownership",
+                  cache.HasGpuDirtyBytes(args, sizeof(backing)) &&
+                      LibKernel::Memory::TryReadBacking(args, backing.data(), sizeof(backing)) &&
+                      backing == stale,
+                  "thread-dimension dispatch published the GPU arguments to guest RAM");
+        } else {
           Require(name, "asynchronous indirect dispatch", scheduler.CurrentTick() == tick,
                   "workgroup-count arguments caused a host submission or readback");
           if (!test.transfer) {

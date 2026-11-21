@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -49,9 +50,12 @@ class GpuTimer;
 struct GpuPassInfo;
 struct RenderExecutorTestAccess;
 
+using DsProbePixels = std::array<std::pair<uint32_t, uint32_t>, 5>;
+
 // PPSA01341: bounded diagnostic of GPU-written compute storage textures.
 void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash,
-                         bool forced = false, const ImageViewInfo* view = nullptr);
+                         bool forced = false, const ImageViewInfo* view = nullptr,
+                         const DsProbePixels* pixels = nullptr);
 
 enum class CommandBufferDebugOp : uint32_t {
 	DispatchDirect,

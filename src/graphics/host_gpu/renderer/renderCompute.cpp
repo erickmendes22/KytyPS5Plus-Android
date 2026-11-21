@@ -70,10 +70,15 @@ struct DsBufferProducer {
 // Accessed under the renderer context lock. Only the lighting trace records compute writes.
 std::array<DsBufferProducer, 1024> ds_buffer_producers {};
 size_t ds_next_buffer_producer = 0;
+DsBufferProducer ds_light_queue_writer {};
 
 void RememberDsBufferProducer(DsBufferProducer producer) {
 	ds_buffer_producers[ds_next_buffer_producer] = producer;
 	ds_next_buffer_producer = (ds_next_buffer_producer + 1) % ds_buffer_producers.size();
+	if (producer.shader == 0x6cbfe18ea2005263ull &&
+	    producer.size == 65 * sizeof(vk::DispatchIndirectCommand)) {
+		ds_light_queue_writer = producer;
+	}
 }
 
 bool DsTraceEnabled() {
@@ -496,13 +501,12 @@ static void ProbeDsComputeWrites(RenderContext& context,
 		const auto match = std::find(target_hashes.begin(), target_hashes.end(), hash);
 		const auto ordinal = static_cast<size_t>(match - target_hashes.begin());
 		const int32_t frame = context.GetGpu().GetFrameNum();
-		// The 08:27 gameplay trace shows nonzero dispatch groups for this writer.
-		const bool gameplay_writer = hash == 0x3dfe402653925fbfull;
 		static const bool targeted = [] {
 			const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
 			return v != nullptr && v[0] == '1' && v[1] == '\0';
 		}();
-		const bool probe_this_capture = enabled && (!targeted || gameplay_writer);
+		// The targeted capture below samples pixels from the actual light-tile queue.
+		const bool probe_this_capture = enabled && !targeted;
 		if (match != target_hashes.end() &&
 		    context.GetTextureCache().GetImage(target_id).info.data.address == 0x281300000ull &&
 		    sampled_writers[ordinal].Due(frame, 240)) {
@@ -596,7 +600,7 @@ static void ProbeDsComputeWrites(RenderContext& context,
 				if (probe_this_capture && has_view && !repeated && !is_tiny &&
 				    texture.backing.extent.width >= 960u &&
 				    texture.backing.extent.height >= 540u &&
-				    source.image_id != target_id && probed < (targeted ? 3u : 6u)) {
+			    source.image_id != target_id && probed < 6u) {
 					ProbeDsComputeImage(context, source.image_id, hash, true, &view_info);
 					++probed;
 				}
@@ -675,6 +679,9 @@ static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBinding
 	}
 	auto& scheduler = context.GetCommandScheduler();
 	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	uint32_t first_tile = 0, end_tile = 0;
+	DsProbePixels pixels {};
+	bool have_tiles = false;
 	uint32_t captured = 0;
 	for (uint32_t i = 0; i < program.info.buffers.size() && captured < 4; ++i) {
 		const auto& resource = program.info.buffers[i];
@@ -686,7 +693,7 @@ static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBinding
 		if (source.address == 0 || source.size < 4 || !native.buffer ||
 		    native.range == VK_WHOLE_SIZE || native.range < 4) continue;
 		const bool reader = shader == watched[0] && !resource.written &&
-		                    (resource.source == 8u || resource.source == 11u);
+		                    (resource.source <= 1u || resource.source == 8u || resource.source == 11u);
 		const bool other_reader = watch_index >= 3u && !resource.written &&
 		                          captured < 2u;
 		const bool args_writer = shader == watched[1] && resource.written &&
@@ -694,8 +701,12 @@ static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBinding
 		const bool list_writer = shader == watched[2] && resource.written &&
 		                         source.size >= 4096u;
 		if (!reader && !other_reader && !args_writer && !list_writer) continue;
+		const auto offset_word = program.bindings.memory_offset_dword + slot / 4u;
+		if (offset_word >= bindings.shader_data.size()) continue;
+		const auto adjustment = (bindings.shader_data[offset_word] >> ((slot % 4u) * 8u)) & 255u;
+		if (adjustment >= native.range) continue;
 		const uint64_t size = (std::min<uint64_t>(
-		    {source.size, static_cast<uint64_t>(native.range), 512u * 1024u}) / 4u) * 4u;
+		    {source.size, native.range - adjustment, 512u * 1024u}) / 4u) * 4u;
 		if (size < 4) continue;
 		auto [mapped, dest] = download.Map(size, 16u, true);
 		if (mapped == nullptr) {
@@ -715,8 +726,13 @@ static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBinding
 		command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 		                        vk::PipelineStageFlagBits::eTransfer, {}, 1, &before,
 		                        0, nullptr, 0, nullptr);
-		const vk::BufferCopy copy {native.offset, dest, size};
+		const vk::BufferCopy copy {native.offset + adjustment, dest, size};
 		command.copyBuffer(native.buffer, download.Handle(), 1, &copy);
+		vk::MemoryBarrier after {};
+		after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+		after.dstAccessMask = vk::AccessFlagBits::eHostRead;
+		command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		                        vk::PipelineStageFlagBits::eHost, {}, 1, &after, 0, nullptr, 0, nullptr);
 		scheduler.Finish();
 		download.Invalidate(dest, size);
 		const uint64_t words = size / 4u;
@@ -729,6 +745,35 @@ static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBinding
 			std::memcpy(&value, mapped + 4u * std::min(index, words - 1u), 4);
 			return value;
 		};
+		if (shader == watched[0] && resource.source == 0 && words > 9) {
+			first_tile = at(8);
+			end_tile = at(9);
+		}
+		if (shader == watched[0] && resource.source == 1 && end_tile > first_tile &&
+		    end_tile <= words && snapshots.flattened_srt.size() > 114) {
+			const auto pitch = snapshots.flattened_srt[112];
+			const auto width = snapshots.flattened_srt[113];
+			const auto height = snapshots.flattened_srt[114];
+			// The guest shader divides a queued tile ID by the pitch and addresses
+			// an 8x8 region. Pick tile centers from across the recorded queue.
+			have_tiles = pitch != 0 && uint64_t{pitch} == (uint64_t{width} + 7) / 8 &&
+			             width != 0 && height != 0;
+			for (size_t i = 0; have_tiles && i < pixels.size(); ++i) {
+				const auto tile = at(first_tile + (end_tile - first_tile - 1u) * i / (pixels.size() - 1u));
+				const uint64_t x = uint64_t{tile % pitch} * 8;
+				const uint64_t y = uint64_t{tile / pitch} * 8;
+				have_tiles = x < width && y < height;
+				pixels[i] = {static_cast<uint32_t>(std::min<uint64_t>(x + 4, width - 1)),
+				             static_cast<uint32_t>(std::min<uint64_t>(y + 4, height - 1))};
+			}
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_LIGHT_TILE_PROBE] frame={} shader=0x{:016x} first={} end={} "
+			    "pitch={} width={} height={} valid={} xy={},{}/{},{}/{},{}/{},{}/{},{}\n",
+			    frame, shader, first_tile, end_tile, pitch, width, height, have_tiles,
+			    pixels[0].first, pixels[0].second, pixels[1].first, pixels[1].second,
+			    pixels[2].first, pixels[2].second, pixels[3].first, pixels[3].second,
+			    pixels[4].first, pixels[4].second));
+		}
 		uint64_t active = 0;
 		for (uint64_t i = 0; i < words; ++i) active += at(i) != 0u;
 		std::array<uint32_t, 4> backing {};
@@ -772,6 +817,25 @@ static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBinding
 			}
 		}
 		++captured;
+	}
+	if (have_tiles) {
+		for (const auto& binding: bindings.images) {
+			if (!binding.image_id || binding.placeholder) continue;
+			const auto& image = context.GetTextureCache().GetImage(binding.image_id);
+			const auto view = std::ranges::find(image.views, binding.image_view, &CachedImageView::view);
+			if (view == image.views.end()) continue;
+			const bool hdr = binding.desc.type == TextureCache::BindingType::Storage &&
+			                 image.info.data.address == 0x281300000ull;
+			const bool stencil = view->info.aspect == vk::ImageAspectFlagBits::eStencil;
+			if (!hdr && !stencil) continue;
+			const auto& mapping = view->info.mapping;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_LIGHT_TILE_VIEW] frame={} role={} swizzle={}/{}/{}/{}\n", frame,
+			    hdr ? "hdr" : "stencil", static_cast<uint32_t>(mapping.r),
+			    static_cast<uint32_t>(mapping.g), static_cast<uint32_t>(mapping.b),
+			    static_cast<uint32_t>(mapping.a)));
+			ProbeDsComputeImage(context, binding.image_id, shader, true, &view->info, &pixels);
+		}
 	}
 	if (captured == 0) {
 		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_GPU_BUFFER_CAPTURE] frame=%d shader=0x%016" PRIx64
@@ -1174,11 +1238,68 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	ResetBindings();
 }
 
+// Thread-dimension dispatches also need the unrounded counts on the CPU to
+// bound partial workgroups and materialize descriptors. Read the actual Vulkan
+// argument buffer when guest backing is no longer authoritative.
+static vk::DispatchIndirectCommand ReadIndirectThreadCounts(RenderContext& context,
+                                                            uint64_t address) {
+	Common::LockGuard lock(context.GetMutex());
+	const Common::PerfStats::ScopedWaitSite wait(Common::PerfStats::Wait::SemIndirectArgs);
+	auto& cache = context.GetBufferCache();
+	auto& textures = context.GetTextureCache();
+	constexpr auto size = sizeof(vk::DispatchIndirectCommand);
+	const bool image_gpu_owned = textures.IsRegionGpuModified(address, size);
+	vk::DispatchIndirectCommand args {};
+	if (!image_gpu_owned && !cache.HasGpuDirtyBytes(address, size) &&
+	    !cache.IsRegionGpuModified(address, size) &&
+	    !cache.HasPendingBackingPublication(address, size) &&
+	    LibKernel::Memory::TryReadBacking(address, &args, size)) {
+		return args;
+	}
+	auto& scheduler = context.GetCommandScheduler();
+	scheduler.EndRendering(PassEnd::Compute);
+	if (image_gpu_owned) {
+		(void)textures.PublishGpuImageForIndirectArgs(address, size);
+	}
+	auto& download = cache.GetUtilityBuffer(MemoryUsage::Download);
+	auto [mapped, dst] = download.Map(size, 16u, true);
+	EXIT_IF(mapped == nullptr);
+	download.Commit();
+	const auto [source, offset] = cache.ObtainBuffer(address, size, false);
+	EXIT_IF(source == nullptr || (offset & 3u) != 0);
+	download.CopyFrom(scheduler.Current(), *source, offset, dst, size,
+	                  vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eHostWrite,
+	                  vk::AccessFlagBits::eHostRead, vk::AccessFlagBits::eMemoryRead,
+	                  vk::AccessFlagBits::eHostRead);
+	scheduler.Finish();
+	download.Invalidate(dst, size);
+	std::memcpy(&args, mapped, size);
+	if (DsTraceEnabled()) {
+		const auto frame = context.GetGpu().GetFrameNum();
+		const auto queue_offset = address - ds_light_queue_writer.address;
+		if (ds_light_queue_writer.frame == frame && queue_offset < ds_light_queue_writer.size &&
+		    queue_offset % size == 0) {
+			static std::array<DemonsRollingProbe::FrameGate, 65> queues {};
+			const auto index = queue_offset / size;
+			if (queues[index].Due(frame, 240)) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_LIGHT_QUEUE_THREADS] frame={} index={} args=0x{:x} x={} y={} z={}\n",
+				    frame, index, address, args.x, args.y, args.z));
+			}
+		}
+	}
+	return args;
+}
+
 void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
                                       uint64_t args_addr, uint32_t mode, bool async_compute) {
-	EXIT_IF(buffer.IsInvalid() || args_addr == 0 || (args_addr & 3u) != 0 ||
-	        (mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0);
+	EXIT_IF(buffer.IsInvalid() || args_addr == 0 || (args_addr & 3u) != 0);
 	m_context.GetCommandScheduler().PopDrawOperations();
+	if (mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) {
+		const auto args = ReadIndirectThreadCounts(m_context, args_addr);
+		DispatchDirect(submit_id, buffer, args.x, args.y, args.z, mode, async_compute);
+		return;
+	}
 	buffer.SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DispatchIndirect), submit_id,
 	                    static_cast<uint32_t>(args_addr), static_cast<uint32_t>(args_addr >> 32u),
 	                    0, mode, buffer.GetShaders().GetCs().cs_regs.data_addr);
@@ -1267,6 +1388,30 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	PreparedBindings* descriptor_stage = &bindings;
 	FindBuffers(std::span {&descriptor_stage, 1u});
 	const auto& program = *input_info.stage.program;
+	if (DsTraceEnabled()) {
+		// The captured producer emits 65 records, including two much larger
+		// queues than any of the six originally traced HDR kernels.
+		const auto frame = m_context.GetGpu().GetFrameNum();
+		const auto& writer = ds_light_queue_writer;
+		const auto offset = args_addr - writer.address;
+		if (writer.frame == frame && offset < writer.size &&
+		    offset % sizeof(vk::DispatchIndirectCommand) == 0) {
+			const auto index = offset / sizeof(vk::DispatchIndirectCommand);
+			static std::array<DemonsRollingProbe::FrameGate, 65> queues {};
+			if (queues[index].Due(frame, 240)) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_LIGHT_QUEUE] frame={} index={} shader=0x{:016x} args=0x{:x}\n",
+				    frame, index, program.shader_hash, args_addr));
+				for (size_t i = 0; i < bindings.images.size() && i < program.info.images.size(); ++i) {
+					const auto& image = bindings.images[i];
+					if (!image.image_id || image.placeholder || !program.info.images[i].written) continue;
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_LIGHT_QUEUE_OUTPUT] frame={} index={} shader=0x{:016x} guest=0x{:x}\n",
+					    frame, index, program.shader_hash, image.desc.info.data.address));
+				}
+			}
+		}
+	}
 	// Demon's Souls: for the six failing light-dispatch commands, compare
 	// original guest backing with the GPU-indirect path's read-only feedback.
 	// Unlike a synchronous GPU readback, this cannot modify counts or wait on

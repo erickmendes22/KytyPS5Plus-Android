@@ -423,13 +423,13 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 
 		const auto final_scissor = HostScissor(ctx, rendering, i);
 		auto& scissor  = scissors[i];
-		scissor.offset = {final_scissor.left, final_scissor.top};
-		scissor.extent = {static_cast<uint32_t>(final_scissor.right - final_scissor.left),
+		scissor.offset = vk::Offset2D {final_scissor.left, final_scissor.top};
+		scissor.extent = vk::Extent2D {static_cast<uint32_t>(final_scissor.right - final_scissor.left),
 		                  static_cast<uint32_t>(final_scissor.bottom - final_scissor.top)};
 		if (viewport.width == 0.0f) {
 			// Keep empty slots at their guest index; Vulkan requires a positive viewport width.
 			viewport.width = 1.0f;
-			scissor.extent = {0, 0};
+			scissor.extent = vk::Extent2D {0, 0};
 		}
 	}
 	dynamic_state.SetViewports(std::span {viewports}.first(viewport_count));
@@ -970,7 +970,8 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 // image ownership or writes guest memory. Other games never enable it.
 static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* colors,
                                 uint32_t count, uint64_t shader_hash, bool compute = false, bool forced = false,
-                                const ImageViewInfo* sampled_view = nullptr) {
+                                const ImageViewInfo* sampled_view = nullptr,
+                                const DsProbePixels* pixels = nullptr) {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_DS_COLOR_PROBE");
 		// An explicit 0 disables probing. Otherwise reuse the existing DS
@@ -1105,7 +1106,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		download.Commit();
 		const uint32_t w = std::max(backing.extent.width >> view_mip, 1u);
 		const uint32_t h = std::max(backing.extent.height >> view_mip, 1u);
-		const std::array<std::pair<uint32_t,uint32_t>,5> xy {
+		const DsProbePixels xy = pixels ? *pixels : DsProbePixels {
 		    std::pair{w/2u,h/2u}, {w/4u,h/4u}, {3u*w/4u,h/4u},
 		    {w/4u,3u*h/4u}, {3u*w/4u,3u*h/4u}};
 		std::array<vk::BufferImageCopy,5> regions {};
@@ -1115,9 +1116,11 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			regions[i].imageSubresource.mipLevel = view_mip;
 			regions[i].imageSubresource.baseArrayLayer = view_layer;
 			regions[i].imageSubresource.layerCount = 1;
+			const auto x = std::min(xy[i].first, w - 1);
+			const auto y = std::min(xy[i].second, h - 1);
 			regions[i].imageOffset = vk::Offset3D{
-			    static_cast<int32_t>(compressed ? (xy[i].first & ~3u) : xy[i].first),
-			    static_cast<int32_t>(compressed ? (xy[i].second & ~3u) : xy[i].second), 0};
+			    static_cast<int32_t>(compressed ? (x & ~3u) : x),
+			    static_cast<int32_t>(compressed ? (y & ~3u) : y), 0};
 			regions[i].imageExtent = compressed ? vk::Extent3D{4,4,1} : vk::Extent3D{1,1,1};
 		}
 		image.Download(regions, download.Handle(), offset, length);
@@ -1166,11 +1169,11 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 // The compute renderer shares the same exact-pixel sampler rather than
 // inferring nonzero outputs from vkCmdDispatch counts.
 void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash,
-                         bool forced, const ImageViewInfo* view) {
+                         bool forced, const ImageViewInfo* view, const DsProbePixels* pixels) {
 	if (!id) return;
 	RenderColorInfo color {};
 	color.image_id = id;
-	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced, view);
+	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced, view, pixels);
 }
 
 static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
