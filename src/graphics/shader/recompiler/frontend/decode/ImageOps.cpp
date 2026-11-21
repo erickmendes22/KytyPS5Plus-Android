@@ -290,34 +290,44 @@ uint32_t CountDmaskComponents(uint32_t dmask) {
 
 } // namespace
 
+// A16 MIMG operands use one VGPR per offset/bias/PCF reference, with
+// half-width coordinates and paired derivatives. For 1D and 3D gradients
+// the unpaired halves occupy separate low-half VGPRs. Counting every field
+// as an independent half shifts shadow coordinates and may sample a wrong
+// depth layer, leaving deferred light contributions zero.
+ImageAddressComponent ImageAddressComponentLayout(uint32_t flags, ImageDimension dimension,
+                                                  uint32_t component) {
+	if ((flags & ImageSampleFlagA16) == 0u) return {component * 32u, 32u};
+	const bool has_bias = (flags & ImageSampleFlagBias) != 0u;
+	const uint32_t bias_index = (flags & ImageSampleFlagOffset) != 0u ? 1u : 0u;
+	const uint32_t full = std::popcount(
+	    flags & (ImageSampleFlagOffset | ImageSampleFlagBias | ImageSampleFlagCompare));
+	if (component < full)
+		return {component * 32u, has_bias && component == bias_index ? 16u : 32u};
+	const uint32_t dimensions =
+	    (flags & ImageSampleFlagDerivative) != 0u ? ImageGradientComponents(dimension) : 0u;
+	const uint32_t standalone = (dimensions & 1u) * 2u;
+	const uint32_t paired = 2u * dimensions - standalone;
+	const uint32_t local = component - full;
+	const uint32_t half = local + std::clamp(local, paired, paired + standalone) - paired;
+	return {full * 32u + half * 16u, 16u};
+}
+
+uint32_t ImageAddressDwordCount(uint32_t flags, ImageDimension dimension,
+                                uint32_t components) {
+	if (components == 0u) return 0u;
+	const auto last = ImageAddressComponentLayout(flags, dimension, components - 1u);
+	return (last.bit_offset + last.bit_width + 31u) / 32u;
+}
+
+// Preserve the original API for callers that do not carry a dimension.
+// Spatially sensitive image users should use the overload above.
 ImageAddressComponent ImageAddressComponentLayout(uint32_t flags, uint32_t component) {
-	const auto width = [flags](uint32_t index) {
-		if ((flags & ImageSampleFlagA16) == 0u) return 32u;
-		uint32_t cursor = 0;
-		if ((flags & ImageSampleFlagOffset) != 0u) {
-			if (index == cursor++) return 32u;
-		}
-		if ((flags & ImageSampleFlagBias) != 0u) {
-			if (index == cursor++) return 16u;
-		}
-		if ((flags & ImageSampleFlagCompare) != 0u && index == cursor) return 32u;
-		return 16u;
-	};
-	uint32_t offset = 0;
-	for (uint32_t index = 0; index < component; index++) {
-		const auto bits = width(index);
-		if (bits == 32u) offset = (offset + 31u) & ~31u;
-		offset += bits;
-	}
-	const auto bits = width(component);
-	if (bits == 32u) offset = (offset + 31u) & ~31u;
-	return {offset, bits};
+	return ImageAddressComponentLayout(flags, ImageDimension::Dim2D, component);
 }
 
 uint32_t ImageAddressDwordCount(uint32_t flags, uint32_t components) {
-	if (components == 0u) return 0u;
-	const auto last = ImageAddressComponentLayout(flags, components - 1u);
-	return (last.bit_offset + last.bit_width + 31u) / 32u;
+	return ImageAddressDwordCount(flags, ImageDimension::Dim2D, components);
 }
 
 void DecodeMimg(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index,

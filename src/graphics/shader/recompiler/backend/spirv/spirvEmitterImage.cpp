@@ -39,7 +39,7 @@ bool HasFlag(const IR::MemoryInfo& mem, uint32_t flag) {
 
 uint32_t AddressU32(ValueEmitContext& ctx, const IR::MemoryInfo& mem, const IR::Inst& address,
                     uint32_t component) {
-	const auto layout = Decoder::ImageAddressComponentLayout(mem.image_sample_flags, component);
+	const auto layout = Decoder::ImageAddressComponentLayout(mem.image_sample_flags, mem.image_dimension, component);
 	const auto packed = layout.bit_offset / 32u;
 	if (packed >= address.NumArgs()) return ConstantU32(ctx.state, 0);
 	auto value = ctx.Def(address.Arg(packed));
@@ -57,7 +57,7 @@ uint32_t AddressU32(ValueEmitContext& ctx, const IR::MemoryInfo& mem, const IR::
 uint32_t AddressF32(ValueEmitContext& ctx, const IR::MemoryInfo& mem, const IR::Inst& address,
                     uint32_t component) {
 	const auto value = AddressU32(ctx, mem, address, component);
-	return Decoder::ImageAddressComponentLayout(mem.image_sample_flags, component).bit_width == 16u
+	return Decoder::ImageAddressComponentLayout(mem.image_sample_flags, mem.image_dimension, component).bit_width == 16u
 	           ? EmitF16BitsToF32(ctx.state, value)
 	           : Unary(ctx.state, spv::OpBitcast, TypeF32(ctx.state), value);
 }
