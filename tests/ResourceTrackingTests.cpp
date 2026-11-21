@@ -2367,11 +2367,15 @@ void TestDescendingImageRange() {
   enum class Variant {
     Valid, WrongStep, IncrementBypass, MissingNonzero, NegativeInitial,
     Bitmap, BitmapAddsBit, BitmapWrongWord, BitmapUnknownInitial,
-    BitmapByteOffset, BitmapScalarOffset, BitmapOuterClobber, BitmapWrongLoadMask
+    BitmapByteOffset, BitmapScalarOffset, BitmapOuterClobber, BitmapWrongLoadMask,
+    Bitmap8, Bitmap8MisplacedLoad, Bitmap8OtherBuffer, Bitmap8OuterClobber, Bitmap8WrongUpperWord,
+    Bitmap8NarrowMask, Bitmap8OtherGuard
   };
   const auto make_plan = [](Variant variant) {
     Fixture fixture;
     const bool bitmap = variant >= Variant::Bitmap;
+    // Eight-word records are two four-word loads of one buffer record.
+    const uint32_t bitmap_words = variant >= Variant::Bitmap8 ? 8u : 4u;
     auto *entry = fixture.block;
     auto *header = fixture.AddBlock();
     auto *guard = fixture.AddBlock();
@@ -2394,11 +2398,11 @@ void TestDescendingImageRange() {
     branch(latch, header);
     auto &induction = header->AppendNewInst(ValueOpcode::Phi);
     induction.SetFlags(Type::U32);
-    std::array<Inst *, 4> outer_words {}, remaining_words {};
-    std::array<Value, 4> loaded_words {};
+    std::array<Inst *, 8> outer_words {}, remaining_words {};
+    std::array<Value, 8> loaded_words {};
     if (bitmap)
-      for (auto& word : outer_words)
-        word = &header->AppendNewInst(ValueOpcode::Phi, {}, uint64_t(Type::U32));
+      for (uint32_t word = 0; word < bitmap_words; ++word)
+        outer_words[word] = &header->AppendNewInst(ValueOpcode::Phi, {}, uint64_t(Type::U32));
     const auto bound = fixture.Emit(ValueOpcode::SGreaterThanEqual32,
         {Value(&induction), Value(0u)}, 0, header);
     choose(header, guard, variant == Variant::IncrementBypass ? latch : exit, bound);
@@ -2415,14 +2419,27 @@ void TestDescendingImageRange() {
       read.idxen = true;
       read.offen = variant == Variant::BitmapByteOffset;
       read.data_dwords = 4u;
-      const auto packed = fixture.Emit(ValueOpcode::LoadBufferU32x4,
-          {buffer, lane,
-           Value(variant == Variant::BitmapByteOffset ? 4u : 0u),
-           Value(variant == Variant::BitmapScalarOffset ? 4u : 0u), load_active},
-          fixture.AddMemory(read, 0x10));
-      for (uint32_t word = 0; word < 4u; ++word) {
+      std::array<Value, 2> packed;
+      for (uint32_t part = 0; part < bitmap_words / 4u; ++part) {
+        read.offset = part * (variant == Variant::Bitmap8MisplacedLoad ? 32u : 16u);
+        const auto source = variant == Variant::Bitmap8OtherBuffer && part != 0u
+            ? fixture.Buffer({fixture.UserData(8), fixture.UserData(9), fixture.UserData(10),
+                              fixture.UserData(11)}) : buffer;
+        const auto guard = variant == Variant::Bitmap8OtherGuard && part != 0u
+            ? fixture.Emit(ValueOpcode::LogicalAnd,
+                  {load_active, fixture.Emit(ValueOpcode::ULessThan32, {lane, Value(16u)})})
+            : load_active;
+        packed[part] = fixture.Emit(ValueOpcode::LoadBufferU32x4,
+            {source, lane,
+             Value(variant == Variant::BitmapByteOffset ? 4u : 0u),
+             Value(variant == Variant::BitmapScalarOffset ? 4u : 0u), guard},
+            fixture.AddMemory(read, 0x10 + part * 8u));
+      }
+      for (uint32_t word = 0; word < bitmap_words; ++word) {
+        const bool wrong_word = variant == Variant::BitmapWrongWord ||
+                                (variant == Variant::Bitmap8WrongUpperWord && word >= 4u);
         auto component = fixture.Emit(ValueOpcode::CompositeExtractU32x4,
-            {packed, Value(variant == Variant::BitmapWrongWord ? (word + 1u) % 4u : word)}, 0, entry);
+            {packed[word / 4u], Value((wrong_word ? word + 1u : word) % 4u)}, 0, entry);
         component = fixture.Emit(ValueOpcode::SelectU32,
             {load_active, component, fixture.Emit(ValueOpcode::UndefU32)});
         loaded_words[word] = component;
@@ -2435,7 +2452,7 @@ void TestDescendingImageRange() {
         remaining_words[word]->AddPhiOperand(header, Value(outer_words[word]));
       }
       auto selected = fixture.Emit(ValueOpcode::UndefU32, {}, 0, guard);
-      for (uint32_t word = 0; word < 4u; ++word) {
+      for (uint32_t word = 0; word < bitmap_words; ++word) {
         selected = fixture.Emit(ValueOpcode::SelectU32,
             {fixture.Emit(ValueOpcode::IEqual32, {Value(&induction), Value(word)}, 0, guard),
              Value(remaining_words[word]), selected}, 0, guard);
@@ -2498,32 +2515,39 @@ void TestDescendingImageRange() {
               {fixture.Emit(ValueOpcode::ShiftLeftLogical32, {Value(1u), bit})})});
       if (variant == Variant::BitmapAddsBit)
         next = fixture.Emit(ValueOpcode::BitwiseOr32, {next, Value(1u << 21u)});
-      for (uint32_t word = 0; word < 4u; ++word) {
+      for (uint32_t word = 0; word < bitmap_words; ++word) {
+        // Relative register writes index with M0 & 0xff; a narrower mask aliases upper words.
+        const auto index = bitmap_words == 4u ? Value(&induction)
+            : fixture.Emit(ValueOpcode::BitwiseAnd32,
+                  {Value(&induction), Value(variant == Variant::Bitmap8NarrowMask ? 3u : 255u)});
         const auto selected_word = fixture.Emit(ValueOpcode::LogicalAnd,
-            {active, fixture.Emit(ValueOpcode::IEqual32, {Value(&induction), Value(word)})});
+            {active, fixture.Emit(ValueOpcode::IEqual32, {index, Value(word)})});
         remaining_words[word]->AddPhiOperand(body, fixture.Emit(ValueOpcode::SelectU32,
             {selected_word, next, Value(remaining_words[word])}));
         auto carried = Value(remaining_words[word]);
-        if (variant == Variant::BitmapOuterClobber)
+        if (variant == Variant::BitmapOuterClobber || variant == Variant::Bitmap8OuterClobber)
           carried = fixture.Emit(ValueOpcode::SelectU32,
               {fixture.Emit(ValueOpcode::IEqual32,
                    {Value(&induction), Value(word + 1u)}, 0, latch),
-               loaded_words[(word + 1u) % 4u], carried}, 0, latch);
+               loaded_words[(word + 1u) % bitmap_words], carried}, 0, latch);
         outer_words[word]->AddPhiOperand(latch, carried);
       }
     }
     const auto step = fixture.Emit(ValueOpcode::IAdd32,
         {Value(&induction), Value(variant == Variant::WrongStep ? UINT32_MAX - 1u : UINT32_MAX)}, 0, latch);
-    induction.AddPhiOperand(entry, Value(variant == Variant::NegativeInitial ? UINT32_MAX : 3u));
+    induction.AddPhiOperand(entry,
+        Value(variant == Variant::NegativeInitial ? UINT32_MAX : bitmap_words - 1u));
     induction.AddPhiOperand(latch, step);
     fixture.PlanAndTrack();
     Check(ordinal.Instruction()->Arg(1).Resolve() == bit.Resolve(),
           "descending range retained impossible relative-register stores");
     const auto &indirect = fixture.program.descriptor_sources[
         fixture.program.info.images[0].source].indirect_descriptor;
-    Check(indirect && indirect->selector.has_value() == (variant == Variant::Bitmap) &&
-              (!indirect->selector || indirect->selector->bitset) &&
-              indirect->key_count == Value(128u) &&
+    const bool selects = variant == Variant::Bitmap || variant == Variant::Bitmap8;
+    Check(indirect && indirect->selector.has_value() == selects &&
+              (!indirect->selector || (indirect->selector->bitset &&
+                                       indirect->selector->stride == bitmap_words * 4u)) &&
+              indirect->key_count == Value(bitmap_words * 32u) &&
               !indirect->selector_first.IsEmpty(),
           "descending bitscan range lost its bound or accepted an unproved bitmap subset");
     return ExtractResourcePlan(fixture.program);
@@ -2563,10 +2587,14 @@ void TestDescendingImageRange() {
   }
 
   auto bitmap_plan = make_plan(Variant::Bitmap);
+  auto wide_plan = make_plan(Variant::Bitmap8);
   for (const auto variant : {Variant::BitmapAddsBit, Variant::BitmapWrongWord,
                              Variant::BitmapUnknownInitial, Variant::BitmapByteOffset,
                              Variant::BitmapScalarOffset, Variant::BitmapOuterClobber,
-                             Variant::BitmapWrongLoadMask})
+                             Variant::BitmapWrongLoadMask, Variant::Bitmap8MisplacedLoad,
+                             Variant::Bitmap8OtherBuffer, Variant::Bitmap8OuterClobber,
+                             Variant::Bitmap8WrongUpperWord, Variant::Bitmap8NarrowMask,
+                             Variant::Bitmap8OtherGuard})
     make_plan(variant);
   // Every descriptor is distinct, so retained keys are visible in the snapshot as well as
   // its lookup table. An unrelated table slot must never be read, even when it is malformed.
@@ -2581,23 +2609,25 @@ void TestDescendingImageRange() {
   const SrtRuntime bitmap_runtime {.user_data = bitmap_data, .userdata = &memory,
       .read_specialization_memory = ReadLinearTestMemory};
   memory.watched_address = bitmap_address;
+  auto *checked_plan = &bitmap_plan;
   const auto check_bitmap = [&](std::initializer_list<uint32_t> ranks, uint32_t count) {
     bitmap_data[2] = count;
     memory.watched_reads = memory.descriptor_reads = 0u;
     std::vector<uint32_t> keys;
     for (const auto rank : ranks) keys.push_back(count - rank);
     std::ranges::sort(keys);
-    Check(MaterializeResources(bitmap_plan, bitmap_runtime, snapshot, specialization) &&
+    const auto dwords = bitmap_data[6] * (bitmap_data[5] >> 18u);
+    Check(MaterializeResources(*checked_plan, bitmap_runtime, snapshot, specialization) &&
               memory.watched_reads == uint32_t(bitmap_data[6] != 0u) &&
               (bitmap_data[6] == 0u || memory.watched_dwords ==
-                  std::min(bitmap_data[6] * 4u, MaxIndirectDescriptorProbes)) &&
+                  std::min(dwords, MaxIndirectDescriptorProbes)) &&
               memory.descriptor_reads == keys.size() &&
               snapshot.images.size() == std::max<size_t>(keys.size(), 1u),
           "bitmap selector lost bounded reads or retained unreachable descriptors");
-    for (uint32_t first = 0; first < bitmap_data[6] * 4u; first += MaxIndirectDescriptorProbes)
+    for (uint32_t first = 0; first < dwords; first += MaxIndirectDescriptorProbes)
       Check(std::ranges::find(snapshot.specialization_reads,
                 std::pair{uint64_t{bitmap_address} + first * 4u,
-                    uint64_t{std::min(bitmap_data[6] * 4u - first, MaxIndirectDescriptorProbes)} * 4u}) !=
+                    uint64_t{std::min(dwords - first, MaxIndirectDescriptorProbes)} * 4u}) !=
                 snapshot.specialization_reads.end(),
             "bitmap chunk was omitted from same-dispatch write-alias protection");
     if (keys.empty()) {
@@ -2649,8 +2679,8 @@ void TestDescendingImageRange() {
   memory.fail_address = UINT64_MAX;
 
   const auto valid_data = bitmap_data;
-  for (const auto [word, value] : std::array<std::pair<uint32_t, uint32_t>, 6>{{
-           {4u, bitmap_address + 1u}, {5u, 8u << 16u}, {5u, (16u << 16u) | (1u << 31u)},
+  for (const auto [word, value] : std::array<std::pair<uint32_t, uint32_t>, 7>{{
+           {4u, bitmap_address + 1u}, {5u, 8u << 16u}, {5u, 32u << 16u}, {5u, (16u << 16u) | (1u << 31u)},
            {7u, 0x5204u | (1u << 23u)}, {7u, 0x5204u | (1u << 28u)},
            {7u, 0x5204u | (1u << 30u)}}}) {
     bitmap_data[word] = value;
@@ -2690,6 +2720,24 @@ void TestDescendingImageRange() {
               return read.first >= memory.fail_address;
             }),
         "a complete bitmap domain read redundant chunks or lost candidate keys");
+
+  // A 256-key light bitmap spans eight words and may select ranks in its
+  // upper half. The four-word path must not discard those ranks or
+  // silently read a different stride.
+  checked_plan = &wide_plan;
+  bitmap_data = valid_data;
+  bitmap_data[5] = 32u << 16u;
+  bitmap_data[6] = 2u;
+  std::fill_n(memory.words.begin() + bitmap_word, 16u, 0u);
+  memory.words[bitmap_word] = 1u | (1u << 2u);
+  memory.words[bitmap_word + 12u] = 1u << 1u;
+  memory.fail_address = UINT64_MAX;
+  check_bitmap({0u, 2u, 129u}, 2u);
+  for (const uint32_t stride : {16u, 64u}) {
+    bitmap_data[5] = stride << 16u;
+    Check(!MaterializeResources(wide_plan, bitmap_runtime, snapshot, specialization),
+          "an eight-word light bitmap accepted an incorrect record stride");
+  }
 }
 
 void TestPostTestedImageLoop() {
