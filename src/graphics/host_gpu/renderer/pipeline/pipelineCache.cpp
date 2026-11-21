@@ -159,7 +159,14 @@ bool DsCoherentSrtEnabled() {
 		const char* value = std::getenv("KYTY_DS_SRT_COHERENT");
 		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
-	if (forced) return true;
+	if (forced) {
+		static const bool reported = [] {
+			PipelineCacheLog("[DS_SRT_COHERENCE] enabled=1 source=launch early_title_safe=1");
+			return true;
+		}();
+		(void)reported;
+		return true;
+	}
 	std::string title;
 	return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
 	       title == "PPSA01341";
@@ -180,7 +187,7 @@ bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) 
 // single-owner native images. Null/unmapped table addresses remain zero, as
 // the PS5 scalar read returns zero on missing pages.
 bool ReadShaderScalarMemory(void*, uint64_t address, std::span<uint32_t> values) {
-	if (values.empty()) return false;
+	if (values.empty()) return true; // an empty scalar read is a successful no-op
 	const bool coherent = DsCoherentSrtEnabled() && GuestGpu::IsGpuThread();
 	const bool ok = coherent
 	    ? Libs::LibKernel::Memory::TryReadShaderResourceBacking(
