@@ -41,6 +41,7 @@
 
 #include <algorithm>
 #include <tuple>
+#include <nlohmann/json.hpp>
 #include <array>
 #include <atomic>
 #include <cinttypes>
@@ -988,6 +989,183 @@ GpuPipeline::Prefetch RenderExecutor::PrefetchDispatchDirect(
 	return GpuPipeline::Prefetch::Prepared;
 }
 
+static bool ReadDsGpuWords(RenderContext& context, vk::Buffer source, uint64_t offset,
+                           std::span<uint32_t> words) {
+	if (!source || words.empty()) return false;
+	auto& scheduler = context.GetCommandScheduler();
+	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	const auto size = words.size_bytes();
+	auto [mapped, dest] = download.Map(size, 16u, true);
+	if (!mapped) return false;
+	download.Commit();
+	scheduler.EndRendering(PassEnd::Buffer);
+	const auto command = scheduler.Current().Handle();
+	vk::MemoryBarrier before {};
+	before.srcAccessMask = vk::AccessFlagBits::eMemoryWrite;
+	before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+	command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+	                        vk::PipelineStageFlagBits::eTransfer, {}, 1, &before,
+	                        0, nullptr, 0, nullptr);
+	const vk::BufferCopy copy {offset, dest, size};
+	command.copyBuffer(source, download.Handle(), 1, &copy);
+	vk::MemoryBarrier after {};
+	after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+	after.dstAccessMask = vk::AccessFlagBits::eHostRead;
+	command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+	                        vk::PipelineStageFlagBits::eHost, {}, 1, &after,
+	                        0, nullptr, 0, nullptr);
+	scheduler.Finish();
+	download.Invalidate(dest, size);
+	std::memcpy(words.data(), mapped, size);
+	return true;
+}
+
+static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
+                                               const PreparedBindings& bindings,
+                                               uint32_t slot, size_t max_words) {
+	if (slot >= bindings.buffers.size() || slot >= bindings.buffer_sources.size()) return {};
+	const auto& native = bindings.buffers[slot];
+	const auto& source = bindings.buffer_sources[slot];
+	const auto& program = *bindings.runtime->program;
+	const auto offset_word = program.bindings.memory_offset_dword + slot / 4u;
+	if (offset_word >= bindings.shader_data.size() || !native.buffer ||
+	    native.range == VK_WHOLE_SIZE) return {};
+	const auto adjustment = (bindings.shader_data[offset_word] >> ((slot % 4u) * 8u)) & 255u;
+	if (adjustment >= native.range) return {};
+	const auto count = std::min<uint64_t>(max_words,
+	    std::min<uint64_t>(source.size, native.range - adjustment) / sizeof(uint32_t));
+	std::vector<uint32_t> words(count);
+	if (!ReadDsGpuWords(context, native.buffer, native.offset + adjustment, words)) words.clear();
+	return words;
+}
+
+static void SaveDsQueueFile(const std::string& name, const char* subdir, const void* data,
+                            size_t size) {
+	const auto root = Config::GetShaderDumpFolder();
+	if (root.filename() != "ds-lighting-dumps") return;
+	const auto folder = root / subdir;
+	std::error_code ec;
+	std::filesystem::create_directories(folder, ec);
+	if (!ec) {
+		std::ofstream file(folder / name, std::ios::binary | std::ios::trunc);
+		if (file.write(static_cast<const char*>(data), static_cast<std::streamsize>(size))) return;
+	}
+	Log::WriteToConsoleAndLog(fmt::format("[DS_QUEUE_CAPTURE_ERROR] file={} reason=write_failed\n", name));
+}
+
+void RenderExecutor::CaptureDsLightTiles(const PreparedBindings& bindings) {
+	using namespace DemonsQueueProbe;
+	if (!DsTraceEnabled() || bindings.runtime->program->shader_hash != TileProducer) return;
+	const auto frame = m_context.GetGpu().GetFrameNum();
+	static DemonsRollingProbe::FrameGate gate;
+	if (!gate.Due(frame, 240)) return;
+	m_ds_tile_frame = frame;
+	std::vector<uint32_t> offsets, tiles;
+	for (const auto& resource : bindings.runtime->program->info.buffers) {
+		const auto slot = resource.descriptor_index;
+		if (!resource.written || slot >= bindings.buffer_sources.size()) continue;
+		const auto addr = bindings.buffer_sources[slot].address;
+		if (addr == PrefixAddress) offsets = ReadDsBoundWords(m_context, bindings, slot, 256);
+		if (addr == TilesAddress) tiles = ReadDsBoundWords(m_context, bindings, slot, 128 * 1024);
+	}
+	for (size_t i = 0; i < Queues.size(); ++i) {
+		const auto selected = SelectTiles(offsets, tiles, Queues[i]);
+		m_ds_light_tiles[i] = selected;
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_QUEUE_TILES] frame={} queue={} first={} end={} prefix_words={} list_words={} valid={} "
+		    "ids={},{},{},{},{}\n", frame, Queues[i], selected.first, selected.end,
+		    offsets.size(), tiles.size(), selected.valid, selected.ids[0], selected.ids[1],
+		    selected.ids[2], selected.ids[3], selected.ids[4]));
+	}
+	const auto state = nlohmann::json {
+	    {"frame", frame}, {"prefix_words", offsets.size()}, {"tile_words", tiles.size()}
+	}.dump();
+	SaveDsQueueFile(fmt::format("queue_{:016x}_tiles.json", TileProducer),
+	                "queue-state", state.data(), state.size());
+	if (!offsets.empty()) SaveDsQueueFile(fmt::format("queue_{:016x}_prefix.bin", TileProducer),
+	    "queue-state", offsets.data(), offsets.size() * sizeof(uint32_t));
+	if (!tiles.empty()) SaveDsQueueFile(fmt::format("queue_{:016x}_tiles.bin", TileProducer),
+	    "queue-state", tiles.data(), tiles.size() * sizeof(uint32_t));
+}
+
+static void ProbeDsQueueImages(RenderContext& context, const PreparedBindings& bindings,
+                               const DemonsQueueProbe::Capture& capture, uint32_t queue,
+                               bool before) {
+	const auto& resources = bindings.runtime->program->info.images;
+	for (size_t i = 0; i < bindings.images.size() && i < resources.size(); ++i) {
+		const auto& binding = bindings.images[i];
+		const auto addr = binding.desc.info.data.address;
+		if (!binding.image_id || binding.placeholder) {
+			if (before) Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_QUEUE_IMAGE] frame={} queue={} index={} guest=0x{:x} missing=1\n",
+			    capture.frame, queue, i, addr));
+			continue;
+		}
+		if (!before && !resources[i].written) continue;
+		const auto& image = context.GetTextureCache().GetImage(binding.image_id);
+		const auto view = std::ranges::find(image.views, binding.image_view, &CachedImageView::view);
+		if (view == image.views.end()) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_QUEUE_IMAGE] frame={} queue={} phase={} index={} guest=0x{:x} missing_view=1\n",
+			    capture.frame, queue, before ? "before" : "after", i, addr));
+			continue;
+		}
+		const bool screen_extent = (image.backing.extent.width >> view->info.base_level) == capture.width &&
+		                           (image.backing.extent.height >> view->info.base_level) == capture.height;
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_QUEUE_IMAGE] frame={} queue={} phase={} index={} guest=0x{:x} owner=0x{:x} "
+		    "format={} mip={} layer={} aspect=0x{:x} written={} probe={}\n",
+		    capture.frame, queue, before ? "before" : "after", i, addr, image.info.data.address,
+		    static_cast<uint32_t>(image.backing.format), view->info.base_level, view->info.base_layer,
+		    static_cast<uint32_t>(view->info.aspect), resources[i].written, screen_extent));
+		if (screen_extent)
+			ProbeDsComputeImage(context, binding.image_id, capture.shader, true, &view->info,
+			                    &capture.pixels);
+	}
+}
+
+static void SaveDsQueueBindings(RenderContext& context, const PreparedBindings& bindings,
+                                const DemonsQueueProbe::Capture& capture, uint32_t queue) {
+	const auto& snapshot = *bindings.runtime->resources;
+	const auto descriptors = [](const auto& items) {
+		auto array = nlohmann::json::array();
+		for (const auto& item : items) {
+			array.push_back(std::vector<uint32_t>(item.dwords.begin(),
+			    item.dwords.begin() + std::min<size_t>(item.dwords.size(), item.dword_count)));
+		}
+		return array;
+	};
+	const auto prefix = fmt::format("queue_{:016x}_", capture.shader);
+	nlohmann::json state {
+	    {"frame", capture.frame}, {"queue", queue}, {"width", capture.width}, {"height", capture.height},
+	    {"pixels", capture.pixels}, {"guest_buffers", descriptors(snapshot.buffers)},
+	    {"guest_images", descriptors(snapshot.images)}, {"guest_samplers", descriptors(snapshot.samplers)},
+	    {"flattened_srt", snapshot.flattened_srt}, {"user_data", snapshot.user_data},
+	    {"shader_data", bindings.shader_data}
+	};
+	auto& captured = state["bound_buffers"] = nlohmann::json::array();
+	for (const auto& resource : bindings.runtime->program->info.buffers) {
+		const auto slot = resource.descriptor_index;
+		if (slot >= bindings.buffer_sources.size()) continue;
+		const auto& source = bindings.buffer_sources[slot];
+		const auto name = fmt::format("{}slot{}.bin", prefix, slot);
+		// Screen-size lists are exported at the producer. For other resources preserve
+		// small constants and headers, with explicit byte counts for truncated buffers.
+		std::vector<uint32_t> words;
+		if (!resource.written && source.address != DemonsQueueProbe::PrefixAddress &&
+		    source.address != DemonsQueueProbe::TilesAddress) {
+			words = ReadDsBoundWords(context, bindings, slot, 4096);
+			if (!words.empty()) SaveDsQueueFile(name, "queue-state", words.data(),
+			                                    words.size() * sizeof(uint32_t));
+		}
+		captured.push_back({{"slot", slot}, {"source", resource.source}, {"address", source.address},
+		                    {"bytes", source.size}, {"captured_bytes", words.size() * sizeof(uint32_t)},
+		                    {"file", words.empty() ? std::string {} : name}, {"written", resource.written}});
+	}
+	const auto json = state.dump();
+	SaveDsQueueFile(prefix + "bindings.json", "queue-state", json.data(), json.size());
+}
+
 void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
                                     uint32_t thread_group_x, uint32_t thread_group_y,
                                     uint32_t thread_group_z, uint32_t mode, bool async_compute) {
@@ -1231,6 +1409,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
+	CaptureDsLightTiles(bindings);
 	ProbeDsLightingBuffers(m_context, bindings);
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
@@ -1500,6 +1679,58 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	BindSharedMemory(m_context, input_info, bindings, args_addr);
 	RebindImages(bindings);
+	DemonsQueueProbe::Capture* queue_capture = nullptr;
+	size_t captured_queue_index = 0;
+	const auto frame = m_context.GetGpu().GetFrameNum();
+	if (m_ds_tile_frame == frame && ds_light_queue_writer.frame == frame) {
+		using namespace DemonsQueueProbe;
+		for (size_t i = 0; i < Queues.size(); ++i) {
+			const auto queue = Queues[i];
+			if (args_addr != ds_light_queue_writer.address + queue * sizeof(vk::DispatchIndirectCommand) ||
+			    program.shader_hash != Shaders[i] || m_ds_queue_captures[i].frame == frame) continue;
+			const auto hdr = std::ranges::find_if(bindings.images, [](const auto& binding) {
+				return binding.image_id && !binding.placeholder &&
+				       binding.desc.info.data.address == HdrAddress &&
+				       binding.desc.type == TextureCache::BindingType::Storage;
+			});
+			if (hdr == bindings.images.end()) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_QUEUE_CAPTURE_ERROR] frame={} queue={} reason=hdr_unbound\n", frame, queue));
+				break;
+			}
+			const auto& image = m_context.GetTextureCache().GetImage(hdr->image_id);
+			const auto view = std::ranges::find(image.views, hdr->image_view, &CachedImageView::view);
+			if (view == image.views.end()) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_QUEUE_CAPTURE_ERROR] frame={} queue={} reason=hdr_view_missing\n", frame, queue));
+				break;
+			}
+			const auto mip = view->info.base_level;
+			Capture capture {frame, program.shader_hash, std::max(image.backing.extent.width >> mip, 1u),
+			                 std::max(image.backing.extent.height >> mip, 1u)};
+			const bool covered = TilePixels(m_ds_light_tiles[i], capture.width, capture.height,
+			                               capture.pixels);
+			if (!covered) {
+				// Still record arguments and bindings for empty or invalid lists.
+				const auto w = capture.width;
+				const auto h = capture.height;
+				capture.pixels = {{{w/2, h/2}, {w/4, h/4}, {w-w/4, h/4},
+				                   {w/4, h-h/4}, {w-w/4, h-h/4}}};
+			}
+			m_ds_queue_captures[i] = capture;
+			queue_capture = &m_ds_queue_captures[i];
+			captured_queue_index = i;
+			const auto& p = capture.pixels;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_QUEUE_CAPTURE] frame={} queue={} shader=0x{:016x} covered={} coords={},{}/{},{}/{},{}/{},{}/{},{}\n",
+			    frame, queue, capture.shader, covered, p[0].first, p[0].second, p[1].first, p[1].second,
+			    p[2].first, p[2].second, p[3].first, p[3].second, p[4].first, p[4].second));
+			RebindBuffers(bindings);
+			SaveDsQueueBindings(m_context, bindings, capture, queue);
+			ProbeDsQueueImages(m_context, bindings, capture, queue, true);
+			break;
+		}
+	}
 	// Acquiring arguments can merge cache buffers; finalize shader bindings afterward.
 	const auto args_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	auto [args_buffer, args_offset] = m_context.GetBufferCache().ObtainBuffer(
@@ -1576,6 +1807,20 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	RememberDsBufferProducers(m_context, bindings, true);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
+	if (queue_capture) {
+		const auto captured_queue = DemonsQueueProbe::Queues[captured_queue_index];
+		const auto& tiles = m_ds_light_tiles[captured_queue_index];
+		std::array<uint32_t, 3> groups {args.x, args.y, args.z};
+		const bool read = split_on_cpu ||
+		    ReadDsGpuWords(m_context, indirect_buffer, indirect_offset, groups);
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_QUEUE_EXECUTED] frame={} queue={} shader=0x{:016x} source={} valid={} "
+		    "x={} y={} z={} tile_count={}\n", frame, captured_queue, program.shader_hash,
+		    split_on_cpu ? "cpu_split" : "vulkan_indirect", read, groups[0], groups[1], groups[2],
+		    tiles.end - tiles.first));
+		ProbeDsQueueImages(m_context, bindings, *queue_capture, captured_queue, false);
+	}
+	CaptureDsLightTiles(bindings);
 	ProbeDsLightingBuffers(m_context, bindings);
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
@@ -1641,6 +1886,7 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 	buffer.MarkGpu("cs-retrace", input_info.stage.program->shader_hash);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
+	CaptureDsLightTiles(bindings);
 	ProbeDsLightingBuffers(m_context, bindings);
 	if (input_info.stage.program->info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(input_info.stage.program->shader_hash);

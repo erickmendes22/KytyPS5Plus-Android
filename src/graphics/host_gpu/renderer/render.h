@@ -1,6 +1,7 @@
 #ifndef EMULATOR_INCLUDE_EMULATOR_GRAPHICS_GRAPHICSRENDER_H_
 #define EMULATOR_INCLUDE_EMULATOR_GRAPHICS_GRAPHICSRENDER_H_
 
+#include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
@@ -50,7 +51,7 @@ class GpuTimer;
 struct GpuPassInfo;
 struct RenderExecutorTestAccess;
 
-using DsProbePixels = std::array<std::pair<uint32_t, uint32_t>, 5>;
+using DsProbePixels = DemonsQueueProbe::Pixels;
 
 // PPSA01341: bounded diagnostic of GPU-written compute storage textures.
 void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash,
@@ -438,6 +439,11 @@ private:
 	bool                                  m_pass_scaled = false;
 	// --gpu-indirect argument fix-up pass, created on the first GPU indirect draw.
 	std::unique_ptr<IndirectDrawFixup>    m_indirect_fixup;
+
+	std::array<DemonsQueueProbe::Capture, DemonsQueueProbe::Queues.size()> m_ds_queue_captures {};
+	void CaptureDsLightTiles(const PreparedBindings& bindings);
+	int32_t m_ds_tile_frame = -1;
+	std::array<DemonsQueueProbe::Tiles, DemonsQueueProbe::Queues.size()> m_ds_light_tiles {};
 
 	friend class CommandProcessor;
 	friend struct RenderExecutorTestAccess;

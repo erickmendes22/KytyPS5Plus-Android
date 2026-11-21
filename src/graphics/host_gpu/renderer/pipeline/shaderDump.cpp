@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
 
 #include "common/emulatorConfig.h"
@@ -53,7 +54,9 @@ bool DsLightingShader(uint64_t hash) {
 	    0x23056085c1120461ull, 0xfabe0bcb275a3005ull,
 	    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull
 	}};
-	return std::find(watched.begin(), watched.end(), hash) != watched.end();
+	return hash == DemonsQueueProbe::TileProducer ||
+	       std::ranges::find(DemonsQueueProbe::Shaders, hash) != DemonsQueueProbe::Shaders.end() ||
+	       std::find(watched.begin(), watched.end(), hash) != watched.end();
 }
 
 bool WriteFile(const std::filesystem::path& path, const void* data, size_t size) {

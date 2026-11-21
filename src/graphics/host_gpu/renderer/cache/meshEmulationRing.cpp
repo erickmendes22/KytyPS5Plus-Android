@@ -24,6 +24,7 @@ namespace {
 constexpr vk::BufferUsageFlags RingUsage = vk::BufferUsageFlagBits::eStorageBuffer |
                                            vk::BufferUsageFlagBits::eIndexBuffer |
                                            vk::BufferUsageFlagBits::eIndirectBuffer |
+                                           vk::BufferUsageFlagBits::eTransferSrc |
                                            vk::BufferUsageFlagBits::eShaderDeviceAddress;
 
 std::unique_ptr<Buffer> CreateRingBuffer(GraphicContext& graphics, CommandScheduler& scheduler,

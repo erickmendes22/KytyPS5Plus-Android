@@ -222,20 +222,20 @@ object Diagnostics {
     }
 
     /**
-     * Demon’s Souls GPU light capture: include only the eight identified native
-     * compute programs and their pipeline layouts. The GPU light-list contents,
-     * counters and hashes are already in logs/session.log. No external capture.
+     * Demon’s Souls GPU light capture. Export the queue shaders, pipeline layouts,
+     * resolved inputs and GPU light lists alongside the frame-correlated session log.
      */
     private fun exportDsLightingCapture(context: Context, zip: ZipOutputStream): Int {
         val dump = File(context.filesDir, "ds-lighting-dumps")
         if (!dump.isDirectory) return 0
-        val watched = setOf(
+        val queueShaders = setOf("f0c482b0b355e9de", "e3daeb1e7426761b", "32c7da582db1795a")
+        val watched = queueShaders + setOf(
             "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
             "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",
             "e75589aa0bb3ae52", "93b0be7f1a0293d1"
         )
         return try {
-            val candidates = listOf("spv", "pipelines", "buffers").flatMap { subdir ->
+            val candidates = listOf("queue-state", "spv", "pipelines", "buffers").flatMap { subdir ->
                 File(dump, subdir).listFiles().orEmpty()
                     .filter { file ->
                         file.isFile && file.length() > 0L &&
@@ -244,18 +244,24 @@ object Diagnostics {
                                 "spv" -> file.extension == "spv"
                                 "pipelines" -> file.extension == "json"
                                 "buffers" -> file.extension == "bin"
+                                "queue-state" -> file.extension == "json" || file.extension == "bin"
                                 else -> false
                             })
                     }
-                    .sortedByDescending { it.lastModified() }
-                    .take(24)
+                    .sortedWith(compareByDescending<File> { file ->
+                        queueShaders.any { hash -> file.name.contains("_${hash}_") }
+                    }.thenByDescending { it.lastModified() })
+                    .take(if (subdir == "queue-state") 72 else 24)
                     .map { subdir to it }
             }
             var count = 0
             var budget = 40L * 1024L * 1024L
             val info = "PPSA01341 lighting shaders and GPU buffer capture. " +
                 "The session.log entries [DS_GPU_BUFFER_CAPTURE] contain native Vulkan " +
-                "buffer summaries; buffers/*.bin contain the actual bytes.\\n"
+                "buffer summaries; buffers/*.bin contain the actual bytes. " +
+                "Join DS_QUEUE_TILES, DS_QUEUE_CAPTURE, DS_QUEUE_IMAGE, DS_QUEUE_EXECUTED and " +
+                "DS_QUEUE_DRAW by frame and queue. queue-state contains the most recent " +
+                "binding snapshots and GPU tile lists.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
             zip.closeEntry()
