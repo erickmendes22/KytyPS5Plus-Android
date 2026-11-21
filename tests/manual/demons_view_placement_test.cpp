@@ -61,6 +61,11 @@ static_assert(!KeepDistinctDepth(a, depth_b, true)); // color vs depth
 constexpr Surface raw_depth_a {a.address, a.size, a.width, a.height, a.depth,
                                1, 1, 100, a.type, a.samples, a.tile, false};
 static_assert(KeepDistinctSampledDepth(raw_depth_a, depth_b));
+// Some shaders bind the same depth component as native D32_SFLOAT (126)
+// rather than R32_SFLOAT (100), while the attachment stays D32/S8 (130).
+constexpr Surface sampled_d32_a {a.address, a.size, a.width, a.height, a.depth,
+                                 1, 1, 126, a.type, a.samples, a.tile, true};
+static_assert(KeepDistinctSampledDepth(sampled_d32_a, depth_b));
 static_assert(!KeepDistinctSampledDepth(
     Surface{depth_b.address, a.size, a.width, a.height, a.depth,
             1, 1, 100, a.type, a.samples, a.tile, false}, depth_b));
