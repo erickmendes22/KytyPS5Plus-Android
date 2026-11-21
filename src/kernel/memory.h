@@ -119,6 +119,11 @@ bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size)
 // True when [vaddr, vaddr + size) lies in committed guest mappings.
 [[nodiscard]] bool     IsMappedRange(uint64_t vaddr, uint64_t size);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
+// GPU-command-thread resource-table read for titles whose scalar descriptors can be
+// produced by prior GPU image or buffer passes. Reconciles an unambiguous native
+// image owner before reading dirty buffer bytes; never guesses an image alias.
+bool                   TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
+                                                    bool image_sync);
 // Like TryReadBufferBacking, but fails instead of reading back GPU-written bytes (no GPU wait).
 bool                   TryReadCleanBufferBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
