@@ -1258,7 +1258,20 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		const bool distinct_depth = binding == BindingType::Texture &&
 		    requested.IsDepth() && owner->info.IsDepth() &&
 		    ViewPlacementPolicy::KeepDistinctDepth(req, old, true);
-		if (distinct_color || distinct_depth) return {merged_id};
+		// A native R32 sampled depth view is not marked IsDepth(). Prior
+		// KeepDistinctDepth consequently missed the PPSA01341 first depth
+		// input: 0x2831e0000 became the separate target 0x282b60000
+		// (and 0x285b80000 became 0x284c80000). Require both a supported
+		// depth/raw format pair and exact element-size compatibility; never
+		// redirect a distinct full surface to its neighbour's D32/S8 owner.
+		const bool distinct_sampled_depth = binding == BindingType::Texture &&
+		    !requested.IsDepth() && owner->info.IsDepth() &&
+		    !requested.HasStencil() && !requested.HasMetadata() &&
+		    requested.bytes_per_block == owner->info.bytes_per_block &&
+		    IsSupportedSampledDepthFormat(owner->info.pixel_format, requested.pixel_format) &&
+		    ViewPlacementPolicy::KeepDistinctSampledDepth(req, old);
+		if (distinct_color || distinct_depth || distinct_sampled_depth)
+		    return {merged_id};
 	}
 	if (BcAlias::Matches(requested, owner->info) && !owner->IsCpuDirty()) {
 		BcAlias::Resolve(*this, cached_id, merged_id);
@@ -2136,7 +2149,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 				// candidate after the initial KeepDistinctDepth check; catch
 				// the alias here, before the VkImage view is materialized.
 				const auto* owner = m_slot_images.try_get(result);
-				if (desc.type == BindingType::Texture && desc.info.IsDepth() &&
+				if (desc.type == BindingType::Texture &&
 				    owner != nullptr && owner->registered && !owner->depth_id &&
 				    owner->info.IsDepth()) {
 					const auto surface = [](const ImageInfo& i) {
@@ -2148,11 +2161,18 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 						    .format = static_cast<uint32_t>(i.pixel_format),
 						    .type = static_cast<uint32_t>(i.type),
 						    .samples = i.samples, .tile = static_cast<uint32_t>(i.tile_mode),
-						    .depth_or_stencil = true,
+						    .depth_or_stencil = i.IsDepth() || i.HasStencil(),
 						};
 					};
-					if (ViewPlacementPolicy::KeepDistinctDepth(
-					        surface(desc.info), surface(owner->info), true)) {
+					const bool wrong_depth_owner = desc.info.IsDepth()
+					    ? ViewPlacementPolicy::KeepDistinctDepth(
+					          surface(desc.info), surface(owner->info), true)
+					    : !desc.info.HasStencil() && !desc.info.HasMetadata() &&
+					      desc.info.bytes_per_block == owner->info.bytes_per_block &&
+					      IsSupportedSampledDepthFormat(owner->info.pixel_format, desc.info.pixel_format) &&
+					      ViewPlacementPolicy::KeepDistinctSampledDepth(
+					          surface(desc.info), surface(owner->info));
+					if (wrong_depth_owner) {
 						result = {};
 						view_mip = view_layer = -1;
 					}
