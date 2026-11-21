@@ -157,7 +157,7 @@ void PipelineCacheLog(fmt::format_string<Args...> format, Args&&... args) {
 bool DsCoherentSrtEnabled() {
 	static const bool forced = [] {
 		const char* value = std::getenv("KYTY_DS_SRT_COHERENT");
-		return value != nullptr && value[0] == '1' && value[1] == '\\0';
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
 	if (forced) return true;
 	std::string title;
