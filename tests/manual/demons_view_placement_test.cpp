@@ -20,6 +20,7 @@ static_assert(!Fits(INT32_MAX, INT32_MAX, UINT32_MAX, UINT32_MAX,
 using Libs::Graphics::ViewPlacementPolicy::Surface;
 using Libs::Graphics::ViewPlacementPolicy::KeepDistinct;
 using Libs::Graphics::ViewPlacementPolicy::KeepDistinctDepth;
+using Libs::Graphics::ViewPlacementPolicy::KeepDistinctSampledDepth;
 
 // Log frame 280: distinct 1600x900 G-buffer source T#s, incorrectly
 // resolved to the same VkImage at 0x282b60000 for six compute shaders.
@@ -53,6 +54,24 @@ static_assert(KeepDistinctDepth(depth_a, padded_depth_b, true));
 static_assert(!KeepDistinctDepth(depth_a, depth_b, false)); // S8 association
 static_assert(!KeepDistinctDepth(depth_a, depth_a, true));
 static_assert(!KeepDistinctDepth(a, depth_b, true)); // color vs depth
+
+// Gameplay: the first sampled D32 component is encoded as a single R32
+// view, rather than a VkFormat depth attachment. Both full surfaces have
+// different guest bases but the older overlap path reused depth_b.
+constexpr Surface raw_depth_a {a.address, a.size, a.width, a.height, a.depth,
+                               1, 1, 100, a.type, a.samples, a.tile, false};
+static_assert(KeepDistinctSampledDepth(raw_depth_a, depth_b));
+static_assert(!KeepDistinctSampledDepth(
+    Surface{depth_b.address, a.size, a.width, a.height, a.depth,
+            1, 1, 100, a.type, a.samples, a.tile, false}, depth_b));
+static_assert(!KeepDistinctSampledDepth(
+    Surface{a.address, a.size, a.width + 1u, a.height, a.depth,
+            1, 1, 100, a.type, a.samples, a.tile, false}, depth_b));
+static_assert(!KeepDistinctSampledDepth(
+    Surface{a.address, a.size, a.width, a.height, a.depth,
+            1, 2, 100, a.type, a.samples, a.tile, false}, depth_b));
+static_assert(!KeepDistinctSampledDepth(raw_depth_a, b));
+
 static_assert(!KeepDistinctDepth(depth_a,
     Surface{b.address, b.size, b.width, b.height, 1, 1, 2,
             b.format, b.type, b.samples, b.tile, true}, true));
