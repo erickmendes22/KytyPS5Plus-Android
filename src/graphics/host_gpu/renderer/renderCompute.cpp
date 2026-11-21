@@ -54,6 +54,88 @@
 #include <vector>
 
 namespace Libs::Graphics {
+namespace {
+
+struct DsBufferProducer {
+	uint64_t address = 0;
+	uint64_t size = 0;
+	uint64_t shader = 0;
+	int32_t frame = -1;
+	bool indirect = false;
+	bool fill = false;
+};
+
+// Accessed under the renderer context lock. Only the lighting trace records compute writes.
+std::array<DsBufferProducer, 1024> ds_buffer_producers {};
+size_t ds_next_buffer_producer = 0;
+
+void RememberDsBufferProducer(DsBufferProducer producer) {
+	ds_buffer_producers[ds_next_buffer_producer] = producer;
+	ds_next_buffer_producer = (ds_next_buffer_producer + 1) % ds_buffer_producers.size();
+}
+
+bool DsTraceEnabled() {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_DS_FRAME_TRACE");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	return enabled;
+}
+
+void RememberDsBufferProducers(RenderContext& context, const PreparedBindings& bindings,
+                               bool indirect) {
+	if (!DsTraceEnabled()) return;
+	const auto& program = *bindings.runtime->program;
+	const auto frame = context.GetGpu().GetFrameNum();
+	for (size_t i = 0; i < program.info.buffers.size(); ++i) {
+		const auto& resource = program.info.buffers[i];
+		if (!resource.written || resource.descriptor_index >= bindings.buffer_sources.size()) continue;
+		const auto& range = bindings.buffer_sources[resource.descriptor_index];
+		if (range.address == 0 || range.size == 0) continue;
+		const auto native = DecodeNativeDescriptor<ShaderBufferResource>(
+		    bindings.runtime->resources->buffers[i]);
+		const uint64_t slack = resource.written_slack;
+		uint64_t address = range.address;
+		uint64_t size = range.size;
+		if (!resource.written_dynamic && resource.written_begin < resource.written_end &&
+		    !native.AddTid() && !native.SwizzleEnabled() && resource.written_begin >= slack &&
+		    uint64_t {resource.written_end} + slack <= range.size) {
+			address += resource.written_begin - slack;
+			size = uint64_t {resource.written_end} - resource.written_begin + 2 * slack;
+		}
+		RememberDsBufferProducer({address, size, program.shader_hash, frame, indirect});
+	}
+}
+
+void LogDsBufferProducer(int32_t frame, uint64_t shader, uint64_t args_addr, const char* role,
+                         uint32_t index, uint64_t address, uint64_t size) {
+	if (address == 0 || size == 0) return;
+	const DsBufferProducer* candidate = nullptr;
+	for (size_t i = 0; i < ds_buffer_producers.size(); ++i) {
+		const auto pos = (ds_next_buffer_producer + ds_buffer_producers.size() - 1 - i) %
+		                 ds_buffer_producers.size();
+		const auto& writer = ds_buffer_producers[pos];
+		if (writer.size == 0 || writer.frame > frame || writer.frame < frame - 1) continue;
+		const bool overlap = address >= writer.address ? address - writer.address < writer.size
+		                                              : writer.address - address < size;
+		if (overlap) {
+			candidate = &writer;
+			break;
+		}
+	}
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "[DS_BUFFER_PRODUCER] frame={} shader=0x{:016x} args=0x{:x} role={} index={} "
+	    "address=0x{:x} bytes={} candidate={} producer_shader=0x{:016x} "
+	    "producer_frame={} producer_base=0x{:x} producer_bytes={} producer_indirect={}\n",
+	    frame, shader, args_addr, role, index, address, size,
+	    candidate ? (candidate->fill ? "buffer_fill" : "bound_write") : "unobserved",
+	    candidate ? candidate->shader : 0,
+	    candidate ? candidate->frame : -1, candidate ? candidate->address : 0,
+	    candidate ? candidate->size : 0, candidate && candidate->indirect ? 1 : 0));
+}
+
+} // namespace
+
 static bool FillSourcesDisjoint(std::span<const ShaderRecompiler::IR::DescriptorValue> sources,
                                  GuestRange destination, uint32_t output_buffer = UINT32_MAX) {
 	for (uint32_t i = 0; i < sources.size(); ++i) {
@@ -211,6 +293,10 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 			return false;
 		command.GetContext().GetBufferCache().FillBuffer(descriptor.Base48(), size, packed_clear,
 		                                                 false);
+		if (DsTraceEnabled()) {
+			RememberDsBufferProducer({descriptor.Base48(), size, input.stage.program->shader_hash,
+			                         command.GetContext().GetGpu().GetFrameNum(), false, true});
+		}
 		return true;
 	}
 	static std::atomic<uint32_t> logged_clears {0};
@@ -269,7 +355,7 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 			size *= count;
 		}
 	}
-	bindings.shared_memory = {storage.Handle(), 0, size};
+	bindings.shared_memory = vk::DescriptorBufferInfo {storage.Handle(), 0, size};
 }
 
 static DispatchGroups ComputeGroupLimits(const GraphicContext& graphics) {
@@ -378,8 +464,9 @@ static void ProbeDsComputeWrites(RenderContext& context,
 		value = std::getenv("KYTY_DS_FRAME_TRACE");
 		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
-	if (!enabled || !input.stage.program) return;
+	if ((!enabled && !DsTraceEnabled()) || !input.stage.program) return;
 	const auto& images = input.stage.program->info.images;
+	bool representative_probed = false;
 	for (uint32_t i = 0; i < images.size() && i < bindings.images.size(); ++i) {
 		if (!images[i].written ||
 		    images[i].resource_class != ShaderRecompiler::IR::ImageResourceClass::Storage ||
@@ -387,7 +474,10 @@ static void ProbeDsComputeWrites(RenderContext& context,
 			continue;
 		const uint64_t hash = input.stage.program->shader_hash;
 		const ImageId target_id = bindings.images[i].image_id;
-		ProbeDsComputeImage(context, target_id, hash);
+		if (enabled && !representative_probed) {
+			ProbeDsComputeImage(context, target_id, hash);
+			representative_probed = true;
+		}
 		// The 07:07 diagnostic identified six repeatedly black 2560x1440
 		// RGBA16F writers at guest address 0x281300000. Compare their
 		// *actual sampled inputs* against their zero outputs, once per
@@ -404,15 +494,13 @@ static void ProbeDsComputeWrites(RenderContext& context,
 		const auto match = std::find(target_hashes.begin(), target_hashes.end(), hash);
 		const auto ordinal = static_cast<size_t>(match - target_hashes.begin());
 		const int32_t frame = context.GetGpu().GetFrameNum();
-		// In targeted mode, only two representative writers incur image
-		// readbacks; the other four retain lightweight descriptor tracing.
-		const bool gameplay_writer = hash == 0xe75589aa0bb3ae52ull ||
-		                             hash == 0xc2e01fbe98f5ebabull;
+		// The 08:27 gameplay trace shows nonzero dispatch groups for this writer.
+		const bool gameplay_writer = hash == 0x3dfe402653925fbfull;
 		static const bool targeted = [] {
 			const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
 			return v != nullptr && v[0] == '1' && v[1] == '\0';
 		}();
-		const bool probe_this_capture = !targeted || gameplay_writer;
+		const bool probe_this_capture = enabled && (!targeted || gameplay_writer);
 		if (match != target_hashes.end() &&
 		    context.GetTextureCache().GetImage(target_id).info.data.address == 0x281300000ull &&
 		    sampled_writers[ordinal].Due(frame, 240)) {
@@ -435,9 +523,11 @@ static void ProbeDsComputeWrites(RenderContext& context,
 			    input.stage.program->info.float64 ? 1 : 0,
 			    0x281300000ull));
 			if (probe_this_capture) {
-				ProbeDsComputeImage(context, target_id, hash, true,
-				                    bindings.images[i].desc.view_info.base_layer,
-				                    bindings.images[i].desc.view_info.base_level);
+				const auto& target = context.GetTextureCache().GetImage(target_id);
+				const auto view = std::ranges::find(target.views, bindings.images[i].image_view,
+				                                    &CachedImageView::view);
+				if (view != target.views.end())
+					ProbeDsComputeImage(context, target_id, hash, true, &view->info);
 			}
 			// The previous diagnostic stopped after four inputs. For all six
 			// affected shaders those were mostly the same black 4x4 image.
@@ -445,7 +535,7 @@ static void ProbeDsComputeWrites(RenderContext& context,
 			// synchronous GPU probes only on distinct, non-trivial inputs.
 			// Never substitute a texture or alter descriptor bindings here.
 			uint32_t inspected = 0, probed = 0, missing = 0, tiny = 0;
-			std::array<uint64_t, 32> seen_addresses {};
+			std::array<std::tuple<ImageId, vk::ImageAspectFlags, uint32_t, uint32_t>, 32> seen_views {};
 			uint32_t seen_count = 0;
 			for (uint32_t other = 0; other < images.size() &&
 			     other < bindings.images.size(); ++other) {
@@ -472,12 +562,17 @@ static void ProbeDsComputeWrites(RenderContext& context,
 				}
 				const auto& texture = context.GetTextureCache().GetImage(source.image_id);
 				const uint64_t addr = texture.info.data.address;
-				const bool repeated =
-				    std::find(seen_addresses.begin(),
-				              seen_addresses.begin() + seen_count, addr) !=
-				    seen_addresses.begin() + seen_count;
-				if (!repeated && seen_count < seen_addresses.size())
-					seen_addresses[seen_count++] = addr;
+				const auto view = std::ranges::find(texture.views, source.image_view,
+				                                    &CachedImageView::view);
+				const bool has_view = view != texture.views.end();
+				const auto& view_info = has_view ? view->info : source.desc.view_info;
+				const auto aspect = has_view ? view_info.aspect : vk::ImageAspectFlags {};
+				const auto key = std::tuple {source.image_id, aspect,
+				                             view_info.base_layer, view_info.base_level};
+				const auto end = seen_views.begin() + seen_count;
+				const bool repeated = std::find(seen_views.begin(), end, key) != end;
+				if (!repeated && seen_count < seen_views.size())
+					seen_views[seen_count++] = key;
 				const bool is_tiny =
 				    texture.backing.extent.width <= 4u &&
 				    texture.backing.extent.height <= 4u;
@@ -485,24 +580,22 @@ static void ProbeDsComputeWrites(RenderContext& context,
 				Log::WriteToConsoleAndLog(fmt::format(
 				    "[DS_TARGET_INPUT] shader=0x{:016x} index={} class={} "
 				    "raw=0x{:x} raw_extent={}x{} guest=0x{:x} format={} "
-				    "extent={}x{} owner_layers={} view_layer={} view_mip={} "
+				    "extent={}x{} owner_layers={} view_layer={} view_mip={} view_aspect=0x{:x} "
 				    "repeated={} tiny={} feedback={} gpu_modified={} cpu_dirty={}\n",
 				    hash, other, static_cast<uint32_t>(images[other].resource_class),
 				    raw_address, raw_width, raw_height, addr,
 				    static_cast<uint32_t>(texture.backing.format),
 				    texture.backing.extent.width, texture.backing.extent.height,
-				    texture.backing.layers, source.desc.view_info.base_layer,
-				    source.desc.view_info.base_level,
+				    texture.backing.layers, view_info.base_layer, view_info.base_level,
+				    static_cast<uint32_t>(aspect),
 				    repeated ? 1 : 0, is_tiny ? 1 : 0,
 				    source.image_id == target_id ? 1 : 0,
 				    texture.IsGpuModified() ? 1 : 0, texture.IsCpuDirty() ? 1 : 0));
-				if (probe_this_capture && !repeated && !is_tiny &&
+				if (probe_this_capture && has_view && !repeated && !is_tiny &&
 				    texture.backing.extent.width >= 960u &&
 				    texture.backing.extent.height >= 540u &&
-				    source.image_id != target_id && probed < (targeted ? 2u : 6u)) {
-					ProbeDsComputeImage(context, source.image_id, hash, true,
-					                    source.desc.view_info.base_layer,
-					                    source.desc.view_info.base_level);
+				    source.image_id != target_id && probed < (targeted ? 3u : 6u)) {
+					ProbeDsComputeImage(context, source.image_id, hash, true, &view_info);
 					++probed;
 				}
 			}
@@ -529,8 +622,8 @@ static void ProbeDsComputeWrites(RenderContext& context,
 			    hash, inspected, probed, missing, tiny, input.stage.program->info.buffers.size(),
 			    input.stage.program->info.uses_dma ? 1 : 0,
 			    input.stage.program->has_address_writes ? 1 : 0));
+			return;
 		}
-		return; // one representative output per dispatch, every 256 samples
 	}
 }
 
@@ -910,6 +1003,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();
 	buffer.MarkGpu("cs", program.shader_hash);
+	RememberDsBufferProducers(m_context, bindings, false);
 
 	// The removed host fence also ordered read-only dispatches before later writers.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
@@ -1014,7 +1108,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	// original guest backing with the GPU-indirect path's read-only feedback.
 	// Unlike a synchronous GPU readback, this cannot modify counts or wait on
 	// a new fence. Only bounded samples are exported for init and gameplay.
-	if (ds_gpu_zero_indirect) {
+	if (ds_gpu_zero_indirect && DsTraceEnabled()) {
 		constexpr std::array<uint64_t, 6> watched_lighting {{
 		    0xc2e01fbe98f5ebabull, 0x23056085c1120461ull,
 		    0x3dfe402653925fbfull, 0xfabe0bcb275a3005ull,
@@ -1043,6 +1137,19 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 				    indirect_cache.IsRegionCpuModified(args_addr, sizeof(args)) ? 1 : 0,
 				    indirect_cache.HasPendingBackingPublication(args_addr, sizeof(args)) ? 1 : 0,
 				    backing_read ? 1 : 0, backing.x, backing.y, backing.z));
+				for (uint32_t axis = 0; axis < 3; ++axis) {
+					LogDsBufferProducer(frame, program.shader_hash, args_addr, "dispatch", axis,
+					                    args_addr + axis * sizeof(uint32_t), sizeof(uint32_t));
+				}
+				if (program.shader_hash == 0x3dfe402653925fbfull) {
+					for (const auto& resource: program.info.buffers) {
+						if (resource.written || resource.descriptor_index >= bindings.buffer_sources.size())
+							continue;
+						const auto& source = bindings.buffer_sources[resource.descriptor_index];
+						LogDsBufferProducer(frame, program.shader_hash, args_addr, "input",
+						                    resource.source, source.address, source.size);
+					}
+				}
 			}
 		}
 	}
@@ -1153,6 +1260,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
+	RememberDsBufferProducers(m_context, bindings, true);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
 	ResetBindings();

@@ -598,9 +598,6 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 	EXIT_NOT_IMPLEMENTED(wait_for_previous > 1);
 	EXIT_NOT_IMPLEMENTED(write_confirm > 1);
 	EXIT_NOT_IMPLEMENTED(block_engine > 1);
-	if (static_cast<uint32_t>(dst_address_or_offset) == 0x3022cu) {
-		return;
-	}
 	auto decode_gds = [](uint8_t selector, bool& is_gds) {
 		switch (selector) {
 			case 0:

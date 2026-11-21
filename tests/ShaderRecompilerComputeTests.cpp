@@ -3665,7 +3665,7 @@ public:
                 !resources.IsMapped(empty_unmap_base, empty_unmap_size),
             "unmap returned before an earlier guest-memory callback");
 
-    constexpr uintptr_t fault_base = 0x0000000200500000ull;
+    constexpr uintptr_t fault_base = 0x0000000200030000ull;
     constexpr uint64_t fault_size = 0x10000;
     int64_t fault_direct_offset = -1;
     Require("GpuCommandLane", "processor fault direct allocation",
@@ -3685,6 +3685,7 @@ public:
     resources.MapMemory(fault_base, fault_size);
 
     constexpr uint64_t immediate_dst = fault_base + 0x1000;
+    constexpr uint64_t dma_low_bits_dst = fault_base + 0x22c;
     constexpr uint64_t immediate_memory_dst = fault_base + 0x2000;
     constexpr uint64_t memory_src = fault_base + 0x4000;
     constexpr uint64_t memory_copy_dst = fault_base + 0x6000;
@@ -3706,7 +3707,7 @@ public:
     std::memcpy(reinterpret_cast<void *>(clean_cached_source),
                 clean_copy_words.data(), sizeof(clean_copy_words));
 
-    std::array<uint32_t, 56> dma_commands{};
+    std::array<uint32_t, 63> dma_commands{};
     size_t dma_cursor = 0;
     const auto append_dma = [&](uint8_t dst_sel, uint64_t dst, uint8_t src_sel,
                                 uint64_t src, uint32_t bytes,
@@ -3732,6 +3733,7 @@ public:
     append_dma(0, memory_dst, 1, gds_memory_offset, sizeof(source_words));
     append_dma(0, immediate_memory_dst, 2, immediate_value,
                sizeof(source_words));
+    append_dma(0, dma_low_bits_dst, 2, immediate_value, sizeof(uint32_t));
     append_dma(0, memory_copy_dst, 0, memory_src, sizeof(source_words));
     append_dma(3, l2_copy_dst, 3, memory_src, sizeof(source_words));
     append_dma(2, nowhere_dst, 3, nowhere_dst, sizeof(nowhere_words),
@@ -3741,6 +3743,9 @@ public:
             "DMA_DATA packet stream has the wrong size");
     gpu.Submit(dma_commands, {});
     gpu.WaitForIdle();
+    Require("GpuCommandLane", "DMA_DATA full destination address",
+            *reinterpret_cast<const uint32_t *>(dma_low_bits_dst) == immediate_value,
+            "a valid DMA fill was skipped because of its low address bits");
     constexpr uint32_t clean_fill_value = 0xdecafbad;
     gpu.SendCommandSync([&] {
       auto &buffer_cache = resources.GetBufferCache();

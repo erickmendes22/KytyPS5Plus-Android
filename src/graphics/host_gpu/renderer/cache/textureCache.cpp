@@ -2325,14 +2325,19 @@ vk::ImageView TextureCache::FindTexture(ImageId id, const ImageDesc& desc) {
 	}
 	if (!image.info.data.Empty()) {
 		RefreshImage(id);
-		if (image.info.HasStencil() &&
+		const bool stencil_view = desc.view_info.aspect == vk::ImageAspectFlagBits::eStencil;
+		const bool uses_current_plane = image.info.HasStencil() &&
 		    desc.info.data.address >= image.info.stencil.address &&
-		    desc.info.data.End() <= image.info.stencil.End()) {
-			for (const auto stencil_id:
-			     FindImagesInRegion(image.info.stencil.address, image.info.stencil.size, false)) {
+		    desc.info.data.End() <= image.info.stencil.End();
+		if (stencil_view || uses_current_plane) {
+			const auto plane_range = stencil_view ? desc.info.data : image.info.stencil;
+			// Refresh the exact guest plane returned by FindImage. The owner can
+			// keep several associations and info.stencil describes only the
+			// last one bound as an attachment.
+			for (const auto stencil_id: image.stencil_ids) {
 				const auto* stencil = m_slot_images.try_get(stencil_id);
-				if (stencil != nullptr && stencil->depth_id == id &&
-				    stencil->info.data == image.info.stencil) {
+				if (stencil != nullptr && stencil->registered && stencil->depth_id == id &&
+				    stencil->info.data == plane_range) {
 					RefreshImage(stencil_id);
 					break;
 				}

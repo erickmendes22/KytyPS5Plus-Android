@@ -756,8 +756,15 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	auto*      image               = &texture_cache.GetImage(id);
 	const bool stencil_association = static_cast<bool>(image->depth_id);
 	if (stencil_association) {
-		id    = image->depth_id;
-		image = &texture_cache.GetImage(id);
+		if (!storage) {
+			// The guest view is relative to the stencil plane, while the native
+			// view is relative to the entire depth/stencil attachment.
+			const auto& plane = image->stencil_subresources;
+			desc.view_info.base_level += plane.base_level;
+			desc.view_info.base_layer += plane.base_layer;
+			desc.view_info.aspect = vk::ImageAspectFlagBits::eStencil;
+		}
+		id = image->depth_id;
 	} else if (image->info.IsDepth()) {
 		if (storage) {
 			EXIT("depth target cannot be bound as a storage image\n");

@@ -51,7 +51,7 @@ struct RenderExecutorTestAccess;
 
 // PPSA01341: bounded diagnostic of GPU-written compute storage textures.
 void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash,
-                         bool forced = false, uint32_t base_layer = 0, uint32_t base_mip = 0);
+                         bool forced = false, const ImageViewInfo* view = nullptr);
 
 enum class CommandBufferDebugOp : uint32_t {
 	DispatchDirect,

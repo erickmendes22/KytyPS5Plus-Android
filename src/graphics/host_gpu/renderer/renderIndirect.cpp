@@ -30,6 +30,7 @@ namespace {
 constexpr uint32_t FixupGroupSize     = 64;
 constexpr uint32_t IndexedRecordBytes = 5 * sizeof(uint32_t);
 constexpr uint32_t DirectRecordBytes  = 4 * sizeof(uint32_t);
+constexpr size_t FeedbackBytes = 4 * sizeof(uint32_t); // clamp flag, original X/Y/Z
 // Mesh outputs (indirect_draw_fixup.comp MESH_*): record, dispatch, draw.
 constexpr uint64_t MeshRecordBytes    = 12 * sizeof(uint32_t);
 constexpr uint64_t MeshDispatchOffset = 12 * sizeof(uint32_t);
@@ -98,7 +99,7 @@ IndirectDrawFixup::IndirectDrawFixup(RenderContext& context): m_context(context)
 	m_feedback_buffer = std::make_unique<Buffer>(
 	    graphics, context.GetCommandScheduler(), MemoryUsage::Download, 0,
 	    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-	    FeedbackSlots * sizeof(uint32_t));
+	    FeedbackSlots * FeedbackBytes);
 	LOGF("GPU indirect draws: fix-up pipeline ready (multiDrawIndirect=%u)\n",
 	     m_multi_draw ? 1u : 0u);
 }
@@ -255,9 +256,10 @@ vk::DeviceAddress IndirectDrawFixup::AcquireFeedback(uint32_t& slot, bool lighti
         if (m_feedback[index].tick != 0) continue;
         slot = index;
         const uint32_t zero = 0;
-        std::memcpy(m_feedback_buffer->Mapped().data() + slot * sizeof(uint32_t), &zero, sizeof(zero));
-        m_feedback_buffer->Flush(slot * sizeof(uint32_t), sizeof(uint32_t));
-        return m_feedback_buffer->BufferDeviceAddress() + slot * sizeof(uint32_t);
+        const size_t offset = slot * FeedbackBytes;
+        std::memcpy(m_feedback_buffer->Mapped().data() + offset, &zero, sizeof(zero));
+        m_feedback_buffer->Flush(offset, sizeof(zero));
+        return m_feedback_buffer->BufferDeviceAddress() + offset;
     }
     if (ds_trace && lighting) {
         static std::atomic<uint32_t> missed {0};
@@ -340,18 +342,18 @@ void IndirectDrawFixup::PollFeedback() {
 		if (feedback.tick == 0 || !master.IsFree(feedback.tick)) {
 			continue;
 		}
-		m_feedback_buffer->Invalidate(slot * sizeof(uint32_t), sizeof(uint32_t));
-		uint32_t requested = 0;
-		std::memcpy(&requested, m_feedback_buffer->Mapped().data() + slot * sizeof(uint32_t),
-		            sizeof(requested));
+		const size_t offset = slot * FeedbackBytes;
+		const size_t bytes = feedback.dispatch && feedback.reserved == 1u
+		                         ? FeedbackBytes : sizeof(uint32_t);
+		std::array<uint32_t, 4> words {};
+		m_feedback_buffer->Invalidate(offset, bytes);
+		std::memcpy(words.data(), m_feedback_buffer->Mapped().data() + offset, bytes);
+		const uint32_t requested = words[0];
 		if (feedback.dispatch) {
 			static std::atomic<uint32_t> clamp_count {0};
-			const bool clamped = feedback.reserved == 1u
-			                         ? (requested & 0x80000000u) != 0 : requested != 0;
+			const bool clamped = requested != 0;
 			if (feedback.reserved == 1u) {
-				const uint32_t x = requested & 1023u;
-				const uint32_t y = (requested >> 10u) & 1023u;
-				const uint32_t z = (requested >> 20u) & 1023u;
+				const uint32_t x = words[1], y = words[2], z = words[3];
 				// Capture the actual completed GPU argument values throughout
 				// the session, not only before arbitrary frame deadlines.
 				constexpr std::array<uint64_t, 6> watched {{
@@ -366,10 +368,10 @@ void IndirectDrawFixup::PollFeedback() {
 				        feedback.frame, 32)) {
 					Log::WriteToConsoleAndLog(fmt::sprintf(
 					    "[DS_LIGHTING_GROUPS] source=gpu frame=%d shader=0x%016" PRIx64
-					    " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=%u "
+					    " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=0 "
 					    "clamped=%u zero=%u\n",
 					    feedback.frame, feedback.shader_hash, feedback.site, x, y, z,
-					    (requested >> 30u) & 1u, clamped ? 1u : 0u,
+					    clamped ? 1u : 0u,
 					    (x == 0u || y == 0u || z == 0u) ? 1u : 0u));
 				}
 			}

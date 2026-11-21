@@ -351,7 +351,9 @@ jobs:
           barrier = Path("src/graphics/shader/recompiler/backend/spirv/spirvEmitterFlow.cpp").read_text()
           assert 'spv::MemorySemanticsImageMemoryMask' in barrier
           assert 'std::ranges::any_of(state.program.info.buffers, written)' in barrier
-          assert 'FeedbackWord(params.feedback).word = packed' in shader
+          assert 'HostWords(params.feedback).words[axis + 1u] = groups' in shader
+          assert 'const uint32_t x = words[1], y = words[2], z = words[3]' in indirect
+          assert '[DS_BUFFER_PRODUCER]' in compute
           print("Focused Demon/UFC source contracts: OK")
           PY
 

@@ -970,7 +970,7 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 // image ownership or writes guest memory. Other games never enable it.
 static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* colors,
                                 uint32_t count, uint64_t shader_hash, bool compute = false, bool forced = false,
-                                uint32_t sample_layer = UINT32_MAX, uint32_t sample_mip = UINT32_MAX) {
+                                const ImageViewInfo* sampled_view = nullptr) {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_DS_COLOR_PROBE");
 		// An explicit 0 disables probing. Otherwise reuse the existing DS
@@ -1014,8 +1014,6 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			case vk::Format::eR8G8B8A8Unorm:
 			case vk::Format::eR32Uint:
 			case vk::Format::eR32Sint:
-			case vk::Format::eD32Sfloat:
-			case vk::Format::eD32SfloatS8Uint:
 			case vk::Format::eR8G8B8A8Srgb:
 			case vk::Format::eR8G8B8A8Uint:
 			case vk::Format::eR8G8B8A8Snorm:
@@ -1036,8 +1034,9 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			case vk::Format::eR32G32B32A32Sfloat: return 16;
 			case vk::Format::eR16Sfloat:
 			case vk::Format::eR8G8Unorm:
-			case vk::Format::eR8G8Snorm:
-			case vk::Format::eD16Unorm: return 2;
+			case vk::Format::eR8G8Snorm: return 2;
+			case vk::Format::eR8Uint:
+			case vk::Format::eR8Unorm: return 1;
 			// BC1 is sampled in *compressed 4x4 blocks*; never copy a 1x1 texel.
 			case vk::Format::eBc1RgbaSrgbBlock:
 			case vk::Format::eBc1RgbaUnormBlock:
@@ -1054,27 +1053,33 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		if (!colors[slot].image_id) { ++no_id; continue; }
 		auto& image = cache.GetImage(colors[slot].image_id);
 		const auto& backing = image.backing;
-		// For graphics, honor each attachment's own array slice and mip.
-		// The prior diagnostic read layer zero three times for a 4-layer R32Uint target.
-		const uint32_t view_layer = sample_layer == UINT32_MAX
-		    ? colors[slot].desc.view_info.base_layer : sample_layer;
-		const uint32_t view_mip = sample_mip == UINT32_MAX
-		    ? colors[slot].desc.view_info.base_level : sample_mip;
-		const uint32_t bpp = bytes_per_pixel(backing.format);
+		const auto& view = sampled_view != nullptr ? *sampled_view : colors[slot].desc.view_info;
+		const uint32_t view_layer = view.base_layer;
+		const uint32_t view_mip = view.base_level;
+		const auto depth_bytes = DepthAspectTransferBytes(backing.format);
+		const auto available = depth_bytes != 0 ? ImageViewOps::DepthAspectMask(backing.format)
+		    : vk::ImageAspectFlags {vk::ImageAspectFlagBits::eColor};
+		const auto aspect = sampled_view != nullptr ? view.aspect
+		    : vk::ImageAspectFlags {depth_bytes != 0 ? vk::ImageAspectFlagBits::eDepth
+		                                           : vk::ImageAspectFlagBits::eColor};
+		const bool depth = aspect == vk::ImageAspectFlagBits::eDepth;
+		const bool stencil = aspect == vk::ImageAspectFlagBits::eStencil;
+		const uint32_t bpp = stencil ? 1u : depth ? depth_bytes : bytes_per_pixel(backing.format);
 		const bool compressed = backing.format == vk::Format::eBc1RgbaSrgbBlock ||
 		    backing.format == vk::Format::eBc1RgbaUnormBlock ||
 		    backing.format == vk::Format::eBc1RgbSrgbBlock ||
 		    backing.format == vk::Format::eBc1RgbUnormBlock;
-		const bool depth = backing.format == vk::Format::eD32Sfloat ||
-		    backing.format == vk::Format::eD32SfloatS8Uint ||
-		    backing.format == vk::Format::eD16Unorm;
 		if (example_format == 0u) {
 			example_format = static_cast<uint32_t>(backing.format);
 			example_width = backing.extent.width; example_height = backing.extent.height;
 		}
 		if (!backing.image) { ++no_backing; continue; }
 		if (backing.samples != 1u) { ++not_1x; continue; }
-		if (bpp == 0u) { ++unknown_format; continue; }
+		if (bpp == 0u || (aspect & ~available) ||
+		    (!depth && !stencil && aspect != vk::ImageAspectFlagBits::eColor)) {
+			++unknown_format;
+			continue;
+		}
 		if (backing.extent.width < 4u || backing.extent.height < 4u) { ++tiny; continue; }
 		if (!(backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) { ++no_transfer; continue; }
 		// Sample precisely the native view bound to the shader, not the owner image's
@@ -1088,7 +1093,9 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			continue;
 		}
 		++probed;
-		const uint64_t length = bpp * 5u;
+		// Vulkan depth/stencil buffer copies require DWORD-aligned offsets, including S8.
+		const uint32_t stride = depth || stencil ? std::max(bpp, 4u) : bpp;
+		const uint64_t length = stride * 5u;
 		auto [mapped, offset] = download.Map(length, 16u, true);
 		if (mapped == nullptr) {
 			Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE] path=%s shader=0x%016" PRIx64 " slot=%u result=staging_unavailable\n",
@@ -1103,9 +1110,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		    {w/4u,3u*h/4u}, {3u*w/4u,3u*h/4u}};
 		std::array<vk::BufferImageCopy,5> regions {};
 		for (size_t i = 0; i < regions.size(); ++i) {
-			regions[i].bufferOffset = offset + i * bpp;
-			regions[i].imageSubresource.aspectMask = depth ? vk::ImageAspectFlagBits::eDepth
-			                                                 : vk::ImageAspectFlagBits::eColor;
+			regions[i].bufferOffset = offset + i * stride;
+			regions[i].imageSubresource.aspectMask = aspect;
 			regions[i].imageSubresource.mipLevel = view_mip;
 			regions[i].imageSubresource.baseArrayLayer = view_layer;
 			regions[i].imageSubresource.layerCount = 1;
@@ -1122,27 +1128,28 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		uint32_t zero = 0, zero_rgb = 0;
 		std::array<uint32_t,5> first_words {}, second_words {};
 		for (uint32_t i = 0; i < 5; ++i) {
+			const auto* pixel = mapped + i * stride;
 			bool empty = true, rgb_black = true;
 			for (uint32_t b = 0; b < bpp; ++b) {
-				empty &= mapped[i*bpp+b] == 0u;
+				empty &= pixel[b] == 0u;
 				// RGBA16F: RGB are bytes [0,6); alpha alone is not visible lighting.
 				if (b < (backing.format == vk::Format::eR16G16B16A16Sfloat ? 6u : bpp))
-					rgb_black &= mapped[i*bpp+b] == 0u;
+					rgb_black &= pixel[b] == 0u;
 			}
 			zero += empty;
 			zero_rgb += rgb_black;
-			std::memcpy(&first_words[i], mapped + i*bpp, std::min<uint32_t>(bpp,4u));
+			std::memcpy(&first_words[i], pixel, std::min(bpp, 4u));
 			if (bpp > 4u)
-				std::memcpy(&second_words[i], mapped + i*bpp + 4u, std::min<uint32_t>(bpp-4u,4u));
+				std::memcpy(&second_words[i], pixel + 4u, std::min(bpp - 4u, 4u));
 		}
 		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE] path=%s capture=%u shader=0x%016" PRIx64
 		     " frame=%d slot=%u guest=0x%012" PRIx64 " format=%u extent=%ux%u"
-		     " layer=%u mip=%u samples=5 compressed_blocks=%u depth=%u zero=%u rgb_black=%u first=%08x,%08x,%08x,%08x,%08x"
+		     " layer=%u mip=%u samples=5 compressed_blocks=%u depth=%u aspect=0x%x zero=%u rgb_black=%u first=%08x,%08x,%08x,%08x,%08x"
 		     " second=%08x,%08x,%08x,%08x,%08x\n",
 		     compute ? "compute" : "graphics", capture, shader_hash,
 		     context.GetGpu().GetFrameNum(), slot, image.info.data.address,
 		     static_cast<uint32_t>(backing.format), w, h, view_layer, view_mip, compressed ? 1u : 0u,
-		     depth ? 1u : 0u, zero, zero_rgb,
+		     depth ? 1u : 0u, static_cast<uint32_t>(aspect), zero, zero_rgb,
 		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4],
 		     second_words[0],second_words[1],second_words[2],second_words[3],second_words[4]));
 	}
@@ -1159,11 +1166,11 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 // The compute renderer shares the same exact-pixel sampler rather than
 // inferring nonzero outputs from vkCmdDispatch counts.
 void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash,
-                         bool forced, uint32_t base_layer, uint32_t base_mip) {
+                         bool forced, const ImageViewInfo* view) {
 	if (!id) return;
 	RenderColorInfo color {};
 	color.image_id = id;
-	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced, base_layer, base_mip);
+	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced, view);
 }
 
 static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
