@@ -338,6 +338,7 @@ jobs:
           shader = Path("src/graphics/host_gpu/shaders/indirect_draw_fixup.comp").read_text()
           assert 'KYTY_DS_LDS64_STORAGE=1' in launch
           assert 'KYTY_DS_START_INSTANCE_SGPR=1' in launch
+          assert '"--sync-raw-image-buffers", "true"' in launch
           assert 'KYTY_UFC6_SUBMIT_BATCH=1' in launch
           assert 'KYTY_UFC6_DESCRIPTOR_REUSE=1' not in launch
           assert 'QueueSubmitBatch' in scheduler
@@ -347,6 +348,9 @@ jobs:
           assert 'eColorAttachmentWrite' in compute and 'eDepthStencilAttachmentWrite' in compute
           assert '[DS_LIGHTING_GROUPS]' in indirect
           assert '[DS_LIGHTING_FEATURES]' in compute
+          barrier = Path("src/graphics/shader/recompiler/backend/spirv/spirvEmitterFlow.cpp").read_text()
+          assert 'spv::MemorySemanticsImageMemoryMask' in barrier
+          assert 'std::ranges::any_of(state.program.info.buffers, written)' in barrier
           assert 'FeedbackWord(params.feedback).word = packed' in shader
           print("Focused Demon/UFC source contracts: OK")
           PY

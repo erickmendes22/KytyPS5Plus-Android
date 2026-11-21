@@ -208,6 +208,12 @@ object LaunchArgs {
                     // readback of GPU-written linear images. This is guest
                     // memory coherency, not the disabled diagnostic readbacks.
                     "--readback-linear-images", "true",
+                    // Upstream KytyPS5 743fdc699: raw SSBO reads must publish
+                    // GPU-modified image aliases before obtaining the Vulkan buffer.
+                    // This was enabled for formatted reads but left off for
+                    // raw lighting buffers, so the consumer could see stale zeros.
+                    // Only Demon’s Souls opts in; preserve other titles' policy.
+                    "--sync-raw-image-buffers", "true",
                     // A guest-memory zero is not authoritative for a GPU-produced
                     // indirect lighting dispatch. Vulkan still reads the actual
                     // arguments; the existing clamp handles device limits.

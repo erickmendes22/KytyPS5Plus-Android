@@ -798,9 +798,19 @@ void EmitBarrier(EmitterState& state) {
 		return;
 	}
 	const auto memory_scope = tessellation ? spv::ScopeInvocation : spv::ScopeWorkgroup;
-	const auto memory = state.lds_storage_class == spv::StorageClassStorageBuffer
-	                        ? spv::MemorySemanticsUniformMemoryMask
-	                        : spv::MemorySemanticsWorkgroupMemoryMask;
+	auto memory = state.lds_storage_class == spv::StorageClassStorageBuffer
+	                  ? spv::MemorySemanticsUniformMemoryMask
+	                  : spv::MemorySemanticsWorkgroupMemoryMask;
+	// KytyPS5 upstream ceb154d9: S_BARRIER acquires SSBO/image writes
+	// across workgroup waves, not only LDS. In the light-list producer path,
+	// missing UniformMemory/ImageMemory semantics can leave the consumer
+	// with the previous zero group count even with valid GPU writes.
+	const auto written = [](const auto& resource) { return resource.written; };
+	if (std::ranges::any_of(state.program.info.buffers, written) ||
+	    std::ranges::any_of(state.program.info.images, written)) {
+		memory = memory | spv::MemorySemanticsUniformMemoryMask |
+		         spv::MemorySemanticsImageMemoryMask;
+	}
 	const auto semantics = tessellation ? spv::MemorySemanticsMaskNone
 	                                    : spv::MemorySemanticsAcquireReleaseMask | memory;
 	state.builder.AddFunction(spv::OpControlBarrier, ConstantU32(state, spv::ScopeWorkgroup),

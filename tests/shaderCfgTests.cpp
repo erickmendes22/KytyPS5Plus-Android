@@ -1873,6 +1873,32 @@ void TestShaderStageBarriers() {
       "SPIR-V barrier does not use workgroup acquire-release memory semantics");
   CheckSpirvBinaryValidates(result.spirv);
 
+  // Upstream ceb154d9: acquire buffer and image stores made by other
+  // workgroup waves at S_BARRIER. Without these memory classes, LDS-only
+  // semantics can leave GPU-generated indirect counts at zero.
+  const auto acquires = [](std::span<const uint32_t> code,
+                           const ShaderRecompiler::CompileOptions &options) {
+    const auto compiled = RecompileForTest(code, options);
+    CheckSpirvBinaryValidates(compiled.spirv);
+    return DisassembleSpirvBinary(compiled.spirv).find(
+               "OpControlBarrier %uint_2 %uint_2 %uint_2376") != std::string::npos;
+  };
+  const uint32_t buffer_store[] = {
+      EncodeMubuf0(0x1c, 0, false), EncodeMubuf1(1, 0, 0),
+      EncodeSopp(0x0a), EncodeSopp(0x01),
+  };
+  Check(acquires(buffer_store, MakeCompileOptions(ShaderType::Compute)),
+        "S_BARRIER after buffer writes does not acquire UniformMemory");
+  const uint32_t image_store[] = {
+      EncodeMimg0(0x08, 0xf), EncodeMimg1(20, 0, 0, 4),
+      EncodeSopp(0x0a), EncodeSopp(0x01),
+  };
+  auto image_options = MakeCompileOptions(ShaderType::Compute);
+  const auto image_user_data = ImageTestUserData();
+  image_options.user_data = image_user_data;
+  Check(acquires(image_store, image_options),
+        "S_BARRIER after image writes does not acquire ImageMemory");
+
   const auto vertex_result =
       RecompileForTest(shader, MakeCompileOptions(ShaderType::Vertex));
   CheckSpirvBinaryValidates(vertex_result.spirv);
