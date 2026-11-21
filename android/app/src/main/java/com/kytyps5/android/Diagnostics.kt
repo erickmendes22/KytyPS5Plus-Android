@@ -230,7 +230,9 @@ object Diagnostics {
         if (!dump.isDirectory) return 0
         val queueShaders = setOf("f0c482b0b355e9de", "e3daeb1e7426761b", "32c7da582db1795a")
         val producerShaders = setOf("afd9334e8581cda2", "e31a5473e9ee7503", "b631777eb4aee68c")
-        val watched = queueShaders + producerShaders + setOf(
+        val postShaders = setOf("3265b01ed00a5c01", "17defa333d9d1e22", "d1768d02fcf96a58",
+            "844e5697cf62ecd7", "a5fc1658592e3cba", "41a57a218d07a778")
+        val watched = queueShaders + producerShaders + postShaders + setOf(
             "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
             "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",
             "e75589aa0bb3ae52", "93b0be7f1a0293d1"
@@ -264,7 +266,8 @@ object Diagnostics {
                 "DS_QUEUE_DRAW by frame and queue. queue-state contains the most recent " +
                 "binding snapshots and GPU tile lists. Join DS_GBUFFER_DRAW, DS_GBUFFER_PIXELS, " +
                 "DS_GBUFFER_PIXEL to DS_MATERIAL_LIGHT and DS_MATERIAL_HANDOFF by draw_frame and material shader. " +
-                "The material lighting image markers identify the immediately following pixel probe.\n"
+                "The material lighting image markers identify the immediately following pixel probe. " +
+                "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
             zip.closeEntry()

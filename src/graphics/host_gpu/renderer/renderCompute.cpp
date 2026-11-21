@@ -1413,6 +1413,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		}
 	}
 
+	auto* post = BeginDsPostCompute(bindings, submit_id);
 	const bool material_probe = ProbeDsMaterialLight(bindings, submit_id, true);
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
@@ -1515,6 +1516,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// Record the shader barriers and diagnostics before the BDA settle submits the
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	if (post) ProbeDsPostImages(bindings, *post, submit_id, program.shader_hash, true, false);
 	if (material_probe) {
 		ProbeDsMaterialLight(bindings, submit_id, false,
 		    {thread_group_x / std::max(program.info.group_pack, 1u), thread_group_y, thread_group_z},
@@ -1858,6 +1860,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			break;
 		}
 	}
+	auto* post = BeginDsPostCompute(bindings, submit_id);
 	const bool material_probe = ProbeDsMaterialLight(bindings, submit_id, true);
 	// Acquiring arguments can merge cache buffers; finalize shader bindings afterward.
 	const auto args_epoch = m_context.GetBufferCache().UnregisterEpoch();
@@ -1934,6 +1937,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
 	RememberDsBufferProducers(m_context, bindings, true);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	if (post) ProbeDsPostImages(bindings, *post, submit_id, program.shader_hash, true, false);
 	if (material_probe) {
 		std::array<uint32_t, 3> groups {args.x, args.y, args.z};
 		const bool valid = split_on_cpu ||
@@ -1953,6 +1957,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		    split_on_cpu ? "cpu_split" : "vulkan_indirect", read, groups[0], groups[1], groups[2],
 		    tiles.end - tiles.first));
 		ProbeDsQueueImages(m_context, bindings, *queue_capture, captured_queue, false);
+		queue_capture->light_output_sampled = read && groups[0] != 0 && groups[1] != 0 && groups[2] != 0;
 	}
 	CaptureDsLightTiles(bindings);
 	ProbeDsLightingBuffers(m_context, bindings);

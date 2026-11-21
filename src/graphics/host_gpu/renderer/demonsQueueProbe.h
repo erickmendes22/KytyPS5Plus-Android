@@ -26,6 +26,22 @@ constexpr BlockAxis SampleBlock(uint64_t texel, uint32_t mip_extent) {
 }
 
 constexpr uint64_t HdrAddress = 0x281300000ull;
+constexpr uint64_t SceneAddress = 0x281a80000ull;
+constexpr uint64_t CompositeAuxAddress = 0x2b2a40000ull;
+constexpr uint64_t CompositeShader = 0x3265b01ed00a5c01ull;
+constexpr std::array<uint64_t, 6> PostShaders {
+    CompositeShader, 0x17defa333d9d1e22ull, 0xd1768d02fcf96a58ull,
+    0x844e5697cf62ecd7ull, 0xa5fc1658592e3cbaull, 0x41a57a218d07a778ull
+};
+
+constexpr bool PostImage(uint64_t address) {
+	return address == HdrAddress || address == SceneAddress || address == CompositeAuxAddress;
+}
+
+constexpr bool PostTracePending(int32_t start, int32_t current) {
+	const int64_t age = int64_t{current} - start;
+	return start >= 0 && age >= 0 && age <= 2;
+}
 constexpr uint64_t TileProducer = 0x32c7da582db1795aull;
 constexpr uint64_t PrefixAddress = 0x208e41a00ull;
 constexpr uint64_t TilesAddress = 0x208cc5ee0ull;
@@ -174,6 +190,20 @@ struct Capture {
 	bool hdr_reader_sampled = false;
 	bool hdr_writer_sampled = false;
 	bool composite_sampled = false;
+	bool light_output_sampled = false;
+	uint32_t post_passes = 0;
+	std::array<uint64_t, 12> post_intermediates {};
+
+	bool TracesImage(uint64_t address) const {
+		return PostImage(address) || (address != 0 &&
+		    std::ranges::find(post_intermediates, address) != post_intermediates.end());
+	}
+
+	void TrackIntermediate(uint64_t address, uint32_t w, uint32_t h) {
+		if (address == 0 || w < width / 2 || h < height / 2 || TracesImage(address)) return;
+		const auto slot = std::ranges::find(post_intermediates, uint64_t{0});
+		if (slot != post_intermediates.end()) *slot = address;
+	}
 };
 
 } // namespace Libs::Graphics::DemonsQueueProbe

@@ -135,6 +135,8 @@ void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t gues
                   std::span<const uint32_t> spirv) {
 	if (!Enabled() || module == nullptr ||
 	    (DsLightingCapture() && !DsLightingShader(guest_hash) &&
+	     std::ranges::find(DemonsQueueProbe::PostShaders, guest_hash) ==
+	         DemonsQueueProbe::PostShaders.end() &&
 	     std::ranges::find(DemonsQueueProbe::GBufferShaders, guest_hash) ==
 	         DemonsQueueProbe::GBufferShaders.end())) {
 		return;

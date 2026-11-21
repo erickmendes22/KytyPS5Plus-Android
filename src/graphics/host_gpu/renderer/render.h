@@ -449,6 +449,10 @@ private:
 	    m_ds_material_traces {};
 	bool ProbeDsMaterialLight(const PreparedBindings& bindings, uint64_t submit, bool before,
 	                          const std::array<uint32_t, 3>& groups = {}, bool groups_valid = false);
+	DemonsQueueProbe::Capture* DsPostCapture(uint64_t shader);
+	void ProbeDsPostImages(const PreparedBindings& bindings, const DemonsQueueProbe::Capture& capture,
+	                       uint64_t submit, uint64_t shader, bool compute, bool before);
+	DemonsQueueProbe::Capture* BeginDsPostCompute(const PreparedBindings& bindings, uint64_t submit);
 	void CaptureDsLightTiles(const PreparedBindings& bindings);
 	int32_t m_ds_tile_frame = -1;
 	std::array<DemonsQueueProbe::Tiles, DemonsQueueProbe::Queues.size()> m_ds_light_tiles {};

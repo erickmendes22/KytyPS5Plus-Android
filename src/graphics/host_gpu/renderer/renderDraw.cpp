@@ -1321,6 +1321,82 @@ void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_has
 	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced, view, pixels, 0, 0, first_words);
 }
 
+DemonsQueueProbe::Capture* RenderExecutor::DsPostCapture(uint64_t shader) {
+	using namespace DemonsQueueProbe;
+	const auto frame = m_context.GetGpu().GetFrameNum();
+	auto& capture = m_ds_queue_captures.back();
+	// The second measured queue completes after the primary light passes.
+	// Keep a separate slot for the final composite even if many passes match.
+	if (!capture.light_output_sampled || capture.composite_sampled ||
+	    !PostTracePending(capture.frame, frame) ||
+	    (capture.post_passes >= 24 && shader != CompositeShader)) return nullptr;
+	return &capture;
+}
+
+void RenderExecutor::ProbeDsPostImages(const PreparedBindings& bindings,
+                                       const DemonsQueueProbe::Capture& capture,
+                                       uint64_t submit, uint64_t shader, bool compute, bool before) {
+	using namespace DemonsQueueProbe;
+	for (uint32_t i = 0; i < bindings.images.size(); ++i) {
+		const auto& binding = bindings.images[i];
+		const auto address = binding.desc.info.data.address;
+		const bool written = i < bindings.runtime->program->info.images.size() &&
+		    bindings.runtime->program->info.images[i].written;
+		if (!capture.TracesImage(address) || (!before && !written)) continue;
+		if (binding.placeholder || !binding.image_id) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_POST_BINDING] light_frame={} pass={} submit={} shader=0x{:016x} phase={} "
+			    "guest=0x{:x} slot={} missing=true\n",
+			    capture.frame, capture.post_passes, submit, shader, before ? "before" : "after",
+			    address, i));
+			continue;
+		}
+		const auto& image = m_context.GetTextureCache().GetImage(binding.image_id);
+		const auto view = std::ranges::find(image.views, binding.image_view, &CachedImageView::view);
+		const auto version = image.ContentVersion();
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_POST_BINDING] light_frame={} pass={} submit={} shader=0x{:016x} phase={} "
+		    "guest=0x{:x} slot={} owner=0x{:x} version={} written={} view={}\n",
+		    capture.frame, capture.post_passes, submit, shader, before ? "before" : "after",
+		    address, i, image.info.data.address, version, written, view != image.views.end()));
+		if (view == image.views.end()) continue;
+		RenderColorInfo source {};
+		source.image_id = binding.image_id;
+		ProbeDsColorOutputs(m_context, &source, 1, shader, compute, true, &view->info,
+		                    &capture.pixels, capture.width, capture.height);
+	}
+}
+
+DemonsQueueProbe::Capture* RenderExecutor::BeginDsPostCompute(const PreparedBindings& bindings,
+                                                               uint64_t submit) {
+	const auto shader = bindings.runtime->program->shader_hash;
+	auto* capture = DsPostCapture(shader);
+	if (!capture || shader == DemonsQueueProbe::Shaders.back() ||
+	    std::ranges::none_of(bindings.images, [capture](const auto& binding) {
+		    return capture->TracesImage(binding.desc.info.data.address);
+	    })) return nullptr;
+	const auto& resources = bindings.runtime->program->info.images;
+	bool reads_tracked = false;
+	for (size_t i = 0; i < bindings.images.size() && i < resources.size(); ++i) {
+		const auto& binding = bindings.images[i];
+		reads_tracked |= !resources[i].written && capture->TracesImage(binding.desc.info.data.address);
+	}
+	if (reads_tracked) {
+		for (size_t i = 0; i < bindings.images.size() && i < resources.size(); ++i) {
+			const auto& binding = bindings.images[i];
+			if (!resources[i].written || !binding.image_id || binding.placeholder) continue;
+			const auto& extent = binding.desc.info.extent;
+			capture->TrackIntermediate(binding.desc.info.data.address, extent.width, extent.height);
+		}
+	}
+	++capture->post_passes;
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "[DS_POST_PASS] light_frame={} frame={} pass={} submit={} shader=0x{:016x} path=compute\n",
+	    capture->frame, m_context.GetGpu().GetFrameNum(), capture->post_passes, submit, shader));
+	ProbeDsPostImages(bindings, *capture, submit, shader, true, true);
+	return capture;
+}
+
 static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
 	const auto& sh_regs     = ctx.GetShaderRegisters();
 	const auto  write_mask  = ctx.GetRenderTargetMask() & sh_regs.m_cbShaderMask;
@@ -2357,6 +2433,46 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			}
 		}
 	}
+	DemonsQueueProbe::Capture* ds_post = nullptr;
+	bool ds_post_final = false;
+	if (state.ps_active && bindings.pixel && state.color_count) {
+		using namespace DemonsQueueProbe;
+		const auto shader = state.ps_input_info.stage.program->shader_hash;
+		const auto colors = std::span{state.color_info, state.color_count};
+		ds_post_final = shader == CompositeShader;
+		if (auto* capture = DsPostCapture(shader)) {
+			const auto traces_image = [capture](const auto& item) {
+				return capture->TracesImage(item.desc.info.data.address);
+			};
+			const bool reads_tracked = std::ranges::any_of(bindings.pixel->images, traces_image);
+			if (ds_post_final || reads_tracked || std::ranges::any_of(colors, traces_image)) {
+				ds_post = capture;
+				if (reads_tracked && !ds_post_final) {
+					for (const auto& color : colors) {
+						if (!color.image_id) continue;
+						const auto extent = color.Extent();
+						ds_post->TrackIntermediate(color.desc.info.data.address, extent.width, extent.height);
+					}
+				}
+				++ds_post->post_passes;
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_POST_PASS] light_frame={} frame={} pass={} submit={} shader=0x{:016x} path=graphics "
+				    "targets={} target0=0x{:x} final={}\n",
+				    ds_post->frame, m_context.GetGpu().GetFrameNum(), ds_post->post_passes, submit_id,
+				    shader, state.color_count, colors.front().desc.info.data.address, ds_post_final));
+				ProbeDsPostImages(*bindings.pixel, *ds_post, submit_id, shader, false, true);
+				for (const auto& color : colors) {
+					if (!color.image_id || !traces_image(color)) continue;
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_POST_TARGET] light_frame={} pass={} phase=before guest=0x{:x} slot={}\n",
+					    ds_post->frame, ds_post->post_passes, color.desc.info.data.address,
+					    color.target_slot));
+					ProbeDsColorOutputs(m_context, &color, 1, shader, false, true, nullptr,
+					                    &ds_post->pixels, ds_post->width, ds_post->height);
+				}
+			}
+		}
+	}
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering =
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info,
@@ -2816,6 +2932,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		                       std::span{coverage_points.data(), coverage_points_used}, hits,
 		                       rendering.color_attachments[ds_gbuffer->target_slot].is_clear);
 	}
+	if (ds_post) {
+		const auto shader = state.ps_input_info.stage.program->shader_hash;
+		for (const auto& color : std::span{state.color_info, state.color_count}) {
+			if (!color.image_id || (!ds_post_final &&
+			    !ds_post->TracesImage(color.desc.info.data.address))) continue;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_POST_TARGET] light_frame={} pass={} phase=after guest=0x{:x} slot={} load_clear={}\n",
+			    ds_post->frame, ds_post->post_passes, color.desc.info.data.address, color.target_slot,
+			    rendering.color_attachments[color.target_slot].is_clear));
+			ProbeDsColorOutputs(m_context, &color, 1, shader, false, true, nullptr,
+			                    &ds_post->pixels, ds_post->width, ds_post->height);
+		}
+		if (ds_post_final) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_POST_COMPLETE] light_frame={} frame={} passes={}\n",
+			    ds_post->frame, m_context.GetGpu().GetFrameNum(), ds_post->post_passes));
+		}
+	}
 	for (size_t i = 0; i < ds_draw_stage.size(); ++i) {
 		const auto stage = ds_draw_stage[i];
 		if (!stage) continue;
@@ -2833,6 +2967,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		capture.hdr_writer_sampled |= (stage & DsHdrWriter) != 0;
 		capture.composite_sampled |= (stage & DsComposite) != 0;
 	}
+	if (ds_post && ds_post_final) ds_post->composite_sampled = true;
 	// Diagnose the Demon scene chain at most twice per run: the actual
 	// sampled HUD/scene inputs versus the compositor's final color target.
 	// One short set after initialization and another during live play. Normal

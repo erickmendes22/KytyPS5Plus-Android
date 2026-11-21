@@ -43,6 +43,15 @@ int main(int argc, char** argv) {
 	assert((covered_albedo[0] == std::pair{8u, 3u}));
 	assert((covered_albedo[1] == std::pair{16u, 8u}));
 	assert(ColoredTilePixels(albedo, std::array<uint32_t, 1>{0}, 17, 9, covered_albedo) == 0);
+	static_assert(PostTracePending(961, 963) && !PostTracePending(961, 964));
+	static_assert(!PostTracePending(-1, 0));
+	Capture scene {961, Shaders[1], 1600, 900};
+	assert(scene.TracesImage(HdrAddress) && scene.TracesImage(SceneAddress));
+	assert(!scene.TracesImage(0) && !scene.TracesImage(0x123000));
+	scene.TrackIntermediate(0x123000, 799, 900);
+	assert(!scene.TracesImage(0x123000));
+	scene.TrackIntermediate(0x123000, 1920, 1080);
+	assert(scene.TracesImage(0x123000));
 	std::vector<uint32_t> prefix(65);
 	std::vector<uint32_t> tiles(45200);
 	prefix[1] = 22089;
