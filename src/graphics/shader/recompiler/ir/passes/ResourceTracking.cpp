@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <map>
 #include <numeric>
@@ -922,7 +924,20 @@ private:
 					CollectScalarRead(Value(&inst), inst.Flags<MemoryFlags>().pc);
 			}
 		}
+
+		// A compute shader can write memory and read it again via S_LOAD in
+		// the same dispatch. Capturing the value into a pre-dispatch host SRT
+		// slot freezes stale data and makes the lighting producer see zero.
+		// This compatibility path leaves the actual GPU scalar reads live.
+		const char* live_option = std::getenv("KYTY_DS_GPU_SCALAR_SRT");
+		const bool live_reads = m_program.stage == ShaderType::Compute && m_shader_writes &&
+		    live_option != nullptr && live_option[0] == '1' && live_option[1] == '\0';
+		uint32_t deferred_reads = 0;
 		for (auto* read: m_scalar_reads) {
+			if (live_reads) {
+				++deferred_reads;
+				continue;
+			}
 			const auto flags = read->Flags<MemoryFlags>();
 			auto& memory = m_program.memory_info[flags.index];
 			const auto* handle = read->Arg(0).Resolve().TryInstruction();
@@ -987,6 +1002,9 @@ private:
 				list.erase(where);
 			}
 		}
+		if (deferred_reads != 0u)
+			std::printf("[DS_GPU_SCALAR_SRT] shader=0x%016" PRIx64 " live=%u\n",
+			            m_program.shader_hash, deferred_reads);
 		m_program.srt_plan_complete = true;
 	}
 

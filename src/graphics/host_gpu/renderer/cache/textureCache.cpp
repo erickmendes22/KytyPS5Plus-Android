@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <array>
 #include <bit>
@@ -1090,7 +1091,13 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	// as a color image and dropped native depth/HTile state. Allow only a
 	// proven complete same-layout depth view, never a neighbouring heap or
 	// an independently addressed S8 plane. Based on upstream 1b0f689.
-	const bool grow_depth = binding == BindingType::Texture &&
+	// Hold the unverified sampled-depth array promotion out of the
+	// PPSA01341 rendering path: its introduction coincided with a black
+	// face despite intact geometry, indicating shadow-attachment regression.
+	const char* growth_option = std::getenv("KYTY_DS_DEPTH_ARRAY_GROW");
+	const bool allow_growth = growth_option == nullptr ||
+	    growth_option[0] != '0' || growth_option[1] != '\0';
+	const bool grow_depth = allow_growth && binding == BindingType::Texture &&
 	    cached.info.IsDepth() && !cached.info.HasStencil() &&
 	    !requested.IsVolume() && !requested.HasStencil() &&
 	    requested.data.address == cached.info.data.address &&

@@ -214,6 +214,13 @@ object LaunchArgs {
                     // raw lighting buffers, so the consumer could see stale zeros.
                     // Only Demon’s Souls opts in; preserve other titles' policy.
                     "--sync-raw-image-buffers", "true",
+                    // Live GPU SRT for write-bearing compute kernels; the host
+                    // cannot pre-read values produced later in this dispatch.
+                    "--env", "KYTY_DS_GPU_SCALAR_SRT=1",
+                    // Contain the newly introduced black-face regression:
+                    // retain the pre-5d8e depth and direct-storage semantics.
+                    "--env", "KYTY_DS_DEPTH_ARRAY_GROW=0",
+                    "--env", "KYTY_DS_STORAGE_FILL_CANON=0",
                     // A guest-memory zero is not authoritative for a GPU-produced
                     // indirect lighting dispatch. Vulkan still reads the actual
                     // arguments; the existing clamp handles device limits.

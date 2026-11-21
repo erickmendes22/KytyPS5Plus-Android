@@ -13,6 +13,7 @@
 #include <bit>
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <functional>
 #include <mutex>
@@ -980,9 +981,15 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		// do not exist. A filtered indirect table must preserve every
 		// candidate swizzle for exact resource-class comparisons.
 		const auto swizzle = DescriptorImageSwizzle(descriptor);
+		// Restore the last-known-working explicit direct storage mapping
+		// for PPSA01341 while keeping tested upstream canonicalization for
+		// other games and exact swizzles for indirect image candidates.
+		const char* swizzle_option = std::getenv("KYTY_DS_STORAGE_FILL_CANON");
+		const bool canonical_fill = swizzle_option == nullptr ||
+		    swizzle_option[0] != '0' || swizzle_option[1] != '\0';
 		if (image.conversion_format != Prospero::BufferFormat::kInvalid ||
 		    (storage && (image.indirect_root != ImageResource::NoIndirectImage ||
-		                 swizzle != FormatFillSwizzle(format)))) {
+		                 !canonical_fill || swizzle != FormatFillSwizzle(format)))) {
 			image.shader_swizzle = swizzle;
 		}
 		image.numeric_class = Prospero::SampledTextureNumericClass(
