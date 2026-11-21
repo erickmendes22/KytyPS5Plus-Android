@@ -2769,7 +2769,23 @@ bool BufferCache::PreserveGpuImageForWrite(Buffer& target, uint64_t address, uin
 	// image's authoritative GPU ownership and future image refreshes upload
 	// stale guest bytes over the untouched texels. Keep this path optional
 	// for Demon’s Souls and leave unsupported depth/alias layouts unchanged.
-	if (size == 0 || !target.IsInBounds(Kernel::AddressFold::Fold(address), size)) return false;
+	address = Kernel::AddressFold::Fold(address);
+	if (size == 0 || !target.IsInBounds(address, size)) return false;
+	// A partial mip download is not enough when GPU ownership of the
+	// *entire* image will be removed by the next write binding. Only take
+	// the existing lossless whole-image path, with no depth/stencil alias.
+	const auto selected = m_texture_cache.FindImageFromRange(address, size, false);
+	if (!selected) return false;
+	{
+		std::scoped_lock lock {m_texture_cache.m_lock};
+		const auto* image = m_texture_cache.m_slot_images.try_get(selected);
+		if (image == nullptr || !image->registered || !image->SafeToDownload() ||
+		    image->depth_id || !image->stencil_ids.empty() ||
+		    image->info.data.address != address ||
+		    !target.IsInBounds(image->info.data.address, image->info.data.size)) {
+			return false;
+		}
+	}
 	const bool copied = SynchronizeBufferFromImage(target, address, size);
 	if (copied) {
 		static std::atomic_uint32_t count {0};
