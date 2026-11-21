@@ -2098,9 +2098,20 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				const bool dyn_write = m_context.GetGraphics().optional_features.color_write_enable;
 				Log::WriteToConsoleAndLog(fmt::format(
 				    "[DS_GBUFFER_DRAW] frame={} phase=before shader=0x{:016x} dynamic_write={} "
-				    "target_mask=0x{:08x} shader_mask=0x{:08x} index_count={} instances={} indirect={}\n",
+				    "target_mask=0x{:08x} shader_mask=0x{:08x} index_count={} instances={} indirect={} "
+				    "depth=0x{:x} depth_test={} depth_write={} depth_func={} "
+				    "stencil_test={} stencil_func={} stencil_ref={} stencil_cmask=0x{:x} stencil_wmask=0x{:x}\n",
 				    ds_gbuffer_frame, ds_gbuffer_shader, dyn_write, hardware_mask, shader_mask,
-				    draw.index_count, draw.instance_count, indirect != nullptr));
+				    draw.index_count, draw.instance_count, indirect != nullptr,
+				    state.depth_info.desc.info.data.address,
+				    state.depth_info.depth_test_enable ? 1u : 0u,
+				    state.depth_info.depth_write_enable ? 1u : 0u,
+				    static_cast<uint32_t>(state.depth_info.depth_compare_op),
+				    state.depth_info.stencil_test_enable ? 1u : 0u,
+				    static_cast<uint32_t>(state.depth_info.stencil_front.compareOp),
+				    state.depth_info.stencil_front.reference,
+				    state.depth_info.stencil_front.compareMask,
+				    state.depth_info.stencil_front.writeMask));
 				for (const auto& color : colors) {
 					const auto slot = color.target_slot;
 					const auto mask = GuestColorWriteMask(hardware_mask, shader_mask, slot);
