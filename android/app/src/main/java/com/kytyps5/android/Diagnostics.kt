@@ -123,6 +123,7 @@ object Diagnostics {
 
             count += CrashDiagnostics.export(context, zip)
             count += exportGtTessellationCapture(context, zip)
+            count += exportDsLightingCapture(context, zip)
 
             if (files.isEmpty()) {
                 zip.putNextEntry(ZipEntry("HOW_TO_COLLECT.txt"))
@@ -216,6 +217,62 @@ object Diagnostics {
             exported
         } catch (e: Exception) {
             Log.w(TAG, "Could not export Gran Turismo shader capture", e)
+            0
+        }
+    }
+
+    /**
+     * Demon’s Souls GPU light capture: include only the eight identified native
+     * compute programs and their pipeline layouts. The GPU light-list contents,
+     * counters and hashes are already in logs/session.log. No external capture.
+     */
+    private fun exportDsLightingCapture(context: Context, zip: ZipOutputStream): Int {
+        val dump = File(context.filesDir, "ds-lighting-dumps")
+        if (!dump.isDirectory) return 0
+        val watched = setOf(
+            "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
+            "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",
+            "e75589aa0bb3ae52", "93b0be7f1a0293d1"
+        )
+        return try {
+            val candidates = listOf("spv", "pipelines").flatMap { subdir ->
+                File(dump, subdir).listFiles().orEmpty()
+                    .filter { file ->
+                        file.isFile && file.length() > 0L &&
+                            watched.any { hash -> file.name.contains("_${hash}_") } &&
+                            (if (subdir == "spv") file.extension == "spv"
+                             else file.extension == "json")
+                    }
+                    .sortedByDescending { it.lastModified() }
+                    .take(24)
+                    .map { subdir to it }
+            }
+            var count = 0
+            var budget = 32L * 1024L * 1024L
+            val info = "PPSA01341 lighting shaders and GPU buffer capture. " +
+                "The session.log entries [DS_GPU_BUFFER_CAPTURE] contain exact Vulkan " +
+                "buffer data summaries and CPU backing comparisons.\\n"
+            zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
+            zip.write(info.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+            count++
+            File(dump, "device.json").takeIf { it.isFile && it.length() in 1L..65536L }?.let { file ->
+                zip.putNextEntry(ZipEntry("ds-lighting-capture/device.json"))
+                file.inputStream().use { it.copyTo(zip) }
+                zip.closeEntry()
+                count++
+            }
+            for ((subdir, file) in candidates) {
+                if (file.length() > 8L * 1024L * 1024L || file.length() > budget) continue
+                zip.putNextEntry(ZipEntry("ds-lighting-capture/${subdir}/${file.name}"))
+                file.inputStream().use { it.copyTo(zip) }
+                zip.closeEntry()
+                budget -= file.length()
+                count++
+            }
+            count
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not export Demon's Souls native lighting capture", e)
             0
         }
     }

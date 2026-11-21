@@ -5,6 +5,8 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineRecord.h"
 
+#include <algorithm>
+#include <array>
 #include <fmt/format.h>
 #include <fstream>
 #include <mutex>
@@ -35,6 +37,23 @@ State& GetState() {
 
 const std::filesystem::path& Root() {
 	return Config::GetShaderDumpFolder();
+}
+
+// With Android's automatic Demon trace, save only the affected compute pipelines,
+// never every shader of an entire game. The diagnostic ZIP exports these exact
+// SPIR-V binaries and Vulkan pipeline JSON without needing RenderDoc.
+bool DsLightingCapture() {
+	return Root().filename() == "ds-lighting-dumps";
+}
+
+bool DsLightingShader(uint64_t hash) {
+	static constexpr std::array<uint64_t, 8> watched {{
+	    0x3dfe402653925fbfull, 0x6cbfe18ea2005263ull,
+	    0x1ce1a858f62b5a11ull, 0xc2e01fbe98f5ebabull,
+	    0x23056085c1120461ull, 0xfabe0bcb275a3005ull,
+	    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull
+	}};
+	return std::find(watched.begin(), watched.end(), hash) != watched.end();
 }
 
 bool WriteFile(const std::filesystem::path& path, const void* data, size_t size) {
@@ -111,7 +130,8 @@ bool Enabled() {
 
 void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t guest_hash,
                   std::span<const uint32_t> spirv) {
-	if (!Enabled() || module == nullptr) {
+	if (!Enabled() || module == nullptr ||
+	    (DsLightingCapture() && !DsLightingShader(guest_hash))) {
 		return;
 	}
 	auto&      state   = GetState();
@@ -139,7 +159,7 @@ void ForgetModule(vk::ShaderModule module) {
 std::string RecordComputePipeline(const GraphicContext& graphics,
                                   const vk::ComputePipelineCreateInfo& info,
                                   const LayoutState& layout, uint64_t guest_hash) {
-	if (!Enabled()) {
+	if (!Enabled() || (DsLightingCapture() && !DsLightingShader(guest_hash))) {
 		return {};
 	}
 	auto&            state = GetState();
@@ -160,7 +180,7 @@ std::string RecordGraphicsPipeline(const GraphicContext& graphics,
                                    const vk::GraphicsPipelineCreateInfo& info,
                                    const LayoutState& layout,
                                    std::span<const uint64_t> guest_hashes) {
-	if (!Enabled()) {
+	if (!Enabled() || DsLightingCapture()) {
 		return {};
 	}
 	auto&            state = GetState();

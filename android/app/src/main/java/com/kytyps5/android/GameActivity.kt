@@ -55,10 +55,15 @@ class GameActivity : SDLActivity() {
         val captureGranTurismo = launchArgs.contains(LaunchArgs.FLAG_TESSELLATION) &&
             (intent?.getStringExtra(LaunchArgs.EXTRA_GAME_PATH)
                 ?: LaunchArgs.gamePath(launchArgs))?.contains("PPSA24156", ignoreCase = true) == true
-        val diagnosticArgs = if (captureGranTurismo) {
-            arrayOf("--dump-shaders", java.io.File(filesDir, "gt-pipeline-dumps").absolutePath)
-        } else {
-            emptyArray()
+        val gamePath = intent?.getStringExtra(LaunchArgs.EXTRA_GAME_PATH)
+            ?: LaunchArgs.gamePath(launchArgs)
+        val captureDemonsLighting = gamePath?.contains("PPSA01341", ignoreCase = true) == true
+        val diagnosticArgs = when {
+            captureGranTurismo ->
+                arrayOf("--dump-shaders", java.io.File(filesDir, "gt-pipeline-dumps").absolutePath)
+            captureDemonsLighting ->
+                arrayOf("--dump-shaders", java.io.File(filesDir, "ds-lighting-dumps").absolutePath)
+            else -> emptyArray()
         }
         return PresetLaunchArgs.apply(
             arrayOf(LaunchArgs.FLAG_DATA_DIR, filesDir.absolutePath) + launchArgs + diagnosticArgs,
