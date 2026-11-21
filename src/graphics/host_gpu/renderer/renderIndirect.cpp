@@ -353,7 +353,7 @@ void IndirectDrawFixup::PollFeedback() {
 				const uint32_t z = (requested >> 20u) & 1023u;
 				// Distinct budgets ensure initialization cannot exhaust
 				// all useful samples before gameplay starts.
-				const uint32_t phase = feedback.frame >= 1200 ? 3u : feedback.frame >= 1000 ? 2u : feedback.frame >= 735 ? 1u : 0u;
+				const uint32_t phase = feedback.frame >= 1120 ? 3u : feedback.frame >= 1000 ? 2u : feedback.frame >= 735 ? 1u : 0u;
 				static std::array<std::atomic<uint32_t>, 4> lighting_samples {};
 				const auto index = lighting_samples[phase].fetch_add(1u, std::memory_order_relaxed);
 				if (index < 48u || (index % 4096u) == 0u) {
