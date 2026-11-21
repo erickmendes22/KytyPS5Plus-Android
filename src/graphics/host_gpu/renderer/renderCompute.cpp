@@ -16,6 +16,7 @@
 #include "graphics/host_gpu/renderer/dispatchSplit.h"
 #include "graphics/host_gpu/renderer/computeBufferFillPolicy.h"
 #include "graphics/host_gpu/renderer/indirectDispatchPolicy.h"
+#include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/gpuPipelineItems.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
@@ -397,33 +398,29 @@ static void ProbeDsComputeWrites(RenderContext& context,
 		    0x3dfe402653925fbfull, 0x93b0be7f1a0293d1ull,
 		    0xfabe0bcb275a3005ull, 0xc2e01fbe98f5ebabull
 		}};
-		// Frame 1 is mostly pre-scene initialization. Capturing only there
-		// cannot diagnose missing lighting during gameplay. Compare one
-		// initialization sample with one sample after frame 280 per shader.
-		static std::array<std::atomic_uint32_t, 6> captured {};
+		// Keep a bounded continuous trace for any session length, without
+		// guessed init/scene/gameplay frame boundaries.
+		static std::array<DemonsRollingProbe::FrameGate, 6> sampled_writers {};
 		const auto match = std::find(target_hashes.begin(), target_hashes.end(), hash);
 		const auto ordinal = static_cast<size_t>(match - target_hashes.begin());
 		const int32_t frame = context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 1120 ? 8u : frame >= 735 ? 4u : frame >= 280 ? 2u : 1u;
-		// The prior targeted mode suppressed *all* compute readbacks; the
-		// black 0x281300000 image could therefore never be traced to its producer.
-		// Permit at most two representative writers after gameplay begins.
+		// In targeted mode, only two representative writers incur image
+		// readbacks; the other four retain lightweight descriptor tracing.
 		const bool gameplay_writer = hash == 0xe75589aa0bb3ae52ull ||
 		                             hash == 0xc2e01fbe98f5ebabull;
 		static const bool targeted = [] {
 			const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
 			return v != nullptr && v[0] == '1' && v[1] == '\0';
 		}();
-		const bool probe_this_phase = !targeted || (phase >= 4u && gameplay_writer);
+		const bool probe_this_capture = !targeted || gameplay_writer;
 		if (match != target_hashes.end() &&
 		    context.GetTextureCache().GetImage(target_id).info.data.address == 0x281300000ull &&
-		    (phase < 4u || gameplay_writer) &&
-		    !(captured[ordinal].fetch_or(phase, std::memory_order_relaxed) & phase)) {
+		    sampled_writers[ordinal].Due(frame, 240)) {
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_TARGET_WRITER] shader=0x{:016x} output=0x{:x} "
-			    "frame={} phase={} image_resources={} output_binding={} "
+			    "frame={} capture=rolling image_resources={} output_binding={} "
 			    "indirect=0x{:x} group_pack={}\n",
-			    hash, 0x281300000ull, frame, phase == 1u ? "init" : phase == 2u ? "scene" : "gameplay",
+			    hash, 0x281300000ull, frame,
 			    images.size(), i, input.indirect_args_address,
 			    input.stage.program->info.group_pack));
 			Log::WriteToConsoleAndLog(fmt::format(
@@ -437,7 +434,7 @@ static void ProbeDsComputeWrites(RenderContext& context,
 			    input.stage.program->info.buffer_int64_atomics ? 1 : 0,
 			    input.stage.program->info.float64 ? 1 : 0,
 			    0x281300000ull));
-			if (probe_this_phase) {
+			if (probe_this_capture) {
 				ProbeDsComputeImage(context, target_id, hash, true,
 				                    bindings.images[i].desc.view_info.base_layer,
 				                    bindings.images[i].desc.view_info.base_level);
@@ -499,7 +496,7 @@ static void ProbeDsComputeWrites(RenderContext& context,
 				    repeated ? 1 : 0, is_tiny ? 1 : 0,
 				    source.image_id == target_id ? 1 : 0,
 				    texture.IsGpuModified() ? 1 : 0, texture.IsCpuDirty() ? 1 : 0));
-				if (probe_this_phase && !repeated && !is_tiny &&
+				if (probe_this_capture && !repeated && !is_tiny &&
 				    texture.backing.extent.width >= 960u &&
 				    texture.backing.extent.height >= 540u &&
 				    source.image_id != target_id && probed < (targeted ? 2u : 6u)) {
@@ -1026,10 +1023,11 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		if (std::find(watched_lighting.begin(), watched_lighting.end(),
 		              program.shader_hash) != watched_lighting.end()) {
 			const int32_t frame = m_context.GetGpu().GetFrameNum();
-			const uint32_t phase = frame >= 1120 ? 3u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
-			static std::array<std::atomic<uint32_t>, 4> sampled {};
-			const uint32_t index = sampled[phase].fetch_add(1u, std::memory_order_relaxed);
-			if (index < 48u || (index % 4096u) == 0u) {
+			const size_t ordinal = static_cast<size_t>(
+			    std::find(watched_lighting.begin(), watched_lighting.end(),
+			              program.shader_hash) - watched_lighting.begin());
+			static std::array<DemonsRollingProbe::FrameGate, 6> sampled {};
+			if (sampled[ordinal].Due(frame, 32)) {
 				vk::DispatchIndirectCommand backing {};
 				const bool backing_read = LibKernel::Memory::TryReadBacking(
 				    args_addr, &backing, sizeof(backing));
@@ -1066,10 +1064,11 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		        lighting_hashes.end();
 		if (lighting) {
 			const int32_t frame = m_context.GetGpu().GetFrameNum();
-			const uint32_t phase = frame >= 1120 ? 3u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
-			static std::array<std::atomic<uint32_t>, 4> cpu_samples {};
-			const auto count = cpu_samples[phase].fetch_add(1u, std::memory_order_relaxed);
-			if (count < 48u || (count % 4096u) == 0u) {
+			const auto ordinal = static_cast<size_t>(
+			    std::find(lighting_hashes.begin(), lighting_hashes.end(),
+			              program.shader_hash) - lighting_hashes.begin());
+			static std::array<DemonsRollingProbe::FrameGate, 6> cpu_samples {};
+			if (cpu_samples[ordinal].Due(frame, 32)) {
 				Log::WriteToConsoleAndLog(fmt::sprintf(
 				    "[DS_LIGHTING_GROUPS] source=cpu frame=%d shader=0x%016" PRIx64
 				    " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=0 clamped=0 zero=0\n",

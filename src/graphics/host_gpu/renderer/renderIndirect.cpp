@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/renderIndirect.h"
+#include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -351,12 +352,18 @@ void IndirectDrawFixup::PollFeedback() {
 				const uint32_t x = requested & 1023u;
 				const uint32_t y = (requested >> 10u) & 1023u;
 				const uint32_t z = (requested >> 20u) & 1023u;
-				// Distinct budgets ensure initialization cannot exhaust
-				// all useful samples before gameplay starts.
-				const uint32_t phase = feedback.frame >= 1120 ? 3u : feedback.frame >= 1000 ? 2u : feedback.frame >= 735 ? 1u : 0u;
-				static std::array<std::atomic<uint32_t>, 4> lighting_samples {};
-				const auto index = lighting_samples[phase].fetch_add(1u, std::memory_order_relaxed);
-				if (index < 48u || (index % 4096u) == 0u) {
+				// Capture the actual completed GPU argument values throughout
+				// the session, not only before arbitrary frame deadlines.
+				constexpr std::array<uint64_t, 6> watched {{
+				    0xc2e01fbe98f5ebabull, 0x23056085c1120461ull,
+				    0x3dfe402653925fbfull, 0xfabe0bcb275a3005ull,
+				    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull
+				}};
+				const auto found = std::find(watched.begin(), watched.end(), feedback.shader_hash);
+				static std::array<DemonsRollingProbe::FrameGate, 6> lighting_samples {};
+				if (found != watched.end() &&
+				    lighting_samples[static_cast<size_t>(found - watched.begin())].Due(
+				        feedback.frame, 32)) {
 					Log::WriteToConsoleAndLog(fmt::sprintf(
 					    "[DS_LIGHTING_GROUPS] source=gpu frame=%d shader=0x%016" PRIx64
 					    " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=%u "

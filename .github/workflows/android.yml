@@ -312,6 +312,7 @@ jobs:
             demons_indirect_dispatch_test
             demons_lds_int64_storage_test
             demons_view_placement_test
+            demons_rolling_probe_test
             demons_lighting_memory_policy_test
             demons_gpu_image_publish_policy_test
             ufc6_fan_policy_test

@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/renderDraw.h"
+#include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
 #include "graphics/host_gpu/renderer/ufcPerf.h"
 
@@ -994,22 +995,17 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
 		return v != nullptr && v[0] == '1' && v[1] == '\0';
 	}();
-	if (compositor_only && (!forced || (compute && context.GetGpu().GetFrameNum() < 730))) return;
+	if (compositor_only && !forced) return;
 	static std::atomic_uint64_t eligible_events[2] {};
 	static std::atomic_uint32_t captures[2] {};
 	const uint32_t period = compute ? 256u : 4096u;
 	const uint32_t limit = compute ? 128u : 48u;
 	const uint64_t event = eligible_events[kind].fetch_add(1, std::memory_order_relaxed) + 1u;
-	// Six lighting dispatches are sampled again after the scene is initialized.
-	// Reserve a second budget so periodic init probes cannot exhaust it by frame 216.
-	static std::atomic_uint32_t late_forced_samples {0};
-	const bool late_forced = compute && forced && context.GetGpu().GetFrameNum() >= 280;
-	if (late_forced) {
-		if (late_forced_samples.fetch_add(1, std::memory_order_relaxed) >= 64u) return;
-	} else if ((!forced && event % period != 0u) ||
-	           captures[kind].load(std::memory_order_relaxed) >= limit) {
-		return;
-	}
+	// Targeted probes are already throttled by each rolling caller. Do not
+	// exhaust a fixed run-wide budget or require a minimum guest frame.
+	if (!compositor_only &&
+	    ((!forced && event % period != 0u) ||
+	     captures[kind].load(std::memory_order_relaxed) >= limit)) return;
 	auto& cache = context.GetTextureCache();
 	auto& scheduler = context.GetCommandScheduler();
 	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
@@ -2073,14 +2069,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.ps_input_info.stage.program->shader_hash == 0x3265b01ed00a5c01ull &&
 	    state.color_count != 0u) {
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
-		static std::atomic_uint32_t phases {0};
-		const uint32_t phase = frame >= 1120 ? 4u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
-		if (phase != 0u && !(phases.fetch_or(phase, std::memory_order_relaxed) & phase)) {
+		static DemonsRollingProbe::FrameGate composite_metadata;
+		if (composite_metadata.Due(frame, 96)) {
 			const auto& ps_images = state.ps_input_info.stage.program->info.images;
 			const auto& bound = bindings.pixel->images;
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_COMPOSITE_INPUTS] frame={} phase={} target=0x{:x} resources={} bound={}\n",
-			    frame, phase, state.color_info[0].desc.info.data.address,
+			    "[DS_COMPOSITE_INPUTS] frame={} capture=rolling target=0x{:x} resources={} bound={}\n",
+			    frame, state.color_info[0].desc.info.data.address,
 			    ps_images.size(), bound.size()));
 			auto& texture_cache = m_context.GetTextureCache();
 			for (uint32_t i = 0; i < ps_images.size() && i < bound.size(); ++i) {
@@ -2436,9 +2431,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.ps_input_info.stage.program->shader_hash == 0x3265b01ed00a5c01ull &&
 	    state.color_count != 0u) {
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 1120 ? 4u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
-		static std::atomic_uint32_t phases_done {0};
-		if (phase && !(phases_done.fetch_or(phase, std::memory_order_relaxed) & phase)) {
+		static DemonsRollingProbe::FrameGate composite_pixels;
+		if (composite_pixels.Due(frame, 240)) {
 			std::array<RenderColorInfo, 2> sources {};
 			uint32_t count = 0;
 			const auto& bound_images = bindings.pixel->images;
@@ -2451,8 +2445,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			}
 			const auto shader_hash = state.ps_input_info.stage.program->shader_hash;
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_COMPOSITE_PIXEL_PHASE] frame={} phase={} sources={} outputs={}\n",
-			    frame, phase, count, state.color_count));
+			    "[DS_COMPOSITE_PIXEL_PHASE] frame={} capture=rolling sources={} outputs={}\n",
+			    frame, count, state.color_count));
 			if (count != 0u) {
 				ProbeDsColorOutputs(m_context, sources.data(), count, shader_hash, false, true);
 			}
@@ -2460,30 +2454,26 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			                    shader_hash, false, true);
 		}
 	}
-	// Two gameplay-phase snapshots of the confirmed Demon scene passes.
-	// The previous 280/490 probes saw intro frames before the 1600x900
-	// geometry/lighting graph first ran at frame 651. These captures are
-	// restricted to actual color outputs of the three observed scene targets,
-	// so zero-valued compositor inputs can be traced back to their producer.
+	// Continuously sample the three observed scene targets with per-target
+	// spacing. If a session ends early or runs far longer, its most recent
+	// capture is still present instead of expiring at a fixed phase.
 	if (ds_compositor_pixel_probe && state.ps_active && state.color_count != 0u &&
 	    state.ps_input_info.stage.program != nullptr &&
 	    state.color_info[0].image_id) {
 		const uint64_t target = state.color_info[0].desc.info.data.address;
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 1120 ? 4u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
-		static std::atomic_uint32_t scene_color_phases {0};
-		static std::atomic_uint32_t scene_overlay_phases {0};
-		static std::atomic_uint32_t scene_hdr_phases {0};
-		std::atomic_uint32_t* phase_mask = nullptr;
-		if (target == 0x281300000ull) phase_mask = &scene_color_phases;
-		if (target == 0x2b2a40000ull) phase_mask = &scene_overlay_phases;
-		if (target == 0x287ae0000ull) phase_mask = &scene_hdr_phases;
-		if (phase_mask != nullptr && phase != 0u &&
-		    !(phase_mask->fetch_or(phase, std::memory_order_relaxed) & phase)) {
+		static DemonsRollingProbe::FrameGate scene_color;
+		static DemonsRollingProbe::FrameGate scene_overlay;
+		static DemonsRollingProbe::FrameGate scene_hdr;
+		DemonsRollingProbe::FrameGate* gate = nullptr;
+		if (target == 0x281300000ull) gate = &scene_color;
+		if (target == 0x2b2a40000ull) gate = &scene_overlay;
+		if (target == 0x287ae0000ull) gate = &scene_hdr;
+		if (gate != nullptr && gate->Due(frame, 240)) {
 			const auto shader_hash = state.ps_input_info.stage.program->shader_hash;
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_SCENE_PIXEL_PHASE] frame={} phase={} target=0x{:x} shader=0x{:016x}\n",
-			    frame, phase, target, shader_hash));
+			    "[DS_SCENE_PIXEL_PHASE] frame={} capture=rolling target=0x{:x} shader=0x{:016x}\n",
+			    frame, target, shader_hash));
 			ProbeDsColorOutputs(m_context, state.color_info, state.color_count,
 			                    shader_hash, false, true);
 		}
