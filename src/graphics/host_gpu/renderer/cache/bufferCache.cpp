@@ -1883,6 +1883,44 @@ void BufferCache::PollRtHalfCheck() {
 	}
 }
 
+void BufferCache::PrepareBdaWrites() {
+	m_fault_manager.PrepareBdaWrites();
+}
+
+void BufferCache::SettleBdaWrites(uint64_t shader_hash) {
+	auto writes = m_fault_manager.CollectBdaWrites();
+	// If compaction overflows, every resident buffer is treated conservatively as written.
+	RangeSet touched;
+	if (writes.overflow) {
+		for (const auto& [addr, id]: m_buffers) touched.Add(addr, m_slot_buffers[id].Size());
+	} else {
+		for (const auto page: writes.pages) touched.Add(page, CACHING_PAGESIZE);
+	}
+	uint64_t settled = 0;
+	touched.ForEach([&](uint64_t start, uint64_t end) {
+		auto it = m_buffers.upper_bound(start);
+		if (it != m_buffers.begin()) --it;
+		for (; it != m_buffers.end() && it->first < end; ++it) {
+			const auto id = it->second;
+			auto& b = m_slot_buffers[id];
+			const uint64_t low = std::max(start, b.CpuAddress());
+			const uint64_t high = std::min(end, b.CpuAddress() + b.Size());
+			if (low >= high) continue;
+			// Transfer actual GPU writes to cache tracking before lighting consumes them.
+			(void)ObtainBuffer(low, high - low, true, false, id);
+			m_texture_cache.InvalidateMemoryFromGPU(low, high - low);
+			++settled;
+		}
+	});
+	static std::atomic<uint32_t> reports {0};
+	if ((writes.dropped != 0 || writes.overflow || settled != 0) &&
+	    reports.fetch_add(1, std::memory_order_relaxed) < 96) {
+		LOGF("[U59_BDA_SETTLE] shader=0x%016" PRIx64
+		     " pages=%zu settled=%" PRIu64 " dropped=%u overflow=%u\n",
+		     shader_hash, writes.pages.size(), settled, writes.dropped, writes.overflow ? 1u : 0u);
+	}
+}
+
 void BufferCache::ProcessFaultBuffer() {
 	m_fault_manager.ProcessFaultBuffer();
 }

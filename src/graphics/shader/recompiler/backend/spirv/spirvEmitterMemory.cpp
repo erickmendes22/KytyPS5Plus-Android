@@ -180,6 +180,50 @@ void RecordBdaFault(EmitterState& state, uint32_t page) {
 	                          ConstantU32(state, spv::MemorySemanticsMaskNone), bit);
 }
 
+
+// U59: Record the GPU-owned page after a runtime-addressed store or atomic.
+void RecordBdaGpuWrite(EmitterState& state, uint32_t guest) {
+	auto address = guest;
+	if (Kernel::AddressFold::IsEnabled()) {
+		address = Binary(state, spv::OpBitwiseAnd, TypeU64(state), address,
+		                 ConstantU64(state, Kernel::AddressFold::kFoldMask));
+	}
+	const auto extended = Binary(
+	    state, spv::OpUGreaterThanEqual, TypeBool(state), address,
+	    ConstantU64(state, LibKernel::Memory::kExtendedMemoryBase));
+	const auto packed = Select(
+	    state, TypeU64(state), extended,
+	    Binary(state, spv::OpISub, TypeU64(state), address,
+	           ConstantU64(state, LibKernel::Memory::kExtendedMemoryBase - LOWER_ADDRESS_SIZE)),
+	    address);
+	const auto page = Unary(
+	    state, spv::OpUConvert, TypeU32(state),
+	    Binary(state, spv::OpShiftRightLogical, TypeU64(state), packed,
+	           ConstantU32(state, BufferCache::CACHING_PAGEBITS)));
+	const auto word = Binary(
+	    state, spv::OpIAdd, TypeU32(state),
+	    Binary(state, spv::OpShiftRightLogical, TypeU32(state), page, ConstantU32(state, 5)),
+	    ConstantU32(state, static_cast<uint32_t>(BufferCache::BDA_WRITE_BITMAP_WORD)));
+	const auto bit = Binary(
+	    state, spv::OpShiftLeftLogical, TypeU32(state), ConstantU32(state, 1),
+	    Binary(state, spv::OpBitwiseAnd, TypeU32(state), page, ConstantU32(state, 31)));
+	const auto previous = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAtomicOr, TypeU32(state), previous,
+	                          FaultElementPointer(state, word),
+	                          ConstantU32(state, spv::ScopeDevice),
+	                          ConstantU32(state, spv::MemorySemanticsMaskNone), bit);
+}
+
+void RecordBdaGpuWriteDrop(EmitterState& state) {
+	const auto old = state.builder.AllocateId();
+	state.builder.AddFunction(
+	    spv::OpAtomicIAdd, TypeU32(state), old,
+	    FaultElementPointer(state, ConstantU32(
+	        state, static_cast<uint32_t>(BufferCache::BDA_DROPPED_WRITES_WORD))),
+	    ConstantU32(state, spv::ScopeDevice),
+	    ConstantU32(state, spv::MemorySemanticsMaskNone), ConstantU32(state, 1));
+}
+
 uint32_t LoadBdaDword(ValueEmitContext& ctx, uint32_t address, bool coherent = false) {
 	auto&      state   = ctx.state;
 	const auto bda     = GetBdaPointer(state, address);
@@ -1233,6 +1277,105 @@ uint32_t LoadBuffer(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t compon
 	    });
 }
 
+
+template <typename Fn>
+uint32_t WriteIndirectBda(ValueEmitContext& ctx, uint32_t guest,
+                          uint32_t valid, uint32_t type, uint32_t zero, Fn&& operation) {
+	auto& state = ctx.state;
+	return EmitValueOrDefaultIfCondition(state, valid, type, zero, [&]() {
+		const auto host = GetBdaPointer(state, guest);
+		const auto mapped = Binary(state, spv::OpINotEqual, TypeBool(state), host,
+		                           ConstantU64(state, 0));
+		EmitIfCondition(state, Unary(state, spv::OpLogicalNot, TypeBool(state), mapped),
+		                [&]() { RecordBdaGpuWriteDrop(state); });
+		return EmitValueOrDefaultIfCondition(state, mapped, type, zero, [&]() {
+			RecordBdaGpuWrite(state, guest);
+			return operation(host);
+		});
+	});
+}
+
+// Raw byte/short/dword x1..x4 stores through shader-computed descriptors.
+void StoreIndirectBda(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t components,
+                      uint32_t bits) {
+	auto& state = ctx.state;
+	EmitIfCondition(state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
+		const auto access = PrepareIndirectBuffer(state, IndirectBufferArgs(ctx, inst), false);
+		const auto composite = ctx.Arg(inst, inst.NumArgs() - 2);
+		for (uint32_t i = 0; i < components; ++i) {
+			const auto guest = i == 0 ? access.address
+			    : Binary(state, spv::OpIAdd, TypeU64(state), access.address,
+		             ConstantU64(state, i * 4u));
+			const auto valid = IndirectBufferInBounds(
+			    state, access, i * 4u, ConstantU32(state, bits / 8u), false);
+			const auto aligned = Binary(state, spv::OpBitwiseAnd, TypeU64(state), guest,
+			                            ConstantU64(state, ~uint64_t {3}));
+			auto value = composite;
+			if (components != 1) {
+				value = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), value,
+				                          composite, i);
+			}
+			(void)WriteIndirectBda(ctx, aligned, valid, TypeU32(state),
+			                       ConstantU32(state, 0), [&](uint32_t host) {
+				const auto pointer = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpConvertUToPtr,
+				                          TypePhysicalU32Pointer(state), pointer, host);
+				if (bits == 32u) {
+					state.builder.AddFunction(spv::OpStore, pointer, value,
+					                          spv::MemoryAccessAlignedMask, 4u);
+				} else {
+					const auto shift = Binary(
+					    state, spv::OpShiftLeftLogical, TypeU32(state),
+					    Binary(state, spv::OpBitwiseAnd, TypeU32(state),
+					           Unary(state, spv::OpUConvert, TypeU32(state), guest),
+					           ConstantU32(state, bits == 8u ? 3u : 2u)),
+					    ConstantU32(state, 3));
+					const auto mask = Binary(
+					    state, spv::OpShiftLeftLogical, TypeU32(state),
+					    ConstantU32(state, bits == 8u ? 0xffu : 0xffffu), shift);
+					const auto data = Binary(state, spv::OpShiftLeftLogical, TypeU32(state),
+					                         value, shift);
+					AtomicUpdate(state, pointer, IR::ResourceKind::Buffer, [&](uint32_t old) {
+						return Binary(state, spv::OpBitwiseOr, TypeU32(state),
+						              Binary(state, spv::OpBitwiseAnd, TypeU32(state), old,
+						                     Unary(state, spv::OpNot, TypeU32(state), mask)),
+						              Binary(state, spv::OpBitwiseAnd, TypeU32(state), data, mask));
+					});
+				}
+				return ConstantU32(state, 0);
+			});
+		}
+	});
+}
+
+// Range-check the complete 32/64-bit atomic payload and return its pre-operation value.
+template <typename Fn>
+uint32_t EmitIndirectBdaAtomic(ValueEmitContext& ctx, const IR::Inst& inst, bool wide,
+                               Fn&& operation) {
+	auto& state = ctx.state;
+	const auto type = wide ? TypeU64(state) : TypeU32(state);
+	const auto zero = wide ? ConstantU64(state, 0) : ConstantU32(state, 0);
+	return EmitValueOrDefaultIfCondition(state, ctx.Arg(inst, inst.NumArgs() - 1), type, zero,
+	    [&]() {
+		const auto access = PrepareIndirectBuffer(state, IndirectBufferArgs(ctx, inst), false);
+		const auto valid = IndirectBufferInBounds(
+		    state, access, 0u, ConstantU32(state, wide ? 8u : 4u), false);
+		const auto guest = Binary(state, spv::OpBitwiseAnd, TypeU64(state),
+		                          access.address, ConstantU64(state,
+		                          wide ? ~uint64_t {7} : ~uint64_t {3}));
+		return WriteIndirectBda(ctx, guest, valid, type, zero,
+		    [&](uint32_t host) {
+			const auto pointer = state.builder.AllocateId();
+			state.builder.AddFunction(
+			    spv::OpConvertUToPtr,
+			    TypePointer(state, spv::StorageClassPhysicalStorageBuffer, type),
+			    pointer, host);
+			return operation(pointer);
+		});
+	});
+}
+
 void StoreBuffer(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t components) {
 	auto& state = ctx.state;
 	EmitIfCondition(state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
@@ -1518,6 +1661,13 @@ void DefineGetBdaPointer(EmitterState& state) {
 
 uint32_t EmitAtomic32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto& mem = ctx.Memory(inst);
+	if (mem.kind == IR::ResourceKind::IndirectBuffer) {
+		return EmitIndirectBdaAtomic(ctx, inst, false, [&](uint32_t pointer) {
+			const auto old = EmitAtomicOperation(ctx, inst, pointer, spv::ScopeDevice);
+			EmitAtomicMemoryBarrier(ctx.state, IR::ResourceKind::Buffer);
+			return old;
+		});
+	}
 	return EmitAtomicAccess(ctx, inst, mem, [&](uint32_t pointer) {
 		const auto scope =
 		    mem.kind == IR::ResourceKind::Lds ? spv::ScopeWorkgroup : spv::ScopeDevice;
@@ -1530,6 +1680,13 @@ uint32_t EmitAtomic32(ValueEmitContext& ctx, const IR::Inst& inst) {
 uint32_t EmitBufferAtomic64(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto& mem   = ctx.Memory(inst);
 	auto&       state = ctx.state;
+	if (mem.kind == IR::ResourceKind::IndirectBuffer) {
+		return EmitIndirectBdaAtomic(ctx, inst, true, [&](uint32_t pointer) {
+			const auto old = EmitAtomicOperation(ctx, inst, pointer, spv::ScopeDevice);
+			EmitAtomicMemoryBarrier(ctx.state, IR::ResourceKind::Buffer);
+			return old;
+		});
+	}
 	return EmitValueOrDefaultIfCondition(
 	    state, ctx.Arg(inst, inst.NumArgs() - 1), TypeU64(state), ConstantU64(state, 0), [&]() {
 		    const auto resource =
@@ -1600,6 +1757,14 @@ void EmitSharedAtomic64(ValueEmitContext& ctx, const IR::Inst& inst) {
 uint32_t EmitBufferFloatAtomic(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto& mem       = ctx.Memory(inst);
 	const bool  max_value = inst.GetOpcode() == IR::ValueOpcode::BufferAtomicFMax32;
+	if (mem.kind == IR::ResourceKind::IndirectBuffer) {
+		return EmitIndirectBdaAtomic(ctx, inst, false, [&](uint32_t pointer) {
+			return AtomicUpdate(ctx.state, pointer, IR::ResourceKind::Buffer, [&](uint32_t old) {
+				return EmitFloatAtomicReplacement(ctx.state, old,
+				                                  ctx.Arg(inst, inst.NumArgs() - 2), max_value);
+			});
+		});
+	}
 	return EmitAtomicUpdate(ctx, inst, mem,
 	                        [max_value](EmitterState& state, uint32_t old, uint32_t value) {
 		                        return EmitFloatAtomicReplacement(state, old, value, max_value);
@@ -1847,7 +2012,10 @@ void EmitStoreMemory(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto  buffer_components = IR::BufferComponentCount(op);
 	const auto  shared_components = IR::SharedComponentCount(op);
 	const auto  type              = inst.Arg(inst.NumArgs() - 2).GetType();
-	if (mem.kind == IR::ResourceKind::FlatLocal)
+	if (mem.kind == IR::ResourceKind::IndirectBuffer) {
+		StoreIndirectBda(ctx, inst, std::max(buffer_components, 1u),
+		                 type == IR::Type::U8 ? 8u : type == IR::Type::U16 ? 16u : 32u);
+	} else if (mem.kind == IR::ResourceKind::FlatLocal)
 		StoreLocalFlat(ctx, inst);
 	else if (buffer_components > 1u)
 		StoreBuffer(ctx, inst, buffer_components);

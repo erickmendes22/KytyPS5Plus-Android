@@ -102,6 +102,37 @@ struct MemoryInfo {
 		                        opcode == ValueOpcode::LoadBufferU32x4);
 	}
 
+
+	// U59: GPU-computed buffer descriptors may be raw store or atomic destinations.
+	[[nodiscard]] bool SupportsIndirectRawWrite(ValueOpcode opcode) const {
+		if (typed || formatted) return false;
+		switch (opcode) {
+			case ValueOpcode::StoreBufferU8: return data_bits == 8u;
+			case ValueOpcode::StoreBufferU16: return data_bits == 16u;
+			case ValueOpcode::StoreBufferU32:
+			case ValueOpcode::StoreBufferU32x2:
+			case ValueOpcode::StoreBufferU32x3:
+			case ValueOpcode::StoreBufferU32x4: return data_bits == 32u;
+			case ValueOpcode::BufferAtomicSwap32:
+			case ValueOpcode::BufferAtomicCmpSwap32:
+			case ValueOpcode::BufferAtomicIAdd32:
+			case ValueOpcode::BufferAtomicISub32:
+			case ValueOpcode::BufferAtomicSMin32:
+			case ValueOpcode::BufferAtomicUMin32:
+			case ValueOpcode::BufferAtomicSMax32:
+			case ValueOpcode::BufferAtomicUMax32:
+			case ValueOpcode::BufferAtomicAnd32:
+			case ValueOpcode::BufferAtomicOr32:
+			case ValueOpcode::BufferAtomicXor32:
+			case ValueOpcode::BufferAtomicFMin32:
+			case ValueOpcode::BufferAtomicFMax32: return data_bits == 32u;
+			case ValueOpcode::BufferAtomicSwap64:
+			case ValueOpcode::BufferAtomicIAdd64:
+			case ValueOpcode::BufferAtomicAnd64:
+			case ValueOpcode::BufferAtomicOr64: return data_bits == 32u || data_bits == 64u;
+			default: return false;
+		}
+	}
 	bool operator==(const MemoryInfo& other) const = default;
 };
 
@@ -676,6 +707,8 @@ struct ShaderInfo {
 	int32_t                          instance_offset_sgpr = -1;
 	bool                            has_bitwise_xor               = false;
 	bool                            uses_dma                      = false;
+	// U59: a computed V# writes through BDA, so its GPU-written pages must be settled.
+	bool                            bda_writes                    = false;
 	bool                            uses_swizzle                  = false;
 	bool                            uses_lds                      = false;
 	bool                            live_vertex_exec              = false;

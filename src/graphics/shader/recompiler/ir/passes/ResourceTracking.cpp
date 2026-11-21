@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdlib>
+#include <cstring>
 #include <fmt/format.h>
 #include <map>
 #include <numeric>
@@ -4054,15 +4056,26 @@ private:
 				source = indirect->source;
 			} else if (!GetHandle(inst.Arg(0), ValueOpcode::GetBufferResource, 4, flags.pc,
 			               memory.resource * 4u, handle, source)) {
-				if (memory.kind != (op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
-				                                                        : ResourceKind::Buffer) ||
-				    !memory.SupportsIndirectBufferLoad(op)) {
+
+				const char* bda_mode = std::getenv("KYTY_BDA_WRITES");
+				const bool indirect_write =
+				    memory.kind == ResourceKind::Buffer &&
+				    m_program.stage == ShaderType::Compute &&
+				    memory.SupportsIndirectRawWrite(op) &&
+				    (bda_mode == nullptr || std::strcmp(bda_mode, "0") != 0);
+				if (!indirect_write &&
+				    (memory.kind != (op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
+				                                                           : ResourceKind::Buffer) ||
+				     !memory.SupportsIndirectBufferLoad(op))) {
 					Fail(flags.pc,
-					     "buffer descriptor is not a valid runtime value; GPU-selected access "
-					     "requires a scalar, raw 8/16-bit, raw DWORD x1/x2/x3/x4, or formatted X load");
+					     "GPU-selected buffer descriptor requires a supported load, store or atomic");
 				}
 				m_program.memory_info[flags.index].kind = ResourceKind::IndirectBuffer;
-				m_info.uses_dma                         = true;
+				if (indirect_write) {
+					m_info.bda_writes = true;
+					m_program.has_address_writes = true;
+				}
+				m_info.uses_dma = true;
 				return;
 			}
 			resource = AddBuffer(source, memory, op, flags.pc);

@@ -41,6 +41,12 @@ public:
 	static constexpr uint64_t CACHING_PAGESIZE  = uint64_t {1} << CACHING_PAGEBITS;
 	static constexpr size_t   kStreamHistoryMax = 65536; // KYTY_STREAM_PROMOTE entries before a reset
 	static constexpr uint64_t CACHING_NUMPAGES  = (LOWER_ADDRESS_SIZE + LibKernel::Memory::kExtendedMemorySize) >> CACHING_PAGEBITS;
+	// GPU-computed V# stores use a separate dirty bitmap, away from ordinary read faults.
+	static constexpr uint64_t FAULT_BITMAP_WORDS = CACHING_NUMPAGES / 32u;
+	static constexpr uint64_t BDA_WRITE_BITMAP_WORD = FAULT_BITMAP_WORDS;
+	static constexpr uint64_t BDA_DROPPED_WRITES_WORD = 2u * FAULT_BITMAP_WORDS;
+	static constexpr uint64_t BDA_WRITES_FAULT_BUFFER_SIZE =
+	    (BDA_DROPPED_WRITES_WORD + 1u) * sizeof(uint32_t);
 	static constexpr uint64_t BDA_PAGETABLE_SIZE =
 	    CACHING_NUMPAGES * sizeof(vk::DeviceAddress);
 
@@ -135,6 +141,8 @@ public:
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	void               ProcessFaultBuffer();
+	void               PrepareBdaWrites();
+	void               SettleBdaWrites(uint64_t shader_hash);
 	void               SynchronizeBda(const RangeSet& mapped);
 	void               QueueBdaSync(uint64_t vaddr, uint64_t size) {
 		m_memory_tracker.QueueBdaSync(Kernel::AddressFold::Fold(vaddr), size);

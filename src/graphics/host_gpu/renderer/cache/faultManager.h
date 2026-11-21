@@ -6,6 +6,8 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace Libs::Graphics {
 
@@ -21,6 +23,13 @@ public:
 
 	[[nodiscard]] Buffer* GetFaultBuffer() noexcept { return &m_fault_buffer; }
 	void                  ProcessFaultBuffer();
+	void                  PrepareBdaWrites();
+	struct BdaWrites {
+		std::vector<uint64_t> pages;
+		uint32_t dropped = 0;
+		bool overflow = false;
+	};
+	[[nodiscard]] BdaWrites CollectBdaWrites();
 
 private:
 	GraphicContext&                            m_graphics;
@@ -30,6 +39,8 @@ private:
 	Buffer                                     m_download_buffer;
 	std::array<uint64_t, MaxPendingFaults>      m_fault_areas {};
 	uint32_t                                   m_current_area = 0;
+	std::unique_ptr<Buffer>                    m_bda_download;
+	bool                                       m_bda_initialized = false;
 	vk::DescriptorSetLayout                    m_fault_process_desc_layout = nullptr;
 	vk::Pipeline                               m_fault_process_pipeline = nullptr;
 	vk::PipelineLayout                         m_fault_process_pipeline_layout = nullptr;

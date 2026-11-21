@@ -29,7 +29,7 @@ FaultManager::FaultManager(GraphicContext& graphics, CommandScheduler& scheduler
                            BufferCache& buffer_cache)
     : m_graphics(graphics), m_scheduler(scheduler), m_buffer_cache(buffer_cache),
       m_fault_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 0, AllFlags,
-                     BufferCache::CACHING_NUMPAGES / 8),
+                     BufferCache::BDA_WRITES_FAULT_BUFFER_SIZE),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 0, AllFlags,
                         MaxPendingFaults * PageFaultAreaSize) {
 	SetVulkanObjectNameF(m_graphics.device, m_fault_buffer.Handle(), "Fault Buffer");
@@ -104,7 +104,7 @@ void FaultManager::ProcessFaultBuffer() {
 	post_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite;
 
 	const vk::DescriptorBufferInfo infos[] {
-	    {m_fault_buffer.Handle(), 0, m_fault_buffer.Size()},
+	    {m_fault_buffer.Handle(), 0, BufferCache::FAULT_BITMAP_WORDS * sizeof(uint32_t)},
 	    {m_download_buffer.Handle(), offset, PageFaultAreaSize},
 	};
 	std::array<vk::WriteDescriptorSet, 2> writes {};
@@ -158,6 +158,102 @@ void FaultManager::ProcessFaultBuffer() {
 
 	m_fault_areas[m_current_area++] = m_scheduler.CurrentTick();
 	m_current_area %= MaxPendingFaults;
+}
+
+void FaultManager::PrepareBdaWrites() {
+	if (!m_bda_initialized) {
+		constexpr uint64_t begin = BufferCache::BDA_WRITE_BITMAP_WORD * sizeof(uint32_t);
+		m_fault_buffer.Fill(begin, BufferCache::BDA_WRITES_FAULT_BUFFER_SIZE - begin, 0);
+		m_bda_initialized = true;
+	}
+}
+
+FaultManager::BdaWrites FaultManager::CollectBdaWrites() {
+	PrepareBdaWrites();
+	// The existing GPU fault-scanner also compacts the separate GPU-written bitmap.
+	// Its source descriptor is restricted to this second bitmap, leaving read faults intact.
+	constexpr uint64_t begin = BufferCache::BDA_WRITE_BITMAP_WORD * sizeof(uint32_t);
+	constexpr uint64_t bytes = BufferCache::FAULT_BITMAP_WORDS * sizeof(uint32_t);
+	constexpr uint64_t counter = BufferCache::BDA_DROPPED_WRITES_WORD * sizeof(uint32_t);
+	if (!m_bda_download) {
+		m_bda_download = std::make_unique<Buffer>(
+		    m_graphics, m_scheduler, MemoryUsage::Download, 0, AllFlags,
+		    PageFaultAreaSize + sizeof(uint32_t));
+	}
+	auto* mapped = m_bda_download->Mapped().data();
+	std::memset(mapped, 0, sizeof(uint64_t));
+	m_bda_download->Flush(0, sizeof(uint64_t));
+	m_scheduler.EndRendering(PassEnd::Buffer);
+	const auto command = m_scheduler.Current().Handle();
+	vk::BufferMemoryBarrier2 before {};
+	before.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+	before.srcAccessMask = vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eTransferWrite;
+	before.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader |
+	                      vk::PipelineStageFlagBits2::eTransfer;
+	before.dstAccessMask = vk::AccessFlagBits2::eShaderRead |
+	                       vk::AccessFlagBits2::eShaderWrite |
+	                       vk::AccessFlagBits2::eTransferRead;
+	before.buffer = m_fault_buffer.Handle();
+	before.offset = begin;
+	before.size = BufferCache::BDA_WRITES_FAULT_BUFFER_SIZE - begin;
+	vk::DependencyInfo dep {};
+	dep.bufferMemoryBarrierCount = 1;
+	dep.pBufferMemoryBarriers = &before;
+	command.pipelineBarrier2(dep);
+	const vk::DescriptorBufferInfo infos[] {
+	    {m_fault_buffer.Handle(), begin, bytes},
+	    {m_bda_download->Handle(), 0, PageFaultAreaSize},
+	};
+	std::array<vk::WriteDescriptorSet, 2> writes {};
+	for (uint32_t i = 0; i < writes.size(); ++i) {
+		writes[i].dstBinding = i;
+		writes[i].descriptorCount = 1;
+		writes[i].descriptorType = vk::DescriptorType::eStorageBuffer;
+		writes[i].pBufferInfo = &infos[i];
+	}
+	command.bindPipeline(vk::PipelineBindPoint::eCompute, m_fault_process_pipeline);
+	command.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute,
+	                             m_fault_process_pipeline_layout, 0, writes);
+	constexpr uint64_t threads = BufferCache::FAULT_BITMAP_WORDS;
+	command.dispatch(static_cast<uint32_t>((threads + 63u) / 64u), 1, 1);
+	vk::BufferMemoryBarrier2 after = before;
+	after.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+	after.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
+	after.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+	after.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
+	dep.pBufferMemoryBarriers = &after;
+	command.pipelineBarrier2(dep);
+	const vk::BufferCopy dropped_copy {counter, PageFaultAreaSize, sizeof(uint32_t)};
+	command.copyBuffer(m_fault_buffer.Handle(), m_bda_download->Handle(), 1, &dropped_copy);
+	// Ensure the compacted page list and dropped-write counter are host visible.
+	vk::BufferMemoryBarrier2 host {};
+	host.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader |
+	                    vk::PipelineStageFlagBits2::eTransfer;
+	host.srcAccessMask = vk::AccessFlagBits2::eShaderWrite |
+	                     vk::AccessFlagBits2::eTransferWrite;
+	host.dstStageMask = vk::PipelineStageFlagBits2::eHost;
+	host.dstAccessMask = vk::AccessFlagBits2::eHostRead;
+	host.buffer = m_bda_download->Handle();
+	host.offset = 0;
+	host.size = PageFaultAreaSize + sizeof(uint32_t);
+	dep.pBufferMemoryBarriers = &host;
+	command.pipelineBarrier2(dep);
+	// Wait on the actual producer/scan GPU tick, not a CPU approximation.
+	m_scheduler.Wait(m_scheduler.CurrentTick());
+	m_bda_download->Invalidate(0, PageFaultAreaSize + sizeof(uint32_t));
+	const auto* words = reinterpret_cast<const uint64_t*>(mapped);
+	const auto count = static_cast<uint32_t>(words[0]);
+	BdaWrites result;
+	result.overflow = count >= MaxPageFaults;
+	const auto limited = std::min(count, uint32_t {MaxPageFaults - 1});
+	result.pages.reserve(limited);
+	for (uint32_t index = 1; index <= limited; ++index) {
+		result.pages.push_back(BufferCache::GuestAddress(words[index]));
+	}
+	std::memcpy(&result.dropped, mapped + PageFaultAreaSize, sizeof(result.dropped));
+	// Do not carry written bits into the next dispatch or confuse them with read faults.
+	m_fault_buffer.Fill(begin, BufferCache::BDA_WRITES_FAULT_BUFFER_SIZE - begin, 0);
+	return result;
 }
 
 } // namespace Libs::Graphics

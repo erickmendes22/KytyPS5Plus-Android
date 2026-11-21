@@ -892,8 +892,12 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	PreparedBindings* descriptor_stage = &bindings;
 	FindBuffers(std::span {&descriptor_stage, 1u});
+
 	if (program.info.uses_dma) {
 		m_context.PrepareBda();
+	}
+	if (program.info.bda_writes) {
+		m_context.GetBufferCache().PrepareBdaWrites();
 	}
 	RebindImages(bindings);
 	BindSharedMemory(m_context, input_info, bindings);
@@ -1002,7 +1006,11 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();
+
 	buffer.MarkGpu("cs", program.shader_hash);
+	if (program.info.bda_writes) {
+		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
+	}
 	RememberDsBufferProducers(m_context, bindings, false);
 
 	// The removed host fence also ordered read-only dispatches before later writers.
@@ -1183,8 +1191,12 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			}
 		}
 	}
+
 	if (program.info.uses_dma) {
 		m_context.PrepareBda();
+	}
+	if (program.info.bda_writes) {
+		m_context.GetBufferCache().PrepareBdaWrites();
 	}
 	BindSharedMemory(m_context, input_info, bindings, args_addr);
 	RebindImages(bindings);
@@ -1259,7 +1271,11 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 	m_context.GetCommandScheduler().NoteWork();
+
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
+	if (program.info.bda_writes) {
+		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
+	}
 	RememberDsBufferProducers(m_context, bindings, true);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
@@ -1293,8 +1309,12 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 	PrepareBindings(input_info.stage, bindings);
 	PreparedBindings* descriptor_stage = &bindings;
 	FindBuffers(std::span {&descriptor_stage, 1u});
+
 	if (input_info.stage.program->info.uses_dma) {
 		m_context.PrepareBda();
+	}
+	if (input_info.stage.program->info.bda_writes) {
+		m_context.GetBufferCache().PrepareBdaWrites();
 	}
 	BindSharedMemory(m_context, input_info, bindings, args_addr);
 	RebindImages(bindings);
@@ -1316,7 +1336,11 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 		vk_buffer.dispatchIndirect(retrace.Handle(), 0);
 	}
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
+
 	buffer.MarkGpu("cs-retrace", input_info.stage.program->shader_hash);
+	if (input_info.stage.program->info.bda_writes) {
+		m_context.GetBufferCache().SettleBdaWrites(input_info.stage.program->shader_hash);
+	}
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
 	ResetBindings();
