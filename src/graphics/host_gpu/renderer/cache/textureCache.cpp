@@ -53,6 +53,8 @@ namespace Libs::Graphics {
 namespace {
 
 constexpr uint64_t NumFramesBeforeRemoval = 32;
+// Match U59's per-binding null comparison value. Never share across threads.
+thread_local uint32_t t_null_compare_funcs = 0;
 
 // --perf-stats: why the cache replaces or drops an image while resolving an overlap (each
 // replacement is a new native image, uploaded again from guest memory). Logs the first 400
@@ -795,14 +797,28 @@ TextureCache::ImageIds TextureCache::FindImagesInRegion(uint64_t address, uint64
 }
 
 ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
-	const auto format = desc.info.pixel_format;
-	if (const auto found = m_null_images.find(format); found != m_null_images.end()) {
+	// Old Android code cached every null image by format alone, created even
+	// 1D/3D placeholders as 2D, and left their texels undefined. Some of the
+	// shadow/lighting shaders do access null or nonresident T# descriptors.
+	const auto type = desc.info.type == Prospero::ImageType::kColor1D ||
+	                  desc.info.type == Prospero::ImageType::kColor3D
+	                      ? desc.info.type : Prospero::ImageType::kColor2D;
+	const bool depth_compare = desc.info.pixel_format == vk::Format::eD16Unorm &&
+	                           desc.view_info.aspect == vk::ImageAspectFlagBits::eDepth;
+	// A nonresident depth map should fail the S# comparison, rather than
+	// sampling undefined memory (reference OP depth: D16 clamps to [0,1]).
+	constexpr uint32_t GreaterFamily = (1u << 0u) | (1u << 4u) | (1u << 6u);
+	const bool compare_one = depth_compare && t_null_compare_funcs != 0u &&
+	                         (t_null_compare_funcs & ~GreaterFamily) == 0u;
+	const uint64_t key = static_cast<uint64_t>(desc.info.pixel_format) |
+	                     (static_cast<uint64_t>(type) << 32u) |
+	                     (static_cast<uint64_t>(compare_one ? 1u : 0u) << 40u);
+	if (const auto found = m_null_images.find(key); found != m_null_images.end())
 		return found->second;
-	}
 	ImageInfo info {};
 	info.pixel_format    = desc.info.pixel_format;
 	info.guest_format    = desc.info.guest_format;
-	info.type            = Prospero::ImageType::kColor2D;
+	info.type            = type;
 	info.extent          = {1, 1, 1};
 	info.resources       = {1, 1};
 	info.pitch           = 1;
@@ -810,8 +826,31 @@ ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
 	info.samples         = 1;
 	info.tile_mode       = Prospero::TileMode::kLinear;
 	info.mip_layout[0]   = {0, info.bytes_per_block, 1, 1};
-	const auto id        = InsertImage(info);
-	m_null_images.emplace(format, id);
+	const auto id = InsertImage(info);
+	m_null_images.emplace(key, id);
+	auto& image = m_slot_images[id];
+	auto& command = m_scheduler.Current();
+	command.EndRendering(PassEnd::ImageCopy);
+	image.Transit(vk::ImageLayout::eTransferDstOptimal,
+	              vk::AccessFlagBits2::eTransferWrite, {}, command.Handle());
+	if (depth_compare) {
+		const vk::ClearDepthStencilValue value {compare_one ? 1.0f : 0.0f, 0u};
+		const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+		command.Handle().clearDepthStencilImage(image.backing.image,
+		    vk::ImageLayout::eTransferDstOptimal, &value, 1, &range);
+	} else {
+		const vk::ClearColorValue value {std::array<float, 4> {}};
+		const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+		command.Handle().clearColorImage(image.backing.image,
+		    vk::ImageLayout::eTransferDstOptimal, &value, 1, &range);
+	}
+	static std::atomic<uint32_t> count {0};
+	if (count.fetch_add(1, std::memory_order_relaxed) < 16u) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_NULL_TEXTURE] format={} depth={} clear_one={} funcs={}\\n",
+		    vk::to_string(desc.info.pixel_format), depth_compare ? 1u : 0u,
+		    compare_one ? 1u : 0u, t_null_compare_funcs));
+	}
 	return id;
 }
 
@@ -3842,6 +3881,10 @@ void TextureCache::ProcessDownloadImages() {
 		}
 	}
 	m_download_images.clear();
+}
+
+void SetNullCompareFuncs(uint32_t funcs) {
+	t_null_compare_funcs = funcs;
 }
 
 } // namespace Libs::Graphics

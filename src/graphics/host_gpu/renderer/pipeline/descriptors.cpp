@@ -389,6 +389,23 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	     descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
 }
 
+// The texture's S# comparison functions determine the defined depth of a
+// null compare image. Its type *must* be depth for SPIR-V Dref operations.
+static uint32_t NullDepthCompareFuncs(
+    const ShaderRecompiler::IR::CompiledShaderInfo& program,
+    const ShaderRecompiler::IR::ResourceSnapshot& snapshot, uint32_t index) {
+	if (index >= program.info.images.size() || !program.info.images[index].depth_compare)
+		return 0u;
+	uint32_t funcs = 0u;
+	for (const auto& pair: program.info.sampled_pairs) {
+		if (pair.image != index || pair.sampler >= program.info.samplers.size()) continue;
+		const auto slot = program.info.samplers[pair.sampler].snapshot_index;
+		if (slot < snapshot.samplers.size())
+			funcs |= 1u << ((snapshot.samplers[slot].dwords[0] >> 12u) & 7u);
+	}
+	return funcs;
+}
+
 // Without nullDescriptor, an unbound texture binds a 1x1 placeholder image of the resource's
 // numeric class instead (the texture cache keeps one per format).
 static TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::ImageResource& resource,
@@ -407,7 +424,11 @@ static TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::Image
 			break;
 		default: EXIT("null image has unsupported numeric class\n");
 	}
-	desc.info.pixel_format    = VulkanFormat(desc.info.guest_format);
+	const bool null_depth_compare = resource.depth_compare &&
+	                               binding == TextureCache::BindingType::Texture;
+	if (null_depth_compare) desc.info.guest_format = Prospero::BufferFormat::k16UNorm;
+	desc.info.pixel_format    = null_depth_compare ? vk::Format::eD16Unorm
+	                                                 : VulkanFormat(desc.info.guest_format);
 	desc.info.type            = Prospero::ImageType::kColor2D;
 	desc.info.extent          = {1, 1, 1};
 	desc.info.resources       = {1, 1};
@@ -446,7 +467,8 @@ static TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::Image
 			break;
 		default: break;
 	}
-	desc.view_info.aspect     = vk::ImageAspectFlagBits::eColor;
+	desc.view_info.aspect     = null_depth_compare ? vk::ImageAspectFlagBits::eDepth
+	                                                : vk::ImageAspectFlagBits::eColor;
 	desc.view_info.usage      = binding == TextureCache::BindingType::Storage
 	                                ? vk::ImageUsageFlagBits::eStorage
 	                                : vk::ImageUsageFlagBits::eSampled;
@@ -720,6 +742,10 @@ static TextureDescEntry ComputeTextureDesc(const ShaderRecompiler::IR::ImageReso
 TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&   resource,
                                               const ShaderRecompiler::IR::DescriptorValue& value,
                                               TextureDescMemo::Slot*                      slot) {
+	// A null comparison mask must never leak into another image or game.
+	struct ResetNullDepthCompare {
+		~ResetNullDepthCompare() { SetNullCompareFuncs(0u); }
+	} reset_null_depth_compare;
 	if (resource.atomic64 && !m_context.GetGraphics().shader_image_int64_atomics_enabled) {
 		EXIT("64-bit image atomics require shaderImageInt64Atomics\n");
 	}
@@ -731,7 +757,8 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 
 	auto& texture_cache = m_context.GetTextureCache();
 	if (descriptor.IsNull()) {
-		if (m_context.GetGraphics().optional_features.null_descriptor) {
+		if (m_context.GetGraphics().optional_features.null_descriptor &&
+		    !resource.depth_compare) {
 			return {.layout = vk::ImageLayout::eGeneral};
 		}
 		auto       desc = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
@@ -1079,6 +1106,7 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
             prepared.images[i] = {}; // no static descriptor: shared dynamic set1
             continue;
         }
+		SetNullCompareFuncs(NullDepthCompareFuncs(program, snapshot, i));
 		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i],
 		                              slots != nullptr ? &slots[i] : nullptr);
 		BindImage(binding.image_id, binding.desc.type == TextureCache::BindingType::Storage);
@@ -1390,6 +1418,7 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 				auto* slots = (BindMemo::Bits() & BindMemo::TextureDesc) != 0
 				                  ? m_texture_desc_memo.SlotsFor(&program, program.info.images.size()).data()
 				                  : nullptr;
+				SetNullCompareFuncs(NullDepthCompareFuncs(program, snapshot, i));
 				images[i] = ResolveTexture(program.info.images[i], snapshot.images[i],
 				                           slots != nullptr ? &slots[i] : nullptr);
 				// NullDescriptor-capable devices may legitimately resolve a missing
