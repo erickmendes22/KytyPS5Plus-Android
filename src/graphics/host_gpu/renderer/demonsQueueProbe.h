@@ -8,6 +8,12 @@
 
 namespace Libs::Graphics::DemonsQueueProbe {
 
+constexpr uint64_t GBufferAddress = 0x287ae0000ull;
+// Observed with that array bound as a color attachment in the gameplay trace.
+constexpr std::array<uint64_t, 3> GBufferShaders {
+    0xafd9334e8581cda2ull, 0xe31a5473e9ee7503ull, 0xb631777eb4aee68cull
+};
+
 constexpr uint64_t HdrAddress = 0x281300000ull;
 constexpr uint64_t TileProducer = 0x32c7da582db1795aull;
 constexpr uint64_t PrefixAddress = 0x208e41a00ull;

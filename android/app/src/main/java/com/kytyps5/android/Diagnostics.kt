@@ -229,7 +229,8 @@ object Diagnostics {
         val dump = File(context.filesDir, "ds-lighting-dumps")
         if (!dump.isDirectory) return 0
         val queueShaders = setOf("f0c482b0b355e9de", "e3daeb1e7426761b", "32c7da582db1795a")
-        val watched = queueShaders + setOf(
+        val producerShaders = setOf("afd9334e8581cda2", "e31a5473e9ee7503", "b631777eb4aee68c")
+        val watched = queueShaders + producerShaders + setOf(
             "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
             "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",
             "e75589aa0bb3ae52", "93b0be7f1a0293d1"
@@ -249,7 +250,7 @@ object Diagnostics {
                             })
                     }
                     .sortedWith(compareByDescending<File> { file ->
-                        queueShaders.any { hash -> file.name.contains("_${hash}_") }
+                        (queueShaders + producerShaders).any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { it.lastModified() })
                     .take(if (subdir == "queue-state") 72 else 24)
                     .map { subdir to it }
@@ -261,7 +262,8 @@ object Diagnostics {
                 "buffer summaries; buffers/*.bin contain the actual bytes. " +
                 "Join DS_QUEUE_TILES, DS_QUEUE_CAPTURE, DS_QUEUE_IMAGE, DS_QUEUE_EXECUTED and " +
                 "DS_QUEUE_DRAW by frame and queue. queue-state contains the most recent " +
-                "binding snapshots and GPU tile lists.\n"
+                "binding snapshots and GPU tile lists. DS_GBUFFER_DRAW records the producer's " +
+                "effective masks, inputs and output samples.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
             zip.closeEntry()

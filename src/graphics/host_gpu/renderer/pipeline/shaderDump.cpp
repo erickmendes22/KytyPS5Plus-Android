@@ -40,8 +40,8 @@ const std::filesystem::path& Root() {
 	return Config::GetShaderDumpFolder();
 }
 
-// With Android's automatic Demon trace, save only the affected compute pipelines,
-// never every shader of an entire game. The diagnostic ZIP exports these exact
+// With Android's automatic Demon trace, save the affected compute pipelines
+// and observed G-buffer fragment shaders. The diagnostic ZIP exports these exact
 // SPIR-V binaries and Vulkan pipeline JSON without needing RenderDoc.
 bool DsLightingCapture() {
 	return Root().filename() == "ds-lighting-dumps";
@@ -134,7 +134,9 @@ bool Enabled() {
 void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t guest_hash,
                   std::span<const uint32_t> spirv) {
 	if (!Enabled() || module == nullptr ||
-	    (DsLightingCapture() && !DsLightingShader(guest_hash))) {
+	    (DsLightingCapture() && !DsLightingShader(guest_hash) &&
+	     std::ranges::find(DemonsQueueProbe::GBufferShaders, guest_hash) ==
+	         DemonsQueueProbe::GBufferShaders.end())) {
 		return;
 	}
 	auto&      state   = GetState();

@@ -2,6 +2,13 @@
 
 #include <cassert>
 using Libs::Graphics::GuestColorWriteEnabled;
+using Libs::Graphics::GuestColorWriteMask;
+
+// An alpha-only export leaves the old RGB intact, even with dynamic attachment enable.
+static_assert(GuestColorWriteMask(0x0000000fu, 0x00000008u, 0) == 0x8u);
+static_assert(GuestColorWriteMask(0x000000f0u, 0x00000030u, 1) == 0x3u);
+static_assert(GuestColorWriteMask(0x00000001u, 0x00000002u, 0) == 0u);
+static_assert(GuestColorWriteMask(0xffffffffu, 0xffffffffu, 8) == 0u);
 
 // Target exists but shader exports no channels to it: no host writes.
 static_assert(!GuestColorWriteEnabled(0x0000000fu, 0x00000000u, 0, true));

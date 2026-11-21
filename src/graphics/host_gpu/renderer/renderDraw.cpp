@@ -2070,6 +2070,63 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	auto& pipeline = *pipeline_ptr;
 	TraceDsGraphicsOutcome(true, true, state.color_count,
 	                      static_cast<bool>(state.depth_info.image_id), state.ps_active);
+	static const bool ds_gbuffer_enabled = [] {
+		const auto* value = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
+		return value && value[0] == '1' && value[1] == '\0';
+	}();
+	// Record the actual material pass feeding the deferred-lighting kernels.
+	// One draw per selected shader and 240 frames keeps GPU readback bounded.
+	const RenderColorInfo* ds_gbuffer = nullptr;
+	uint64_t ds_gbuffer_shader = 0;
+	const int32_t ds_gbuffer_frame = m_context.GetGpu().GetFrameNum();
+	if (ds_gbuffer_enabled && state.ps_active && bindings.pixel) {
+		ds_gbuffer_shader = state.ps_input_info.stage.program->shader_hash;
+		const auto& watched = DemonsQueueProbe::GBufferShaders;
+		const auto found = std::ranges::find(watched, ds_gbuffer_shader);
+		if (found != watched.end()) {
+			const auto colors = std::span {state.color_info, state.color_count};
+			const auto target = std::ranges::find_if(colors, [](const auto& color) {
+				return color.image_id && color.desc.info.data.address == DemonsQueueProbe::GBufferAddress &&
+				       color.desc.view_info.base_layer == 0 && color.desc.view_info.base_level == 0;
+			});
+			static std::array<DemonsRollingProbe::FrameGate, watched.size()> gates {};
+			if (target != colors.end() && gates[found - watched.begin()].Due(ds_gbuffer_frame, 240)) {
+				ds_gbuffer = &*target;
+				const auto& hw = buffer.GetRegisters();
+				const auto shader_mask = hw.GetShaderRegisters().m_cbShaderMask;
+				const auto hardware_mask = hw.GetRenderTargetMask();
+				const bool dyn_write = m_context.GetGraphics().optional_features.color_write_enable;
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_GBUFFER_DRAW] frame={} phase=before shader=0x{:016x} dynamic_write={} "
+				    "target_mask=0x{:08x} shader_mask=0x{:08x} index_count={} instances={} indirect={}\n",
+				    ds_gbuffer_frame, ds_gbuffer_shader, dyn_write, hardware_mask, shader_mask,
+				    draw.index_count, draw.instance_count, indirect != nullptr));
+				for (const auto& color : colors) {
+					const auto slot = color.target_slot;
+					const auto mask = GuestColorWriteMask(hardware_mask, shader_mask, slot);
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_GBUFFER_ATTACHMENT] frame={} shader=0x{:016x} slot={} guest=0x{:x} "
+					    "mip={} layer={} format={} native_mask=0x{:x} old_dynamic_mask=0x{:x}\n",
+					    ds_gbuffer_frame, ds_gbuffer_shader, slot, color.desc.info.data.address,
+					    color.desc.view_info.base_level, color.desc.view_info.base_layer,
+					    static_cast<uint32_t>(color.desc.view_info.format),
+					    color.export_mapping.ApplyMask(mask & 0xfu),
+					    color.export_mapping.ApplyMask(render_target_mask_slot(hardware_mask, slot))));
+				}
+				for (size_t i = 0; i < bindings.pixel->images.size(); ++i) {
+					const auto& input = bindings.pixel->images[i];
+					const auto& view = input.desc.view_info;
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_GBUFFER_INPUT] frame={} shader=0x{:016x} index={} guest=0x{:x} "
+					    "format={} base_mip={} base_layer={} layers={} placeholder={}\n",
+					    ds_gbuffer_frame, ds_gbuffer_shader, i, input.desc.info.data.address,
+					    static_cast<uint32_t>(view.format), view.base_level, view.base_layer,
+					    view.layer_count, input.placeholder || !input.image_id));
+				}
+				ProbeDsColorOutputs(m_context, ds_gbuffer, 1, ds_gbuffer_shader, false, true);
+			}
+		}
+	}
 	// Follow the first post-compute HDR writer and reader, then the compositor.
 	constexpr uint8_t DsHdrReader = 1, DsComposite = 2, DsHdrWriter = 4;
 	std::array<uint8_t, DemonsQueueProbe::Queues.size()> ds_draw_stage {};
@@ -2481,6 +2538,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (shader_write_stages) {
 		m_context.GetCommandScheduler().EndRendering(PassEnd::ShaderWrite);
 		ShaderWriteBarrier(buffer.Handle(), shader_write_stages);
+	}
+	if (ds_gbuffer) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_GBUFFER_DRAW] frame={} phase=after shader=0x{:016x}\n",
+		    ds_gbuffer_frame, ds_gbuffer_shader));
+		ProbeDsColorOutputs(m_context, ds_gbuffer, 1, ds_gbuffer_shader, false, true);
 	}
 	for (size_t i = 0; i < ds_draw_stage.size(); ++i) {
 		const auto stage = ds_draw_stage[i];

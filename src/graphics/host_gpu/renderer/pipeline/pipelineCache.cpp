@@ -21,6 +21,7 @@
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/hostShaderQuirks.h"
 #include "graphics/host_gpu/renderer/pipeline/deadLaneDefaults.h"
+#include "graphics/host_gpu/renderer/colorWritePolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightingMemoryPolicy.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/pipeline/laneBranchDefaults.h"
@@ -2047,15 +2048,10 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 			continue;
 		}
 		++kept_color_count;
-		// Without VK_EXT_color_write_enable the pipeline's static mask is the
-		// only protection against undefined PS exports (Chen KytyPS5 #41).
-		// With the extension, the dynamic write-enable mask enforces the
-		// guest shader mask, preserving existing pipeline-cache keys.
-		const uint32_t guest_mask = ctx.GetRenderTargetMask() &
-		    (m_graphics.optional_features.color_write_enable
-		         ? 0xffffffffu : ctx.GetShaderRegisters().m_cbShaderMask);
-		const uint32_t guest_slot_mask =
-		    render_target_mask_slot(guest_mask, colors[i].target_slot);
+		// VK_EXT_color_write_enable toggles the entire attachment. It cannot
+		// protect individual components that the guest pixel shader did not export.
+		const uint32_t guest_slot_mask = GuestColorWriteMask(
+		    ctx.GetRenderTargetMask(), ctx.GetShaderRegisters().m_cbShaderMask, slot);
 		// Binding a guest attachment during a depth-only draw must never
 		// imply color writes when the pixel shader stage is absent.
 		static_params.color_mask[slot] = ps_active
