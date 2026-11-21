@@ -18,6 +18,10 @@ static std::vector<uint32_t> ReadWords(const char* path) {
 
 int main(int argc, char** argv) {
 	static_assert(DefaultPixels(1600, 900)[4] == std::pair{1200u, 675u});
+	constexpr auto coverage = MaterialCoveragePixels(1600, 900, 0);
+	static_assert(coverage.size() == 96 && coverage.front() == std::pair{33u, 28u});
+	static_assert(coverage.back() == std::pair{1500u, 815u});
+	static_assert(MaterialCoveragePixels(1600, 900, 8).back() == std::pair{1566u, 871u});
 	static_assert(PixelInScissor({12, 9}, 10, 9, 3, 1));
 	static_assert(!PixelInScissor({13, 9}, 10, 9, 3, 1));
 	static_assert(!PixelInScissor({9, 9}, 10, 9, 3, 1));

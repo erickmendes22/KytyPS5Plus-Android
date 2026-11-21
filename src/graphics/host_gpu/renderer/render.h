@@ -441,6 +441,9 @@ private:
 	std::unique_ptr<IndirectDrawFixup>    m_indirect_fixup;
 
 	std::array<DemonsQueueProbe::Capture, DemonsQueueProbe::Queues.size()> m_ds_queue_captures {};
+	std::array<DemonsQueueProbe::MaterialTrace, DemonsQueueProbe::GBufferShaders.size()>
+	    m_ds_material_traces {};
+	void ProbeDsMaterialLight(const PreparedBindings& bindings, bool before);
 	void CaptureDsLightTiles(const PreparedBindings& bindings);
 	int32_t m_ds_tile_frame = -1;
 	std::array<DemonsQueueProbe::Tiles, DemonsQueueProbe::Queues.size()> m_ds_light_tiles {};

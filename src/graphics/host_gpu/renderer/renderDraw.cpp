@@ -1198,6 +1198,103 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 	}
 }
 
+// A full layer comparison also finds writes between the occlusion samples.
+struct DsAlbedoSnapshot {
+	uint32_t width = 0;
+	uint32_t height = 0;
+	std::vector<uint32_t> words;
+};
+
+static DsAlbedoSnapshot SnapshotDsAlbedo(RenderContext& context, const RenderColorInfo& color) {
+	auto& image = context.GetTextureCache().GetImage(color.image_id);
+	const auto& backing = image.backing;
+	const auto& view = color.desc.view_info;
+	const uint64_t area = uint64_t{backing.extent.width} * backing.extent.height;
+	if (!backing.image || backing.image_type != vk::ImageType::e2D || backing.samples != 1 ||
+	    backing.format != vk::Format::eR32Uint || !(backing.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+	    view.base_level != 0 || view.base_layer != 0 || area == 0 || area > 4u * 1024u * 1024u) {
+		return {};
+	}
+	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	const auto size = area * sizeof(uint32_t);
+	auto [mapped, offset] = download.Map(size, 16u, true);
+	if (!mapped) return {};
+	download.Commit();
+	vk::BufferImageCopy copy {};
+	copy.bufferOffset = offset;
+	copy.imageSubresource = vk::ImageSubresourceLayers {vk::ImageAspectFlagBits::eColor,
+	                                                   view.base_level, view.base_layer, 1};
+	copy.imageExtent = vk::Extent3D {backing.extent.width, backing.extent.height, 1};
+	image.Download(std::span{&copy, 1u}, download.Handle(), offset, size);
+	context.GetCommandScheduler().Finish();
+	download.Invalidate(offset, size);
+	DsAlbedoSnapshot result {backing.extent.width, backing.extent.height, std::vector<uint32_t>(area)};
+	std::memcpy(result.words.data(), mapped, size);
+	return result;
+}
+
+static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
+                                   const DsAlbedoSnapshot& before,
+                                   const DsAlbedoSnapshot& after,
+                                   std::span<const DemonsQueueProbe::Pixels::value_type> points,
+                                   std::span<const uint64_t> hits, bool cleared) {
+	if (before.words.empty() || before.width != after.width || before.height != after.height) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_GBUFFER_PIXELS] frame={} shader=0x{:016x} result=snapshot_unavailable\n",
+		    trace.frame, trace.shader));
+		return;
+	}
+	trace.width = before.width;
+	trace.height = before.height;
+	uint32_t equal_count = 0, always_count = 0, changed = 0, colored_after = 0;
+	const auto report = [&](DemonsQueueProbe::Pixels::value_type point, const char* evidence) {
+		const auto used = std::span{trace.pixels.data(), trace.count};
+		if (trace.count == trace.pixels.size() || std::ranges::find(used, point) != used.end())
+			return;
+		const auto [x, y] = point;
+		const auto index = size_t{y} * trace.width + x;
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_GBUFFER_PIXEL] frame={} shader=0x{:016x} sample={} xy={},{} "
+		    "evidence={} before={:08x} after={:08x}\n",
+		    trace.frame, trace.shader, trace.count, x, y, evidence,
+		    before.words[index], after.words[index]));
+		trace.pixels[trace.count++] = point;
+	};
+	// Prefer depth-accepted samples whose color stayed black, then any other
+	// depth-accepted sample. A changed word is independent evidence of a write.
+	for (size_t i = 0; i < points.size(); ++i) {
+		const auto [x, y] = points[i];
+		const auto index = size_t{y} * trace.width + x;
+		equal_count += hits[2 + 2 * i] != 0;
+		always_count += hits[3 + 2 * i] != 0;
+		if (hits[2 + 2 * i] && (after.words[index] & 0x00ffffffu) == 0)
+			report(points[i], "equal_black");
+	}
+	for (size_t i = 0; i < points.size(); ++i) {
+		if (hits[2 + 2 * i]) report(points[i], "equal");
+	}
+	for (size_t i = 0; i < after.words.size(); ++i) {
+		colored_after += (after.words[i] & 0x00ffffffu) != 0;
+		changed += before.words[i] != after.words[i];
+	}
+	if (changed && !cleared && trace.count < trace.pixels.size()) {
+		const uint32_t step = std::max(changed / uint32_t{trace.pixels.size()}, 1u);
+		uint32_t ordinal = 0;
+		for (size_t i = 0; i < after.words.size() && trace.count < trace.pixels.size(); ++i) {
+			if (before.words[i] == after.words[i] || ordinal++ % step != 0) continue;
+			report({static_cast<uint32_t>(i % trace.width), static_cast<uint32_t>(i / trace.width)},
+			       "attachment_changed");
+		}
+	}
+	// Keep the sampler's five lanes valid when the mesh covers fewer points.
+	std::fill(trace.pixels.begin() + trace.count, trace.pixels.end(), trace.pixels[0]);
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "[DS_GBUFFER_PIXELS] frame={} shader=0x{:016x} probes={} equal={} always={} "
+	    "changed={} cleared_on_load={} colored_after={} extent={}x{} traced={}\n",
+	    trace.frame, trace.shader, points.size(), equal_count, always_count,
+	    changed, cleared, colored_after, trace.width, trace.height, trace.count));
+}
+
 // The compute renderer shares the same exact-pixel sampler rather than
 // inferring nonzero outputs from vkCmdDispatch counts.
 void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash,
@@ -2102,6 +2199,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	const RenderColorInfo* ds_gbuffer = nullptr;
 	uint64_t ds_gbuffer_shader = 0;
 	const int32_t ds_gbuffer_frame = m_context.GetGpu().GetFrameNum();
+	DemonsQueueProbe::MaterialTrace* ds_material_trace = nullptr;
+	DsAlbedoSnapshot ds_albedo_before;
 	if (ds_gbuffer_enabled && state.ps_active && bindings.pixel) {
 		ds_gbuffer_shader = state.ps_input_info.stage.program->shader_hash;
 		const auto& watched = DemonsQueueProbe::GBufferShaders;
@@ -2115,6 +2214,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			static std::array<DemonsRollingProbe::FrameGate, watched.size()> gates {};
 			if (target != colors.end() && gates[found - watched.begin()].Due(ds_gbuffer_frame, 240)) {
 				ds_gbuffer = &*target;
+				ds_material_trace = &m_ds_material_traces[found - watched.begin()];
+				*ds_material_trace = {ds_gbuffer_frame, ds_gbuffer_shader};
 				const auto& hw = buffer.GetRegisters();
 				const auto shader_mask = hw.GetShaderRegisters().m_cbShaderMask;
 				const auto hardware_mask = hw.GetRenderTargetMask();
@@ -2175,7 +2276,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					                    false, true, &native->info);
 					++material_probes;
 				}
-				ProbeDsColorOutputs(m_context, ds_gbuffer, 1, ds_gbuffer_shader, false, true);
+				ds_albedo_before = SnapshotDsAlbedo(m_context, *ds_gbuffer);
 			}
 		}
 	}
@@ -2386,7 +2487,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    std::ranges::any_of(vertex_stages, [&](const auto& stage) {
 		    return stage_image_writes(stage.stage);
 	    }) || (state.ps_active && stage_image_writes(state.ps_input_info.stage));
-	constexpr uint32_t CoverageQueries = 12;
+	DemonsQueueProbe::CoveragePixels coverage_points {};
+	constexpr uint32_t CoverageQueries = 2 + 2 * DemonsQueueProbe::CoveragePixels{}.size();
 	vk::QueryPool coverage_pool {};
 	const auto device = m_context.GetGraphics().device;
 	const bool stencil_independent = !state.depth_info.stencil_test_enable ||
@@ -2420,7 +2522,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    m_context.GetGraphics().optional_features.color_write_enable));
 	}
 	uint32_t coverage_count = 0;
-	uint32_t coverage_pixels = 0;
+	uint32_t coverage_points_used = 0;
 	LogDrawPhase(draw.Name(), "BeginRendering");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
@@ -2624,21 +2726,21 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			};
 			query(vk::CompareOp::eEqual);
 			query(vk::CompareOp::eAlways);
-			const auto extent = ds_gbuffer->Extent();
-			if (dynamic_state.num_scissors == 1 && !m_pass_scaled) {
+			if (dynamic_state.num_scissors == 1 && !m_pass_scaled && !ds_albedo_before.words.empty()) {
 				const auto original = dynamic_state.scissors[0];
-				const auto pixels = DemonsQueueProbe::DefaultPixels(extent.width, extent.height);
-				for (uint32_t i = 0; i < pixels.size(); ++i) {
-					const auto [x, y] = pixels[i];
+				const auto pixels = DemonsQueueProbe::MaterialCoveragePixels(
+				    ds_albedo_before.width, ds_albedo_before.height,
+				    static_cast<uint32_t>(ds_gbuffer_frame) / 240u);
+				for (const auto& point : pixels) {
+					const auto [x, y] = point;
 					if (x >= rendering.width || y >= rendering.height ||
-					    !DemonsQueueProbe::PixelInScissor(pixels[i], original.offset.x,
-					                                    original.offset.y, original.extent.width,
-					                                    original.extent.height)) continue;
+					    !DemonsQueueProbe::PixelInScissor(point, original.offset.x,
+					        original.offset.y, original.extent.width, original.extent.height)) continue;
 					const vk::Rect2D one {{static_cast<int32_t>(x), static_cast<int32_t>(y)}, {1, 1}};
 					vk_buffer.setScissorWithCount(1, &one);
 					query(vk::CompareOp::eEqual);
 					query(vk::CompareOp::eAlways);
-					coverage_pixels |= 1u << i;
+					coverage_points[coverage_points_used++] = point;
 				}
 				vk_buffer.setScissorWithCount(1, &original);
 			}
@@ -2668,28 +2770,25 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_GBUFFER_DRAW] frame={} phase=after shader=0x{:016x}\n",
 		    ds_gbuffer_frame, ds_gbuffer_shader));
-		ProbeDsColorOutputs(m_context, ds_gbuffer, 1, ds_gbuffer_shader, false, true);
-	}
-	if (coverage_pool) {
-		m_context.GetCommandScheduler().Finish();
+		const auto after = SnapshotDsAlbedo(m_context, *ds_gbuffer);
 		std::array<uint64_t, CoverageQueries> hits {};
-		const auto result = device.getQueryPoolResults(
-		    coverage_pool, 0, coverage_count, coverage_count * sizeof(uint64_t), hits.data(),
-		    sizeof(uint64_t), vk::QueryResultFlagBits::e64);
-		device.destroyQueryPool(coverage_pool);
-		uint32_t equal_mask = 0, always_mask = 0, slot = 2;
-		if (result == vk::Result::eSuccess) {
-			for (uint32_t i = 0; i < DsProbePixels{}.size(); ++i) {
-				if ((coverage_pixels & (1u << i)) == 0) continue;
-				if (hits[slot++] != 0) equal_mask |= 1u << i;
-				if (hits[slot++] != 0) always_mask |= 1u << i;
+		if (coverage_pool) {
+			if (after.words.empty()) m_context.GetCommandScheduler().Finish();
+			const auto result = device.getQueryPoolResults(
+			    coverage_pool, 0, coverage_count, coverage_count * sizeof(uint64_t), hits.data(),
+			    sizeof(uint64_t), vk::QueryResultFlagBits::e64);
+			device.destroyQueryPool(coverage_pool);
+			if (result != vk::Result::eSuccess) {
+				coverage_points_used = 0;
+				hits = {};
 			}
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_GBUFFER_COVERAGE] frame={} shader=0x{:016x} result={} equal_any={} always_any={}\n",
+			    ds_gbuffer_frame, ds_gbuffer_shader, vk::to_string(result), hits[0] != 0, hits[1] != 0));
 		}
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "[DS_GBUFFER_COVERAGE] frame={} shader=0x{:016x} result={} equal_any={} always_any={} "
-		    "sampled=0x{:x} equal_pixels=0x{:x} always_pixels=0x{:x}\n",
-		    ds_gbuffer_frame, ds_gbuffer_shader, vk::to_string(result), hits[0] != 0,
-		    hits[1] != 0, coverage_pixels, equal_mask, always_mask));
+		RecordDsMaterialPixels(*ds_material_trace, ds_albedo_before, after,
+		                       std::span{coverage_points.data(), coverage_points_used}, hits,
+		                       rendering.color_attachments[ds_gbuffer->target_slot].is_clear);
 	}
 	for (size_t i = 0; i < ds_draw_stage.size(); ++i) {
 		const auto stage = ds_draw_stage[i];

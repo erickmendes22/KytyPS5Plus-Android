@@ -262,8 +262,9 @@ object Diagnostics {
                 "buffer summaries; buffers/*.bin contain the actual bytes. " +
                 "Join DS_QUEUE_TILES, DS_QUEUE_CAPTURE, DS_QUEUE_IMAGE, DS_QUEUE_EXECUTED and " +
                 "DS_QUEUE_DRAW by frame and queue. queue-state contains the most recent " +
-                "binding snapshots and GPU tile lists. DS_GBUFFER_DRAW records the producer's " +
-                "effective masks, inputs and output samples.\n"
+                "binding snapshots and GPU tile lists. Join DS_GBUFFER_DRAW, DS_GBUFFER_PIXELS, " +
+                "DS_GBUFFER_PIXEL and DS_MATERIAL_LIGHT by frame and material shader. " +
+                "The material lighting image markers identify the immediately following pixel probe.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
             zip.closeEntry()

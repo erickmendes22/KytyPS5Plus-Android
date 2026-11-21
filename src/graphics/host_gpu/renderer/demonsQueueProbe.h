@@ -46,6 +46,35 @@ constexpr bool PixelInScissor(std::pair<uint32_t, uint32_t> pixel, int32_t x, in
 	return dx >= 0 && dy >= 0 && dx < width && dy < height;
 }
 
+// Centers of a regular 12-by-8 grid; vary the offset within each cell
+// between captures to avoid repeatedly hitting gaps between small meshes.
+constexpr uint32_t CoverageColumns = 12;
+constexpr uint32_t CoverageRows = 8;
+using CoveragePixels =
+    std::array<Pixels::value_type, CoverageColumns * CoverageRows>;
+
+constexpr CoveragePixels MaterialCoveragePixels(uint32_t width, uint32_t height,
+                                                uint32_t phase) {
+	CoveragePixels pixels {};
+	const auto x_offset = 1u + (phase % 3u);
+	const auto y_offset = 1u + (phase / 3u % 3u);
+	for (uint32_t i = 0; i < pixels.size(); ++i) {
+		pixels[i] = {((i % CoverageColumns) * 4u + x_offset) * width / (4u * CoverageColumns),
+		             ((i / CoverageColumns) * 4u + y_offset) * height / (4u * CoverageRows)};
+	}
+	return pixels;
+}
+
+struct MaterialTrace {
+	int32_t frame = -1;
+	uint64_t shader = 0;
+	uint32_t width = 0;
+	uint32_t height = 0;
+	Pixels pixels {};
+	uint32_t count = 0;
+	uint32_t lighting_sampled = 0;
+};
+
 struct Tiles {
 	uint32_t first = 0;
 	uint32_t end = 0;
