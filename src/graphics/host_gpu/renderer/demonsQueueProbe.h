@@ -14,6 +14,17 @@ constexpr std::array<uint64_t, 3> GBufferShaders {
     0xafd9334e8581cda2ull, 0xe31a5473e9ee7503ull, 0xb631777eb4aee68cull
 };
 
+struct BlockAxis {
+	uint32_t offset;
+	uint32_t extent;
+};
+
+// Vulkan compressed copies start on a block boundary and may end on the mip edge.
+constexpr BlockAxis SampleBlock(uint64_t texel, uint32_t mip_extent) {
+	const auto offset = static_cast<uint32_t>(texel) & ~3u;
+	return {offset, std::min(4u, mip_extent - offset)};
+}
+
 constexpr uint64_t HdrAddress = 0x281300000ull;
 constexpr uint64_t TileProducer = 0x32c7da582db1795aull;
 constexpr uint64_t PrefixAddress = 0x208e41a00ull;

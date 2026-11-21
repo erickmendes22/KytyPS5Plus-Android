@@ -1147,24 +1147,21 @@ bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
 				            static_cast<unsigned long long>(size));
 			}
 		} else {
-			auto& textures = renderer.GetTextureCache();
-			if (textures.IsRegionGpuModified(vaddr, size)) {
-				if (textures.PublishGpuImageForIndirectArgs(vaddr, size)) {
-					static std::atomic_uint32_t published {0};
-					const auto n = published.fetch_add(1u, std::memory_order_relaxed) + 1u;
-					if (n <= 12u || (n & (n - 1u)) == 0u) {
-						std::printf("[DS_SRT_IMAGE_READY] count=%u addr=0x%llx bytes=%llu\n",
-						            n, static_cast<unsigned long long>(vaddr),
-						            static_cast<unsigned long long>(size));
-					}
-				} else {
-					static std::atomic_uint32_t ambiguous {0};
-					const auto n = ambiguous.fetch_add(1u, std::memory_order_relaxed) + 1u;
-					if (n <= 8u || (n & (n - 1u)) == 0u) {
-						std::printf("[DS_SRT_IMAGE_UNRESOLVED] count=%u addr=0x%llx bytes=%llu\n",
-						            n, static_cast<unsigned long long>(vaddr),
-						            static_cast<unsigned long long>(size));
-					}
+			Graphics::TextureCache::GpuImagePublication details {};
+			const bool published = renderer.GetTextureCache().PublishGpuImageForIndirectArgs(
+			    vaddr, size, &details);
+			if (published || details.failure) {
+				static std::atomic_uint32_t ready {0}, unresolved {0};
+				auto& counter = published ? ready : unresolved;
+				const auto n = counter.fetch_add(1u, std::memory_order_relaxed) + 1u;
+				if (n <= 12u || (n & (n - 1u)) == 0u) {
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_SRT_IMAGE_{}] count={} shader=0x{:016x} addr=0x{:x} bytes={} "
+					    "owner=0x{:x} owner_bytes={} format={} samples={} reason={}\n",
+					    published ? "READY" : "UNRESOLVED", n,
+					    Common::PerfStats::CurrentTraceShader(), vaddr, size,
+					    details.owner_address, details.owner_size, details.format,
+					    details.samples, published ? "published" : details.failure));
 				}
 			}
 		}

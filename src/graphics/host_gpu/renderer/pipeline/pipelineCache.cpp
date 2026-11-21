@@ -208,29 +208,17 @@ bool ReadShaderScalarMemory(void*, uint64_t address, std::span<uint32_t> values)
 	return true;
 }
 
-// Branch predicates are normally evaluated from a clean snapshot without
-// waiting. In Demon's Souls the branch may select a table that the preceding
-// GPU producer updated. Retry only these missing clean reads on the GPU
-// command thread, using the same ordered buffer/image ownership path as the
-// scalar SRT reads. No synchronization on shader worker threads.
+// A clean VkBuffer does not exclude a newer overlapping image. On the title's
+// coherent path, resolve ownership before accepting a CPU branch predicate.
 bool ReadShaderGuestMemoryNoSync(void*, uint64_t address, std::span<uint32_t> values) {
 	if (values.empty()) return false;
-	if (Libs::LibKernel::Memory::TryReadCleanBufferBacking(
-	        address, values.data(), values.size_bytes())) return true;
-	if (!DsCoherentSrtEnabled() || !GuestGpu::IsGpuThread()) return false;
-	const bool recovered = Libs::LibKernel::Memory::TryReadShaderResourceBacking(
-	    address, values.data(), values.size_bytes(), true);
-	if (recovered) {
-		static std::atomic_uint32_t recovered_count {0};
-		const auto n = recovered_count.fetch_add(1u, std::memory_order_relaxed) + 1u;
-		if (n <= 12u || (n & (n - 1u)) == 0u) {
-			PipelineCacheLog("[DS_SRT_BRANCH_READY] count={} addr=0x{:x} bytes={}",
-			                 n, address, values.size_bytes());
-		}
+	if (DsCoherentSrtEnabled() && GuestGpu::IsGpuThread()) {
+		return Libs::LibKernel::Memory::TryReadShaderResourceBacking(
+		    address, values.data(), values.size_bytes(), true);
 	}
-	return recovered;
+	return Libs::LibKernel::Memory::TryReadCleanBufferBacking(
+	    address, values.data(), values.size_bytes());
 }
-
 
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
                      const std::vector<uint32_t>& spirv) {

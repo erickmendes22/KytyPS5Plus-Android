@@ -48,6 +48,8 @@
 #include "loader/systemContent.h"
 #include "libs/errno.h"
 
+#include <vulkan/vulkan_format_traits.hpp>
+
 #include <algorithm>
 #include <fmt/format.h>
 #include <array>
@@ -968,6 +970,10 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 // all-black final composition (their addresses, shader hashes and formats are
 // reported separately). The readback is synchronized and never changes guest
 // image ownership or writes guest memory. Other games never enable it.
+static bool DsBlockCompressed(vk::Format format) {
+	return format >= vk::Format::eBc1RgbUnormBlock && format <= vk::Format::eBc7SrgbBlock;
+}
+
 static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* colors,
                                 uint32_t count, uint64_t shader_hash, bool compute = false, bool forced = false,
                                 const ImageViewInfo* sampled_view = nullptr,
@@ -1067,11 +1073,9 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		                                           : vk::ImageAspectFlagBits::eColor};
 		const bool depth = aspect == vk::ImageAspectFlagBits::eDepth;
 		const bool stencil = aspect == vk::ImageAspectFlagBits::eStencil;
-		const uint32_t bpp = stencil ? 1u : depth ? depth_bytes : bytes_per_pixel(backing.format);
-		const bool compressed = backing.format == vk::Format::eBc1RgbaSrgbBlock ||
-		    backing.format == vk::Format::eBc1RgbaUnormBlock ||
-		    backing.format == vk::Format::eBc1RgbSrgbBlock ||
-		    backing.format == vk::Format::eBc1RgbUnormBlock;
+		const bool compressed = DsBlockCompressed(backing.format);
+		const uint32_t bpp = stencil ? 1u : depth ? depth_bytes
+		                   : compressed ? vk::blockSize(backing.format) : bytes_per_pixel(backing.format);
 		if (example_format == 0u) {
 			example_format = static_cast<uint32_t>(backing.format);
 			example_width = backing.extent.width; example_height = backing.extent.height;
@@ -1083,7 +1087,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			++unknown_format;
 			continue;
 		}
-		if (backing.extent.width < 4u || backing.extent.height < 4u) { ++tiny; continue; }
+		if ((!compressed && (backing.extent.width < 4u || backing.extent.height < 4u)) ||
+		    backing.image_type != vk::ImageType::e2D) { ++tiny; continue; }
 		if (!(backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) { ++no_transfer; continue; }
 		// Sample precisely the native view bound to the shader, not the owner image's
 		// first layer. Some PS5 texture descriptors alias a nonzero depth array slice.
@@ -1124,10 +1129,13 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			const auto y = std::min<uint64_t>(
 			    reference_height ? uint64_t{xy[i].second} * h / reference_height : xy[i].second,
 			    h - 1u);
+			const auto bx = compressed ? DemonsQueueProbe::SampleBlock(x, w) :
+			    DemonsQueueProbe::BlockAxis {static_cast<uint32_t>(x), 1u};
+			const auto by = compressed ? DemonsQueueProbe::SampleBlock(y, h) :
+			    DemonsQueueProbe::BlockAxis {static_cast<uint32_t>(y), 1u};
 			regions[i].imageOffset = vk::Offset3D{
-			    static_cast<int32_t>(compressed ? (x & ~3u) : x),
-			    static_cast<int32_t>(compressed ? (y & ~3u) : y), 0};
-			regions[i].imageExtent = compressed ? vk::Extent3D{4,4,1} : vk::Extent3D{1,1,1};
+			    static_cast<int32_t>(bx.offset), static_cast<int32_t>(by.offset), 0};
+			regions[i].imageExtent = vk::Extent3D{bx.extent, by.extent, 1};
 		}
 		image.Download(regions, download.Handle(), offset, length);
 		// A once-per-4096-draw diagnostic GPU wait is intentional. Do not read
@@ -1136,6 +1144,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		download.Invalidate(offset, length);
 		uint32_t zero = 0, zero_rgb = 0;
 		std::array<uint32_t,5> first_words {}, second_words {};
+		std::array<std::array<uint32_t, 4>, 5> blocks {};
 		for (uint32_t i = 0; i < 5; ++i) {
 			const auto* pixel = mapped + i * stride;
 			bool empty = true, rgb_black = true;
@@ -1150,7 +1159,11 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			if (backing.format == vk::Format::eA2B10G10R10UnormPack32 ||
 			    backing.format == vk::Format::eA2R10G10B10UnormPack32)
 				rgb_black = DemonsQueueProbe::PackedRgb10IsBlack(first_words[i]);
+			if (backing.format == vk::Format::eR32Uint &&
+			    image.info.data.address == DemonsQueueProbe::GBufferAddress && view_layer == 0)
+				rgb_black = (first_words[i] & 0x00ffffffu) == 0;
 			zero_rgb += rgb_black;
+			if (compressed) std::memcpy(blocks[i].data(), pixel, bpp);
 			if (bpp > 4u)
 				std::memcpy(&second_words[i], pixel + 4u, std::min(bpp - 4u, 4u));
 		}
@@ -1164,6 +1177,18 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		     depth ? 1u : 0u, static_cast<uint32_t>(aspect), zero, zero_rgb,
 		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4],
 		     second_words[0],second_words[1],second_words[2],second_words[3],second_words[4]));
+		if (compressed) {
+			std::string words;
+			for (const auto& block : blocks) {
+				words += fmt::format(" {:08x}:{:08x}:{:08x}:{:08x}",
+				                     block[0], block[1], block[2], block[3]);
+			}
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_MATERIAL_BLOCKS] frame={} shader=0x{:016x} owner=0x{:x} format={} "
+			    "mip={} layer={} block_bytes={} zero_blocks={} words={}\n",
+			    context.GetGpu().GetFrameNum(), shader_hash, image.info.data.address,
+			    static_cast<uint32_t>(backing.format), view_mip, view_layer, bpp, zero, words));
+		}
 	}
 	if (probed == 0) {
 		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_PIXEL_PROBE_REJECT] path=%s capture=%u event=%" PRIu64
@@ -2124,6 +2149,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					    color.export_mapping.ApplyMask(mask & 0xfu),
 					    color.export_mapping.ApplyMask(render_target_mask_slot(hardware_mask, slot))));
 				}
+				uint32_t material_probes = 0;
 				for (size_t i = 0; i < bindings.pixel->images.size(); ++i) {
 					const auto& input = bindings.pixel->images[i];
 					const auto& view = input.desc.view_info;
@@ -2133,6 +2159,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					    ds_gbuffer_frame, ds_gbuffer_shader, i, input.desc.info.data.address,
 					    static_cast<uint32_t>(view.format), view.base_level, view.base_layer,
 					    view.layer_count, input.placeholder || !input.image_id));
+					if (material_probes >= 3 || input.placeholder || !input.image_id ||
+					    !DsBlockCompressed(view.format)) continue;
+					const auto& image = m_context.GetTextureCache().GetImage(input.image_id);
+					const auto native = std::ranges::find(image.views, input.image_view,
+					                                      &CachedImageView::view);
+					if (native == image.views.end()) continue;
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_MATERIAL_BINDING] frame={} shader=0x{:016x} index={} guest=0x{:x} "
+					    "owner=0x{:x} mip={} layer={} cpu_dirty={} buffer_modified={}\n",
+					    ds_gbuffer_frame, ds_gbuffer_shader, i, input.desc.info.data.address,
+					    image.info.data.address, native->info.base_level, native->info.base_layer,
+					    image.IsCpuDirty(), image.IsBufferModified()));
+					RenderColorInfo source {};
+					source.image_id = input.image_id;
+					ProbeDsColorOutputs(m_context, &source, 1, ds_gbuffer_shader,
+					                    false, true, &native->info);
+					++material_probes;
 				}
 				ProbeDsColorOutputs(m_context, ds_gbuffer, 1, ds_gbuffer_shader, false, true);
 			}

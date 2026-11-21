@@ -87,7 +87,15 @@ public:
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t address, uint64_t size);
 	// Demon indirect dispatch: publish a GPU-owned image covering an arbitrary subrange
 	// into the buffer cache without reading the image back to guest CPU memory.
-	[[nodiscard]] bool PublishGpuImageForIndirectArgs(uint64_t address, uint64_t size);
+	struct GpuImagePublication {
+		const char* failure = nullptr;
+		uint64_t owner_address = 0;
+		uint64_t owner_size = 0;
+		uint32_t format = 0;
+		uint32_t samples = 0;
+	};
+	[[nodiscard]] bool PublishGpuImageForIndirectArgs(
+	    uint64_t address, uint64_t size, GpuImagePublication* details = nullptr);
 
 	[[nodiscard]] bool IsMeta(uint64_t address);
 	// Whether [address, address + size) lies inside the DCC/CMask range of a color surface that

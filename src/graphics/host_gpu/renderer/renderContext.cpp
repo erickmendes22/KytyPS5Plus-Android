@@ -169,9 +169,9 @@ void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
 			static std::atomic_uint32_t logged {0};
 			const auto n = logged.fetch_add(1u, std::memory_order_relaxed);
 			if (n < 32u || (n % 1024u) == 0u) {
-				LOGF("[DS_MAP_INVALIDATE] count=%u addr=0x%016" PRIx64
-				     " size=0x%" PRIx64 " images=%u buffers=%u\n",
-				     n, vaddr, size, images ? 1u : 0u, buffers ? 1u : 0u);
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_MAP_INVALIDATE] count={} addr=0x{:016x} size=0x{:x} images={} buffers={}\n",
+				    n, vaddr, size, images, buffers));
 			}
 			(void)InvalidateMemory(vaddr, size);
 		}

@@ -17,6 +17,9 @@ static std::vector<uint32_t> ReadWords(const char* path) {
 }
 
 int main(int argc, char** argv) {
+	static_assert(SampleBlock(5, 12).offset == 4 && SampleBlock(5, 12).extent == 4);
+	static_assert(SampleBlock(8, 10).offset == 8 && SampleBlock(8, 10).extent == 2);
+	static_assert(SampleBlock(0, 1).offset == 0 && SampleBlock(0, 1).extent == 1);
 	static_assert(PackedRgb10IsBlack(0xc0000000u));
 	static_assert(!PackedRgb10IsBlack(0xc0000001u));
 	static_assert(!PackedRgb10IsBlack(0x00100000u));

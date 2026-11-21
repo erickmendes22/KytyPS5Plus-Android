@@ -3260,15 +3260,22 @@ bool TextureCache::IsRegionGpuModified(uint64_t address, uint64_t size) {
 // so the texel-buffer synchronization path does not cover that situation.
 // Publish at most one unambiguous, GPU-modified image through the existing
 // GPU-to-GPU detiling/download path. Nothing is read back by the CPU.
-bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t size) {
+bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t size,
+                                                   GpuImagePublication* details) {
 	address = Kernel::AddressFold::Fold(address);
 	if (!GuestRange {address, size}.Valid()) return false;
 	std::scoped_lock lock {m_lock};
 	ImageId selected {};
 	for (const auto id: FindImagesInRegion(address, size, false)) {
 		const auto* image = m_slot_images.try_get(id);
-		if (!image || !image->registered || !image->IsGpuModified() || image->depth_id) continue;
+		if (!image || !image->registered || !image->IsGpuModified()) continue;
 		const auto& range = image->info.data;
+		if (details && !selected) {
+			*details = {image->depth_id ? "stencil_alias" : "range_not_covered",
+			            range.address, range.size, static_cast<uint32_t>(image->backing.format),
+			            image->backing.samples};
+		}
+		if (image->depth_id) continue;
 		if (range.address > address || range.size < size ||
 		    address - range.address > range.size - size) continue;
 		if (selected) {
@@ -3282,7 +3289,9 @@ bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t siz
 			    image->gpu_write_order, exact_layout)) {
 				case GpuImagePublishPolicy::Decision::Replace: selected = id; break;
 				case GpuImagePublishPolicy::Decision::Keep: break;
-				case GpuImagePublishPolicy::Decision::Refuse: return false;
+				case GpuImagePublishPolicy::Decision::Refuse:
+					if (details) details->failure = "conflicting_owners";
+					return false;
 			}
 		} else {
 			selected = id;
@@ -3290,8 +3299,17 @@ bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t siz
 	}
 	if (!selected) return false;
 	auto& image = m_slot_images[selected];
-	if (!image.SafeToDownload() || !CanDownload(image)) return false;
-	return BcAlias::Publish(*this, image);
+	if (details) {
+		*details = {nullptr, image.info.data.address, image.info.data.size,
+		            static_cast<uint32_t>(image.backing.format), image.backing.samples};
+	}
+	if (!image.SafeToDownload()) {
+		if (details) details->failure = "owner_dirty";
+		return false;
+	}
+	const bool published = BcAlias::Publish(*this, image);
+	if (!published && details) details->failure = "unsupported_readback";
+	return published;
 }
 
 void TextureCache::RestoreMappedProtection(uint64_t address, uint64_t size) {
