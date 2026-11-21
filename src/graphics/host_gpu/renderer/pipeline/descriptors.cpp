@@ -1524,8 +1524,7 @@ void NoteRebindAfterJoin(const char* kind, const char* name) {
 }
 
 void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
-                                             std::span<RenderColorInfo> colors,
-                                             RenderDepthInfo* depth) {
+                                             std::span<RenderColorInfo> colors) {
 	bool uses_dma = false;
 	FindBuffers(stages);
 	for (auto* stage: stages) {
@@ -1550,21 +1549,6 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 			target.desc.view_info.base_layer = target.guest_array_layer;
 			target.image_id = cache.FindImage(target.desc);
 			BindRenderTarget(target.image_id);
-		}
-	}
-	// A later sampled view can grow a depth-array owner while the current
-	// draw still references its previous image ID. Rediscover the real depth
-	// attachment after the sampled bindings, rather than drawing into a
-	// freed image or accidentally treating the new sampled depth as color.
-	if (depth != nullptr && depth->image_id) {
-		auto* old = cache.m_slot_images.try_get(depth->image_id);
-		if (old == nullptr || !old->registered || old->binding.needs_rebind) {
-			if (old != nullptr) old->binding = {};
-			depth->image_id = cache.FindImage(depth->desc);
-			if (depth->image_id) BindRenderTarget(depth->image_id);
-			// A rediscovered target may displace a sampled alias. Ensure
-			// descriptors are still registered before submitting this draw.
-			for (auto* stage: stages) RebindImages(*stage);
 		}
 	}
 	// Discovery can read back PS5 metadata and submit the scheduler. Reserve draw buffers only

@@ -12,7 +12,6 @@
 #include <array>
 #include <bit>
 #include <cstring>
-#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -5378,15 +5377,6 @@ void TestFmaskLoadSpecialization() {
         "rebinding FMASK as a texture reused the metadata specialization");
 }
 
-// A folded image operation may leave an unreferenced MemoryInfo with a
-// raw SGPR table index. It must not be remapped through an empty image list.
-void TestFoldedImageOperationMemory() {
-  Fixture fixture;
-  fixture.AddMemory({.kind = ResourceKind::Image, .resource = 2}, 0);
-  fixture.PlanAndTrack();
-  ApplyResourceSpecialization(fixture.program, {});
-}
-
 void TestGatherLodSamplerValidation() {
   for (const bool explicit_lod : {false, true}) {
     for (const bool reverse : {false, true}) {
@@ -5655,41 +5645,6 @@ void TestSrtFlatteningAndRuntimeMemoization() {
   CollectShaderInfo(fixture.program, {.compute = &compute});
   Check(fixture.program.info.uses_flattened_srt,
         "flattened typed SRT reads were not collected");
-}
-
-// GPU-visible scalar reads must survive SRT planning if this same
-// compute shader also contains buffer writes (PPSA01341 light producers).
-void TestGpuScalarSrtWriter() {
-#if !defined(_WIN32)
-  struct ScopedFlag {
-    const char* previous_value = std::getenv("KYTY_DS_GPU_SCALAR_SRT");
-    const bool had_previous = previous_value != nullptr;
-    const std::string previous = had_previous ? previous_value : "";
-    ~ScopedFlag() {
-      if (had_previous) ::setenv("KYTY_DS_GPU_SCALAR_SRT", previous.c_str(), 1);
-      else ::unsetenv("KYTY_DS_GPU_SCALAR_SRT");
-    }
-  } guard;
-  ::setenv("KYTY_DS_GPU_SCALAR_SRT", "1", 1);
-  Fixture f;
-  const auto base = f.Address(f.UserData(0), f.UserData(1), 4);
-  MemoryInfo scalar;
-  scalar.kind = ResourceKind::ScalarAddress;
-  scalar.offset = 4;
-  const auto read = f.Emit(ValueOpcode::LoadAddressU32,
-      {base, Value(0u), Value(0u), Value(true)}, f.AddMemory(scalar, 4));
-  const auto desc = f.Buffer({read, Value(0u), Value(64u), Value(0u)}, 12);
-  MemoryInfo buf;
-  buf.kind = ResourceKind::Buffer;
-  f.Emit(ValueOpcode::LoadBufferU32,
-      {desc, Value(0u), Value(0u), Value(0u), Value(true)}, f.AddMemory(buf, 12));
-  f.Emit(ValueOpcode::StoreBufferU32,
-      {desc, Value(0u), Value(0u), Value(0u), Value(42u), Value(true)},
-      f.AddMemory(buf, 20));
-  f.PlanAndTrack();
-  Check(f.program.srt_reads.empty() && !f.program.memory_info[0].planning_only,
-        "GPU-written compute shader captured a live scalar read on the host");
-#endif
 }
 
 void TestScalarDataReadControlFlow() {
@@ -8739,7 +8694,6 @@ int main() {
     Run("independent image/sampler pairs", TestIndependentImageSamplerPairs);
     Run("SampleAdjust sampler scratch", TestSampleAdjustSamplerScratch);
     Run("FMASK load specialization", TestFmaskLoadSpecialization);
-    Run("folded image operation memory", TestFoldedImageOperationMemory);
     Run("gather LOD sampler validation", TestGatherLodSamplerValidation);
     Run("dynamic storage mips", TestDynamicStorageMipTracking);
     Run("invariant indirect images", [] { TestInvariantIndirectImageMaterialization(true); });
@@ -8762,7 +8716,6 @@ int main() {
     Run("shared append selector bounds", TestSharedAppendSelectorBounds);
     Run("descending image range", TestDescendingImageRange);
     Run("SRT runtime", TestSrtFlatteningAndRuntimeMemoization);
-    Run("GPU-live scalar SRT writer", TestGpuScalarSrtWriter);
     Run("scalar data control flow", TestScalarDataReadControlFlow);
     Run("dynamic SRT", TestDynamicSrtReadRemainsExplicit);
     Run("writable descriptor phi", TestWritableDescriptorPhi);

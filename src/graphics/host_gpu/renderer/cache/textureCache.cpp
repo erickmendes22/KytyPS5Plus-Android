@@ -33,7 +33,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cstdlib>
 #include <fmt/format.h>
 #include <array>
 #include <bit>
@@ -1085,33 +1084,6 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	    requested.pitch == cached.info.pitch &&
 	    (full_raw_layout || retain_cached_layout) &&
 	    !IsSupportedSampledDepthFormat(cached.info.pixel_format, requested.pixel_format);
-	// A shader may sample a larger shadow/depth array at the same guest base
-	// after previous draws produced just one or several of its slices.
-	// Without this depth promotion, growing the array recreated the owner
-	// as a color image and dropped native depth/HTile state. Allow only a
-	// proven complete same-layout depth view, never a neighbouring heap or
-	// an independently addressed S8 plane. Based on upstream 1b0f689.
-	// Hold the unverified sampled-depth array promotion out of the
-	// PPSA01341 rendering path: its introduction coincided with a black
-	// face despite intact geometry, indicating shadow-attachment regression.
-	const char* growth_option = std::getenv("KYTY_DS_DEPTH_ARRAY_GROW");
-	const bool allow_growth = growth_option == nullptr ||
-	    growth_option[0] != '0' || growth_option[1] != '\0';
-	const bool grow_depth = allow_growth && binding == BindingType::Texture &&
-	    cached.info.IsDepth() && !cached.info.HasStencil() &&
-	    !requested.IsVolume() && !requested.HasStencil() &&
-	    requested.data.address == cached.info.data.address &&
-	    requested.extent == cached.info.extent &&
-	    requested.type == cached.info.type &&
-	    requested.tile_mode == cached.info.tile_mode &&
-	    requested.pitch == cached.info.pitch &&
-	    requested.samples == cached.info.samples &&
-	    requested.bytes_per_block == cached.info.bytes_per_block &&
-	    requested.resources.levels >= cached.info.resources.levels &&
-	    requested.resources.layers >= cached.info.resources.layers &&
-	    (requested.resources.levels > cached.info.resources.levels ||
-	     requested.resources.layers > cached.info.resources.layers) &&
-	    IsSupportedSampledDepthFormat(cached.info.pixel_format, requested.pixel_format);
 	// A padded pitch can alias an existing smaller depth backing at the
 	// same base. Vulkan requires an attachment at least as large as the
 	// requested render area; otherwise all uncovered pixels are undefined.
@@ -1148,13 +1120,6 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		info.linear_slice_stride = cached.info.linear_slice_stride;
 		info.first_tail_level    = cached.info.first_tail_level;
 	}
-	if (grow_depth) {
-		// Keep native depth format and HTile metadata; the sampled format
-		// belongs to the view, not to a new color backing.
-		info.pixel_format = cached.info.pixel_format;
-		info.guest_format = cached.info.guest_format;
-		info.metadata     = cached.info.metadata;
-	}
 	info.htile_initial_clear  = false;
 	const auto replacement_id = InsertImage(info, cached_id);
 	auto&      replacement    = m_slot_images[replacement_id];
@@ -1171,9 +1136,6 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 			// First import the entire destination from guest RAM, then overlay
 			// only the GPU-authored common extent. Preserve padded rows.
 			if (grown_depth_target) RefreshImage(replacement_id);
-			// CopyImage overlays just the common GPU-authored slices;
-			// initialize any newly sampled layers from their guest backing.
-			if (grow_depth) InitializeImage(replacement_id);
 			CopyImage(replacement_id, cached_id);
 			if (binding == BindingType::DepthTarget && cached.info.IsDepth() &&
 			    cached.info.HasStencil() && requested.HasStencil() &&
@@ -1200,14 +1162,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		           "TextureCache: unsupported unequal-sample depth overlap copy (%u -> %u)\n",
 		           cached.backing.samples, replacement.backing.samples);
 	}
-	if (grow_depth && info.metadata.kind == ImageMetadataKind::Htile) {
-		auto metadata = m_surface_metas.find(info.metadata.range.address);
-		if (metadata != m_surface_metas.end() && metadata->second.owner == cached_id) {
-			metadata->second.owner = replacement_id;
-		}
-	}
-	NoteRecreate(grow_depth ? "sampled-depth-array-grow" : "depth-replace",
-	             requested, cached.info);
+	NoteRecreate("depth-replace", requested, cached.info);
 	FreeImage(cached_id);
 	return replacement_id;
 }
