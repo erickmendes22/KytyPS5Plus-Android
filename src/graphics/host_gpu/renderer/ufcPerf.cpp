@@ -59,6 +59,14 @@ void NoteFan(bool on) {
     if (!Enabled()) return;
     (on ? g_fan_on : g_fan_off).fetch_add(1, std::memory_order_relaxed);
 }
+bool SampleDrawPath() {
+    if (!Enabled()) return false;
+    static thread_local uint32_t rng = 0xa5b357e1u;
+    rng ^= rng << 13u;
+    rng ^= rng >> 17u;
+    rng ^= rng << 5u;
+    return (rng & 127u) == 0u;
+}
 bool SamplePm4Handler() {
     if (!Enabled()) return false;
     // Repeated PM4 packet sequences bias fixed-every-N sampling.
@@ -135,17 +143,26 @@ void ReportMaybe() {
         sampled_opcodes += fmt::format(" 0x{:02x}:{:.2f}us/{}",
             op.opcode, static_cast<double>(op.ns) / op.samples / 1000.0, op.samples);
     }
+    const auto draw_us = [&](Site s) {
+        const auto index = static_cast<size_t>(s);
+        return counts[index] ? static_cast<double>(total[index]) / counts[index] / 1000.0 : 0.0;
+    };
     Log::WriteToConsoleAndLog(fmt::format(
         "[UFC6_PERF] dt={:.2f}s pm4_cpu={:.1f}ms/s blocked={:.1f}ms/s "
         "submit_driver={:.1f}ms/s({:.1f}/s) submit_drain={:.1f}ms/s "
         "timeline_wait={:.1f}ms/s finish={:.1f}ms/s descriptor_prepare={:.1f}ms/s "
         "descriptor_update={:.1f}ms/s gc={:.1f}ms/s sets_reused={} sets_written={} "
         "submits={} work={} batches={} batch_buffers={} fan_on={} fan_off={} "
-        "pipe_on={} pipe_off={} pending_deferred={} pm4_top_samples={} gpu_busy=not_measured\n",
+        "pipe_on={} pipe_off={} pending_deferred={} draw_restart={:.2f}us/{} "
+        "draw_prepare={:.2f}us/{} draw_emit={:.2f}us/{} "
+        "pm4_top_samples={} gpu_busy=not_measured\n",
         seconds, ms(Site::Pm4), ms(Site::GpuQueueBlocked),
         ms(Site::VkQueueSubmit), calls(Site::VkQueueSubmit), ms(Site::SubmitDrain),
         ms(Site::TimelineWait), ms(Site::Finish), ms(Site::DescriptorPrepare),
         ms(Site::DescriptorUpdate), ms(Site::GarbageCollect),
-        reuse, write, submits, work, batches, batch_buffers, fanon, fanoff, pipeon, pipeoff, deferred, sampled_opcodes));
+        reuse, write, submits, work, batches, batch_buffers, fanon, fanoff, pipeon, pipeoff, deferred,
+        draw_us(Site::DrawPrimitive), counts[static_cast<size_t>(Site::DrawPrimitive)],
+        draw_us(Site::DrawPrepare), counts[static_cast<size_t>(Site::DrawPrepare)],
+        draw_us(Site::DrawExecute), counts[static_cast<size_t>(Site::DrawExecute)], sampled_opcodes));
 }
 } // namespace Libs::Graphics::UfcPerf

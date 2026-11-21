@@ -10,7 +10,8 @@ namespace Libs::Graphics::UfcPerf {
 // extra Vulkan submissions, or threads. GPU hardware busy is NOT inferred.
 enum class Site : uint8_t {
     Pm4, GpuQueueBlocked, VkQueueSubmit, SubmitDrain, TimelineWait,
-    Finish, DescriptorPrepare, DescriptorUpdate, GarbageCollect, Count
+    Finish, DescriptorPrepare, DescriptorUpdate, GarbageCollect,
+    DrawPrimitive, DrawPrepare, DrawExecute, Count
 };
 [[nodiscard]] bool Enabled();
 void Add(Site site, uint64_t duration_ns);
@@ -23,6 +24,10 @@ void NotePendingDeferred();
 // Sample ~1/128 PM4 handlers with a thread-local xorshift, not a
 // periodic fixed opcode slot (games emit repeating packet sequences).
 [[nodiscard]] bool SamplePm4Handler();
+// About 1/128 indexed draws; three monotonic timestamps only for selected
+// samples. Separates custom primitive-reset scans, shader/target preparation,
+// and command emission in the UFC6 gameplay's hot DRAW_INDEX_2 handler.
+[[nodiscard]] bool SampleDrawPath();
 void NotePm4Handler(uint32_t opcode, uint64_t duration_ns);
 void ReportMaybe();
 

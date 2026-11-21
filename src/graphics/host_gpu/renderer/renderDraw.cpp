@@ -2603,7 +2603,18 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 		default: EXIT("unknown index_type_and_size: %u\n", args.index_type_and_size);
 	}
 	index_source.size = static_cast<uint64_t>(args.index_count) * index_source.guest_element_size;
+	// Only the sampled hot indexed draws pay a few extra clock reads.
+	// This measures actual Android gameplay rather than blaming the total
+	// PM4 handler on shader preparation, primitive restart or Vulkan alone.
+	using DrawClock = std::chrono::steady_clock;
+	const bool sample_draw = UfcPerf::SampleDrawPath();
+	const auto time0 = sample_draw ? DrawClock::now() : DrawClock::time_point {};
 	const bool primitive_restart = ResolvePrimitiveRestart(buffer, index_source);
+	const auto time1 = sample_draw ? DrawClock::now() : DrawClock::time_point {};
+	if (sample_draw) {
+		UfcPerf::Add(UfcPerf::Site::DrawPrimitive, static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(time1 - time0).count()));
+	}
 
 	std::vector<uint16_t> expanded_indices;
 	if (index_source.guest_element_size == 1) {
@@ -2620,7 +2631,14 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	const DrawCallInfo draw {CommandBufferDebugOp::DrawIndex, args.index_count,
 	                        args.instance_count, args.first_instance};
 	auto& state = ReusableDrawRenderState();
-	if (!PrepareDrawRenderState(buffer, draw, args.render_target_slice_offset, state)) {
+	const bool draw_ready = PrepareDrawRenderState(
+	    buffer, draw, args.render_target_slice_offset, state);
+	const auto time2 = sample_draw ? DrawClock::now() : DrawClock::time_point {};
+	if (sample_draw) {
+		UfcPerf::Add(UfcPerf::Site::DrawPrepare, static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(time2 - time1).count()));
+	}
+	if (!draw_ready) {
 		ResetBindings();
 		return;
 	}
@@ -2641,6 +2659,11 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 
 	ExecutePreparedDraw(submit_id, buffer, draw, state, topology, emit, index_source,
 	                    primitive_restart);
+	const auto time3 = sample_draw ? DrawClock::now() : DrawClock::time_point {};
+	if (sample_draw) {
+		UfcPerf::Add(UfcPerf::Site::DrawExecute, static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(time3 - time2).count()));
+	}
 	ResetBindings();
 }
 
