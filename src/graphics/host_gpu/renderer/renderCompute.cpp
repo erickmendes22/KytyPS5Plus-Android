@@ -1026,7 +1026,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		if (std::find(watched_lighting.begin(), watched_lighting.end(),
 		              program.shader_hash) != watched_lighting.end()) {
 			const int32_t frame = m_context.GetGpu().GetFrameNum();
-			const uint32_t phase = frame >= 1200 ? 3u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
+			const uint32_t phase = frame >= 1120 ? 3u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
 			static std::array<std::atomic<uint32_t>, 4> sampled {};
 			const uint32_t index = sampled[phase].fetch_add(1u, std::memory_order_relaxed);
 			if (index < 48u || (index % 4096u) == 0u) {
@@ -1066,7 +1066,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		        lighting_hashes.end();
 		if (lighting) {
 			const int32_t frame = m_context.GetGpu().GetFrameNum();
-			const uint32_t phase = frame >= 1200 ? 3u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
+			const uint32_t phase = frame >= 1120 ? 3u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
 			static std::array<std::atomic<uint32_t>, 4> cpu_samples {};
 			const auto count = cpu_samples[phase].fetch_add(1u, std::memory_order_relaxed);
 			if (count < 48u || (count % 4096u) == 0u) {
