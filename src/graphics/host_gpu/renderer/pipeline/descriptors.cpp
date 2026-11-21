@@ -1164,7 +1164,16 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 				const char* env = std::getenv("KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS");
 				return env && env[0] == '1' && env[1] == '\0';
 			}();
-			if (ds_shader_buffer_alias && metadata.read &&
+			// The existing read-only publication is also required before a
+			// *writable* SSBO takes over part of a GPU-authored image. A
+			// write-only binding need not start at the same guest base:
+			// InvalidateMemoryFromGPU only transfers whole-base owners,
+			// so without publication a partial shader store can later be
+			// hidden by the stale native image. The publication is an
+			// in-order GPU image->buffer copy, not a host readback, and
+			// refuses ambiguous/dirty/unsupported aliases. It precedes
+			// FindBuffer and the eventual writable buffer bind.
+			if (ds_shader_buffer_alias && (metadata.read || metadata.written) &&
 			    descriptor.NumRecords() != UINT32_MAX &&
 			    size <= (uint64_t {256} << 20u) &&
 			    m_context.GetTextureCache().IsRegionGpuModified(address, size) &&
@@ -1174,8 +1183,9 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 				if (n < 16u || (n & 4095u) == 4095u) {
 					LOGF("[DS_BUFFER_IMAGE_ALIAS] shader=0x%016" PRIx64
 					     " addr=0x%016" PRIx64 " bytes=%" PRIu64
-					     " published=%u\n",
-					     program.shader_hash, address, size, n + 1u);
+					     " published=%u read=%u written=%u\n",
+					     program.shader_hash, address, size, n + 1u,
+					     metadata.read ? 1u : 0u, metadata.written ? 1u : 0u);
 				}
 			}
 			// A segmented shader needs distinct descriptor bindings, not a single multi-GiB
