@@ -40,7 +40,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
           fetch-depth: 1
 
       - name: Compute native compatibility key
@@ -56,6 +56,13 @@ jobs:
       - name: Verify cached native core
         id: native
         run: python3 android/ci/native_cache.py verify
+
+      # Native deps are unnecessary when a verified cached core can be reused.
+      # Regressions use a different job; avoid cloning 15 deep submodules on every APK.
+      - name: Initialize native source submodules (shallow, only on cache miss)
+        if: steps.native.outputs.reused != 'true'
+        timeout-minutes: 15
+        run: git -c submodule.fetchJobs=6 submodule update --init --recursive --depth 1 --jobs 6
 
       - name: Free disk space
         run: |
