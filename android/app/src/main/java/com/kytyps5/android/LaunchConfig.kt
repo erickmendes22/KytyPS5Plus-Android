@@ -259,6 +259,11 @@ object LaunchArgs {
                     // Read back GPU-authored V# tables, branch selectors and
                     // single-owner image buffers before materialization.
                     "--env", "KYTY_DS_SRT_COHERENT=1",
+                    // A missing D16 shadow descriptor sampled with GREATER is
+                    // not a filled shadow map. Keep it unshadowed instead of
+                    // forcing every comparison to fail with depth=1.0.
+                    // Real depth/shadow targets are not affected.
+                    "--env", "KYTY_DS_NULL_SHADOW_LIT=1",
                     // U59: keep shader-runtime/loop-carried SRT loads on the GPU;
                     // do not pre-evaluate their addresses on the host.
                     "--env", "KYTY_SRT_VARIANT_READS=1",
