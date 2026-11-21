@@ -134,13 +134,47 @@ bool RenderContext::IsMapped(uint64_t vaddr, uint64_t size) const noexcept {
 	return m_mapped_ranges.Contains(vaddr, size);
 }
 
+// A newly mapped guest range can make image bytes that were previously unmapped
+// (and read as zero) resident. The image write watcher never covered the absent
+// pages, so no guest write fault invalidated its stale cached contents. Keep
+// this U59 texture-streaming correctness fix title-scoped on Android until it
+// has been compared on other games.
+static bool DemonsMapInvalidateEnabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_DS_MAP_INVALIDATE");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	return enabled;
+}
+
 void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
+	bool newly_mapped = false;
 	{
 		std::lock_guard lock(m_mapped_ranges_mutex);
+		newly_mapped = GuestRange {vaddr, size}.Valid() &&
+		               !m_mapped_ranges.Contains(vaddr, size);
 		m_mapped_ranges.Add(vaddr, size);
 		m_buffer_cache.QueueBdaSync(vaddr, size);
 		m_buffer_cache.NoteMappedEnd(vaddr, size);
 		LogMappedSpread(vaddr, size);
+	}
+	if (DemonsMapInvalidateEnabled() && newly_mapped) {
+		// A mapping change is a guest-memory content change for previously
+		// created GPU images and buffers. Invalidate after releasing the
+		// mapped-range lock (InvalidateMemory checks IsMapped internally).
+		// This is U59's texture streaming fix, not a forced image readback.
+		const bool images = m_texture_cache.IsRegionRegistered(vaddr, size);
+		const bool buffers = m_buffer_cache.IsRegionRegistered(vaddr, size);
+		if (images || buffers) {
+			static std::atomic_uint32_t logged {0};
+			const auto n = logged.fetch_add(1u, std::memory_order_relaxed);
+			if (n < 32u || (n % 1024u) == 0u) {
+				LOGF("[DS_MAP_INVALIDATE] count=%u addr=0x%016" PRIx64
+				     " size=0x%" PRIx64 " images=%u buffers=%u\n",
+				     n, vaddr, size, images ? 1u : 0u, buffers ? 1u : 0u);
+			}
+			(void)InvalidateMemory(vaddr, size);
+		}
 	}
 	// Partial guest-memory remaps replace kernel page permissions. Images that
 	// retained their GPU-owned sibling slices still have write-watcher counts:
