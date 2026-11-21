@@ -264,6 +264,12 @@ object LaunchArgs {
                     // forcing every comparison to fail with depth=1.0.
                     // Real depth/shadow targets are not affected.
                     "--env", "KYTY_DS_NULL_SHADOW_LIT=1",
+                    // Guest pages that were previously unmapped can contain
+                    // newly streamed textures after MapMemory. Invalidate any
+                    // cached images/buffers covering those pages, as in U59's
+                    // streamed-material fix; do not force invalidations on
+                    // unchanged mappings or on other titles.
+                    "--env", "KYTY_DS_MAP_INVALIDATE=1",
                     // U59: keep shader-runtime/loop-carried SRT loads on the GPU;
                     // do not pre-evaluate their addresses on the host.
                     "--env", "KYTY_SRT_VARIANT_READS=1",
