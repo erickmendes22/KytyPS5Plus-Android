@@ -46,6 +46,9 @@ public:
 	void                      Shutdown();
 	void                      Wait(uint64_t tick);
 	void                      PopPendingOperations();
+	// During draw/dispatch preparation, opportunistic completion callbacks must
+	// never wait for the priority runner. Explicit waits and final drains still do.
+	void                      PopDrawOperations();
 	void                      DrainPriorityOperations();
 	void                      WaitPriorityOperations(uint64_t tick);
 	// Guest-memory completions use the priority queue; normal callbacks maintain GPU resources.

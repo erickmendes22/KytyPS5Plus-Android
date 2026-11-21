@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 
 namespace Libs::Graphics {
@@ -275,6 +276,48 @@ void CommandScheduler::PopPendingOperations() {
 			m_pending_operations.pop();
 		}
 		WaitPriorityOperations(operation.tick);
+		RunOperation(std::move(operation.callback));
+	}
+}
+
+void CommandScheduler::PopDrawOperations() {
+	// Backport of the nonblocking draw-path pop in Jetsku/KytyPS5 291b140c66.
+	// With a GPU-complete operation at the head, a priority callback of that
+	// tick (guest backing publication) must execute FIRST. Postpone regular
+	// resource cleanup instead of blocking the entire PM4 recording thread.
+	// All explicit Finish/Wait/drain paths continue through PopPendingOperations.
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_UFC6_PENDING_NOWAIT");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	if (!enabled) {
+		PopPendingOperations();
+		return;
+	}
+	{
+		std::lock_guard lock(m_operation_mutex);
+		if (m_pending_operations.empty()) return;
+		const auto tick = m_pending_operations.front().tick;
+		if (tick >= CurrentTick()) return;
+		if (!m_master.IsFree(tick)) m_master.Refresh();
+	}
+	for (;;) {
+		PendingOperation operation;
+		{
+			std::lock_guard lock(m_operation_mutex);
+			if (m_pending_operations.empty() ||
+			    !m_master.IsFree(m_pending_operations.front().tick)) {
+				return;
+			}
+			const auto tick = m_pending_operations.front().tick;
+			if ((m_priority_active && m_priority_active_tick <= tick) ||
+			    (!m_priority_operations.empty() &&
+			     m_priority_operations.front().tick <= tick)) {
+				return;
+			}
+			operation = std::move(m_pending_operations.front());
+			m_pending_operations.pop();
+		}
 		RunOperation(std::move(operation.callback));
 	}
 }

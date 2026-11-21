@@ -2763,6 +2763,26 @@ void TextureCache::DownloadImage(Image& image, Buffer& destination, uint64_t des
 	}
 }
 
+bool BufferCache::PreserveGpuImageForWrite(Buffer& target, uint64_t address, uint64_t size) {
+	// The shader will write SOME dwords of the buffer, not necessarily all
+	// texels. Without this GPU->GPU copy, InvalidateMemoryFromGPU clears the
+	// image's authoritative GPU ownership and future image refreshes upload
+	// stale guest bytes over the untouched texels. Keep this path optional
+	// for Demon’s Souls and leave unsupported depth/alias layouts unchanged.
+	if (size == 0 || !target.IsInBounds(Kernel::AddressFold::Fold(address), size)) return false;
+	const bool copied = SynchronizeBufferFromImage(target, address, size);
+	if (copied) {
+		static std::atomic_uint32_t count {0};
+		const auto n = count.fetch_add(1u, std::memory_order_relaxed) + 1u;
+		if (n <= 16u || (n & (n - 1u)) == 0u) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_GPU_WRITE_PRESERVE] copy={} addr=0x{:x} size={} owner_gpu_image=1\n",
+			    n, address, size));
+		}
+	}
+	return copied;
+}
+
 bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uint64_t size) {
 	const auto selected = m_texture_cache.FindImageFromRange(vaddr, size);
 	if (!selected) {

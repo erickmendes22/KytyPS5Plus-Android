@@ -173,6 +173,9 @@ object LaunchArgs {
                     // U59-derived fix: skip only per-draw fatal scalar-overlap
                     // audit, not actual resource barriers or producer tracking.
                     "--env", "KYTY_UFC6_SKIP_SCALAR_OVERLAP_AUDIT=1",
+                    // Don't block PM4 draw preparation on guest-memory priority
+                    // callbacks; explicit waits/flushes still drain in order.
+                    "--env", "KYTY_UFC6_PENDING_NOWAIT=1",
                     // Threaded submit batches only an already-queued backlog,
                     // using one Vulkan driver entry with multiple ordered
                     // VkSubmitInfo/timeline signals. No extra waiting or frame
@@ -239,6 +242,9 @@ object LaunchArgs {
                     // resources. Publish the image backing to the buffer-cache GPU timeline
                     // before read-only shader storage buffer bindings.
                     "--env", "KYTY_DS_SHADER_BUFFER_IMAGE_ALIAS=1",
+                    // Preserve existing GPU-written image pixels when a
+                    // write-only shader buffer begins at the same backing.
+                    "--env", "KYTY_DS_GPU_WRITE_PRESERVE=1",
                     // Existing software BVH and indirect SRT resources consume
                     // prior GPU writes; preserve cross-stage visibility.
                     "--env", "KYTY_DS_BVH_SRT_COHERENCE=1",

@@ -171,6 +171,21 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	}
 	const vk::DescriptorBufferInfo result {buffer->Handle(), aligned_offset, size + adjustment};
 	if (resource.written) {
+		// Upstream GPU-image ownership fix (Jetsku/KytyPS5 842e708058):
+		// a write-only SSBO can alias an image whose GPU pixels are newer
+		// than the guest backing. Preserve the full image content into the
+		// target buffer BEFORE invalidating image ownership. The write then
+		// modifies its intended bytes, leaving all other pixels intact.
+		// Existing image/buffer alias publication above covers *read* users,
+		// not this pure-write binding. Never introduce CPU readback or waits.
+		static const bool ds_preserve_write = [] {
+			const char* value = std::getenv("KYTY_DS_GPU_WRITE_PRESERVE");
+			return value != nullptr && value[0] == '1' && value[1] == '\0';
+		}();
+		if (ds_preserve_write &&
+		    context.GetTextureCache().IsRegionGpuModified(address, size)) {
+			(void)context.GetBufferCache().PreserveGpuImageForWrite(*buffer, address, size);
+		}
 		context.GetTextureCache().InvalidateMemoryFromGPU(address, size);
 	}
 	return result;

@@ -75,6 +75,11 @@ public:
 	[[nodiscard]] static bool GuestReadWaitStartValue();
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
+	// For an opted-in shader storage write that aliases a GPU-authored image,
+	// preserve its existing texels on the GPU before the writer takes ownership.
+	// Returns false when no safe full-copy path exists, retaining legacy handling.
+	[[nodiscard]] bool PreserveGpuImageForWrite(Buffer& target, uint64_t address,
+	                                            uint64_t size);
 	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainBuffer(uint64_t vaddr, uint64_t size,
 	                                                        bool     is_written,
 	                                                        bool     is_texel_buffer = false,
