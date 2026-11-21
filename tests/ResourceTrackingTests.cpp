@@ -8667,6 +8667,44 @@ void TestMalformedMemoryKindsRejected() {
   }
 }
 
+void TestPlanReferencesSurviveIdentityRemoval() {
+  Fixture fixture;
+  const auto live = fixture.UserData(0);
+  const auto identity = fixture.Emit(ValueOpcode::Identity, {live});
+  const auto branch_identity = fixture.Emit(ValueOpcode::Identity, {Value(true)});
+
+  DescriptorSource source;
+  source.dword_count = 1;
+  source.dwords[0] = identity;
+  source.indirect_descriptor.emplace();
+  source.indirect_descriptor->key_count = identity;
+  source.indirect_descriptor->selector_first = identity;
+  source.indirect_descriptor->selector_mask = identity;
+  fixture.program.descriptor_sources.push_back(source);
+  fixture.program.srt_reads.push_back({identity, 0});
+  fixture.program.control_flow.push_back({.condition = branch_identity});
+  fixture.program.uniform_fill.values[0] = identity;
+  fixture.program.uniform_fill.pattern_size = identity;
+  fixture.program.uniform_fill.element_count = identity;
+
+  RemoveIdentities(fixture.program);
+
+  const auto& resolved = fixture.program.descriptor_sources[0];
+  Check(resolved.dwords[0] == live &&
+        resolved.indirect_descriptor->key_count == live &&
+        resolved.indirect_descriptor->selector_first == live &&
+        resolved.indirect_descriptor->selector_mask == live,
+        "descriptor plan retained a freed Identity instruction");
+  Check(fixture.program.srt_reads[0].value == live,
+        "SRT plan retained a freed Identity instruction");
+  Check(fixture.program.control_flow[0].condition == Value(true),
+        "control-flow plan retained a freed Identity instruction");
+  Check(fixture.program.uniform_fill.values[0] == live &&
+        fixture.program.uniform_fill.pattern_size == live &&
+        fixture.program.uniform_fill.element_count == live,
+        "uniform fill plan retained a freed Identity instruction");
+}
+
 } // namespace
 
 int main() {
@@ -8678,6 +8716,7 @@ int main() {
         throw std::runtime_error(std::string(name) + ": " + exception.what());
       }
     };
+    Run("plan identity references", TestPlanReferencesSurviveIdentityRemoval);
     Run("same-condition select fold", TestFoldSameConditionSelects);
     Run("nested exec merge interpolation", [] {
       TestManualInterpolationNestedExecMerge(false);
