@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for test in demons_view_placement_test demons_stencil_alias_test \
+          for test in demons_rolling_probe_test demons_view_placement_test demons_stencil_alias_test \
                       demons_indirect_dispatch_test demons_lds_int64_storage_test \
                       demons_lighting_memory_policy_test demons_gpu_image_publish_policy_test \
                       ufc6_fan_policy_test ufc6_output_resolution_test \
@@ -58,7 +58,11 @@ jobs:
           assert 'KYTY_GPU_PIPELINE=1' not in launch and 'KYTY_PIPE_BATCH=1' not in launch
           assert 'eColorAttachmentWrite' in code and 'eDepthStencilAttachmentWrite' in code
           assert 'pipe_on={}' in perf
-          assert 'feedback.frame >= 735' in code
+          # Sampling must survive short or long gameplay; fixed absolute-frame
+          # thresholds previously exhausted the diagnostics before the final frames.
+          assert 'DemonsRollingProbe::FrameGate' in code
+          assert 'feedback.frame >= 735' not in code
+          assert 'frame >= 1120' not in code and 'frame >= 1200' not in code
           assert '[DS_LIGHTING_FEATURES]' in compute
           assert 'FeedbackWord(params.feedback).word = packed' in shader
           perf = Path('src/graphics/host_gpu/renderer/ufcPerf.cpp').read_text()
