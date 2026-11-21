@@ -306,11 +306,15 @@ class LaunchArgsTest {
         val normal = DemonsSoulsDiagnosticArgs.append(base, fullPixelTrace = false, perFaceBias = false)
         val normalEnv = normal.indices.filter { normal[it] == "--env" }.map { normal[it + 1] }
         assertEquals("KYTY_DS_COLOR_PROBE=0", normalEnv.last { it.startsWith("KYTY_DS_COLOR_PROBE=") })
+        assertEquals("KYTY_DS_COLOR_PROBE_TARGETED=0",
+            normalEnv.last { it.startsWith("KYTY_DS_COLOR_PROBE_TARGETED=") })
         assertEquals("KYTY_DS_FRAME_TRACE=1", normalEnv.last { it.startsWith("KYTY_DS_FRAME_TRACE=") })
         val traced = DemonsSoulsDiagnosticArgs.append(base, fullPixelTrace = true, perFaceBias = true)
         val env = traced.indices.filter { traced[it] == "--env" }.map { traced[it + 1] }
         assertEquals("KYTY_DS_COLOR_PROBE=1", env.last { it.startsWith("KYTY_DS_COLOR_PROBE=") })
-        assertEquals("KYTY_DS_COLOR_PROBE_TARGETED=0",
+        // Full pixel diagnostics capture the real scene compositor at late
+        // gameplay; the default launch above must never enable GPU readbacks.
+        assertEquals("KYTY_DS_COLOR_PROBE_TARGETED=1",
             env.last { it.startsWith("KYTY_DS_COLOR_PROBE_TARGETED=") })
         assertEquals("KYTY_DS_FRAME_TRACE=1", env.last { it.startsWith("KYTY_DS_FRAME_TRACE=") })
         assertEquals(1, env.count { it == "KYTY_DS_PER_FACE_BIAS=1" })
