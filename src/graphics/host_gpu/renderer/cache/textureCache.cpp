@@ -805,11 +805,29 @@ ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
 	                      ? desc.info.type : Prospero::ImageType::kColor2D;
 	const bool depth_compare = desc.info.pixel_format == vk::Format::eD16Unorm &&
 	                           desc.view_info.aspect == vk::ImageAspectFlagBits::eDepth;
-	// A nonresident depth map should fail the S# comparison, rather than
-	// sampling undefined memory (reference OP depth: D16 clamps to [0,1]).
-	constexpr uint32_t GreaterFamily = (1u << 0u) | (1u << 4u) | (1u << 6u);
-	const bool compare_one = depth_compare && t_null_compare_funcs != 0u &&
-	                         (t_null_compare_funcs & ~GreaterFamily) == 0u;
+	// Preserve the existing all-shadow fallback for games which rely on it.
+	// PPSA01341's U59 reference leaves KYTY_NULL_COMPARE_DEPTH disabled by
+	// default: an unbound shadow map must not make every sample fail GREATER.
+	// Its active lighting shaders use compare=4. Return depth zero for an
+	// unbound D16 GREATER map, so a positive reference depth is unshadowed.
+	// This is a real native clear of the null image, not a shader-pipeline
+	// diagnostic or a forced dispatch; all valid shadow maps are untouched.
+	constexpr auto clear_one_for_compare = [](bool depth, uint32_t funcs,
+	                                         bool unshadow_greater) constexpr {
+		constexpr uint32_t GreaterFamily = (1u << 0u) | (1u << 4u) | (1u << 6u);
+		return depth && funcs != 0u && (funcs & ~GreaterFamily) == 0u &&
+		       !(unshadow_greater && funcs == (1u << 4u));
+	};
+	static_assert(clear_one_for_compare(true, 1u << 4u, false));
+	static_assert(!clear_one_for_compare(true, 1u << 4u, true));
+	static_assert(clear_one_for_compare(true, 1u << 6u, true));
+	static_assert(!clear_one_for_compare(false, 1u << 4u, true));
+	const bool unshadow_greater = [] {
+		const char* value = std::getenv("KYTY_DS_NULL_SHADOW_LIT");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	const bool compare_one =
+	    clear_one_for_compare(depth_compare, t_null_compare_funcs, unshadow_greater);
 	const uint64_t key = static_cast<uint64_t>(desc.info.pixel_format) |
 	                     (static_cast<uint64_t>(type) << 32u) |
 	                     (static_cast<uint64_t>(compare_one ? 1u : 0u) << 40u);
