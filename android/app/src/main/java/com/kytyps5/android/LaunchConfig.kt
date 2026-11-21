@@ -254,6 +254,11 @@ object LaunchArgs {
                     // Existing software BVH and indirect SRT resources consume
                     // prior GPU writes; preserve cross-stage visibility.
                     "--env", "KYTY_DS_BVH_SRT_COHERENCE=1",
+                    // Title-scoped SRT readiness must work from the first shader,
+                    // even before TITLE_ID is populated in the native SFO state.
+                    // Read back GPU-authored V# tables, branch selectors and
+                    // single-owner image buffers before materialization.
+                    "--env", "KYTY_DS_SRT_COHERENT=1",
                     // U59: keep shader-runtime/loop-carried SRT loads on the GPU;
                     // do not pre-evaluate their addresses on the host.
                     "--env", "KYTY_SRT_VARIANT_READS=1",
