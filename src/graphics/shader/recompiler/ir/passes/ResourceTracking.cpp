@@ -876,6 +876,13 @@ private:
 	}
 
 	void PlanScalarReads() {
+		// U59 KYTY_SRT_VARIANT_READS: a scalar read whose address depends on
+		// shader-runtime values must NOT be evaluated once on the CPU before
+		// dispatch. Keep it in SPIR-V so GPU-selected V# descriptors use the
+		// existing indirect-scalar BDA path in Collect().
+		const char* variant_env = std::getenv("KYTY_SRT_VARIANT_READS");
+		const bool variant_reads = variant_env && std::strcmp(variant_env, "1") == 0;
+		uint32_t kept_runtime_reads = 0;
 		m_program.srt_plan_complete = false;
 		m_program.srt_reads.clear();
 		for (auto* block: m_program.blocks) {
@@ -934,6 +941,17 @@ private:
 			EXIT_IF(resolved == m_resolved_handles.end());
 			uint32_t bad_dword = 0;
 			if (!ValidateSource(resolved->source, bad_dword)) continue;
+			// Validating only the normalized descriptor source is insufficient:
+			// its original handle can depend on a loop-carried value even when
+			// the source's canonicalized DWORDs look host-evaluable. U59 keeps
+			// such reads in shader code rather than turning them into stale flat
+			// SRT slots before the GPU dispatch.
+			if (variant_reads &&
+			    (!ValidateRuntimeValue(m_program, read->Arg(0)) ||
+			     !ValidateRuntimeValue(m_program, Value(read)))) {
+				++kept_runtime_reads;
+				continue;
+			}
 			memory.planning_only = true;
 			uint32_t slot = 0;
 			for (; slot < m_program.srt_reads.size(); ++slot) {
@@ -990,6 +1008,11 @@ private:
 			}
 		}
 		m_program.srt_plan_complete = true;
+		if (variant_reads && kept_runtime_reads != 0u) {
+			std::printf("KYTY_SRT_VARIANT_READS: shader=0x%016" PRIx64
+			            " retained %u runtime scalar reads (not flattened)\n",
+			            m_program.shader_hash, kept_runtime_reads);
+		}
 	}
 
 	bool ValidateSource(const DescriptorSource& descriptor, uint32_t& bad_dword) const {
