@@ -1534,7 +1534,31 @@ int KYTY_SYSV_ABI KernelMkdir(const char* path, uint16_t mode) {
 		return KERNEL_ERROR_EEXIST;
 	}
 
-	if (!Common::File::CreateDirectory(real_name)) {
+	// Saros (PPSA07631) creates guest/intermediate and guest/saved subtrees in
+	// an order that does not guarantee the parent exists. POSIX mkdir of the final
+	// component returns ENOENT in that case, then UE's initialization aborts.
+	// Create the missing parent chain only for those game-generated writable
+	// directories; preserve normal single-component mkdir semantics for games.
+	const auto host_path = Common::PathToGenericString(real_name);
+	const bool saros_generated =
+	    host_path.find("PPSA07631") != std::string::npos &&
+	    (host_path.find("/guest/intermediate/") != std::string::npos ||
+	     host_path.find("/guest/saved/") != std::string::npos);
+	bool created = false;
+	if (saros_generated) {
+		std::error_code error;
+		std::filesystem::create_directories(real_name, error);
+		created = !error;
+		static std::atomic_uint32_t reports {0};
+		if (reports.fetch_add(1, std::memory_order_relaxed) < 48) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[SAROS_MKDIR] guest={} parent_chain={} native={} ec={} success={}\\n",
+			    path, 1, host_path, error.value(), created ? 1 : 0));
+		}
+	} else {
+		created = Common::File::CreateDirectory(real_name);
+	}
+	if (!created) {
 		return KERNEL_ERROR_EIO;
 	}
 

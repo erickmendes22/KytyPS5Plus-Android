@@ -1,4 +1,7 @@
 #include "common/abi.h"
+#if KYTY_HOST_ARM64
+#include "cpu/guestCpu.h"
+#endif
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/hostArch.h"
@@ -191,16 +194,32 @@ static void PrintAbortPointerArrayCandidate(const char* name, uint64_t addr) {
 
 	uint64_t rbp = 0;
 	uint64_t rsp = 0;
-	// This assembly is x86-64-specific, not Windows-specific.
+	uint64_t ret = reinterpret_cast<uint64_t>(__builtin_return_address(0));
 #if KYTY_HOST_X86
 	asm volatile("movq %%rbp, %0" : "=r"(rbp));
 	asm volatile("movq %%rsp, %0" : "=r"(rsp));
-#else
-	// rbp/rsp here are guest registers. The guest stack walk below only understands x86 frames, so on
-	// ARM64 they stay 0 and the diagnostics skip the walk.
+#elif KYTY_HOST_ARM64
+	// The host return address is an ARM64 thunk and cannot identify the x86
+	// abort caller. Capture the real trapped guest return, RSP, RBP and arguments
+	// from FEX before the process terminates. This works for Saros without a
+	// guest-side debugger or a manually supplied crash dump.
+	Cpu::GuestCpu::GuestRegisters regs {};
+	if (Cpu::GuestCpu::CaptureTrappedGuestRegisters(&regs)) {
+		ret = regs.rip;
+		rbp = regs.gpr[Cpu::GuestCpu::GuestRegisters::kRbp];
+		rsp = regs.gpr[Cpu::GuestCpu::GuestRegisters::kRsp];
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[SAROS_ABORT_GUEST] rip=0x{:016x} rsp=0x{:016x} rbp=0x{:016x} "
+		    "rdi=0x{:016x} rsi=0x{:016x} rdx=0x{:016x} rcx=0x{:016x} "
+		    "r8=0x{:016x} r9=0x{:016x} fs=0x{:016x}\\n",
+		    ret, rsp, rbp, regs.gpr[Cpu::GuestCpu::GuestRegisters::kRdi],
+		    regs.gpr[Cpu::GuestCpu::GuestRegisters::kRsi],
+		    regs.gpr[Cpu::GuestCpu::GuestRegisters::kRdx],
+		    regs.gpr[Cpu::GuestCpu::GuestRegisters::kRcx],
+		    regs.gpr[Cpu::GuestCpu::GuestRegisters::kR8],
+		    regs.gpr[Cpu::GuestCpu::GuestRegisters::kR9], regs.fs_base));
+	}
 #endif
-
-	const auto ret = reinterpret_cast<uint64_t>(__builtin_return_address(0));
 
 	LOGF("Guest abort diagnostics:\n"
 	     "\t return = 0x%016" PRIx64 "\n"
