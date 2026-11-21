@@ -831,6 +831,7 @@ struct CompiledShaderInfo {
 	uint32_t                      scratch_dwords      = 0;
 	uint32_t                      param_export_mask   = 0;
 	bool                          has_address_writes  = false;
+	bool                          ds_light_math_probe = false;
 	ShaderInfo                    info;
 	Bindings                      bindings;
 };

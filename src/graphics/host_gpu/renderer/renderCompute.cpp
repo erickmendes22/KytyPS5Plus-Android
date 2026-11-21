@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -40,6 +41,7 @@
 #include "libs/errno.h"
 
 #include <algorithm>
+#include <bit>
 #include <tuple>
 #include <nlohmann/json.hpp>
 #include <array>
@@ -316,9 +318,65 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 	return true;
 }
 
+void RenderExecutor::BindDsLightMath(PreparedBindings& bindings,
+                                    const DemonsQueueProbe::Capture* capture) {
+	using namespace DemonsLightMathProbe;
+	if (!bindings.runtime->program->ds_light_math_probe) return;
+	auto& storage = m_ds_light_math_buffers[static_cast<bool>(capture)];
+	const bool initialize = !storage;
+	if (initialize) {
+		storage = std::make_unique<Buffer>(m_context.GetGraphics(), m_context.GetCommandScheduler(),
+		    MemoryUsage::Download, 0, vk::BufferUsageFlagBits::eStorageBuffer,
+		    WordCount * sizeof(uint32_t));
+	}
+	if (initialize || capture) {
+		std::array<uint32_t, WordCount> data {};
+		std::fill_n(data.begin(), Samples, UINT32_MAX);
+		if (capture) {
+			for (uint32_t i = 0; i < Samples; ++i) {
+				const auto [x, y] = capture->pixels[i];
+				if (x < 65535 && y < 65535) data[i] = x | (y << 16);
+			}
+		}
+		std::memcpy(storage->Mapped().data(), data.data(), sizeof(data));
+		storage->Flush(0, sizeof(data));
+	}
+	bindings.shared_memory = vk::DescriptorBufferInfo{storage->Handle(), 0,
+	                                                   WordCount * sizeof(uint32_t)};
+}
+
+void RenderExecutor::ReadDsLightMath(const DemonsQueueProbe::Capture& capture, uint64_t submit) {
+	using namespace DemonsLightMathProbe;
+	auto& storage = m_ds_light_math_buffers[1];
+	m_context.GetCommandScheduler().Finish();
+	std::array<uint32_t, WordCount> data {};
+	storage->Invalidate(0, sizeof(data));
+	std::memcpy(data.data(), storage->Mapped().data(), sizeof(data));
+	const auto float_at = [](const uint32_t* row, size_t i) { return std::bit_cast<float>(row[i]); };
+	for (uint32_t i = 0; i < Samples; ++i) {
+		const auto* row = data.data() + Samples + i * Stride;
+		const auto [x, y] = capture.pixels[i];
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_LIGHT_MATH] frame={} submit={} sample={} xy={},{} wrote_hdr={} "
+		    "albedo=0x{:08x} depth={:.8g} stencil=0x{:02x} accumulated={:.8g}/{:.8g}/{:.8g} "
+		    "scale={:.8g} rgb_factors={:.8g}/{:.8g}/{:.8g} incoming={:.8g}/{:.8g}/{:.8g} "
+		    "stored={:.8g}/{:.8g}/{:.8g} auxiliary={:.8g} "
+		    "shadow_a_seen={} shadow_a_result={:.8g} shadow_a_ref={:.8g} "
+		    "shadow_b_seen={} shadow_b_result={:.8g} shadow_b_ref={:.8g}\n",
+		    capture.frame, submit, i, x, y, row[0] != 0, row[1], float_at(row, 2), row[3],
+		    float_at(row, 4), float_at(row, 5), float_at(row, 6), float_at(row, 7),
+		    float_at(row, 8), float_at(row, 9), float_at(row, 10),
+		    float_at(row, 11), float_at(row, 12), float_at(row, 13),
+		    float_at(row, 14), float_at(row, 15), float_at(row, 16), float_at(row, 17),
+		    row[18] != 0, float_at(row, 19), float_at(row, 20),
+		    row[22] != 0, float_at(row, 23), float_at(row, 24)));
+	}
+}
+
 static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& input,
                              PreparedBindings& bindings, uint64_t indirect_args = 0) {
-	if (input.stage.program->bindings.descriptor_counts[
+	if (input.stage.program->ds_light_math_probe ||
+	    input.stage.program->bindings.descriptor_counts[
 	        static_cast<size_t>(ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory)] == 0) {
 		return;
 	}
@@ -1402,6 +1460,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	RebindImages(bindings);
 	BindSharedMemory(m_context, input_info, bindings);
+	BindDsLightMath(bindings, nullptr);
 	m_rebind_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	RebindBuffers(bindings);
 	if (RebindAfterJoinEnabled()) {
@@ -1860,6 +1919,9 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			break;
 		}
 	}
+	const bool light_math_sample = queue_capture && program.ds_light_math_probe &&
+	    m_ds_light_tiles[captured_queue_index].valid;
+	BindDsLightMath(bindings, light_math_sample ? queue_capture : nullptr);
 	auto* post = BeginDsPostCompute(bindings, submit_id);
 	const bool material_probe = ProbeDsMaterialLight(bindings, submit_id, true);
 	// Acquiring arguments can merge cache buffers; finalize shader bindings afterward.
@@ -1937,6 +1999,12 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
 	RememberDsBufferProducers(m_context, bindings, true);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	if (light_math_sample) {
+		vk::MemoryBarrier host_read {vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
+		vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+		                          vk::PipelineStageFlagBits::eHost, {}, 1, &host_read, 0, nullptr, 0, nullptr);
+		ReadDsLightMath(*queue_capture, submit_id);
+	}
 	if (post) ProbeDsPostImages(bindings, *post, submit_id, program.shader_hash, true, false);
 	if (material_probe) {
 		std::array<uint32_t, 3> groups {args.x, args.y, args.z};
@@ -2002,6 +2070,7 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 		m_context.GetBufferCache().PrepareBdaWrites();
 	}
 	BindSharedMemory(m_context, input_info, bindings, args_addr);
+	BindDsLightMath(bindings, nullptr);
 	RebindImages(bindings);
 	m_rebind_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	RebindBuffers(bindings);

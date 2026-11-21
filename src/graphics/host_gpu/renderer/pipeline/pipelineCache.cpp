@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDiskCache.h"
 
@@ -258,8 +259,8 @@ void DumpShaderOriginal(const char* stage_name, uint64_t shader_hash,
 }
 
 bool ValidateShaderSpirv(const char* label, uint64_t shader_hash,
-                         const std::vector<uint32_t>& spirv, bool maintenance8_enabled) {
-	if (!Config::ShaderValidationEnabled()) {
+                         const std::vector<uint32_t>& spirv, bool maintenance8_enabled, bool force = false) {
+	if (!force && !Config::ShaderValidationEnabled()) {
 		return true;
 	}
 	spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_3);
@@ -501,6 +502,28 @@ struct PipelineCache::ProgramCache {
 				     options.shader_hash);
 			}
 		}
+		auto program = std::move(result.program).TakeCompiledInfo();
+		const auto* trace = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
+		if (options.shader_hash == DemonsLightMathProbe::Shader && trace && trace[0] == '1' &&
+		    trace[1] == '\0') {
+			constexpr auto kind = ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
+			constexpr auto slot = static_cast<size_t>(kind);
+			const auto fingerprint = XXH3_64bits(result.spirv.data(), result.spirv.size() * sizeof(uint32_t));
+			auto copy = result.spirv;
+			const auto binding = ShaderRecompiler::IR::NativeBinding(program.stage, kind);
+			if (!program.bindings.descriptor_counts[slot] &&
+			    DemonsLightMathProbe::Instrument(copy, fingerprint, binding) &&
+			    ValidateShaderSpirv(options.dump_label, options.shader_hash, copy,
+			                        options.maintenance8_enabled, true)) {
+				result.spirv = std::move(copy);
+				program.bindings.descriptor_counts[slot] = 1;
+				program.bindings.descriptor_mask |= uint64_t{1} << slot;
+				program.ds_light_math_probe = true;
+			}
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_LIGHT_MATH_VARIANT] shader=0x{:016x} binary=0x{:016x} instrumented={}\n",
+			    options.shader_hash, fingerprint, program.ds_light_math_probe));
+		}
 		DumpShaderSpirv(stage_name, options.shader_hash, result.spirv);
 
 		vk::ShaderModule module = nullptr;
@@ -517,7 +540,7 @@ struct PipelineCache::ProgramCache {
 		return {
 		    .function_code  = {function_code.begin(), function_code.end()},
 		    .specialization = std::move(specialization),
-		    .program        = std::move(result.program).TakeCompiledInfo(),
+		    .program        = std::move(program),
 		    .handle         = {.id = 0, .module = module},
 		};
 	}

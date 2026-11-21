@@ -267,6 +267,8 @@ object Diagnostics {
                 "binding snapshots and GPU tile lists. Join DS_GBUFFER_DRAW, DS_GBUFFER_PIXELS, " +
                 "DS_GBUFFER_PIXEL to DS_MATERIAL_LIGHT and DS_MATERIAL_HANDOFF by draw_frame and material shader. " +
                 "The material lighting image markers identify the immediately following pixel probe. " +
+                "DS_LIGHT_MATH_VARIANT identifies instrumented shader binaries. DS_LIGHT_MATH records the exact " +
+                "shader values for the queue 33 pixels. Shadow samples are the last comparison at each shader site. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
