@@ -404,7 +404,7 @@ static void ProbeDsComputeWrites(RenderContext& context,
 		const auto match = std::find(target_hashes.begin(), target_hashes.end(), hash);
 		const auto ordinal = static_cast<size_t>(match - target_hashes.begin());
 		const int32_t frame = context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 1200 ? 8u : frame >= 735 ? 4u : frame >= 280 ? 2u : 1u;
+		const uint32_t phase = frame >= 1120 ? 8u : frame >= 735 ? 4u : frame >= 280 ? 2u : 1u;
 		// The prior targeted mode suppressed *all* compute readbacks; the
 		// black 0x281300000 image could therefore never be traced to its producer.
 		// Permit at most two representative writers after gameplay begins.
