@@ -17,7 +17,7 @@ on:
         default: false
 
 concurrency:
-  group: android-${{ github.ref }}
+  group: android-${{ github.ref }}-gpu-srt-readiness
   cancel-in-progress: true
 
 permissions:
