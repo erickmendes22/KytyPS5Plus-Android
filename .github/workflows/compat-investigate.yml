@@ -64,7 +64,9 @@ jobs:
           assert 'feedback.frame >= 735' not in code
           assert 'frame >= 1120' not in code and 'frame >= 1200' not in code
           assert '[DS_LIGHTING_FEATURES]' in compute
-          assert 'FeedbackWord(params.feedback).word = packed' in shader
+          assert 'HostWords(params.feedback).words[axis + 1u] = groups' in shader
+          assert 'const uint32_t x = words[1], y = words[2], z = words[3]' in code
+          assert '[DS_BUFFER_PRODUCER]' in compute
           perf = Path('src/graphics/host_gpu/renderer/ufcPerf.cpp').read_text()
           graphics = Path('src/graphics/guest_gpu/graphicsRun.cpp').read_text()
           assert 'pm4_top_samples=' in perf
