@@ -46,6 +46,8 @@
 #include <cinttypes>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -635,14 +637,42 @@ static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBinding
 	if (!DsTraceEnabled() || !bindings.runtime || !*bindings.runtime) return;
 	const auto& program = *bindings.runtime->program;
 	const uint64_t shader = program.shader_hash;
-	static constexpr std::array<uint64_t, 3> watched {
-	    0x3dfe402653925fbfull, 0x6cbfe18ea2005263ull, 0x1ce1a858f62b5a11ull
+	static constexpr std::array<uint64_t, 8> watched {
+	    0x3dfe402653925fbfull, 0x6cbfe18ea2005263ull,
+	    0x1ce1a858f62b5a11ull, 0xc2e01fbe98f5ebabull,
+	    0x23056085c1120461ull, 0xfabe0bcb275a3005ull,
+	    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull
 	};
 	const auto which = std::find(watched.begin(), watched.end(), shader);
 	if (which == watched.end()) return;
-	static std::array<DemonsRollingProbe::FrameGate, 3> gates {};
+	static std::array<DemonsRollingProbe::FrameGate, watched.size()> gates {};
 	const auto frame = context.GetGpu().GetFrameNum();
-	if (!gates[static_cast<size_t>(which - watched.begin())].Due(frame, 240)) return;
+	const auto watch_index = static_cast<size_t>(which - watched.begin());
+	if (!gates[watch_index].Due(frame, 240)) return;
+	static std::array<uint32_t, watched.size()> count {};
+	if (count[watch_index]++ >= 6) return;
+	// This is deliberately unconditional: LOGF was suppressed for this build's
+	// file-logging configuration, so the earlier capture never appeared in its ZIP.
+	Log::WriteToConsoleAndLog(fmt::sprintf(
+	    "[DS_GPU_CAPTURE_START] frame=%d shader=0x%016" PRIx64
+	    " buffers=%zu images=%zu samplers=%zu\n",
+	    frame, shader, program.info.buffers.size(),
+	    program.info.images.size(), program.info.samplers.size()));
+	// Check every compared shadow map/sampler pair, regardless of whether its
+	// indirect lighting dispatch has X=0 for this frame.
+	const auto& snapshots = *bindings.runtime->resources;
+	for (uint32_t index = 0; index < program.info.samplers.size() &&
+	     index < snapshots.samplers.size(); ++index) {
+		const auto& metadata = program.info.samplers[index];
+		const auto desc = DecodeNativeDescriptor<ShaderSamplerResource>(snapshots.samplers[index]);
+		Log::WriteToConsoleAndLog(fmt::sprintf(
+		    "[DS_GPU_SAMPLER] frame=%d shader=0x%016" PRIx64
+		    " index=%u dref=%u compare=%u unnormalized=%u raw=%08x,%08x,%08x,%08x\n",
+		    frame, shader, index, metadata.depth_compare ? 1u : 0u,
+		    static_cast<unsigned>(desc.DepthCompareFunc()),
+		    desc.ForceUnormCoords() ? 1u : 0u,
+		    desc.fields[0], desc.fields[1], desc.fields[2], desc.fields[3]));
+	}
 	auto& scheduler = context.GetCommandScheduler();
 	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
 	uint32_t captured = 0;
@@ -657,19 +687,21 @@ static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBinding
 		    native.range == VK_WHOLE_SIZE || native.range < 4) continue;
 		const bool reader = shader == watched[0] && !resource.written &&
 		                    (resource.source == 8u || resource.source == 11u);
+		const bool other_reader = watch_index >= 3u && !resource.written &&
+		                          captured < 2u;
 		const bool args_writer = shader == watched[1] && resource.written &&
 		                         source.size <= 65536u;
 		const bool list_writer = shader == watched[2] && resource.written &&
 		                         source.size >= 4096u;
-		if (!reader && !args_writer && !list_writer) continue;
+		if (!reader && !other_reader && !args_writer && !list_writer) continue;
 		const uint64_t size = (std::min<uint64_t>(
 		    {source.size, static_cast<uint64_t>(native.range), 512u * 1024u}) / 4u) * 4u;
 		if (size < 4) continue;
 		auto [mapped, dest] = download.Map(size, 16u, true);
 		if (mapped == nullptr) {
-			LOGF("[DS_GPU_BUFFER_CAPTURE] frame=%d shader=0x%016" PRIx64
+			Log::WriteToConsoleAndLog(fmt::sprintf("[DS_GPU_BUFFER_CAPTURE] frame=%d shader=0x%016" PRIx64
 			     " source=%u error=staging_unavailable bytes=%" PRIu64 "\n",
-			     frame, shader, resource.source, size);
+			     frame, shader, resource.source, size));
 			continue;
 		}
 		download.Commit();
@@ -702,7 +734,7 @@ static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBinding
 		std::array<uint32_t, 4> backing {};
 		const bool backing_ok = LibKernel::Memory::TryReadBacking(
 		    source.address, backing.data(), sizeof(backing));
-		LOGF("[DS_GPU_BUFFER_CAPTURE] frame=%d shader=0x%016" PRIx64
+		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_GPU_BUFFER_CAPTURE] frame=%d shader=0x%016" PRIx64
 		     " role=%s source=%u guest=0x%016" PRIx64
 		     " slot=%u declared=%" PRIu64 " copied=%" PRIu64
 		     " partial=%u active_words=%" PRIu64 "/%" PRIu64
@@ -715,13 +747,36 @@ static void ProbeDsLightingBuffers(RenderContext& context, const PreparedBinding
 		     size < source.size ? 1u : 0u, active, words, digest,
 		     at(0), at(1), at(2), at(3), at(words/4u), at(words/2u),
 		     at(words*3u/4u), at(words-1u), backing_ok ? 1u : 0u,
-		     backing[0], backing[1], backing[2], backing[3]);
+		     backing[0], backing[1], backing[2], backing[3]));
+		// Persist the exact bytes of this bound GPU buffer, not only a five-word
+		// histogram. This data distinguishes empty lists from wrong addresses
+		// and enables offline decoding of the guest light structures.
+		const auto root = Config::GetShaderDumpFolder();
+		if (!root.empty() && root.filename() == "ds-lighting-dumps") {
+			const auto folder = root / "buffers";
+			std::error_code ec;
+			std::filesystem::create_directories(folder, ec);
+			if (!ec) {
+				const auto name = fmt::sprintf("cs_%016" PRIx64 "_f%u_s%u_a%016" PRIx64 ".bin",
+				                               shader, static_cast<uint32_t>(frame),
+				                               resource.source, source.address);
+				std::ofstream file(folder / name, std::ios::binary | std::ios::trunc);
+				if (file) {
+					file.write(reinterpret_cast<const char*>(mapped),
+					           static_cast<std::streamsize>(size));
+				}
+				Log::WriteToConsoleAndLog(fmt::sprintf(
+				    "[DS_GPU_BUFFER_FILE] frame=%d shader=0x%016" PRIx64
+				    " file=%s bytes=%" PRIu64 " written=%u\n",
+				    frame, shader, name.c_str(), size, file.good() ? 1u : 0u));
+			}
+		}
 		++captured;
 	}
 	if (captured == 0) {
-		LOGF("[DS_GPU_BUFFER_CAPTURE] frame=%d shader=0x%016" PRIx64
+		Log::WriteToConsoleAndLog(fmt::sprintf("[DS_GPU_BUFFER_CAPTURE] frame=%d shader=0x%016" PRIx64
 		     " no_matching_binding=1 resources=%zu\n", frame, shader,
-		     program.info.buffers.size());
+		     program.info.buffers.size()));
 	}
 }
 

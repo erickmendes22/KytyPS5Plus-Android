@@ -235,23 +235,27 @@ object Diagnostics {
             "e75589aa0bb3ae52", "93b0be7f1a0293d1"
         )
         return try {
-            val candidates = listOf("spv", "pipelines").flatMap { subdir ->
+            val candidates = listOf("spv", "pipelines", "buffers").flatMap { subdir ->
                 File(dump, subdir).listFiles().orEmpty()
                     .filter { file ->
                         file.isFile && file.length() > 0L &&
                             watched.any { hash -> file.name.contains("_${hash}_") } &&
-                            (if (subdir == "spv") file.extension == "spv"
-                             else file.extension == "json")
+                            (when (subdir) {
+                                "spv" -> file.extension == "spv"
+                                "pipelines" -> file.extension == "json"
+                                "buffers" -> file.extension == "bin"
+                                else -> false
+                            })
                     }
                     .sortedByDescending { it.lastModified() }
                     .take(24)
                     .map { subdir to it }
             }
             var count = 0
-            var budget = 32L * 1024L * 1024L
+            var budget = 40L * 1024L * 1024L
             val info = "PPSA01341 lighting shaders and GPU buffer capture. " +
-                "The session.log entries [DS_GPU_BUFFER_CAPTURE] contain exact Vulkan " +
-                "buffer data summaries and CPU backing comparisons.\\n"
+                "The session.log entries [DS_GPU_BUFFER_CAPTURE] contain native Vulkan " +
+                "buffer summaries; buffers/*.bin contain the actual bytes.\\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
             zip.closeEntry()
