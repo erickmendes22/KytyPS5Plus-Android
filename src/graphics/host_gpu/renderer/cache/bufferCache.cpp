@@ -365,6 +365,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		}();
 		if (track_publications) {
 			BackingPublication publication;
+			publication.tick = m_scheduler.CurrentTick();
 			publication.ranges.reserve(copies.size());
 			for (const auto& copy: copies) {
 				publication.ranges.push_back({buffer_address + copy.srcOffset, copy.size});
@@ -1538,16 +1539,32 @@ bool BufferCache::HasGpuDirtyBytes(uint64_t vaddr, uint64_t size) {
 	return m_gpu_modified_ranges.Intersects(vaddr, size);
 }
 
-bool BufferCache::HasPendingBackingPublication(uint64_t vaddr, uint64_t size) const {
-	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
-	if (size == 0 || vaddr > UINT64_MAX - size) return false;
+uint64_t BufferCache::PendingBackingPublicationTick(uint64_t vaddr, uint64_t size) const {
+	vaddr = Kernel::AddressFold::Fold(vaddr);
+	if (!GuestRange {vaddr, size}.Valid()) return 0;
 	const std::scoped_lock lock(m_pending_publication_mutex);
 	const uint64_t end = vaddr + size;
-	return std::ranges::any_of(m_pending_publications, [&](const BackingPublication& publication) {
-		return std::ranges::any_of(publication.ranges, [&](const GuestRange& range) {
-			return range.address < end && vaddr < range.address + range.size;
+	uint64_t tick = 0;
+	for (const auto& publication: m_pending_publications) {
+		const bool overlaps = std::ranges::any_of(publication.ranges, [&](const GuestRange& range) {
+			return range.address < end && vaddr < range.End();
 		});
-	});
+		if (overlaps) tick = std::max(tick, publication.tick);
+	}
+	return tick;
+}
+
+bool BufferCache::HasPendingBackingPublication(uint64_t vaddr, uint64_t size) const {
+	return PendingBackingPublicationTick(vaddr, size) != 0;
+}
+
+void BufferCache::WaitForBackingPublication(uint64_t vaddr, uint64_t size) {
+	const auto tick = PendingBackingPublicationTick(vaddr, size);
+	if (tick == 0) return;
+	// The priority callback publishes the backing bytes after the GPU copy completes.
+	// An open command buffer must be submitted before waiting for that callback.
+	m_scheduler.Wait(tick);
+	m_scheduler.WaitPriorityOperations(tick);
 }
 
 bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {

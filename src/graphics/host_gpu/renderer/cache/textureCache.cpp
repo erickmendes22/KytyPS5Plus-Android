@@ -3202,6 +3202,7 @@ bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t siz
 	if (!GuestRange {address, size}.Valid()) return false;
 	std::scoped_lock lock {m_lock};
 	ImageId selected {};
+	ImageIds superseded;
 	for (const auto id: FindImagesInRegion(address, size, false)) {
 		const auto* image = m_slot_images.try_get(id);
 		if (!image || !image->registered || !image->IsGpuModified() || image->depth_id) continue;
@@ -3211,14 +3212,17 @@ bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t siz
 		if (selected) {
 			const auto* previous = m_slot_images.try_get(selected);
 			const bool exact_layout = previous != nullptr &&
-			    range.address == address && range.size == size &&
-			    previous->info.data.address == address && previous->info.data.size == size &&
-			    SameBacking(previous->info, image->info, true);
+			    range == previous->info.data &&
+			    SameBacking(previous->info, image->info, true) &&
+			    SameBacking(image->info, previous->info, true);
 			switch (GpuImagePublishPolicy::ChooseAlias(
 			    previous != nullptr ? previous->gpu_write_order : 0u,
 			    image->gpu_write_order, exact_layout)) {
-				case GpuImagePublishPolicy::Decision::Replace: selected = id; break;
-				case GpuImagePublishPolicy::Decision::Keep: break;
+				case GpuImagePublishPolicy::Decision::Replace:
+					superseded.push_back(selected);
+					selected = id;
+					break;
+				case GpuImagePublishPolicy::Decision::Keep: superseded.push_back(id); break;
 				case GpuImagePublishPolicy::Decision::Refuse: return false;
 			}
 		} else {
@@ -3227,8 +3231,15 @@ bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t siz
 	}
 	if (!selected) return false;
 	auto& image = m_slot_images[selected];
-	if (!image.SafeToDownload() || !CanDownload(image)) return false;
-	return BcAlias::Publish(*this, image);
+	if (!image.SafeToDownload() || !BcAlias::Publish(*this, image)) return false;
+	// Identical aliases are now backed by the latest image's published bytes.
+	// Leaving an older alias GPU-owned lets the next subrange consumer publish it again.
+	for (const auto id: superseded) {
+		auto& older = m_slot_images[id];
+		older.ClearGpuModified();
+		older.MarkBufferModified();
+	}
+	return true;
 }
 
 void TextureCache::RestoreMappedProtection(uint64_t address, uint64_t size) {

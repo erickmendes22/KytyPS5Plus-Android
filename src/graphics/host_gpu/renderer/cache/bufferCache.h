@@ -121,6 +121,7 @@ public:
 	// While an asynchronous GPU readback is awaiting publication, the exact
 	// GPU-dirty ledger may be empty even though guest backing is still stale.
 	[[nodiscard]] bool HasPendingBackingPublication(uint64_t vaddr, uint64_t size) const;
+	void WaitForBackingPublication(uint64_t vaddr, uint64_t size);
 	// Bumped whenever bytes become GPU-written (GPU thread): a page seen without GPU-written
 	// bytes stays so while this is unchanged.
 	[[nodiscard]] uint64_t UnregisterEpoch() const noexcept { return m_unregister_epoch; }
@@ -262,8 +263,10 @@ private:
 	mutable std::shared_mutex                         m_gpu_modified_mutex;
 	struct BackingPublication {
 		uint64_t token = 0;
+		uint64_t tick = 0;
 		std::vector<GuestRange> ranges;
 	};
+	[[nodiscard]] uint64_t PendingBackingPublicationTick(uint64_t vaddr, uint64_t size) const;
 	mutable std::mutex                                m_pending_publication_mutex;
 	std::vector<BackingPublication>                    m_pending_publications;
 	uint64_t                                           m_next_publication_token = 0;
