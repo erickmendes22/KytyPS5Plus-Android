@@ -2000,7 +2000,9 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	RememberDsBufferProducers(m_context, bindings, true);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	if (light_math_sample) {
-		vk::MemoryBarrier host_read {vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
+		vk::MemoryBarrier host_read {};
+		host_read.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+		host_read.dstAccessMask = vk::AccessFlagBits::eHostRead;
 		vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
 		                          vk::PipelineStageFlagBits::eHost, {}, 1, &host_read, 0, nullptr, 0, nullptr);
 		ReadDsLightMath(*queue_capture, submit_id);
