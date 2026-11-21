@@ -313,6 +313,7 @@ void CommandScheduler::PopDrawOperations() {
 			if ((m_priority_active && m_priority_active_tick <= tick) ||
 			    (!m_priority_operations.empty() &&
 			     m_priority_operations.front().tick <= tick)) {
+				UfcPerf::NotePendingDeferred();
 				return;
 			}
 			operation = std::move(m_pending_operations.front());

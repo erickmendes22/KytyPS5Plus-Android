@@ -17,6 +17,7 @@ std::atomic<uint64_t> g_reused{0}, g_written{0}, g_submits{0}, g_work{0};
 std::atomic<uint64_t> g_batches{0}, g_batch_buffers{0};
 std::atomic<uint64_t> g_fan_on{0}, g_fan_off{0};
 std::atomic<uint64_t> g_pipeline_on{0}, g_pipeline_off{0};
+std::atomic<uint64_t> g_pending_deferred{0};
 // Only sampled PM4 handler time, not guest waits or GPU execution time.
 std::array<std::atomic<uint64_t>, 256> g_pm4_opcode_ns {};
 std::array<std::atomic<uint64_t>, 256> g_pm4_opcode_samples {};
@@ -75,6 +76,9 @@ void NotePm4Handler(uint32_t opcode, uint64_t duration_ns) {
     g_pm4_opcode_ns[slot].fetch_add(duration_ns, std::memory_order_relaxed);
     g_pm4_opcode_samples[slot].fetch_add(1, std::memory_order_relaxed);
 }
+void NotePendingDeferred() {
+    if (Enabled()) g_pending_deferred.fetch_add(1u, std::memory_order_relaxed);
+}
 void NotePipeline(bool on) {
     if (!Enabled()) return;
     (on ? g_pipeline_on : g_pipeline_off).fetch_add(1, std::memory_order_relaxed);
@@ -107,6 +111,7 @@ void ReportMaybe() {
     const auto fanoff = g_fan_off.exchange(0, std::memory_order_relaxed);
     const auto pipeon = g_pipeline_on.exchange(0, std::memory_order_relaxed);
     const auto pipeoff = g_pipeline_off.exchange(0, std::memory_order_relaxed);
+    const auto deferred = g_pending_deferred.exchange(0, std::memory_order_relaxed);
     // Top opcode handler samples are a direct CPU-work attribution, unlike
     // queue-submit time which is on another thread. Show the sample count
     // to distinguish a genuine hot opcode from one rare, expensive call.
@@ -136,11 +141,11 @@ void ReportMaybe() {
         "timeline_wait={:.1f}ms/s finish={:.1f}ms/s descriptor_prepare={:.1f}ms/s "
         "descriptor_update={:.1f}ms/s gc={:.1f}ms/s sets_reused={} sets_written={} "
         "submits={} work={} batches={} batch_buffers={} fan_on={} fan_off={} "
-        "pipe_on={} pipe_off={} pm4_top_samples={} gpu_busy=not_measured\n",
+        "pipe_on={} pipe_off={} pending_deferred={} pm4_top_samples={} gpu_busy=not_measured\n",
         seconds, ms(Site::Pm4), ms(Site::GpuQueueBlocked),
         ms(Site::VkQueueSubmit), calls(Site::VkQueueSubmit), ms(Site::SubmitDrain),
         ms(Site::TimelineWait), ms(Site::Finish), ms(Site::DescriptorPrepare),
         ms(Site::DescriptorUpdate), ms(Site::GarbageCollect),
-        reuse, write, submits, work, batches, batch_buffers, fanon, fanoff, pipeon, pipeoff, sampled_opcodes));
+        reuse, write, submits, work, batches, batch_buffers, fanon, fanoff, pipeon, pipeoff, deferred, sampled_opcodes));
 }
 } // namespace Libs::Graphics::UfcPerf

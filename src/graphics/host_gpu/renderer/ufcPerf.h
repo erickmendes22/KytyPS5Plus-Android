@@ -19,6 +19,7 @@ void NoteSubmit(uint32_t work_items);
 void NoteBatch(uint32_t queued_command_buffers);
 void NoteFan(bool enabled);
 void NotePipeline(bool enabled);
+void NotePendingDeferred();
 // Sample ~1/128 PM4 handlers with a thread-local xorshift, not a
 // periodic fixed opcode slot (games emit repeating packet sequences).
 [[nodiscard]] bool SamplePm4Handler();
