@@ -170,12 +170,6 @@ object LaunchArgs {
                     // timeline waits, descriptor work and GC. No sampler
                     // signals, per-draw logs, readbacks or GPU instrumentation.
                     "--env", "KYTY_UFC6_PERF=1",
-                    // The FPS bottleneck is inside draw recording, not SRT walks.
-                    // Auto WalkFan disengaged at 5us/walk while DRAW_INDEX_2
-                    // occupies ~25us/packet. Split CP parsing/prefetch from
-                    // Vulkan draw recording in the existing 2-stage pipeline;
-                    // this is title-scoped, not a change to shaders or sync.
-                    "--env", "KYTY_GPU_PIPELINE=1",
                     // U59-derived fix: skip only per-draw fatal scalar-overlap
                     // audit, not actual resource barriers or producer tracking.
                     "--env", "KYTY_UFC6_SKIP_SCALAR_OVERLAP_AUDIT=1",
