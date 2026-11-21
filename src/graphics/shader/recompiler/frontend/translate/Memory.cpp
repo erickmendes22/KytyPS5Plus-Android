@@ -325,7 +325,8 @@ IR::Value Translator::MakeImageAddress(const Decoder::Instruction& inst,
 	std::array<IR::Value, 13> components {};
 	components.fill(IR::Value(0u));
 	const auto count =
-	    Decoder::ImageAddressDwordCount(inst.image_sample_flags, inst.image_address_components);
+	    Decoder::ImageAddressDwordCount(inst.image_sample_flags, inst.image_dimension,
+		                                    inst.image_address_components);
 	EXIT_IF(count > components.size());
 	const auto nsa_components =
 	    std::min(inst.image_nsa_dwords * 4u, Decoder::MaxImageNsaAddressComponents);

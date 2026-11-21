@@ -78,6 +78,7 @@ ImageSampleLayout Layout(const IR::MemoryInfo& mem) {
 	layout.coord = cursor;
 	cursor += info.coordinate_components;
 	if (HasFlag(mem, Decoder::ImageSampleFlagLod)) layout.lod = cursor++;
+	if (HasFlag(mem, Decoder::ImageSampleFlagLodClamp)) layout.clamp = cursor++;
 	return layout;
 }
 
@@ -1115,6 +1116,16 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			auto lod = ZeroF32(state);
 			if (HasFlag(mem, Decoder::ImageSampleFlagLod) && layout.lod != NoImageComponent) {
 				lod = AddressF32(ctx, mem, *address, layout.lod);
+			}
+			// IMAGE_SAMPLE*_CL carries a *separate* minimum LOD component.
+			// Old Android code decoded it in the instruction flags but ignored
+			// the value. For explicit-LOD compute passes this must clamp the LOD
+			// before the image is sampled; otherwise textures/lights from
+			// streaming mip chains may be read from an invalid finer level.
+			if (layout.clamp != NoImageComponent &&
+			    mem.image_address_components > layout.clamp) {
+				lod = EmitGlsl<GLSLstd450FMax, IR::Type::F32>(
+				    state, lod, AddressF32(ctx, mem, *address, layout.clamp));
 			}
 			operands[0] = spv::ImageOperandsLodMask;
 			operands[1] = lod;
