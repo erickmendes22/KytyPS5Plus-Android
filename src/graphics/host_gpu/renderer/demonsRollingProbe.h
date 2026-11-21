@@ -20,7 +20,7 @@ public:
                 int64_t{frame} - int64_t{previous} < spacing) return false;
             // Ignore out-of-order feedback from an older frame, except a
             // restarted guest counter that begins again from frame zero.
-            if (previous >= 0 && frame < previous && frame > 4) return false;
+            if (previous >= 0 && frame < previous && (frame > 4 || previous < 32)) return false;
             if (m_last.compare_exchange_weak(previous, frame, std::memory_order_relaxed,
                                              std::memory_order_relaxed)) return true;
         }
