@@ -254,6 +254,9 @@ object LaunchArgs {
                     // Existing software BVH and indirect SRT resources consume
                     // prior GPU writes; preserve cross-stage visibility.
                     "--env", "KYTY_DS_BVH_SRT_COHERENCE=1",
+                    // U59: keep shader-runtime/loop-carried SRT loads on the GPU;
+                    // do not pre-evaluate their addresses on the host.
+                    "--env", "KYTY_SRT_VARIANT_READS=1",
                     // Stamp actual writer tick when preparation submits early.
                     "--env", "KYTY_DS_SHADER_WRITE_RETICK=1",
                     // Prioritize reclaiming cold buffers over G-buffer,
