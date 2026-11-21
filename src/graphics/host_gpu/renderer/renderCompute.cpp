@@ -1013,6 +1013,41 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	PreparedBindings* descriptor_stage = &bindings;
 	FindBuffers(std::span {&descriptor_stage, 1u});
 	const auto& program = *input_info.stage.program;
+	// Demon's Souls: for the six failing light-dispatch commands, compare
+	// original guest backing with the GPU-indirect path's read-only feedback.
+	// Unlike a synchronous GPU readback, this cannot modify counts or wait on
+	// a new fence. Only bounded samples are exported for init and gameplay.
+	if (ds_gpu_zero_indirect) {
+		constexpr std::array<uint64_t, 6> watched_lighting {{
+		    0xc2e01fbe98f5ebabull, 0x23056085c1120461ull,
+		    0x3dfe402653925fbfull, 0xfabe0bcb275a3005ull,
+		    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull
+		}};
+		if (std::find(watched_lighting.begin(), watched_lighting.end(),
+		              program.shader_hash) != watched_lighting.end()) {
+			const int32_t frame = m_context.GetGpu().GetFrameNum();
+			const uint32_t phase = frame >= 735 ? 1u : 0u;
+			static std::array<std::atomic<uint32_t>, 2> sampled {};
+			const uint32_t index = sampled[phase].fetch_add(1u, std::memory_order_relaxed);
+			if (index < 48u || (index % 4096u) == 0u) {
+				vk::DispatchIndirectCommand backing {};
+				const bool backing_read = LibKernel::Memory::TryReadBacking(
+				    args_addr, &backing, sizeof(backing));
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_ARGS_PROVENANCE] frame={} shader=0x{:016x} addr=0x{:x} "
+				    "chosen={} gpu_image={} buffer_dirty={} buffer_modified={} "
+				    "cpu_modified={} pending_publication={} backing_ok={} "
+				    "backing_x={} backing_y={} backing_z={}\n",
+				    frame, program.shader_hash, args_addr,
+				    cpu_args ? "cpu" : "gpu", image_gpu_owned ? 1 : 0,
+				    indirect_cache.HasGpuDirtyBytes(args_addr, sizeof(args)) ? 1 : 0,
+				    indirect_cache.IsRegionGpuModified(args_addr, sizeof(args)) ? 1 : 0,
+				    indirect_cache.IsRegionCpuModified(args_addr, sizeof(args)) ? 1 : 0,
+				    indirect_cache.HasPendingBackingPublication(args_addr, sizeof(args)) ? 1 : 0,
+				    backing_read ? 1 : 0, backing.x, backing.y, backing.z));
+			}
+		}
+	}
 	// A CPU-current indirect command bypasses the Vulkan clamp feedback path.
 	// Log its real groups too, otherwise zero GPU samples can wrongly imply
 	// that the six lighting kernels never dispatched.

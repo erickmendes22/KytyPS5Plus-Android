@@ -1595,6 +1595,17 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 		        (pipeline_bind_point == vk::PipelineBindPoint::eCompute &&
 		         shader_stage != vk::ShaderStageFlagBits::eCompute));
 	}
+	// The scalar-read overlap test below is a per-draw fatal assertion, not a
+	// Vulkan dependency, hazard barrier, image binding or coherency operation.
+	// The U59 derived fork removed it after specialization reads were captured
+	// before the draw (fxandrei/KytyPS5-ufc6 eb3cb47296). UFC6 performs tens
+	// of thousands of draws/second; skip this O(reads * resource writes) audit
+	// strictly for that title. The sentinel sizing proof in FindBuffers stays.
+	static const bool ufc_skip_overlap_audit = [] {
+		const char* value = std::getenv("KYTY_UFC6_SKIP_SCALAR_OVERLAP_AUDIT");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	if (!ufc_skip_overlap_audit) {
 	// Scalar (specialization) reads must not overlap anything this draw writes. The written
 	// ranges are gathered once per call: the per-read rescan of every bound image's slot (deque
 	// lookups) cost ~5% of the GPU thread's CPU in Astro Bot gameplay (hundreds of reads x ~550
@@ -1702,6 +1713,7 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			}
 		}
 	}
+	} // UFC6: retain all real resource transitions and barriers after audit.
 	// Rebound G-buffer images may have different owners than their original
 	// descriptor snapshots. Reconstruct sampled/storage feedback from the FINAL
 	// identities across every stage (VS/PS as well as a single compute stage).

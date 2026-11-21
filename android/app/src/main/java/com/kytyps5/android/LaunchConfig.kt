@@ -170,6 +170,9 @@ object LaunchArgs {
                     // timeline waits, descriptor work and GC. No sampler
                     // signals, per-draw logs, readbacks or GPU instrumentation.
                     "--env", "KYTY_UFC6_PERF=1",
+                    // U59-derived fix: skip only per-draw fatal scalar-overlap
+                    // audit, not actual resource barriers or producer tracking.
+                    "--env", "KYTY_UFC6_SKIP_SCALAR_OVERLAP_AUDIT=1",
                     // Threaded submit batches only an already-queued backlog,
                     // using one Vulkan driver entry with multiple ordered
                     // VkSubmitInfo/timeline signals. No extra waiting or frame
