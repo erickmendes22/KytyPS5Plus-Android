@@ -1138,14 +1138,22 @@ bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
 	    Graphics::GuestGpu::IsGpuThread() && IsGpuAddressRange(vaddr, size)) {
 		auto& renderer = GetGpuResources();
 		auto& buffers = renderer.GetBufferCache();
-		if (!buffers.HasGpuDirtyBytes(vaddr, size)) {
+		if (buffers.HasGpuDirtyBytes(vaddr, size)) {
+			static std::atomic_uint32_t dirty_buffer {0};
+			const auto n = dirty_buffer.fetch_add(1u, std::memory_order_relaxed) + 1u;
+			if (n <= 12u || (n & (n - 1u)) == 0u) {
+				std::printf("[DS_SRT_BUFFER_READY] count=%u addr=0x%llx bytes=%llu\n",
+				            n, static_cast<unsigned long long>(vaddr),
+				            static_cast<unsigned long long>(size));
+			}
+		} else {
 			auto& textures = renderer.GetTextureCache();
 			if (textures.IsRegionGpuModified(vaddr, size)) {
 				if (textures.PublishGpuImageForIndirectArgs(vaddr, size)) {
 					static std::atomic_uint32_t published {0};
 					const auto n = published.fetch_add(1u, std::memory_order_relaxed) + 1u;
 					if (n <= 12u || (n & (n - 1u)) == 0u) {
-						std::printf("[DS_SRT_IMAGE_READY] count=%u addr=0x%llx bytes=%llu\\n",
+						std::printf("[DS_SRT_IMAGE_READY] count=%u addr=0x%llx bytes=%llu\n",
 						            n, static_cast<unsigned long long>(vaddr),
 						            static_cast<unsigned long long>(size));
 					}
@@ -1153,7 +1161,7 @@ bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
 					static std::atomic_uint32_t ambiguous {0};
 					const auto n = ambiguous.fetch_add(1u, std::memory_order_relaxed) + 1u;
 					if (n <= 8u || (n & (n - 1u)) == 0u) {
-						std::printf("[DS_SRT_IMAGE_UNRESOLVED] count=%u addr=0x%llx bytes=%llu\\n",
+						std::printf("[DS_SRT_IMAGE_UNRESOLVED] count=%u addr=0x%llx bytes=%llu\n",
 						            n, static_cast<unsigned long long>(vaddr),
 						            static_cast<unsigned long long>(size));
 					}
