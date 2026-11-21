@@ -1039,18 +1039,22 @@ static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
 	return words;
 }
 
-void RenderExecutor::ProbeDsMaterialLight(const PreparedBindings& bindings, bool before) {
+bool RenderExecutor::ProbeDsMaterialLight(const PreparedBindings& bindings, uint64_t submit,
+                                         bool before, const std::array<uint32_t, 3>& groups,
+                                         bool groups_valid) {
 	using namespace DemonsQueueProbe;
 	const auto shader = bindings.runtime->program->shader_hash;
 	constexpr uint64_t sparse_lighting = 0x3dfe402653925fbfull;
 	const uint32_t consumer = shader == sparse_lighting ? 1u :
 	    shader == Shaders[0] ? 2u : shader == Shaders[1] ? 4u : 0u;
-	if (!consumer) return;
+	if (!consumer) return false;
 	const auto frame = m_context.GetGpu().GetFrameNum();
-	const auto pending = [frame, consumer](const MaterialTrace& trace) {
-		return trace.frame == frame && trace.count && !(trace.lighting_sampled & consumer);
+	const auto pending = [frame, consumer, before](const MaterialTrace& trace) {
+		if (!before) return (trace.lighting_in_progress & consumer) != 0;
+		return MaterialTracePending(trace.frame, frame) && trace.count &&
+		       !(trace.lighting_sampled & consumer);
 	};
-	if (std::ranges::none_of(m_ds_material_traces, pending)) return;
+	if (std::ranges::none_of(m_ds_material_traces, pending)) return false;
 
 	std::vector<uint32_t> range, tiles;
 	if (!before && shader == sparse_lighting) {
@@ -1065,7 +1069,12 @@ void RenderExecutor::ProbeDsMaterialLight(const PreparedBindings& bindings, bool
 	const auto& srt = bindings.runtime->resources->flattened_srt;
 	for (auto& trace : m_ds_material_traces) {
 		if (!pending(trace)) continue;
-		if (!before) trace.lighting_sampled |= consumer;
+		if (before) {
+			trace.lighting_in_progress |= consumer;
+		} else {
+			trace.lighting_in_progress &= ~consumer;
+			trace.lighting_sampled |= consumer;
+		}
 		uint32_t tile_mask = 0;
 		const bool tiles_valid = !before && srt.size() > 114 && srt[113] == trace.width &&
 		    srt[114] == trace.height && srt[112] == (trace.width + 7u) / 8u &&
@@ -1079,10 +1088,12 @@ void RenderExecutor::ProbeDsMaterialLight(const PreparedBindings& bindings, bool
 			}
 		}
 		Log::WriteToConsoleAndLog(fmt::format(
-		    "[DS_MATERIAL_LIGHT] frame={} material=0x{:016x} shader=0x{:016x} phase={} "
-		    "samples={} tiles_valid={} tile_mask=0x{:x} tile_count={}\n",
-		    frame, trace.shader, shader, before ? "before" : "after",
-		    trace.count, tiles_valid, tile_mask, tiles_valid ? range[9] - range[8] : 0u));
+		    "[DS_MATERIAL_LIGHT] frame={} draw_frame={} draw_submit={} light_submit={} "
+		    "material=0x{:016x} shader=0x{:016x} phase={} samples={} tiles_valid={} "
+		    "tile_mask=0x{:x} tile_count={} groups_valid={} groups={}/{}/{}\n",
+		    frame, trace.frame, trace.submit, submit, trace.shader, shader, before ? "before" : "after",
+		    trace.count, tiles_valid, tile_mask, tiles_valid ? range[9] - range[8] : 0u,
+		    groups_valid, groups[0], groups[1], groups[2]));
 		uint32_t roles = 0;
 		for (const auto& binding : bindings.images) {
 			const bool albedo = before && binding.desc.info.data.address == GBufferAddress;
@@ -1102,7 +1113,24 @@ void RenderExecutor::ProbeDsMaterialLight(const PreparedBindings& bindings, bool
 			    "owner=0x{:x} view_format={}\n", frame, trace.shader, before ? "before" : "after",
 			    albedo ? "albedo" : "hdr", image.info.data.address,
 			    static_cast<uint32_t>(view->info.format)));
-			ProbeDsComputeImage(m_context, binding.image_id, shader, true, &view->info, &trace.pixels);
+			std::array<uint32_t, DsProbePixels{}.size()> words;
+			words.fill(UINT32_MAX);
+			const auto version = image.ContentVersion();
+			ProbeDsComputeImage(m_context, binding.image_id, shader, true, &view->info,
+			                    &trace.pixels, albedo ? &words : nullptr);
+			if (albedo) {
+				const bool same_image = trace.image_index == binding.image_id.index &&
+				    trace.image_generation == binding.image_id.generation;
+				uint32_t same = 0;
+				for (uint32_t i = 0; i < trace.count; ++i) {
+					if (words[i] == trace.output[i]) same |= 1u << i;
+				}
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_MATERIAL_HANDOFF] draw_frame={} frame={} material=0x{:016x} "
+				    "shader=0x{:016x} same_image={} draw_version={} read_version={} same_words=0x{:x}\n",
+				    trace.frame, frame, trace.shader, shader, same_image,
+				    trace.content_version, version, same));
+			}
 		}
 		if (roles != (before ? 3u : 2u)) {
 			Log::WriteToConsoleAndLog(fmt::format(
@@ -1110,6 +1138,7 @@ void RenderExecutor::ProbeDsMaterialLight(const PreparedBindings& bindings, bool
 			    frame, trace.shader, before ? "before" : "after", roles));
 		}
 	}
+	return true;
 }
 
 static void SaveDsQueueFile(const std::string& name, const char* subdir, const void* data,
@@ -1144,6 +1173,10 @@ void RenderExecutor::CaptureDsLightTiles(const PreparedBindings& bindings) {
 	for (size_t i = 0; i < Queues.size(); ++i) {
 		const auto selected = SelectTiles(offsets, tiles, Queues[i]);
 		m_ds_light_tiles[i] = selected;
+		auto& selected_ids = m_ds_light_tile_ids[i];
+		selected_ids.clear();
+		if (selected.valid)
+			selected_ids.assign(tiles.begin() + selected.first, tiles.begin() + selected.end);
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_QUEUE_TILES] frame={} queue={} first={} end={} prefix_words={} list_words={} valid={} "
 		    "ids={},{},{},{},{}\n", frame, Queues[i], selected.first, selected.end,
@@ -1380,7 +1413,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		}
 	}
 
-	ProbeDsMaterialLight(bindings, true);
+	const bool material_probe = ProbeDsMaterialLight(bindings, submit_id, true);
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
@@ -1482,7 +1515,11 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// Record the shader barriers and diagnostics before the BDA settle submits the
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
-	ProbeDsMaterialLight(bindings, false);
+	if (material_probe) {
+		ProbeDsMaterialLight(bindings, submit_id, false,
+		    {thread_group_x / std::max(program.info.group_pack, 1u), thread_group_y, thread_group_z},
+		    true);
+	}
 	ProbeDsComputeWrites(m_context, input_info, bindings);
 	CaptureDsLightTiles(bindings);
 	ProbeDsLightingBuffers(m_context, bindings);
@@ -1785,6 +1822,21 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			                 std::max(image.backing.extent.height >> mip, 1u)};
 			const bool covered = TilePixels(m_ds_light_tiles[i], capture.width, capture.height,
 			                               capture.pixels);
+			uint32_t colored = 0;
+			if (covered) {
+				const auto albedo = std::ranges::find_if(bindings.images, [](const auto& binding) {
+					return binding.image_id && !binding.placeholder &&
+					       binding.desc.info.data.address == GBufferAddress;
+				});
+				if (albedo != bindings.images.end()) {
+					const auto& source = m_context.GetTextureCache().GetImage(albedo->image_id);
+					const auto native_view = std::ranges::find(
+					    source.views, albedo->image_view, &CachedImageView::view);
+					if (native_view != source.views.end())
+						colored = PickDsColoredTilePixels(m_context, albedo->image_id, native_view->info,
+						    m_ds_light_tile_ids[i], capture.width, capture.height, capture.pixels);
+				}
+			}
 			if (!covered) {
 				// Still record arguments and bindings for empty or invalid lists.
 				const auto w = capture.width;
@@ -1797,8 +1849,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			captured_queue_index = i;
 			const auto& p = capture.pixels;
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_QUEUE_CAPTURE] frame={} queue={} shader=0x{:016x} covered={} coords={},{}/{},{}/{},{}/{},{}/{},{}\n",
-			    frame, queue, capture.shader, covered, p[0].first, p[0].second, p[1].first, p[1].second,
+			    "[DS_QUEUE_CAPTURE] frame={} queue={} shader=0x{:016x} covered={} colored={} coords={},{}/{},{}/{},{}/{},{}/{},{}\n",
+			    frame, queue, capture.shader, covered, colored, p[0].first, p[0].second, p[1].first, p[1].second,
 			    p[2].first, p[2].second, p[3].first, p[3].second, p[4].first, p[4].second));
 			RebindBuffers(bindings);
 			SaveDsQueueBindings(m_context, bindings, capture, queue);
@@ -1806,7 +1858,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			break;
 		}
 	}
-	ProbeDsMaterialLight(bindings, true);
+	const bool material_probe = ProbeDsMaterialLight(bindings, submit_id, true);
 	// Acquiring arguments can merge cache buffers; finalize shader bindings afterward.
 	const auto args_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	auto [args_buffer, args_offset] = m_context.GetBufferCache().ObtainBuffer(
@@ -1882,7 +1934,12 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
 	RememberDsBufferProducers(m_context, bindings, true);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
-	ProbeDsMaterialLight(bindings, false);
+	if (material_probe) {
+		std::array<uint32_t, 3> groups {args.x, args.y, args.z};
+		const bool valid = split_on_cpu ||
+		    ReadDsGpuWords(m_context, indirect_buffer, indirect_offset, groups);
+		ProbeDsMaterialLight(bindings, submit_id, false, groups, valid);
+	}
 	ProbeDsComputeWrites(m_context, input_info, bindings);
 	if (queue_capture) {
 		const auto captured_queue = DemonsQueueProbe::Queues[captured_queue_index];

@@ -65,6 +65,13 @@ constexpr CoveragePixels MaterialCoveragePixels(uint32_t width, uint32_t height,
 	return pixels;
 }
 
+// GetFrameNum counts guest Done calls, which can advance while the queued
+// GPU work is still being recorded. Age bounds the diagnostic only.
+constexpr bool MaterialTracePending(int32_t producer, int32_t consumer) {
+	const int64_t age = int64_t{consumer} - producer;
+	return producer >= 0 && age >= 0 && age <= 12;
+}
+
 struct MaterialTrace {
 	int32_t frame = -1;
 	uint64_t shader = 0;
@@ -73,6 +80,12 @@ struct MaterialTrace {
 	Pixels pixels {};
 	uint32_t count = 0;
 	uint32_t lighting_sampled = 0;
+	uint32_t lighting_in_progress = 0;
+	uint64_t submit = 0;
+	uint32_t image_index = UINT32_MAX;
+	uint32_t image_generation = 0;
+	uint64_t content_version = 0;
+	std::array<uint32_t, Pixels{}.size()> output {};
 };
 
 struct Tiles {
@@ -109,6 +122,42 @@ inline bool TilePixels(const Tiles& tiles, uint32_t width, uint32_t height, Pixe
 	}
 	output = pixels;
 	return true;
+}
+
+// Select actual nonblack albedo texels belonging to an executed queue.
+inline uint32_t ColoredTilePixels(std::span<const uint32_t> albedo,
+                                  std::span<const uint32_t> tiles, uint32_t width,
+                                  uint32_t height, Pixels& output) {
+	if (width == 0 || height == 0 || albedo.size() != uint64_t{width} * height) return 0;
+	const uint64_t pitch = (uint64_t{width} + 7) / 8;
+	Pixels found {};
+	uint32_t count = 0;
+	const size_t stride = std::max<size_t>(tiles.size() / 17, 1);
+	for (size_t phase = 0; phase < stride && count < found.size(); ++phase) {
+		for (size_t i = phase; i < tiles.size() && count < found.size(); i += stride) {
+			const uint64_t left = (tiles[i] % pitch) * 8;
+			const uint64_t top = (tiles[i] / pitch) * 8;
+			if (left >= width || top >= height) continue;
+			bool picked = false;
+			for (uint64_t y = top; !picked && y < std::min<uint64_t>(top + 8, height); ++y) {
+				for (uint64_t x = left; x < std::min<uint64_t>(left + 8, width); ++x) {
+					if (!(albedo[y * width + x] & 0x00ffffffu)) continue;
+					const Pixels::value_type point {x, y};
+					if (std::ranges::find(found.begin(), found.begin() + count, point) ==
+					    found.begin() + count) {
+						found[count++] = point;
+						picked = true;
+						break;
+					}
+				}
+			}
+		}
+	}
+	if (count) {
+		std::fill(found.begin() + count, found.end(), found[0]);
+		output = found;
+	}
+	return count;
 }
 
 // A2B10G10R10 and A2R10G10B10 put opacity in the most significant two bits.

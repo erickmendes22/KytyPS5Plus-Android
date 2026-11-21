@@ -31,6 +31,18 @@ int main(int argc, char** argv) {
 	static_assert(PackedRgb10IsBlack(0xc0000000u));
 	static_assert(!PackedRgb10IsBlack(0xc0000001u));
 	static_assert(!PackedRgb10IsBlack(0x00100000u));
+	static_assert(MaterialTracePending(891, 892));
+	static_assert(MaterialTracePending(891, 903));
+	static_assert(!MaterialTracePending(891, 904) && !MaterialTracePending(891, 890));
+	std::vector<uint32_t> albedo(17 * 9, 0xff000000u);
+	albedo[3 * 17 + 8] = 0xff112233u;
+	albedo[8 * 17 + 16] = 0xff223344u;
+	constexpr std::array<uint32_t, 4> colored_tiles {1, 5, 1, 100};
+	Pixels covered_albedo {};
+	assert(ColoredTilePixels(albedo, colored_tiles, 17, 9, covered_albedo) == 2);
+	assert((covered_albedo[0] == std::pair{8u, 3u}));
+	assert((covered_albedo[1] == std::pair{16u, 8u}));
+	assert(ColoredTilePixels(albedo, std::array<uint32_t, 1>{0}, 17, 9, covered_albedo) == 0);
 	std::vector<uint32_t> prefix(65);
 	std::vector<uint32_t> tiles(45200);
 	prefix[1] = 22089;

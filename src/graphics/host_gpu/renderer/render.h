@@ -56,7 +56,11 @@ using DsProbePixels = DemonsQueueProbe::Pixels;
 // PPSA01341: bounded diagnostic of GPU-written compute storage textures.
 void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash,
                          bool forced = false, const ImageViewInfo* view = nullptr,
-                         const DsProbePixels* pixels = nullptr);
+                         const DsProbePixels* pixels = nullptr,
+                         std::array<uint32_t, DsProbePixels{}.size()>* first_words = nullptr);
+uint32_t PickDsColoredTilePixels(RenderContext& context, ImageId id,
+                                const ImageViewInfo& view, std::span<const uint32_t> tiles,
+                                uint32_t width, uint32_t height, DsProbePixels& pixels);
 
 enum class CommandBufferDebugOp : uint32_t {
 	DispatchDirect,
@@ -443,10 +447,12 @@ private:
 	std::array<DemonsQueueProbe::Capture, DemonsQueueProbe::Queues.size()> m_ds_queue_captures {};
 	std::array<DemonsQueueProbe::MaterialTrace, DemonsQueueProbe::GBufferShaders.size()>
 	    m_ds_material_traces {};
-	void ProbeDsMaterialLight(const PreparedBindings& bindings, bool before);
+	bool ProbeDsMaterialLight(const PreparedBindings& bindings, uint64_t submit, bool before,
+	                          const std::array<uint32_t, 3>& groups = {}, bool groups_valid = false);
 	void CaptureDsLightTiles(const PreparedBindings& bindings);
 	int32_t m_ds_tile_frame = -1;
 	std::array<DemonsQueueProbe::Tiles, DemonsQueueProbe::Queues.size()> m_ds_light_tiles {};
+	std::array<std::vector<uint32_t>, DemonsQueueProbe::Queues.size()> m_ds_light_tile_ids {};
 
 	friend class CommandProcessor;
 	friend struct RenderExecutorTestAccess;

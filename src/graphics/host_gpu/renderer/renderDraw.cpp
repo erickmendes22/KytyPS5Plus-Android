@@ -978,7 +978,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
                                 uint32_t count, uint64_t shader_hash, bool compute = false, bool forced = false,
                                 const ImageViewInfo* sampled_view = nullptr,
                                 const DsProbePixels* pixels = nullptr,
-                                uint32_t reference_width = 0, uint32_t reference_height = 0) {
+                                uint32_t reference_width = 0, uint32_t reference_height = 0,
+                                std::array<uint32_t, DsProbePixels{}.size()>* words = nullptr) {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_DS_COLOR_PROBE");
 		// An explicit 0 disables probing. Otherwise reuse the existing DS
@@ -1175,6 +1176,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		     depth ? 1u : 0u, static_cast<uint32_t>(aspect), zero, zero_rgb,
 		     first_words[0],first_words[1],first_words[2],first_words[3],first_words[4],
 		     second_words[0],second_words[1],second_words[2],second_words[3],second_words[4]));
+		if (words) *words = first_words;
 		if (compressed) {
 			std::string words;
 			for (const auto& block : blocks) {
@@ -1258,6 +1260,7 @@ static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
 		    "evidence={} before={:08x} after={:08x}\n",
 		    trace.frame, trace.shader, trace.count, x, y, evidence,
 		    before.words[index], after.words[index]));
+		trace.output[trace.count] = after.words[index];
 		trace.pixels[trace.count++] = point;
 	};
 	// Prefer depth-accepted samples whose color stayed black, then any other
@@ -1295,14 +1298,27 @@ static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
 	    changed, cleared, colored_after, trace.width, trace.height, trace.count));
 }
 
+uint32_t PickDsColoredTilePixels(RenderContext& context, ImageId id,
+                                const ImageViewInfo& view, std::span<const uint32_t> tiles,
+                                uint32_t width, uint32_t height, DsProbePixels& pixels) {
+	if (!id || tiles.empty()) return 0;
+	RenderColorInfo color {};
+	color.image_id = id;
+	color.desc.view_info = view;
+	const auto snapshot = SnapshotDsAlbedo(context, color);
+	if (snapshot.width != width || snapshot.height != height) return 0;
+	return DemonsQueueProbe::ColoredTilePixels(snapshot.words, tiles, width, height, pixels);
+}
+
 // The compute renderer shares the same exact-pixel sampler rather than
 // inferring nonzero outputs from vkCmdDispatch counts.
 void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_hash,
-                         bool forced, const ImageViewInfo* view, const DsProbePixels* pixels) {
+                         bool forced, const ImageViewInfo* view, const DsProbePixels* pixels,
+                         std::array<uint32_t, DsProbePixels{}.size()>* first_words) {
 	if (!id) return;
 	RenderColorInfo color {};
 	color.image_id = id;
-	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced, view, pixels);
+	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced, view, pixels, 0, 0, first_words);
 }
 
 static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
@@ -2215,7 +2231,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			if (target != colors.end() && gates[found - watched.begin()].Due(ds_gbuffer_frame, 240)) {
 				ds_gbuffer = &*target;
 				ds_material_trace = &m_ds_material_traces[found - watched.begin()];
+				if (ds_material_trace->count && !ds_material_trace->lighting_sampled) {
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_MATERIAL_LIGHT_UNMATCHED] draw_frame={} submit={} material=0x{:016x}\n",
+					    ds_material_trace->frame, ds_material_trace->submit, ds_material_trace->shader));
+				}
 				*ds_material_trace = {ds_gbuffer_frame, ds_gbuffer_shader};
+				ds_material_trace->submit = submit_id;
+				ds_material_trace->image_index = target->image_id.index;
+				ds_material_trace->image_generation = target->image_id.generation;
 				const auto& hw = buffer.GetRegisters();
 				const auto shader_mask = hw.GetShaderRegisters().m_cbShaderMask;
 				const auto hardware_mask = hw.GetRenderTargetMask();
@@ -2771,6 +2795,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    "[DS_GBUFFER_DRAW] frame={} phase=after shader=0x{:016x}\n",
 		    ds_gbuffer_frame, ds_gbuffer_shader));
 		const auto after = SnapshotDsAlbedo(m_context, *ds_gbuffer);
+		ds_material_trace->content_version =
+		    m_context.GetTextureCache().GetImage(ds_gbuffer->image_id).ContentVersion();
 		std::array<uint64_t, CoverageQueries> hits {};
 		if (coverage_pool) {
 			if (after.words.empty()) m_context.GetCommandScheduler().Finish();
