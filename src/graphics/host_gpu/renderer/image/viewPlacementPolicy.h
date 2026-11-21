@@ -75,16 +75,15 @@ struct Surface {
            requested.tile == cached.tile;
 }
 
-// A full sampled R32 depth view is not itself a Vulkan depth attachment.
-// Its pixel format differs from the D32/S8 owner, so KeepDistinctDepth alone
-// cannot protect it. If both guest surfaces have complete, single-subresource
-// geometry but DIFFERENT base addresses, the sampled view cannot legally
-// become the other depth target merely because their padded heaps overlap.
-// The caller must independently verify a supported depth/raw-format pair
-// and identical element sizes; equal-address reinterpretation stays valid.
+// A sampled R32/D32 depth view need not match the Vulkan attachment's
+// D32/S8 format. KeepDistinctDepth's strict format equality alone is therefore
+// insufficient. Distinct full-sized guest depth surfaces cannot be merged by
+// padded-allocation overlap. The caller verifies a supported depth-view
+// format, element-size equality and excludes separate S8 aspect associations;
+// equal-address reinterpretation still works.
 [[nodiscard]] constexpr bool KeepDistinctSampledDepth(const Surface& sampled,
                                                        const Surface& depth_owner) noexcept {
-    return !sampled.depth_or_stencil && depth_owner.depth_or_stencil &&
+    return depth_owner.depth_or_stencil &&
            sampled.address != depth_owner.address &&
            sampled.size != 0 && depth_owner.size != 0 &&
            sampled.width == depth_owner.width &&
