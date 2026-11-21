@@ -404,9 +404,10 @@ static void ProbeDsComputeWrites(RenderContext& context,
 		const auto match = std::find(target_hashes.begin(), target_hashes.end(), hash);
 		const auto ordinal = static_cast<size_t>(match - target_hashes.begin());
 		const int32_t frame = context.GetGpu().GetFrameNum();
-		// The late-game capture shows this writer submitting nonzero groups.
-		// Sample its actual HDR output instead of spending the targeted budget on empty passes.
-		const bool gameplay_writer = hash == 0x3dfe402653925fbfull;
+		// In targeted mode, only two representative writers incur image
+		// readbacks; the other four retain lightweight descriptor tracing.
+		const bool gameplay_writer = hash == 0xe75589aa0bb3ae52ull ||
+		                             hash == 0xc2e01fbe98f5ebabull;
 		static const bool targeted = [] {
 			const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
 			return v != nullptr && v[0] == '1' && v[1] == '\0';
@@ -471,10 +472,6 @@ static void ProbeDsComputeWrites(RenderContext& context,
 				}
 				const auto& texture = context.GetTextureCache().GetImage(source.image_id);
 				const uint64_t addr = texture.info.data.address;
-				const auto view = std::ranges::find(texture.views, source.image_view,
-				                                     &CachedImageView::view);
-				const auto aspects = view == texture.views.end() ? vk::ImageAspectFlags {}
-				                                                : view->info.aspect;
 				const bool repeated =
 				    std::find(seen_addresses.begin(),
 				              seen_addresses.begin() + seen_count, addr) !=
@@ -488,14 +485,14 @@ static void ProbeDsComputeWrites(RenderContext& context,
 				Log::WriteToConsoleAndLog(fmt::format(
 				    "[DS_TARGET_INPUT] shader=0x{:016x} index={} class={} "
 				    "raw=0x{:x} raw_extent={}x{} guest=0x{:x} format={} "
-				    "extent={}x{} owner_layers={} view_layer={} view_mip={} view_aspect=0x{:x} "
+				    "extent={}x{} owner_layers={} view_layer={} view_mip={} "
 				    "repeated={} tiny={} feedback={} gpu_modified={} cpu_dirty={}\n",
 				    hash, other, static_cast<uint32_t>(images[other].resource_class),
 				    raw_address, raw_width, raw_height, addr,
 				    static_cast<uint32_t>(texture.backing.format),
 				    texture.backing.extent.width, texture.backing.extent.height,
 				    texture.backing.layers, source.desc.view_info.base_layer,
-				    source.desc.view_info.base_level, static_cast<uint32_t>(aspects),
+				    source.desc.view_info.base_level,
 				    repeated ? 1 : 0, is_tiny ? 1 : 0,
 				    source.image_id == target_id ? 1 : 0,
 				    texture.IsGpuModified() ? 1 : 0, texture.IsCpuDirty() ? 1 : 0));

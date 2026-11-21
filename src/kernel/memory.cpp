@@ -990,14 +990,6 @@ bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 	       g_guest_address_space->TryReadBacking(vaddr, data, size);
 }
 
-static bool CheckPendingShaderBacking() {
-	static const bool enabled = [] {
-		const char* value = std::getenv("KYTY_DS_GPU_ZERO_INDIRECT");
-		return value != nullptr && value[0] == '1' && value[1] == '\0';
-	}();
-	return enabled;
-}
-
 bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	vaddr      = Kernel::AddressFold::Fold(vaddr);
 	bool dirty = false;
@@ -1006,7 +998,6 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 			return false;
 		}
 		auto& buffers = GetGpuResources().GetBufferCache();
-		if (CheckPendingShaderBacking()) buffers.WaitForBackingPublication(vaddr, size);
 		if (buffers.HasGpuDirtyBytes(vaddr, size)) {
 			dirty = true;
 			const Common::PerfStats::ScopedTraceSite site(
@@ -1133,10 +1124,8 @@ static void ReadGuestForSrt(uint64_t vaddr, void* data, size_t size) {
 bool TryReadCleanBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	vaddr = Kernel::AddressFold::Fold(vaddr);
 	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
-		if (!Graphics::GuestGpu::IsGpuThread()) return false;
-		auto& buffers = GetGpuResources().GetBufferCache();
-		if (buffers.HasGpuDirtyBytes(vaddr, size) ||
-		    (CheckPendingShaderBacking() && buffers.HasPendingBackingPublication(vaddr, size))) {
+		if (!Graphics::GuestGpu::IsGpuThread() ||
+		    GetGpuResources().GetBufferCache().HasGpuDirtyBytes(vaddr, size)) {
 			return false;
 		}
 	}
