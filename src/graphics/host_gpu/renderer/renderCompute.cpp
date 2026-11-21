@@ -1035,9 +1035,10 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			static std::array<std::atomic<uint32_t>, 2> cpu_samples {};
 			const auto count = cpu_samples[phase].fetch_add(1u, std::memory_order_relaxed);
 			if (count < 48u || (count % 4096u) == 0u) {
-				LOGF("[DS_LIGHTING_GROUPS] source=cpu frame=%d shader=0x%016" PRIx64
-				     " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=0 clamped=0 zero=0\n",
-				     frame, program.shader_hash, args_addr, args.x, args.y, args.z);
+				Log::WriteToConsoleAndLog(fmt::sprintf(
+				    "[DS_LIGHTING_GROUPS] source=cpu frame=%d shader=0x%016" PRIx64
+				    " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=0 clamped=0 zero=0\n",
+				    frame, program.shader_hash, args_addr, args.x, args.y, args.z));
 			}
 		}
 	}

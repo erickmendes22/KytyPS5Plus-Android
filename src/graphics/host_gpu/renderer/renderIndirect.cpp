@@ -262,7 +262,8 @@ vk::DeviceAddress IndirectDrawFixup::AcquireFeedback(uint32_t& slot, bool lighti
         static std::atomic<uint32_t> missed {0};
         const auto sample = missed.fetch_add(1u, std::memory_order_relaxed);
         if (sample < 8u || (sample % 4096u) == 0u)
-            LOGF("[DS_LIGHTING_FEEDBACK] all 16 reserved GPU slots busy, missed=%u\n", sample);
+            Log::WriteToConsoleAndLog(fmt::sprintf(
+                "[DS_LIGHTING_FEEDBACK] all 16 reserved GPU slots busy, missed=%u\n", sample));
     }
     return 0;
 }
@@ -356,12 +357,13 @@ void IndirectDrawFixup::PollFeedback() {
 				static std::array<std::atomic<uint32_t>, 2> lighting_samples {};
 				const auto index = lighting_samples[phase].fetch_add(1u, std::memory_order_relaxed);
 				if (index < 48u || (index % 4096u) == 0u) {
-					LOGF("[DS_LIGHTING_GROUPS] source=gpu frame=%d shader=0x%016" PRIx64
-					     " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=%u "
-					     "clamped=%u zero=%u\n",
-					     feedback.frame, feedback.shader_hash, feedback.site, x, y, z,
-					     (requested >> 30u) & 1u, clamped ? 1u : 0u,
-					     (x == 0u || y == 0u || z == 0u) ? 1u : 0u);
+					Log::WriteToConsoleAndLog(fmt::sprintf(
+					    "[DS_LIGHTING_GROUPS] source=gpu frame=%d shader=0x%016" PRIx64
+					    " args=0x%016" PRIx64 " x=%u y=%u z=%u saturated=%u "
+					    "clamped=%u zero=%u\n",
+					    feedback.frame, feedback.shader_hash, feedback.site, x, y, z,
+					    (requested >> 30u) & 1u, clamped ? 1u : 0u,
+					    (x == 0u || y == 0u || z == 0u) ? 1u : 0u));
 				}
 			}
 			if (clamped && clamp_count.fetch_add(1, std::memory_order_relaxed) < 16) {

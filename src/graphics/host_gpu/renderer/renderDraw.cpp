@@ -530,7 +530,28 @@ struct DrawRenderState {
 	ShaderPixelInputInfo  ps_input_info;
 	PipelineCache::GraphicsPrograms programs;
 	ShaderIndirectDrawInfo indirect; // --gpu-indirect draws
+	// The renderer serializes draws under its mutex. Reuse this large scratch
+	// (Jetsku U59), rather than value-initializing tens of KB per draw.
+	uint32_t previous_vertex_stages = 0;
+	void ResetForNextDraw() {
+		depth_info = {};
+		for (auto& target : color_info) target = {};
+		color_count = 0;
+		ps_active = true;
+		for (uint32_t stage = 1; stage < previous_vertex_stages; ++stage)
+			vertex_info[stage] = {};
+		previous_vertex_stages = 0;
+		// The shader preparation reconstructs vertex[0], pixel and programs.
+		// Never retain prior indirect guest SGPRs across an ordinary draw.
+		indirect = {};
+	}
 };
+
+static DrawRenderState& ReusableDrawRenderState() {
+	static thread_local DrawRenderState state {};
+	state.ResetForNextDraw();
+	return state;
+}
 
 struct DrawCallInfo {
 	CommandBufferDebugOp debug_op       = CommandBufferDebugOp::DrawIndex;
@@ -1590,6 +1611,8 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 	                  (color_output_mask != 0 ||
 	                   PixelShaderHasDepthOrCoverageSideEffects(shader_regs));
 	RefreshShaders(buffer, draw, color_output_mask, state);
+	if (state.programs.ready)
+		state.previous_vertex_stages = state.programs.VertexStageCount();
 	if (!state.programs.ready) {
 		TraceDsGraphicsOutcome(false, false, 0, false, state.ps_active);
 		// --async-shaders: a program is still translating on a worker. The draw is dropped for
@@ -2596,7 +2619,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 
 	const DrawCallInfo draw {CommandBufferDebugOp::DrawIndex, args.index_count,
 	                        args.instance_count, args.first_instance};
-	DrawRenderState state {};
+	auto& state = ReusableDrawRenderState();
 	if (!PrepareDrawRenderState(buffer, draw, args.render_target_slice_offset, state)) {
 		ResetBindings();
 		return;
@@ -2676,7 +2699,7 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 		ResetBindings();
 		return;
 	}
-	DrawRenderState state {};
+	auto& state = ReusableDrawRenderState();
 	if (!PrepareDrawRenderState(buffer, draw, args.render_target_slice_offset, state)) {
 		ResetBindings();
 		return;
@@ -2824,7 +2847,7 @@ bool RenderExecutor::DrawIndirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	// Counts are unknown here: debug output and statistics see the record count.
 	const DrawCallInfo draw {debug_op, args.max_count, 1, 0};
-	DrawRenderState    state {};
+	auto& state = ReusableDrawRenderState();
 	state.indirect = args.sgprs;
 	if (!PrepareDrawRenderState(buffer, draw, 0, state)) {
 		ResetBindings();
