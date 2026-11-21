@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/renderDraw.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
+#include "graphics/host_gpu/renderer/ufcPerf.h"
 
 #include "common/assert.h"
 #include "common/common.h"
