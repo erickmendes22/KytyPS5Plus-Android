@@ -1278,7 +1278,7 @@ static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
 		changed += before.words[i] != after.words[i];
 	}
 	if (changed && !cleared && trace.count < trace.pixels.size()) {
-		const uint32_t step = std::max(changed / uint32_t{trace.pixels.size()}, 1u);
+		const uint32_t step = std::max(changed / static_cast<uint32_t>(trace.pixels.size()), 1u);
 		uint32_t ordinal = 0;
 		for (size_t i = 0; i < after.words.size() && trace.count < trace.pixels.size(); ++i) {
 			if (before.words[i] == after.words[i] || ordinal++ % step != 0) continue;
