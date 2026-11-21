@@ -162,20 +162,19 @@ bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) 
 // Using the guest backing avoids host SIGSEGV on GPU-protected/unmapped pages
 // without synchronizing unrelated GPU writes.
 bool ReadShaderScalarMemory(void*, uint64_t address, std::span<uint32_t> values) {
-	// The six Demon's Souls deferred-lighting kernels and scene composite use
-	// scalar resource tables that earlier GPU passes can rewrite. The legacy
-	// raw CPU backing read may return stale descriptor words, even when
-	// BufferCache owns newer GPU-written bytes. On the GPU command thread,
-	// refresh *only these shader resources* before evaluating their SRT.
-	// Other titles and all other shaders retain the zero-readback fast path.
+	// Demon's Souls builds its indirect lighting group counts with producer
+	// shaders, not the six consumer shaders alone. The old seven-hash
+	// exception made only the consumers' SRT reads coherent while producer
+	// kernels still received stale CPU-backed descriptors from GPU writes.
+	// Synchronize actual dirty bytes for every SRT scalar read on the GPU
+	// command thread of this title. TryReadBufferBacking checks the exact
+	// range and does not wait for clean data; other games retain fast reads.
 	static const bool demons = [] {
 		std::string title;
 		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
 		       title == "PPSA01341";
 	}();
-	const bool coherent = demons && GuestGpu::IsGpuThread() &&
-	    DemonsLightingMemoryPolicy::NeedsCoherentScalarReads(
-	        Common::PerfStats::CurrentTraceShader());
+	const bool coherent = demons && GuestGpu::IsGpuThread();
 	const bool ok = coherent
 	    ? Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes())
 	    : Libs::LibKernel::Memory::TryReadBacking(address, values.data(), values.size_bytes());
