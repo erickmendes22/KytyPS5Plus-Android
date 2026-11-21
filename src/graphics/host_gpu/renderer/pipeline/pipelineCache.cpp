@@ -150,44 +150,80 @@ void PipelineCacheLog(fmt::format_string<Args...> format, Args&&... args) {
 	Log::WriteToConsoleAndLog(message);
 }
 
-bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) {
-	// Scalar and unformatted buffer dependencies use the same backing as native raw loads.
-	// Image synchronization belongs to formatted buffer bindings, not these reads.
-	return !values.empty() &&
-	       Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes());
+// The SRT materializer may be used before the SFO is ready. Do not cache a
+// failed TITLE_ID lookup forever (the previous function-local static did).
+// The Android launcher supplies an explicit, title-scoped switch so all
+// material / BVH / lighting producer and consumer programs use the same path.
+bool DsCoherentSrtEnabled() {
+	static const bool forced = [] {
+		const char* value = std::getenv("KYTY_DS_SRT_COHERENT");
+		return value != nullptr && value[0] == '1' && value[1] == '\\0';
+	}();
+	if (forced) return true;
+	std::string title;
+	return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
+	       title == "PPSA01341";
 }
 
-// Port of KytyPS5 upstream PR #1365 (PPSA21564): ordinary SRT scalar reads must
-// not memcpy raw guest pointers. The walk explores branches the GPU may skip, so
-// a null/unmapped resource table is a legitimate input; return zero descriptors.
-// Using the guest backing avoids host SIGSEGV on GPU-protected/unmapped pages
-// without synchronizing unrelated GPU writes.
+bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) {
+	if (values.empty()) return false;
+	const bool coherent = DsCoherentSrtEnabled() && GuestGpu::IsGpuThread();
+	return coherent
+	    ? Libs::LibKernel::Memory::TryReadShaderResourceBacking(
+	          address, values.data(), values.size_bytes(), true)
+	    : Libs::LibKernel::Memory::TryReadBufferBacking(
+	          address, values.data(), values.size_bytes());
+}
+
+// Do not substitute old CPU-backed descriptor contents for a GPU-produced
+// resource table. The new resource readiness path handles native buffers and
+// single-owner native images. Null/unmapped table addresses remain zero, as
+// the PS5 scalar read returns zero on missing pages.
 bool ReadShaderScalarMemory(void*, uint64_t address, std::span<uint32_t> values) {
-	// Demon's Souls builds its indirect lighting group counts with producer
-	// shaders, not the six consumer shaders alone. The old seven-hash
-	// exception made only the consumers' SRT reads coherent while producer
-	// kernels still received stale CPU-backed descriptors from GPU writes.
-	// Synchronize actual dirty bytes for every SRT scalar read on the GPU
-	// command thread of this title. TryReadBufferBacking checks the exact
-	// range and does not wait for clean data; other games retain fast reads.
-	static const bool demons = [] {
-		std::string title;
-		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
-		       title == "PPSA01341";
-	}();
-	const bool coherent = demons && GuestGpu::IsGpuThread();
+	if (values.empty()) return false;
+	const bool coherent = DsCoherentSrtEnabled() && GuestGpu::IsGpuThread();
 	const bool ok = coherent
-	    ? Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes())
-	    : Libs::LibKernel::Memory::TryReadBacking(address, values.data(), values.size_bytes());
-	if (!ok) std::ranges::fill(values, 0u);
+	    ? Libs::LibKernel::Memory::TryReadShaderResourceBacking(
+	          address, values.data(), values.size_bytes(), true)
+	    : Libs::LibKernel::Memory::TryReadBacking(
+	          address, values.data(), values.size_bytes());
+	if (!ok) {
+		std::ranges::fill(values, 0u);
+		if (coherent) {
+			static std::atomic_uint32_t refused {0};
+			const auto n = refused.fetch_add(1u, std::memory_order_relaxed) + 1u;
+			if (n <= 12u || (n & (n - 1u)) == 0u) {
+				PipelineCacheLog("[DS_SRT_ZERO_FALLBACK] count={} addr=0x{:x} bytes={}",
+				                 n, address, values.size_bytes());
+			}
+		}
+	}
 	return true;
 }
 
-// Branch conditions of the SRT walk (SrtRuntime::read_branch_memory): never waits for the GPU.
+// Branch predicates are normally evaluated from a clean snapshot without
+// waiting. In Demon's Souls the branch may select a table that the preceding
+// GPU producer updated. Retry only these missing clean reads on the GPU
+// command thread, using the same ordered buffer/image ownership path as the
+// scalar SRT reads. No synchronization on shader worker threads.
 bool ReadShaderGuestMemoryNoSync(void*, uint64_t address, std::span<uint32_t> values) {
-	return !values.empty() && Libs::LibKernel::Memory::TryReadCleanBufferBacking(
-	                              address, values.data(), values.size_bytes());
+	if (values.empty()) return false;
+	if (Libs::LibKernel::Memory::TryReadCleanBufferBacking(
+	        address, values.data(), values.size_bytes())) return true;
+	if (!DsCoherentSrtEnabled() || !GuestGpu::IsGpuThread()) return false;
+	const bool recovered = Libs::LibKernel::Memory::TryReadShaderResourceBacking(
+	    address, values.data(), values.size_bytes(), true);
+	if (recovered) {
+		static std::atomic_uint32_t recovered_count {0};
+		const auto n = recovered_count.fetch_add(1u, std::memory_order_relaxed) + 1u;
+		if (n <= 12u || (n & (n - 1u)) == 0u) {
+			PipelineCacheLog("[DS_SRT_BRANCH_READY] count={} addr=0x{:x} bytes={}",
+			                 n, address, values.size_bytes());
+		}
+	}
+	return recovered;
 }
+
 
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
                      const std::vector<uint32_t>& spirv) {
