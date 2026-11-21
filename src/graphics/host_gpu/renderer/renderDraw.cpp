@@ -2107,30 +2107,22 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// Lightweight one-time metadata only; zero device submissions/readbacks.
 	if (ds_composite_trace && state.ps_active &&
 	    state.ps_input_info.stage.program != nullptr && state.color_count != 0u &&
-	    state.color_info[0].image_id && m_context.GetGpu().GetFrameNum() >= 350) {
+	    state.color_info[0].image_id) {
 		const auto& color_owner = m_context.GetTextureCache().GetImage(
 		    state.color_info[0].image_id);
 		if (color_owner.backing.extent.width >= 960u &&
 		    color_owner.backing.extent.height >= 540u) {
-			static std::array<std::atomic_uint64_t, 64> logged_pairs {};
-			const uint64_t shader_hash = state.ps_input_info.stage.program->shader_hash;
-			const uint64_t target = state.color_info[0].desc.info.data.address;
-			const uint64_t key = (shader_hash ^ (target * 0x9e3779b97f4a7c15ull)) | 1ull;
-			bool already = false, inserted = false;
-			for (auto& slot: logged_pairs) {
-				auto existing = slot.load(std::memory_order_relaxed);
-				if (existing == key) { already = true; break; }
-				if (existing == 0ull && slot.compare_exchange_strong(
-				    existing, key, std::memory_order_relaxed)) {
-					inserted = true;
-					break;
-				}
-			}
-			if (inserted && !already) {
+			// Never stop after the first 64 pairs or assume gameplay starts
+			// after an arbitrary frame. Metadata-only; no new GPU submission.
+			static std::atomic_uint64_t eligible {0};
+			const uint64_t ordinal = eligible.fetch_add(1u, std::memory_order_relaxed);
+			if (ordinal == 0u || ordinal % 512u == 0u) {
 				Log::WriteToConsoleAndLog(fmt::format(
-				    "[DS_LARGE_PS_TARGET] frame={} ps=0x{:016x} target=0x{:x} "
+				    "[DS_LARGE_PS_TARGET] frame={} sample={} ps=0x{:016x} target=0x{:x} "
 				    "format={} extent={}x{} images={} bound={} gpu_modified={}\n",
-				    m_context.GetGpu().GetFrameNum(), shader_hash, target,
+				    m_context.GetGpu().GetFrameNum(), ordinal,
+				    state.ps_input_info.stage.program->shader_hash,
+				    state.color_info[0].desc.info.data.address,
 				    static_cast<uint32_t>(color_owner.backing.format),
 				    color_owner.backing.extent.width, color_owner.backing.extent.height,
 				    state.ps_input_info.stage.program->info.images.size(),
