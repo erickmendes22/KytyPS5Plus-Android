@@ -1121,6 +1121,49 @@ static void ReadGuestForSrt(uint64_t vaddr, void* data, size_t size) {
 	}
 }
 
+// SRT resource readiness for PPSA01341: raw guest backing can be older than
+// both a GPU-written VkBuffer and an overlapping render/storage image. The
+// existing TryReadBufferBacking handles dirty VkBuffer ranges. Before that,
+// publish only a single, unambiguous GPU-written image owner when the read
+// does not already have newer buffer bytes. This is the same lossless
+// image-to-buffer path used for GPU-generated indirect arguments.
+//
+// Never synchronize on a shader worker/CPU thread. On an unsupported image
+// layout, retain the original buffer read behavior and report the limitation;
+// do not silently replace the image with an arbitrary competing backing.
+bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
+                                  bool image_sync) {
+	vaddr = Kernel::AddressFold::Fold(vaddr);
+	if (image_sync && size != 0 && size <= 64u && g_gpu_resources != nullptr &&
+	    Graphics::GuestGpu::IsGpuThread() && IsGpuAddressRange(vaddr, size)) {
+		auto& renderer = GetGpuResources();
+		auto& buffers = renderer.GetBufferCache();
+		if (!buffers.HasGpuDirtyBytes(vaddr, size)) {
+			auto& textures = renderer.GetTextureCache();
+			if (textures.IsRegionGpuModified(vaddr, size)) {
+				if (textures.PublishGpuImageForIndirectArgs(vaddr, size)) {
+					static std::atomic_uint32_t published {0};
+					const auto n = published.fetch_add(1u, std::memory_order_relaxed) + 1u;
+					if (n <= 12u || (n & (n - 1u)) == 0u) {
+						std::printf("[DS_SRT_IMAGE_READY] count=%u addr=0x%llx bytes=%llu\\n",
+						            n, static_cast<unsigned long long>(vaddr),
+						            static_cast<unsigned long long>(size));
+					}
+				} else {
+					static std::atomic_uint32_t ambiguous {0};
+					const auto n = ambiguous.fetch_add(1u, std::memory_order_relaxed) + 1u;
+					if (n <= 8u || (n & (n - 1u)) == 0u) {
+						std::printf("[DS_SRT_IMAGE_UNRESOLVED] count=%u addr=0x%llx bytes=%llu\\n",
+						            n, static_cast<unsigned long long>(vaddr),
+						            static_cast<unsigned long long>(size));
+					}
+				}
+			}
+		}
+	}
+	return TryReadBufferBacking(vaddr, data, size);
+}
+
 bool TryReadCleanBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	vaddr = Kernel::AddressFold::Fold(vaddr);
 	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size)) {
