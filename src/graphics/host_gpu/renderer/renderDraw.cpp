@@ -1997,7 +1997,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		descriptor_stages[stage_count++] = &*bindings.pixel;
 	}
 	const auto stages = std::span {descriptor_stages.data(), stage_count};
-	PrepareGraphicsBindings(stages, std::span {state.color_info, state.color_count});
+	PrepareGraphicsBindings(stages, std::span {state.color_info, state.color_count},
+	                        &state.depth_info);
 	PreparedVertexBuffers vertex_bindings;
 	PreparedIndexBuffer   index_binding;
 	if (!mesh_active) {

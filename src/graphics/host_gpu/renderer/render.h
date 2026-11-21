@@ -317,7 +317,8 @@ private:
 	                                            const ShaderRecompiler::IR::DescriptorValue& value,
 	                                            TextureDescMemo::Slot* slot = nullptr);
 	void PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
-	                             std::span<RenderColorInfo> colors);
+	                             std::span<RenderColorInfo> colors,
+	                             RenderDepthInfo* depth = nullptr);
 	// --render-scale: moves image views that a later SetScaled left on the other-size backing
 	// (attachment scaling in AcquireRenderTargets, BlockScaling by another binding) to the
 	// current backing, so descriptors, layout transitions and rescale data agree.
