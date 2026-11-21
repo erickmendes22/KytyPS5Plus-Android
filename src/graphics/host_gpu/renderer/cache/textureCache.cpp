@@ -3304,7 +3304,8 @@ bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t siz
 		            static_cast<uint32_t>(image.backing.format), image.backing.samples};
 	}
 	if (!image.SafeToDownload()) {
-		if (details) details->failure = "owner_dirty";
+		if (details) details->failure = image.IsBufferModified() ? "owner_buffer_dirty" :
+		                                image.IsCpuDirty() ? "owner_cpu_dirty" : "owner_not_readable";
 		return false;
 	}
 	const bool published = BcAlias::Publish(*this, image);

@@ -1113,9 +1113,7 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		download.Commit();
 		const uint32_t w = std::max(backing.extent.width >> view_mip, 1u);
 		const uint32_t h = std::max(backing.extent.height >> view_mip, 1u);
-		const DsProbePixels xy = pixels ? *pixels : DsProbePixels {
-		    std::pair{w/2u,h/2u}, {w/4u,h/4u}, {3u*w/4u,h/4u},
-		    {w/4u,3u*h/4u}, {3u*w/4u,3u*h/4u}};
+		const DsProbePixels xy = pixels ? *pixels : DemonsQueueProbe::DefaultPixels(w, h);
 		std::array<vk::BufferImageCopy,5> regions {};
 		for (size_t i = 0; i < regions.size(); ++i) {
 			regions[i].bufferOffset = offset + i * stride;
@@ -2375,6 +2373,54 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		m_context.GetCommandScheduler().EndRendering(PassEnd::ShaderWrite);
 		ShaderWriteHazardBarrier(buffer.Handle(), shader_write_stages);
 	}
+	// Repeat only the sampled G-buffer draw, using the same resources and
+	// native raster state. The diagnostic must not modify guest attachments.
+	const auto stage_image_writes = [](const auto& stage) {
+		if (stage.program == nullptr) return false;
+		if (stage.program->has_address_writes || stage.program->info.uses_gds) return true;
+		return std::ranges::any_of(stage.program->info.images, [](const auto& image) {
+			return image.written;
+		});
+	};
+	const bool image_side_effects =
+	    std::ranges::any_of(vertex_stages, [&](const auto& stage) {
+		    return stage_image_writes(stage.stage);
+	    }) || (state.ps_active && stage_image_writes(state.ps_input_info.stage));
+	constexpr uint32_t CoverageQueries = 12;
+	vk::QueryPool coverage_pool {};
+	const auto device = m_context.GetGraphics().device;
+	const bool stencil_independent = !state.depth_info.stencil_test_enable ||
+	    (state.depth_info.stencil_front.compareOp == vk::CompareOp::eAlways &&
+	     state.depth_info.stencil_back.compareOp == vk::CompareOp::eAlways);
+	if (ds_gbuffer && state.depth_info.image_id && stencil_independent && !indirect && !mesh_active && !shader_write_stages && !image_side_effects &&
+	    state.depth_info.depth_test_enable && !state.depth_info.depth_write_enable &&
+	    state.depth_info.depth_compare_op == vk::CompareOp::eEqual &&
+	    m_context.GetGraphics().optional_features.color_write_enable) {
+		vk::QueryPoolCreateInfo info {};
+		info.queryType = vk::QueryType::eOcclusion;
+		info.queryCount = CoverageQueries;
+		const auto result = device.createQueryPool(&info, nullptr, &coverage_pool);
+		if (result == vk::Result::eSuccess) {
+			m_context.GetCommandScheduler().EndRendering(PassEnd::Buffer);
+			buffer.Handle().resetQueryPool(coverage_pool, 0, CoverageQueries);
+		} else {
+			coverage_pool = nullptr;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_GBUFFER_COVERAGE_SKIP] frame={} shader=0x{:016x} reason={}\n",
+			    ds_gbuffer_frame, ds_gbuffer_shader, vk::to_string(result)));
+		}
+	} else if (ds_gbuffer) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_GBUFFER_COVERAGE_SKIP] frame={} shader=0x{:016x} "
+		    "indirect={} mesh={} storage_write={} depth_test={} depth_write={} depth_func={} stencil_independent={} color_enable={}\n",
+		    ds_gbuffer_frame, ds_gbuffer_shader, indirect != nullptr, mesh_active,
+		    static_cast<bool>(shader_write_stages) || image_side_effects,
+		    state.depth_info.depth_test_enable, state.depth_info.depth_write_enable,
+		    static_cast<uint32_t>(state.depth_info.depth_compare_op), stencil_independent,
+		    m_context.GetGraphics().optional_features.color_write_enable));
+	}
+	uint32_t coverage_count = 0;
+	uint32_t coverage_pixels = 0;
 	LogDrawPhase(draw.Name(), "BeginRendering");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
@@ -2526,19 +2572,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    (face_mode.poly_offset_front_enable &&
 		     (face_offset.front_offset != face_offset.back_offset ||
 		      face_offset.front_scale != face_offset.back_scale));
-		const auto stage_image_writes = [](const auto& stage) {
-			if (stage.program == nullptr) return false;
-			if (stage.program->has_address_writes) return true;
-			return std::any_of(stage.program->info.images.begin(),
-			                   stage.program->info.images.end(), [](const auto& image) {
-				                   return image.written;
-			                   });
-		};
-		const bool image_side_effects =
-		    std::any_of(vertex_stages.begin(), vertex_stages.end(), [&](const auto& stage) {
-			    return stage_image_writes(stage.stage);
-		    }) ||
-		    (state.ps_active && stage_image_writes(state.ps_input_info.stage));
 		const bool split_bias = ds_per_face_bias && different_bias && !rect_face &&
 		    !face_mode.cull_front && !face_mode.cull_back &&
 		    state.depth_info.image_id && state.depth_info.depth_write_enable &&
@@ -2579,6 +2612,44 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		} else {
 			issue_draw();
 		}
+		if (coverage_pool) {
+			const std::array<vk::Bool32, RENDER_COLOR_ATTACHMENTS_MAX> no_writes {};
+			vk_buffer.setColorWriteEnableEXT(rendering.num_color_attachments, no_writes.data());
+			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFrontAndBack, 0u);
+			const auto query = [&](vk::CompareOp op) {
+				vk_buffer.setDepthCompareOp(op);
+				vk_buffer.beginQuery(coverage_pool, coverage_count, {});
+				issue_draw();
+				vk_buffer.endQuery(coverage_pool, coverage_count++);
+			};
+			query(vk::CompareOp::eEqual);
+			query(vk::CompareOp::eAlways);
+			const auto extent = ds_gbuffer->Extent();
+			if (dynamic_state.num_scissors == 1 && !m_pass_scaled) {
+				const auto original = dynamic_state.scissors[0];
+				const auto pixels = DemonsQueueProbe::DefaultPixels(extent.width, extent.height);
+				for (uint32_t i = 0; i < pixels.size(); ++i) {
+					const auto [x, y] = pixels[i];
+					if (x >= rendering.width || y >= rendering.height ||
+					    !DemonsQueueProbe::PixelInScissor(pixels[i], original.offset.x,
+					                                    original.offset.y, original.extent.width,
+					                                    original.extent.height)) continue;
+					const vk::Rect2D one {{static_cast<int32_t>(x), static_cast<int32_t>(y)}, {1, 1}};
+					vk_buffer.setScissorWithCount(1, &one);
+					query(vk::CompareOp::eEqual);
+					query(vk::CompareOp::eAlways);
+					coverage_pixels |= 1u << i;
+				}
+				vk_buffer.setScissorWithCount(1, &original);
+			}
+			vk_buffer.setDepthCompareOp(state.depth_info.depth_compare_op);
+			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFront,
+			                              dynamic_state.stencil_front_write_mask);
+			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eBack,
+			                              dynamic_state.stencil_back_write_mask);
+			vk_buffer.setColorWriteEnableEXT(rendering.num_color_attachments,
+			                                 dynamic_state.color_write_enables.data());
+		}
 	}
 
 	if (draw_marks) {
@@ -2598,6 +2669,27 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    "[DS_GBUFFER_DRAW] frame={} phase=after shader=0x{:016x}\n",
 		    ds_gbuffer_frame, ds_gbuffer_shader));
 		ProbeDsColorOutputs(m_context, ds_gbuffer, 1, ds_gbuffer_shader, false, true);
+	}
+	if (coverage_pool) {
+		m_context.GetCommandScheduler().Finish();
+		std::array<uint64_t, CoverageQueries> hits {};
+		const auto result = device.getQueryPoolResults(
+		    coverage_pool, 0, coverage_count, coverage_count * sizeof(uint64_t), hits.data(),
+		    sizeof(uint64_t), vk::QueryResultFlagBits::e64);
+		device.destroyQueryPool(coverage_pool);
+		uint32_t equal_mask = 0, always_mask = 0, slot = 2;
+		if (result == vk::Result::eSuccess) {
+			for (uint32_t i = 0; i < DsProbePixels{}.size(); ++i) {
+				if ((coverage_pixels & (1u << i)) == 0) continue;
+				if (hits[slot++] != 0) equal_mask |= 1u << i;
+				if (hits[slot++] != 0) always_mask |= 1u << i;
+			}
+		}
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_GBUFFER_COVERAGE] frame={} shader=0x{:016x} result={} equal_any={} always_any={} "
+		    "sampled=0x{:x} equal_pixels=0x{:x} always_pixels=0x{:x}\n",
+		    ds_gbuffer_frame, ds_gbuffer_shader, vk::to_string(result), hits[0] != 0,
+		    hits[1] != 0, coverage_pixels, equal_mask, always_mask));
 	}
 	for (size_t i = 0; i < ds_draw_stage.size(); ++i) {
 		const auto stage = ds_draw_stage[i];

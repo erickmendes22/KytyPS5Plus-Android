@@ -17,6 +17,10 @@ static std::vector<uint32_t> ReadWords(const char* path) {
 }
 
 int main(int argc, char** argv) {
+	static_assert(DefaultPixels(1600, 900)[4] == std::pair{1200u, 675u});
+	static_assert(PixelInScissor({12, 9}, 10, 9, 3, 1));
+	static_assert(!PixelInScissor({13, 9}, 10, 9, 3, 1));
+	static_assert(!PixelInScissor({9, 9}, 10, 9, 3, 1));
 	static_assert(SampleBlock(5, 12).offset == 4 && SampleBlock(5, 12).extent == 4);
 	static_assert(SampleBlock(8, 10).offset == 8 && SampleBlock(8, 10).extent == 2);
 	static_assert(SampleBlock(0, 1).offset == 0 && SampleBlock(0, 1).extent == 1);

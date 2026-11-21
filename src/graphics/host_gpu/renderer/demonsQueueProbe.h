@@ -33,6 +33,19 @@ constexpr std::array<uint32_t, 2> Queues {0, 33};
 constexpr std::array<uint64_t, 2> Shaders {0xf0c482b0b355e9deull, 0xe3daeb1e7426761bull};
 using Pixels = std::array<std::pair<uint32_t, uint32_t>, 5>;
 
+constexpr Pixels DefaultPixels(uint32_t width, uint32_t height) {
+	return {{{width / 2, height / 2}, {width / 4, height / 4},
+	         {3 * width / 4, height / 4}, {width / 4, 3 * height / 4},
+	         {3 * width / 4, 3 * height / 4}}};
+}
+
+constexpr bool PixelInScissor(std::pair<uint32_t, uint32_t> pixel, int32_t x, int32_t y,
+                              uint32_t width, uint32_t height) {
+	const auto dx = int64_t{pixel.first} - x;
+	const auto dy = int64_t{pixel.second} - y;
+	return dx >= 0 && dy >= 0 && dx < width && dy < height;
+}
+
 struct Tiles {
 	uint32_t first = 0;
 	uint32_t end = 0;
