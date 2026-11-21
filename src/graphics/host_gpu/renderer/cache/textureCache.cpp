@@ -865,7 +865,7 @@ ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
 	static std::atomic<uint32_t> count {0};
 	if (count.fetch_add(1, std::memory_order_relaxed) < 16u) {
 		Log::WriteToConsoleAndLog(fmt::format(
-		    "[DS_NULL_TEXTURE] format={} depth={} clear_one={} funcs={}\\n",
+		    "[DS_NULL_TEXTURE] format={} depth={} clear_one={} funcs={}\n",
 		    vk::to_string(desc.info.pixel_format), depth_compare ? 1u : 0u,
 		    compare_one ? 1u : 0u, t_null_compare_funcs));
 	}
