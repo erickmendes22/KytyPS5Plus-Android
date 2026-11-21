@@ -17,6 +17,9 @@ static std::vector<uint32_t> ReadWords(const char* path) {
 }
 
 int main(int argc, char** argv) {
+	static_assert(PackedRgb10IsBlack(0xc0000000u));
+	static_assert(!PackedRgb10IsBlack(0xc0000001u));
+	static_assert(!PackedRgb10IsBlack(0x00100000u));
 	std::vector<uint32_t> prefix(65);
 	std::vector<uint32_t> tiles(45200);
 	prefix[1] = 22089;

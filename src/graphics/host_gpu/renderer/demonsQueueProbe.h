@@ -52,6 +52,11 @@ inline bool TilePixels(const Tiles& tiles, uint32_t width, uint32_t height, Pixe
 	return true;
 }
 
+// A2B10G10R10 and A2R10G10B10 put opacity in the most significant two bits.
+constexpr bool PackedRgb10IsBlack(uint32_t word) {
+	return (word & 0x3fffffffu) == 0;
+}
+
 struct Capture {
 	int32_t frame = -1;
 	uint64_t shader = 0;
@@ -59,6 +64,7 @@ struct Capture {
 	uint32_t height = 0;
 	Pixels pixels {};
 	bool hdr_reader_sampled = false;
+	bool hdr_writer_sampled = false;
 	bool composite_sampled = false;
 };
 

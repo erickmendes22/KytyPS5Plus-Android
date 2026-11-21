@@ -1026,7 +1026,8 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 			case vk::Format::eR16G16Unorm:
 			case vk::Format::eR16G16Snorm:
 			case vk::Format::eR32Sfloat:
-			case vk::Format::eA2B10G10R10UnormPack32: return 4;
+			case vk::Format::eA2B10G10R10UnormPack32:
+			case vk::Format::eA2R10G10B10UnormPack32: return 4;
 			case vk::Format::eR16G16B16A16Sfloat:
 			case vk::Format::eR16G16B16A16Unorm:
 			case vk::Format::eR16G16B16A16Snorm:
@@ -1145,8 +1146,11 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 					rgb_black &= pixel[b] == 0u;
 			}
 			zero += empty;
-			zero_rgb += rgb_black;
 			std::memcpy(&first_words[i], pixel, std::min(bpp, 4u));
+			if (backing.format == vk::Format::eA2B10G10R10UnormPack32 ||
+			    backing.format == vk::Format::eA2R10G10B10UnormPack32)
+				rgb_black = DemonsQueueProbe::PackedRgb10IsBlack(first_words[i]);
+			zero_rgb += rgb_black;
 			if (bpp > 4u)
 				std::memcpy(&second_words[i], pixel + 4u, std::min(bpp - 4u, 4u));
 		}
@@ -2066,14 +2070,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	auto& pipeline = *pipeline_ptr;
 	TraceDsGraphicsOutcome(true, true, state.color_count,
 	                      static_cast<bool>(state.depth_info.image_id), state.ps_active);
-	// Compare the same regions where the HDR compute queues ran. The first
-	// reader of the HDR image and the final compositor are separate stages.
+	// Follow the first post-compute HDR writer and reader, then the compositor.
+	constexpr uint8_t DsHdrReader = 1, DsComposite = 2, DsHdrWriter = 4;
 	std::array<uint8_t, DemonsQueueProbe::Queues.size()> ds_draw_stage {};
 	if (state.ps_active && bindings.pixel && state.ps_input_info.stage.program && state.color_count) {
 		const auto frame = m_context.GetGpu().GetFrameNum();
 		const auto shader = state.ps_input_info.stage.program->shader_hash;
 		const bool composite = shader == 0x3265b01ed00a5c01ull;
 		const auto& inputs = bindings.pixel->images;
+		const auto colors = std::span {state.color_info, state.color_count};
+		const auto hdr_target = std::ranges::find_if(colors, [](const auto& color) {
+			return color.image_id && color.desc.info.data.address == DemonsQueueProbe::HdrAddress;
+		});
 		for (size_t i = 0; i < m_ds_queue_captures.size(); ++i) {
 			const auto& capture = m_ds_queue_captures[i];
 			if (capture.frame != frame) continue;
@@ -2083,8 +2091,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			});
 			const bool first_hdr_reader = !capture.hdr_reader_sampled && hdr != inputs.end();
 			const bool final_composite = composite && !capture.composite_sampled;
-			if (!first_hdr_reader && !final_composite) continue;
-			ds_draw_stage[i] = (first_hdr_reader ? 1u : 0u) | (final_composite ? 2u : 0u);
+			const bool first_hdr_writer = !capture.hdr_writer_sampled && hdr_target != colors.end();
+			if (!first_hdr_reader && !final_composite && !first_hdr_writer) continue;
+			ds_draw_stage[i] = (first_hdr_reader ? DsHdrReader : 0u) |
+			                   (final_composite ? DsComposite : 0u) |
+			                   (first_hdr_writer ? DsHdrWriter : 0u);
+			if (first_hdr_writer) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_QUEUE_DRAW] frame={} queue={} phase=hdr_writer_before shader=0x{:016x} guest=0x{:x}\n",
+				    frame, DemonsQueueProbe::Queues[i], shader, DemonsQueueProbe::HdrAddress));
+				ProbeDsColorOutputs(m_context, &*hdr_target, 1, shader, false, true, nullptr,
+				                    &capture.pixels, capture.width, capture.height);
+			}
+			if (!final_composite && !first_hdr_reader) continue;
 			for (const auto& input : inputs) {
 				if (!input.image_id || input.placeholder ||
 				    (!final_composite && &input != &*hdr)) continue;
@@ -2469,13 +2488,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		auto& capture = m_ds_queue_captures[i];
 		const auto shader = state.ps_input_info.stage.program->shader_hash;
 		Log::WriteToConsoleAndLog(fmt::format(
-		    "[DS_QUEUE_DRAW] frame={} queue={} phase={} shader=0x{:016x}\n",
+		    "[DS_QUEUE_DRAW] frame={} queue={} phase={} shader=0x{:016x} hdr_writer={} hdr_reader={} composite={}\n",
 		    capture.frame, DemonsQueueProbe::Queues[i],
-		    (stage & 2u) ? "composite_output" : "hdr_reader_output", shader));
+		    (stage & DsComposite) ? "composite_output" :
+		    (stage & DsHdrWriter) ? "hdr_writer_after" : "hdr_reader_output", shader,
+		    (stage & DsHdrWriter) != 0, (stage & DsHdrReader) != 0, (stage & DsComposite) != 0));
 		ProbeDsColorOutputs(m_context, state.color_info, state.color_count, shader, false, true,
 		                    nullptr, &capture.pixels, capture.width, capture.height);
-		capture.hdr_reader_sampled |= (stage & 1u) != 0;
-		capture.composite_sampled |= (stage & 2u) != 0;
+		capture.hdr_reader_sampled |= (stage & DsHdrReader) != 0;
+		capture.hdr_writer_sampled |= (stage & DsHdrWriter) != 0;
+		capture.composite_sampled |= (stage & DsComposite) != 0;
 	}
 	// Diagnose the Demon scene chain at most twice per run: the actual
 	// sampled HUD/scene inputs versus the compositor's final color target.
