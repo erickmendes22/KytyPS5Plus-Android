@@ -6,6 +6,29 @@
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
 void RemoveIdentities(Program& program) {
+	// U59 plan-reference correctness fix (Jetsku/KytyPS5 ce0e6ef):
+	// Identity nodes are removed from IR blocks, but descriptor/SRT/fill
+	// plans are not IR users. Without resolving their references first,
+	// a planned read can still point to freed Identity storage. This can
+	// turn the shader's live material/lighting descriptors into stale data
+	// after simplification, even though its Vulkan pipeline was created.
+	const auto resolve_plan_value = [](Value& value) {
+		if (value.IsIdentity()) value = value.Resolve();
+	};
+	for (auto& source: program.descriptor_sources) {
+		for (auto& dword: source.dwords) resolve_plan_value(dword);
+		if (source.indirect_descriptor) {
+			auto& indirect = *source.indirect_descriptor;
+			resolve_plan_value(indirect.key_count);
+			resolve_plan_value(indirect.selector_first);
+			resolve_plan_value(indirect.selector_mask);
+		}
+	}
+	for (auto& read: program.srt_reads) resolve_plan_value(read.value);
+	for (auto& block: program.control_flow) resolve_plan_value(block.condition);
+	for (auto& value: program.uniform_fill.values) resolve_plan_value(value);
+	resolve_plan_value(program.uniform_fill.pattern_size);
+	resolve_plan_value(program.uniform_fill.element_count);
 	// Resolve metadata before deleting its identity nodes; retain only folded native constants.
 	for (auto& write: program.scalar_writes) {
 		const auto value = write.value.Resolve();
