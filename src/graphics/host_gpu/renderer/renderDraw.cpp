@@ -2073,7 +2073,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.color_count != 0u) {
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
 		static std::atomic_uint32_t phases {0};
-		const uint32_t phase = frame >= 780 ? 2u : frame >= 735 ? 1u : 0u;
+		const uint32_t phase = frame >= 1200 ? 4u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
 		if (phase != 0u && !(phases.fetch_or(phase, std::memory_order_relaxed) & phase)) {
 			const auto& ps_images = state.ps_input_info.stage.program->info.images;
 			const auto& bound = bindings.pixel->images;
@@ -2435,7 +2435,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.ps_input_info.stage.program->shader_hash == 0x3265b01ed00a5c01ull &&
 	    state.color_count != 0u) {
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 780 ? 2u : frame >= 735 ? 1u : 0u;
+		const uint32_t phase = frame >= 1200 ? 4u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
 		static std::atomic_uint32_t phases_done {0};
 		if (phase && !(phases_done.fetch_or(phase, std::memory_order_relaxed) & phase)) {
 			std::array<RenderColorInfo, 2> sources {};
@@ -2469,7 +2469,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.color_info[0].image_id) {
 		const uint64_t target = state.color_info[0].desc.info.data.address;
 		const int32_t frame = m_context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 780 ? 2u : frame >= 735 ? 1u : 0u;
+		const uint32_t phase = frame >= 1200 ? 4u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
 		static std::atomic_uint32_t scene_color_phases {0};
 		static std::atomic_uint32_t scene_overlay_phases {0};
 		static std::atomic_uint32_t scene_hdr_phases {0};
@@ -2650,7 +2650,7 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 
 	EXIT_IF(buffer.IsInvalid());
 	EXIT_IF(args.offset_source == DrawOffsetSource::DrawState && args.first_instance != 0);
-	m_context.GetCommandScheduler().PopPendingOperations();
+	m_context.GetCommandScheduler().PopDrawOperations();
 	auto& ucfg   = buffer.GetUserConfig();
 	auto& sh_ctx = buffer.GetShaders();
 
@@ -2814,7 +2814,7 @@ bool RenderExecutor::DrawIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		LogIndirectFallback(reason);
 		return false;
 	}
-	m_context.GetCommandScheduler().PopPendingOperations();
+	m_context.GetCommandScheduler().PopDrawOperations();
 	auto& ucfg = buffer.GetUserConfig();
 	const auto debug_op =
 	    args.indexed ? CommandBufferDebugOp::DrawIndex : CommandBufferDebugOp::DrawIndexAuto;

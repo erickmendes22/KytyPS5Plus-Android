@@ -272,7 +272,9 @@ object DemonsSoulsDiagnosticArgs {
                                else "KYTY_DS_PER_FACE_BIAS=0")
         return base + bias + (if (fullPixelTrace) {
             arrayOf("--env", "KYTY_DS_FRAME_TRACE=1",
-                    "--env", "KYTY_DS_COLOR_PROBE_TARGETED=0",
+                    // The compositor reads the scene image and overlay. Capture
+                    // both at composition time (incl. late gameplay), not random clears.
+                    "--env", "KYTY_DS_COLOR_PROBE_TARGETED=1",
                     "--env", "KYTY_DS_COLOR_PROBE=1")
         } else emptyArray())
     }

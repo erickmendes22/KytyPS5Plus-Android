@@ -404,7 +404,7 @@ static void ProbeDsComputeWrites(RenderContext& context,
 		const auto match = std::find(target_hashes.begin(), target_hashes.end(), hash);
 		const auto ordinal = static_cast<size_t>(match - target_hashes.begin());
 		const int32_t frame = context.GetGpu().GetFrameNum();
-		const uint32_t phase = frame >= 735 ? 4u : frame >= 280 ? 2u : 1u;
+		const uint32_t phase = frame >= 1200 ? 8u : frame >= 735 ? 4u : frame >= 280 ? 2u : 1u;
 		// The prior targeted mode suppressed *all* compute readbacks; the
 		// black 0x281300000 image could therefore never be traced to its producer.
 		// Permit at most two representative writers after gameplay begins.
@@ -414,10 +414,10 @@ static void ProbeDsComputeWrites(RenderContext& context,
 			const char* v = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
 			return v != nullptr && v[0] == '1' && v[1] == '\0';
 		}();
-		const bool probe_this_phase = !targeted || (phase == 4u && gameplay_writer);
+		const bool probe_this_phase = !targeted || (phase >= 4u && gameplay_writer);
 		if (match != target_hashes.end() &&
 		    context.GetTextureCache().GetImage(target_id).info.data.address == 0x281300000ull &&
-		    (phase != 4u || gameplay_writer) &&
+		    (phase < 4u || gameplay_writer) &&
 		    !(captured[ordinal].fetch_or(phase, std::memory_order_relaxed) & phase)) {
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_TARGET_WRITER] shader=0x{:016x} output=0x{:x} "
@@ -924,7 +924,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
                                       uint64_t args_addr, uint32_t mode, bool async_compute) {
 	EXIT_IF(buffer.IsInvalid() || args_addr == 0 || (args_addr & 3u) != 0 ||
 	        (mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0);
-	m_context.GetCommandScheduler().PopPendingOperations();
+	m_context.GetCommandScheduler().PopDrawOperations();
 	buffer.SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DispatchIndirect), submit_id,
 	                    static_cast<uint32_t>(args_addr), static_cast<uint32_t>(args_addr >> 32u),
 	                    0, mode, buffer.GetShaders().GetCs().cs_regs.data_addr);
@@ -1026,8 +1026,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		if (std::find(watched_lighting.begin(), watched_lighting.end(),
 		              program.shader_hash) != watched_lighting.end()) {
 			const int32_t frame = m_context.GetGpu().GetFrameNum();
-			const uint32_t phase = frame >= 735 ? 1u : 0u;
-			static std::array<std::atomic<uint32_t>, 2> sampled {};
+			const uint32_t phase = frame >= 1200 ? 3u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
+			static std::array<std::atomic<uint32_t>, 4> sampled {};
 			const uint32_t index = sampled[phase].fetch_add(1u, std::memory_order_relaxed);
 			if (index < 48u || (index % 4096u) == 0u) {
 				vk::DispatchIndirectCommand backing {};
@@ -1066,8 +1066,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		        lighting_hashes.end();
 		if (lighting) {
 			const int32_t frame = m_context.GetGpu().GetFrameNum();
-			const uint32_t phase = frame >= 735 ? 1u : 0u;
-			static std::array<std::atomic<uint32_t>, 2> cpu_samples {};
+			const uint32_t phase = frame >= 1200 ? 3u : frame >= 1000 ? 2u : frame >= 735 ? 1u : 0u;
+			static std::array<std::atomic<uint32_t>, 4> cpu_samples {};
 			const auto count = cpu_samples[phase].fetch_add(1u, std::memory_order_relaxed);
 			if (count < 48u || (count % 4096u) == 0u) {
 				Log::WriteToConsoleAndLog(fmt::sprintf(
