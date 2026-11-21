@@ -1008,14 +1008,15 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().NoteWork();
 
 	buffer.MarkGpu("cs", program.shader_hash);
+	RememberDsBufferProducers(m_context, bindings, false);
+
+	// Record the shader barriers and diagnostics before the BDA settle submits the
+	// current command buffer; the Vulkan handle is no longer recordable after Wait.
+	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	ProbeDsComputeWrites(m_context, input_info, bindings);
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
-	RememberDsBufferProducers(m_context, bindings, false);
-
-	// The removed host fence also ordered read-only dispatches before later writers.
-	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
-	ProbeDsComputeWrites(m_context, input_info, bindings);
 	ResetBindings();
 }
 
@@ -1273,12 +1274,12 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().NoteWork();
 
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
-	if (program.info.bda_writes) {
-		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
-	}
 	RememberDsBufferProducers(m_context, bindings, true);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
+	if (program.info.bda_writes) {
+		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
+	}
 	ResetBindings();
 	if (two_pass) {
 		DispatchRetracePass(buffer, cs_regs, pass2_input, args_addr, *retrace);
@@ -1338,11 +1339,11 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 
 	buffer.MarkGpu("cs-retrace", input_info.stage.program->shader_hash);
+	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	ProbeDsComputeWrites(m_context, input_info, bindings);
 	if (input_info.stage.program->info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(input_info.stage.program->shader_hash);
 	}
-	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
-	ProbeDsComputeWrites(m_context, input_info, bindings);
 	ResetBindings();
 }
 
