@@ -3183,10 +3183,12 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
 				if (!info.IsDepth()) {
 					static std::atomic_uint32_t events {0};
 					const auto n = events.fetch_add(1u, std::memory_order_relaxed);
-					if (n < 16u || n % 1024u == 0u)
-						LOGF("[DS_COLOR_ATLAS_GPU_KEEP] guest=0x%016" PRIx64
-						     " affected=%u-%u/%u bytes=%" PRIu64 "\n",
-						     address, first, last, layers, size);
+					if (n < 16u || n % 1024u == 0u) {
+						Log::WriteToConsoleAndLog(fmt::format(
+						    "[DS_COLOR_ATLAS_GPU_KEEP] phase=cpu_write owner=0x{:x} "
+						    "guest=0x{:x} affected={}-{}/{} bytes={}\n",
+						    info.data.address, address, first, last, layers, size));
+					}
 				}
 				owner->MarkCpuDirty();
 				static std::atomic<uint32_t> reported {0};
@@ -3407,6 +3409,16 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 						owner->kept_gpu_layers[layer] = 1;
 					}
 					owner->MarkCpuDirty();
+					if (!info.IsDepth()) {
+						static std::atomic<uint32_t> events {0};
+						const auto n = events.fetch_add(1u, std::memory_order_relaxed);
+						if (n < 16u || n % 1024u == 0u) {
+							Log::WriteToConsoleAndLog(fmt::format(
+							    "[DS_COLOR_ATLAS_GPU_KEEP] phase=unmap owner=0x{:x} "
+							    "guest=0x{:x} affected={}-{}/{} bytes={}\n",
+							    info.data.address, address, first, last, layers, size));
+						}
+					}
 					static std::atomic<uint32_t> reported {0};
 					if (reported.fetch_add(1, std::memory_order_relaxed) < 24) {
 						LOGF("[DS_GPU_LAYER_KEEP] partial_unmap=0x%016" PRIx64

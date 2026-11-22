@@ -1202,9 +1202,9 @@ GpuPipeline::Prefetch RenderExecutor::PrefetchDispatchDirect(
 	return GpuPipeline::Prefetch::Prepared;
 }
 
-static bool ReadDsGpuWords(RenderContext& context, vk::Buffer source, uint64_t offset,
-                           std::span<uint32_t> words) {
-	if (!source || words.empty()) return false;
+static bool ReadDsGpuWordRanges(RenderContext& context, vk::Buffer source,
+                               std::span<vk::BufferCopy> copies, std::span<uint32_t> words) {
+	if (!source || copies.empty() || words.empty()) return false;
 	auto& scheduler = context.GetCommandScheduler();
 	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
 	const auto size = words.size_bytes();
@@ -1219,8 +1219,8 @@ static bool ReadDsGpuWords(RenderContext& context, vk::Buffer source, uint64_t o
 	command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                        vk::PipelineStageFlagBits::eTransfer, {}, 1, &before,
 	                        0, nullptr, 0, nullptr);
-	const vk::BufferCopy copy {offset, dest, size};
-	command.copyBuffer(source, download.Handle(), 1, &copy);
+	for (auto& copy: copies) copy.dstOffset += dest;
+	command.copyBuffer(source, download.Handle(), static_cast<uint32_t>(copies.size()), copies.data());
 	vk::MemoryBarrier after {};
 	after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
 	after.dstAccessMask = vk::AccessFlagBits::eHostRead;
@@ -1229,8 +1229,210 @@ static bool ReadDsGpuWords(RenderContext& context, vk::Buffer source, uint64_t o
 	                        0, nullptr, 0, nullptr);
 	scheduler.Finish();
 	download.Invalidate(dest, size);
-	std::memcpy(words.data(), mapped, size);
+	auto* output = reinterpret_cast<uint8_t*>(words.data());
+	for (auto& copy: copies) {
+		copy.dstOffset -= dest;
+		std::memcpy(output + copy.dstOffset, mapped + copy.dstOffset, copy.size);
+	}
 	return true;
+}
+
+static bool ReadDsGpuWords(RenderContext& context, vk::Buffer source, uint64_t offset,
+                           std::span<uint32_t> words) {
+	vk::BufferCopy copy {offset, 0, words.size_bytes()};
+	return ReadDsGpuWordRanges(context, source, std::span {&copy, 1}, words);
+}
+
+static nlohmann::json ReadDsAtlasWriterTexels(RenderContext& context,
+                                            const PreparedBindings& bindings,
+                                            std::span<const uint32_t> srt,
+                                            std::span<const uint32_t> groups_z,
+                                            std::span<const uint32_t> index_values) {
+	auto& textures = context.GetTextureCache();
+	for (const auto& binding: bindings.images) {
+		if (!binding.image_id || binding.placeholder ||
+		    binding.desc.type != TextureCache::BindingType::Storage) continue;
+		auto& image = textures.GetImage(binding.image_id);
+		const auto& host = image.backing;
+		if (host.format != vk::Format::eR16G16B16A16Sfloat || host.samples != 1 ||
+		    !(host.usage & vk::ImageUsageFlagBits::eTransferSrc)) continue;
+		const auto found = std::ranges::find(image.views, binding.image_view, &CachedImageView::view);
+		if (found == image.views.end()) continue;
+		const auto view = found->info;
+		if (view.base_level >= host.mip_levels || view.base_layer >= host.layers ||
+		    (view.type != vk::ImageViewType::e2D && view.type != vk::ImageViewType::e2DArray)) continue;
+		const auto width = std::max(host.extent.width >> view.base_level, 1u);
+		const auto height = std::max(host.extent.height >> view.base_level, 1u);
+		struct Sample { uint32_t z, x, y, layer; };
+		constexpr size_t max_samples = 16;
+		std::array<Sample, max_samples> samples {};
+		uint32_t count = 0;
+		const auto sample_count = std::min(samples.size(), groups_z.size());
+		for (size_t i = 0; i < sample_count; ++i) {
+			const auto row = i * groups_z.size() / sample_count;
+			const auto index = index_values[row] & 0x00ffffffu;
+			const auto x = ((index & srt[24]) << 4u) + 2u;
+			const auto y = (((index >> (srt[22] & 31u)) & srt[25]) << 4u) + 2u;
+			const auto layer = view.type == vk::ImageViewType::e2DArray
+			    ? (index >> (srt[23] & 31u)) & srt[26] : 0u;
+			if (x >= width || y >= height ||
+			    layer >= std::min(view.layer_count, host.layers - view.base_layer)) continue;
+			samples[count++] = {groups_z[row], x, y, view.base_layer + layer};
+		}
+		if (count == 0) continue;
+		constexpr uint32_t texel_bytes = 8;
+		const uint32_t bytes = count * texel_bytes;
+		auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+		auto [mapped, offset] = download.Map(bytes, 16u, true);
+		if (!mapped) return {{"error", "staging_unavailable"}};
+		download.Commit();
+		std::array<vk::BufferImageCopy, max_samples> copies {};
+		for (uint32_t i = 0; i < count; ++i) {
+			const auto& sample = samples[i];
+			auto& copy = copies[i];
+			copy.bufferOffset = offset + i * texel_bytes;
+			copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, view.base_level, sample.layer, 1};
+			copy.imageOffset = vk::Offset3D {static_cast<int32_t>(sample.x), static_cast<int32_t>(sample.y), 0};
+			copy.imageExtent = vk::Extent3D {1, 1, 1};
+		}
+		image.Download(std::span{copies}.first(count), download.Handle(), offset, bytes);
+		context.GetCommandScheduler().Finish();
+		download.Invalidate(offset, bytes);
+		auto texels = nlohmann::json::array();
+		for (uint32_t i = 0; i < count; ++i) {
+			const auto& sample = samples[i];
+			std::array<uint16_t, 4> rgba {};
+			std::memcpy(rgba.data(), mapped + i * texel_bytes, texel_bytes);
+			texels.push_back({{"z", sample.z}, {"x", sample.x}, {"y", sample.y},
+			                  {"layer", sample.layer}, {"rgba16_bits", rgba}});
+		}
+		return {{"owner", image.info.data.address}, {"version", image.ContentVersion()},
+		        {"mip", view.base_level}, {"texels", std::move(texels)}};
+	}
+	return {{"error", "no_readable_storage_view"}};
+}
+
+static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& bindings,
+                              uint64_t submit, DispatchGroups groups,
+                              vk::Buffer indirect_buffer = {}, uint64_t indirect_offset = 0) {
+	const auto& program = *bindings.runtime->program;
+	if (program.shader_hash != 0xc03afccb96a13c5dull || !DsTraceEnabled()) return;
+	const auto frame = context.GetGpu().GetFrameNum();
+	static DemonsRollingProbe::FrameGate gate;
+	if (!gate.Due(frame, 240)) return;
+	const auto report = [frame, submit](const char* reason) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_LIGHT_ATLAS_INPUT] frame={} submit={} capture={}\n", frame, submit, reason));
+	};
+	if (indirect_buffer && !ReadDsGpuWords(context, indirect_buffer, indirect_offset, groups)) {
+		report("indirect_args_unreadable");
+		return;
+	}
+	if (groups[0] == 0 || groups[1] == 0 || groups[2] == 0) {
+		report("empty_dispatch");
+		return;
+	}
+	const auto& srt = bindings.runtime->resources->flattened_srt;
+	const auto packed_offset = program.bindings.memory_offset_dword;
+	if (srt.size() < 28 || bindings.buffers.size() < 2 || bindings.buffer_sources.size() < 2 ||
+	    packed_offset >= bindings.shader_data.size() ||
+	    !program.bindings.UsesPushData() || program.info.group_pack > 1) {
+		report("unexpected_shader_layout");
+		return;
+	}
+	const auto& indices = bindings.buffers[0];
+	const auto& coefficients = bindings.buffers[1];
+	const uint32_t index_adjustment = bindings.shader_data[packed_offset] & 255u;
+	const uint32_t coefficient_adjustment = (bindings.shader_data[packed_offset] >> 8u) & 255u;
+	if (!indices.buffer || !coefficients.buffer ||
+	    indices.range == VK_WHOLE_SIZE || coefficients.range == VK_WHOLE_SIZE) {
+		report("unexpected_buffer_binding");
+		return;
+	}
+
+	// The four captured variants use SRT word 27 plus WorkGroupID.z to select
+	// a dword from slot 0. Its low 24 bits index a 64-byte coefficient record
+	// in slot 1. Only the first 14 dwords of that record are read by the shader.
+	constexpr uint32_t coefficient_words = 14;
+	constexpr uint32_t max_records = 4096;
+	const uint32_t count = std::min(groups[2], max_records);
+	std::vector<uint32_t> index_values(count);
+	std::vector<uint32_t> coefficient_values(size_t {count} * coefficient_words);
+	std::vector<vk::BufferCopy> index_copies;
+	std::vector<vk::BufferCopy> coefficient_copies;
+	std::vector<uint32_t> selected_groups;
+	std::vector<uint32_t> index_valid(count);
+	std::vector<uint32_t> coefficient_valid_words(count);
+	selected_groups.reserve(count);
+	index_copies.reserve(count);
+	coefficient_copies.reserve(count);
+	for (uint32_t i = 0; i < count; ++i) {
+		const auto z = static_cast<uint32_t>(uint64_t {i} * groups[2] / count);
+		selected_groups.push_back(z);
+		const uint32_t offset = (srt[27] + z) * 4u + index_adjustment;
+		if (offset < index_adjustment || offset > UINT32_MAX - 3u ||
+		    (offset + 3u) / 4u >= indices.range / 4u) continue;
+		index_valid[i] = 1;
+		index_copies.emplace_back(indices.offset + (offset & ~3u), uint64_t {i} * 4u, 4u);
+	}
+	if (!index_copies.empty() &&
+	    !ReadDsGpuWordRanges(context, indices.buffer, index_copies, index_values)) {
+		report("indices_unreadable");
+		return;
+	}
+	for (uint32_t i = 0; i < count; ++i) {
+		const uint64_t offset = uint64_t {index_values[i] & 0x00ffffffu} * 64u +
+		                        (coefficient_adjustment & ~3u);
+		const uint64_t available = offset < coefficients.range ? coefficients.range - offset : 0;
+		const auto valid = std::min<uint64_t>(coefficient_words, available / 4u);
+		coefficient_valid_words[i] = static_cast<uint32_t>(valid);
+		const auto size = valid * 4u;
+		if (size != 0)
+			coefficient_copies.emplace_back(coefficients.offset + offset,
+			                                uint64_t {i} * coefficient_words * 4u, size);
+	}
+	if (!coefficient_copies.empty() &&
+	    !ReadDsGpuWordRanges(context, coefficients.buffer, coefficient_copies, coefficient_values)) {
+		report("coefficients_unreadable");
+		return;
+	}
+	LogDsBufferProducer(frame, program.shader_hash, 0, "atlas_index", 0,
+	                    bindings.buffer_sources[0].address, bindings.buffer_sources[0].size);
+	LogDsBufferProducer(frame, program.shader_hash, 0, "atlas_coefficients", 1,
+	                    bindings.buffer_sources[1].address, bindings.buffer_sources[1].size);
+	const auto root = Config::GetShaderDumpFolder();
+	if (root.filename() != "ds-lighting-dumps") {
+		report("dump_directory_unavailable");
+		return;
+	}
+	const auto folder = root / "queue-state";
+	std::error_code ec;
+	std::filesystem::create_directories(folder, ec);
+	static std::atomic<uint32_t> next_file {0};
+	const auto name = fmt::format("cs_c03afccb96a13c5d_atlas_inputs_{}.json",
+	                              next_file.fetch_add(1, std::memory_order_relaxed) % 4u);
+	std::ofstream file(folder / name, std::ios::trunc);
+	if (file) {
+		const nlohmann::json payload {
+		    {"frame", frame}, {"submit", submit}, {"workgroups", groups},
+		    {"srt_22_to_27", std::vector<uint32_t>(srt.begin() + 22, srt.begin() + 28)},
+		    {"index_guest", bindings.buffer_sources[0].address}, {"index_range", indices.range},
+		    {"index_adjustment", index_adjustment},
+		    {"coefficient_guest", bindings.buffer_sources[1].address},
+		    {"coefficient_range", coefficients.range},
+		    {"coefficient_adjustment", coefficient_adjustment},
+		    {"selected_z", selected_groups}, {"index_words", index_values},
+		    {"index_in_bounds", index_valid},
+		    {"coefficient_words_per_record", coefficient_words},
+		    {"coefficient_in_bounds_words", coefficient_valid_words},
+		    {"coefficient_words", coefficient_values},
+		    {"atlas_after_writer", ReadDsAtlasWriterTexels(context, bindings, srt,
+		                                                  selected_groups, index_values)},
+		};
+		file << payload;
+		file.close();
+	}
+	report(file.good() ? name.c_str() : "file_write_failed");
 }
 
 static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
@@ -1739,6 +1941,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	ProbeDsComputeWrites(m_context, input_info, bindings);
 	CaptureDsLightTiles(bindings);
 	ProbeDsLightingBuffers(m_context, bindings);
+	ProbeDsAtlasInputs(m_context, bindings, submit_id,
+	                   {thread_group_x, thread_group_y, thread_group_z});
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
@@ -2186,6 +2390,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	CaptureDsLightTiles(bindings);
 	ProbeDsLightingBuffers(m_context, bindings);
+	ProbeDsAtlasInputs(m_context, bindings, submit_id, {args.x, args.y, args.z},
+	                   split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
