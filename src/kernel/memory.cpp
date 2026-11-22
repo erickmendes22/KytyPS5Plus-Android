@@ -3972,24 +3972,50 @@ static uint64_t FindFoldedReservation(uint64_t hint, uint64_t size, uint64_t ali
 	if (size > UINT64_MAX - from || from + size <= Fold::kFoldSize) {
 		return 0;
 	}
+	// A folded top must land in host VA that is actually free, not merely in
+	// guest VA that has no registered VirtualRange.  On Android other mappings
+	// can fragment the 32 GiB alias even when the guest range ledger is empty.
+	// Saros previously accepted that plan and then aborted on a 192 MiB direct
+	// mapping at guest 0x90c0000000 (folded host 0x10c0000000).
 	Fold::FoldPlan plan {};
-	if (!Fold::PlanHostFold(size, alignment, &plan) ||
-	    g_virtual_ranges->HasOverlap(plan.alias_end, plan.start + size - plan.alias_end)) {
-		return 0;
+	bool alias_present = false;
+	bool found_plan = false;
+	// All reservations after the first must keep the same fold placement.
+	// Repositioning an active alias would invalidate existing guest pointers.
+	static uint64_t active_alias_start = 0;
+	constexpr uint64_t alias_step = 1ull << 30u;
+	const auto alias_max = Common::AddressLayout::kHostUserEnd - Fold::kAliasSize;
+	for (uint64_t alias_start = Common::AddressLayout::kHostUserMin;
+	     alias_start <= alias_max; alias_start += alias_step) {
+		if (active_alias_start != 0 && alias_start != active_alias_start) continue;
+		Fold::FoldPlan candidate {};
+		if (!Fold::PlanFold(size, alignment, alias_start,
+		                    Common::AddressLayout::kHostUserEnd, Fold::kAliasSize,
+		                    &candidate)) continue;
+		if (g_virtual_ranges->HasOverlap(
+		        candidate.alias_end, candidate.start + size - candidate.alias_end)) continue;
+		const auto candidate_size = candidate.alias_end - candidate.alias_start;
+		VirtualRanges::Range alias {};
+		const bool present = g_virtual_ranges->Query(candidate.alias_start, 0, &alias) &&
+		    alias.start == candidate.alias_start && alias.size == candidate_size &&
+		    std::strncmp(alias.name, "fold-alias", sizeof(alias.name)) == 0;
+		if (!present && (g_virtual_ranges->HasOverlap(candidate.alias_start, candidate_size) ||
+		                 !g_guest_address_space->ReserveFixed(candidate.alias_start, candidate_size))) {
+			continue;
+		}
+		plan = candidate;
+		alias_present = present;
+		found_plan = true;
+		break;
 	}
-	// The alias stays reserved once created, so a later reservation with the same plan (after the
-	// first one was released) reuses it.
-	const auto     alias_size = plan.alias_end - plan.alias_start;
-	VirtualRanges::Range alias {};
-	const bool     alias_present =
-	    g_virtual_ranges->Query(plan.alias_start, 0, &alias) && alias.start == plan.alias_start &&
-	    alias.size == alias_size && std::strncmp(alias.name, "fold-alias", sizeof(alias.name)) == 0;
+	if (!found_plan) return 0;
+	const auto alias_size = plan.alias_end - plan.alias_start;
 	if (!alias_present &&
-	    (g_virtual_ranges->HasOverlap(plan.alias_start, alias_size) ||
-	     !g_virtual_ranges->Add(plan.alias_start, alias_size, 0, 0, 0, VirtualRangeType::Reserved,
-	                            "fold-alias", true))) {
+	    !g_virtual_ranges->Add(plan.alias_start, alias_size, 0, 0, 0,
+	                           VirtualRangeType::Reserved, "fold-alias", true)) {
 		return 0;
 	}
+	active_alias_start = plan.alias_start;
 	if (!Fold::IsEnabled()) {
 		Fold::SetEnabled();
 		Cpu::GuestCpu::EnableAddressFold(Fold::kFoldMask);
