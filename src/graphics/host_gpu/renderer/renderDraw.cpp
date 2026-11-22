@@ -2612,6 +2612,29 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	RenderDepthInfo ds_live_material_depth {};
 	std::optional<std::array<uint32_t, 64>> ds_live_material_before {};
 	std::optional<std::array<uint32_t, 64>> ds_live_depth_before {};
+	// The #645 onset capture proved the material G-buffer is black while
+	// the paired D32 depth contains 64 zero samples *before* the material
+	// draw. Capture the actual D32 prepass writer instead of adding another
+	// compositor or light-atlas probe. Exactly one draw in each observed
+	// bright/onset/dark phase; no absolute frame number is assumed.
+	std::optional<std::array<uint32_t, 64>> ds_depth_prepass_before {};
+	RenderDepthInfo ds_depth_prepass_target {};
+	int ds_depth_prepass_phase = -1;
+	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
+	    state.depth_info.image_id && state.depth_info.depth_write_enable &&
+	    state.depth_info.desc.info.data.address == 0x282b60000ull) {
+		const auto& gate = DemonsAdaptiveCapture::Current();
+		const int phase = gate.DarkOnsetDue(ds_gbuffer_frame) ? 1
+		    : gate.BrightBaselineDue(ds_gbuffer_frame) ? 0
+		    : gate.CaptureDue(ds_gbuffer_frame) ? 2 : -1;
+		static std::array<bool, 3> captured {};
+		if (phase >= 0 && !captured[phase]) {
+			captured[phase] = true;
+			ds_depth_prepass_phase = phase;
+			ds_depth_prepass_target = state.depth_info;
+			ds_depth_prepass_before = SnapshotDsMaterialDepthGrid(m_context, ds_depth_prepass_target);
+		}
+	}
 	if (ds_gbuffer_enabled && state.ps_active && bindings.pixel) {
 		ds_gbuffer_shader = state.ps_input_info.stage.program->shader_hash;
 		const auto& watched = DemonsQueueProbe::GBufferShaders;
@@ -3315,6 +3338,51 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    m_context.GetTextureCache().GetImage(ds_gbuffer->image_id).ContentVersion();
 		RecordDsMaterialPixels(*ds_material_trace, ds_albedo_before, after,
 		                       rendering.color_attachments[ds_gbuffer->target_slot].is_clear);
+	}
+	if (ds_depth_prepass_phase >= 0) {
+		const auto after = SnapshotDsMaterialDepthGrid(m_context, ds_depth_prepass_target);
+		if (ds_depth_prepass_before && after) {
+			uint32_t before_nonzero = 0, after_nonzero = 0, changed = 0;
+			for (size_t i = 0; i < after->size(); ++i) {
+				before_nonzero += (*ds_depth_prepass_before)[i] != 0u;
+				after_nonzero += (*after)[i] != 0u;
+				changed += (*ds_depth_prepass_before)[i] != (*after)[i];
+			}
+			const uint64_t shader = state.ps_active && state.ps_input_info.stage.program
+			    ? state.ps_input_info.stage.program->shader_hash : 0ull;
+			const nlohmann::json evidence {
+			    {"frame", ds_gbuffer_frame}, {"phase", ds_depth_prepass_phase},
+			    {"submit", submit_id}, {"shader", fmt::format("{:016x}", shader)},
+			    {"target", ds_depth_prepass_target.desc.info.data.address},
+			    {"before_bits", *ds_depth_prepass_before}, {"after_bits", *after},
+			    {"nonzero_before", before_nonzero}, {"nonzero_after", after_nonzero},
+			    {"changed", changed}, {"depth_test", state.depth_info.depth_test_enable},
+			    {"depth_write", state.depth_info.depth_write_enable},
+			    {"depth_compare", static_cast<uint32_t>(state.depth_info.depth_compare_op)},
+			    {"load_clear", state.depth_info.depth_load_clear_enable},
+			    {"index_count", draw.index_count}, {"instances", draw.instance_count}
+			};
+			const auto folder = Config::GetShaderDumpFolder() / "queue-state";
+			std::error_code ec;
+			std::filesystem::create_directories(folder, ec);
+			const auto name = fmt::format("ds_depth_prepass_f{}_s{}_p{}.json",
+			                              ds_gbuffer_frame, submit_id, ds_depth_prepass_phase);
+			std::ofstream file(folder / name, std::ios::trunc);
+			if (file) file << evidence;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_DEPTH_PREPASS] frame={} phase={} target=0x{:x} "
+			    "depth_samples={}/64 -> {}/64 changed={} depth_test={} depth_write={} "
+			    "load_clear={} file={} saved={}\\n",
+			    ds_gbuffer_frame, ds_depth_prepass_phase,
+			    ds_depth_prepass_target.desc.info.data.address,
+			    before_nonzero, after_nonzero, changed,
+			    state.depth_info.depth_test_enable, state.depth_info.depth_write_enable,
+			    state.depth_info.depth_load_clear_enable, name, file.good()));
+		} else {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_DEPTH_PREPASS] frame={} phase={} result=depth_snapshot_unavailable\\n",
+			    ds_gbuffer_frame, ds_depth_prepass_phase));
+		}
 	}
 	if (ds_live_material_capture) {
 		const auto after = SnapshotDsGBufferGrid(m_context, ds_live_material_target);
