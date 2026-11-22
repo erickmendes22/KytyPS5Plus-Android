@@ -94,11 +94,12 @@ class GameSettingsDialog(
             isChecked = current.demonsSouls1080p
         }
         val dsDepthEqual = spinner(listOf(
-            "OFF: original EQUAL (normal)",
+            "AUTO: G-buffer material GE compatibility (default)",
             "Material EQUAL -> LESS_OR_EQUAL",
             "Material EQUAL -> GREATER_OR_EQUAL",
+            "OFF: restore original EQUAL",
         )).apply {
-            setSelection(current.demonsSoulsDepthEqualRelax.coerceIn(0, 2))
+            setSelection(current.demonsSoulsDepthEqualRelax.coerceIn(0, 3))
         }
         val dsFaceBias = Switch(activity).apply {
             text = "Experimental: independent front/back shadow depth bias (extra draws)"
@@ -175,7 +176,7 @@ class GameSettingsDialog(
                 addView(label("Controls the game\u0027s own PS5 renderconfig files, not just the window. Originals are preserved alongside each file. Does not fix black geometry by itself.", secondary = true))
                 addView(dsFaceBias)
                 addView(label("Demon's Souls: depth prepass / material EQUAL compatibility (PC reference; experimental)", bold = true))
-                addView(label("Select 1 or 2 only if gameplay goes dark. Off changes nothing. Scoped to the D32 G-buffer material pass, not shadows.", secondary = true))
+                addView(label("Default 0 applies the PC-derived depth tolerance only to the two observed failing material shaders; 3 restores original EQUAL. Does not affect shadows.", secondary = true))
                 addView(dsDepthEqual)
                 addView(dsPixelTrace)
                 addView(label("Off by default: synchronous GPU pixel readbacks previously interrupted rendering and added GPU/CPU overhead.", secondary = true))
