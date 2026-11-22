@@ -1239,7 +1239,7 @@ private:
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[FOLD_MAP_CONFLICT] stage={} guest=0x{:x} host=0x{:x} size=0x{:x} "
 		    "owned={} mapped={} mapped_host=0x{:x} mapped_size=0x{:x} mapped_guest=0x{:x} "
-		    "mapped_type={} prior_free=0x{:x} prior_free_size=0x{:x} seq={}\\n",
+		    "mapped_type={} prior_free=0x{:x} prior_free_size=0x{:x} seq={}\n",
 		    stage, guest, host, size, owned, occupied,
 		    occupied ? mapped->second.vaddr : 0,
 		    occupied ? mapped->second.size : 0,
