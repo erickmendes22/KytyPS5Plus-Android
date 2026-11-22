@@ -2634,7 +2634,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		});
 		if (bright_baseline_frame < 0 && scene != colors.end() && gate.BrightBaselineDue(frame))
 			bright_baseline_frame = frame;
-		if (scene != colors.end() && scene_passes < 12u &&
+		// These are the three confirmed scene-target shaders in the 719
+		// trace. Other fullscreen/geometry passes are outside this probe.
+		const bool known_scene_writer =
+		    shader == 0xd1768d02fcf96a58ull ||
+		    shader == 0xd9a54cb7b549b1b9ull ||
+		    shader == 0x844e5697cf62ecd7ull;
+		if (scene != colors.end() && known_scene_writer && scene_passes < 12u &&
 		    (frame == bright_baseline_frame || gate.CapturedFrame(frame)) &&
 		    Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps") {
 			ds_scene_trace = true;
