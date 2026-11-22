@@ -318,10 +318,48 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 	return true;
 }
 
+void RenderExecutor::RememberDsAtlasWriter(ImageId id, const ImageInfo& info,
+                                            const ImageViewInfo& view, uint64_t shader,
+                                            const char* path) {
+	static const bool trace = [] {
+		const char* value = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
+		return value && value[0] == '1' && value[1] == '\0';
+	}();
+	if (!trace || !id || info.data.Empty()) return;
+	const auto& image = m_context.GetTextureCache().GetImage(id);
+	const auto& data = image.info.data;
+	const bool matches = m_ds_atlas_size && data.address < m_ds_atlas_address + m_ds_atlas_size &&
+	                     m_ds_atlas_address < data.address + data.size;
+	const bool shape = image.backing.format == vk::Format::eR16G16B16A16Sfloat &&
+	                   image.backing.extent.width == 256 && image.backing.extent.height == 256 &&
+	                   image.backing.layers == 360;
+	if (!matches && !shape) return;
+	const auto frame = m_context.GetGpu().GetFrameNum();
+	if (m_ds_atlas_writer_count) {
+		const auto& last = m_ds_atlas_writers[(m_ds_atlas_writer_count - 1) % m_ds_atlas_writers.size()];
+		if (last.frame == frame && last.shader == shader && last.owner == data.address &&
+		    last.layer == view.base_layer && last.layers == view.layer_count &&
+		    last.mip == view.base_level && last.path == path) return;
+	}
+	auto& writer = m_ds_atlas_writers[m_ds_atlas_writer_count++ % m_ds_atlas_writers.size()];
+	writer = {shader, info.data.address, info.data.size, data.address, image.ContentVersion(),
+	          frame, view.base_layer, view.layer_count, view.base_level, path};
+}
+
 void RenderExecutor::BindDsLightMath(PreparedBindings& bindings,
                                     const DemonsQueueProbe::Capture* capture) {
 	using namespace DemonsLightMathProbe;
 	if (!bindings.runtime->program->ds_light_math_variant) return;
+	if (bindings.images.size() > 7) {
+		const auto& binding = bindings.images[7];
+		if (binding.image_id && !binding.placeholder) {
+			const auto& image = m_context.GetTextureCache().GetImage(binding.image_id);
+			if (image.backing.layers == 360 && image.backing.format == vk::Format::eR16G16B16A16Sfloat) {
+				m_ds_atlas_address = image.info.data.address;
+				m_ds_atlas_size = image.info.data.size;
+			}
+		}
+	}
 	auto& storage = m_ds_light_math_buffers[static_cast<bool>(capture)];
 	const bool initialize = !storage;
 	if (initialize) {
@@ -343,6 +381,82 @@ void RenderExecutor::BindDsLightMath(PreparedBindings& bindings,
 	}
 	bindings.shared_memory = vk::DescriptorBufferInfo{storage->Handle(), 0,
 	                                                   WordCount * sizeof(uint32_t)};
+}
+
+static void ReadDsAtlasTexels(RenderContext& context, const TextureBinding& binding,
+                              uint32_t frame, uint64_t submit,
+                              const std::array<uint32_t, DemonsLightMathProbe::WordCount>& data) {
+	using namespace DemonsLightMathProbe;
+	if (!binding.image_id || binding.placeholder) return;
+	auto& image = context.GetTextureCache().GetImage(binding.image_id);
+	const auto found = std::ranges::find(image.views, binding.image_view, &CachedImageView::view);
+	if (found == image.views.end()) return;
+	const auto view = found->info;
+	const auto& host = image.backing;
+	if (host.format != vk::Format::eR16G16B16A16Sfloat || host.samples != 1 ||
+	    !(host.usage & vk::ImageUsageFlagBits::eTransferSrc) || view.base_level >= host.mip_levels ||
+	    view.base_layer >= host.layers ||
+	    (view.type != vk::ImageViewType::e2D && view.type != vk::ImageViewType::e2DArray)) return;
+	const auto width = std::max(host.extent.width >> view.base_level, 1u);
+	const auto height = std::max(host.extent.height >> view.base_level, 1u);
+	if (width < 2 || height < 2) return;
+	struct Sample { uint32_t pixel, site, x, y, layer; };
+	std::array<Sample, Samples * 2> samples {};
+	uint32_t count = 0;
+	for (uint32_t i = 0; i < Samples; ++i) {
+		for (uint32_t site = 0; site < 2; ++site) {
+			const auto* term = data.data() + Samples + i * Stride + TermOffset + site * TermStride;
+			if (!term[0]) continue;
+			const auto u = std::bit_cast<float>(term[9]);
+			const auto v = std::bit_cast<float>(term[10]);
+			const auto z = std::bit_cast<float>(term[11]);
+			if (!std::isfinite(u) || !std::isfinite(v) || !std::isfinite(z) ||
+			    u <= 0.f || u >= 1.f || v <= 0.f || v >= 1.f || z < 0.f ||
+			    z >= static_cast<float>(std::min(view.layer_count, host.layers - view.base_layer)))
+				continue;
+			const auto layer = view.base_layer + static_cast<uint32_t>(std::floor(z + 0.5f));
+			const auto x = static_cast<int32_t>(std::floor(u * static_cast<float>(width) - 0.5f));
+			const auto y = static_cast<int32_t>(std::floor(v * static_cast<float>(height) - 0.5f));
+			// Interior footprints avoid assumptions about addressing, border colors and seams.
+			if (x < 0 || y < 0 || uint32_t(x + 1) >= width || uint32_t(y + 1) >= height ||
+			    layer >= host.layers || layer - view.base_layer >= view.layer_count) continue;
+			samples[count++] = {i, site, static_cast<uint32_t>(x), static_cast<uint32_t>(y), layer};
+		}
+	}
+	if (!count) return;
+	constexpr uint32_t bytes_per_footprint = 32;
+	const auto bytes = count * bytes_per_footprint;
+	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	auto [mapped, offset] = download.Map(bytes, 16u, true);
+	if (!mapped) return;
+	download.Commit();
+	std::array<vk::BufferImageCopy, Samples * 2> copies {};
+	for (uint32_t i = 0; i < count; ++i) {
+		const auto& sample = samples[i];
+		auto& copy = copies[i];
+		copy.bufferOffset = offset + i * bytes_per_footprint;
+		copy.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+		copy.imageSubresource.mipLevel = view.base_level;
+		copy.imageSubresource.baseArrayLayer = sample.layer;
+		copy.imageSubresource.layerCount = 1;
+		copy.imageOffset = vk::Offset3D {static_cast<int32_t>(sample.x), static_cast<int32_t>(sample.y), 0};
+		copy.imageExtent = vk::Extent3D {2, 2, 1};
+	}
+	image.Download(std::span{copies}.first(count), download.Handle(), offset, bytes);
+	context.GetCommandScheduler().Finish();
+	download.Invalidate(offset, bytes);
+	for (uint32_t i = 0; i < count; ++i) {
+		const auto& sample = samples[i];
+		std::array<uint16_t, 16> texels {};
+		std::memcpy(texels.data(), mapped + i * bytes_per_footprint, bytes_per_footprint);
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_LIGHT_ATLAS_TEXELS] frame={} submit={} sample={} site={} layer={} xy={},{} "
+		    "rgb16={:04x}/{:04x}/{:04x},{:04x}/{:04x}/{:04x},"
+		    "{:04x}/{:04x}/{:04x},{:04x}/{:04x}/{:04x}\n",
+		    frame, submit, sample.pixel, sample.site, sample.layer, sample.x, sample.y,
+		    texels[0], texels[1], texels[2], texels[4], texels[5], texels[6],
+		    texels[8], texels[9], texels[10], texels[12], texels[13], texels[14]));
+	}
 }
 
 void RenderExecutor::ReadDsLightMath(const DemonsQueueProbe::Capture& capture, uint64_t submit,
@@ -398,6 +512,19 @@ void RenderExecutor::ReadDsLightMath(const DemonsQueueProbe::Capture& capture, u
 			    float_at(term, 7), float_at(term, 8), float_at(term, 12), float_at(term, 13),
 			    float_at(term, 14), float_at(term, 15), float_at(term, 16), float_at(term, 17)));
 		}
+	}
+	if (bindings.images.size() > 7) {
+		ReadDsAtlasTexels(m_context, bindings.images[7], capture.frame, submit, data);
+	}
+	const auto end = m_ds_atlas_writer_count;
+	const auto count = std::min(end, static_cast<uint32_t>(m_ds_atlas_writers.size()));
+	for (uint32_t i = end - count; i < end; ++i) {
+		const auto& writer = m_ds_atlas_writers[i % m_ds_atlas_writers.size()];
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_LIGHT_ATLAS_WRITER] read_frame={} read_submit={} writer_frame={} shader=0x{:016x} "
+		    "path={} guest=0x{:x} bytes=0x{:x} owner=0x{:x} version={} layer={} layers={} mip={}\n",
+		    capture.frame, submit, writer.frame, writer.shader, writer.path, writer.address,
+		    writer.size, writer.owner, writer.version, writer.layer, writer.layers, writer.mip));
 	}
 }
 

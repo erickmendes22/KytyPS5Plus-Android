@@ -1855,6 +1855,9 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			const ImageSubresourceRange range {view.base_level, view.level_count, view.base_layer,
 			                                   view.layer_count};
 			const bool storage = binding.desc.type == TextureCache::BindingType::Storage;
+			if (storage && program.info.images[i].written)
+				RememberDsAtlasWriter(binding.image_id, binding.desc.info, view,
+				                     program.shader_hash, "storage");
 			if (image.info.data.Empty()) {
 				image.Transit(vk::ImageLayout::eGeneral,
 				              storage ? vk::AccessFlagBits2::eShaderRead |

@@ -270,7 +270,8 @@ object Diagnostics {
                 "DS_LIGHT_MATH_VARIANT identifies instrumented shader binaries. DS_LIGHT_MATH records the exact " +
                 "shader values for the queue 33 pixels. Join DS_LIGHT_TERM by frame, submit and sample. Terms " +
                 "report the last active sample and total contribution before/after shadow weighting at each site. " +
-                "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
+                "DS_LIGHT_ATLAS_TEXELS reports the raw RGB16 footprint and DS_LIGHT_ATLAS_WRITER the recent " +
+                "overlapping output bindings. Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
             zip.closeEntry()

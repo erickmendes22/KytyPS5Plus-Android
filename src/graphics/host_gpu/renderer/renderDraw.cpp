@@ -772,6 +772,8 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		ensure_pass_scale(image, target.desc.view_info, image_view);
 		EXIT_IF(image.backing.samples != target.desc.info.samples || image_view == nullptr);
 		const auto& view   = target.desc.view_info;
+		const auto shader = stages.empty() ? 0u : stages.back()->runtime->program->shader_hash;
+		RememberDsAtlasWriter(target.image_id, target.desc.info, view, shader, "attachment");
 		const auto  layout = image.binding.is_bound ? vk::ImageLayout::eGeneral
 		                                            : vk::ImageLayout::eColorAttachmentOptimal;
 		old_states[i]     = image.backing.state;
@@ -3467,6 +3469,7 @@ bool RenderExecutor::ResolveColorTargets(CommandBuffer& buffer, uint32_t render_
 
 	auto& cache = m_context.GetTextureCache();
 	cache.MarkGpuWritten(dst.image_id);
+	RememberDsAtlasWriter(dst.image_id, dst.desc.info, dst.desc.view_info, 0, "resolve");
 	auto& source      = cache.GetImage(src.image_id);
 	auto& destination = cache.GetImage(dst.image_id);
 	// The resolve addresses guest texels of both images.
