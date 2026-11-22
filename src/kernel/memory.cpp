@@ -1185,7 +1185,7 @@ bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
 				if (n <= 12u || (n & (n - 1u)) == 0u) {
 					Log::WriteToConsoleAndLog(fmt::format(
 					    "[DS_SRT_IMAGE_{}] count={} shader=0x{:016x} addr=0x{:x} bytes={} "
-					    "owner=0x{:x} owner_bytes={} format={} samples={} reason={}\\n",
+					    "owner=0x{:x} owner_bytes={} format={} samples={} reason={}\n",
 					    published ? "READY" : "UNRESOLVED", n,
 					    Common::PerfStats::CurrentTraceShader(), vaddr, size,
 					    details.owner_address, details.owner_size, details.format,
@@ -1202,7 +1202,7 @@ bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
 		static std::atomic_uint32_t ambiguous {0};
 		if (ambiguous.fetch_add(1u, std::memory_order_relaxed) < 8u) {
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_SRT_REFUSE_STALE] shader=0x{:016x} addr=0x{:x} bytes={} reason={}\\n",
+			    "[DS_SRT_REFUSE_STALE] shader=0x{:016x} addr=0x{:x} bytes={} reason={}\n",
 			    Common::PerfStats::CurrentTraceShader(), vaddr, size, image_failure));
 		}
 		return false;
@@ -1217,7 +1217,7 @@ bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
 				std::memcpy(&value, data, static_cast<size_t>(std::min<uint64_t>(size, sizeof(value))));
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_SRT_READ_RESULT] count={} shader=0x{:016x} addr=0x{:x} bytes={} "
-			    "published={} read={} word0=0x{:08x} failure={}\\n",
+			    "published={} read={} word0=0x{:08x} failure={}\n",
 			    n, Common::PerfStats::CurrentTraceShader(), vaddr, size,
 			    image_published, read, value, image_failure ? image_failure : "none"));
 		}
