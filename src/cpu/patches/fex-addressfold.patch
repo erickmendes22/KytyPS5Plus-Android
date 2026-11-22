@@ -53,7 +53,7 @@
 +      Dest = _And(OpSize::i64Bit, Dest, Constant(FoldMask));
 +      if (FEXCore::GuestAddressFold::GetShift() != 0) {
 +        DestRelocation = _Lshr(OpSize::i64Bit,
-+          _And(OpSize::i64Bit, DestHigh, Constant(0x8000000000ull)), Constant(2));
++          _And(OpSize::i64Bit, DestHigh, Constant(0x8000000000ull)), Constant(1));
 +        Dest = _Add(OpSize::i64Bit, Dest, DestRelocation);
 +      }
 +    }
@@ -87,9 +87,9 @@
 +      SrcAddr = _And(OpSize::i64Bit, SrcAddr, Constant(FoldMask));
 +      if (FEXCore::GuestAddressFold::GetShift() != 0) {
 +        DstRelocation = _Lshr(OpSize::i64Bit,
-+          _And(OpSize::i64Bit, DstHigh, Constant(0x8000000000ull)), Constant(2));
++          _And(OpSize::i64Bit, DstHigh, Constant(0x8000000000ull)), Constant(1));
 +        SrcRelocation = _Lshr(OpSize::i64Bit,
-+          _And(OpSize::i64Bit, SrcHigh, Constant(0x8000000000ull)), Constant(2));
++          _And(OpSize::i64Bit, SrcHigh, Constant(0x8000000000ull)), Constant(1));
 +        DstAddr = _Add(OpSize::i64Bit, DstAddr, DstRelocation);
 +        SrcAddr = _Add(OpSize::i64Bit, SrcAddr, SrcRelocation);
 +      }
@@ -160,12 +160,12 @@
 +namespace {
 +
 +  // Saros maps two guest banks whose low 39 bits match. Route the high bank
-+  // through another 128 GiB host region (guest bit39 -> host bit37).
++  // through another 256 GiB host region (guest bit39 -> host bit38).
 +  Ref FoldEffectiveAddress(IREmitter* IREmit, Ref Address, Ref Masked) {
 +    if (FEXCore::GuestAddressFold::GetShift() == 0) return Masked;
 +    Ref BankBit = IREmit->_And(OpSize::i64Bit, Address,
 +                              IREmit->_InlineConstant(0x8000000000ull));
-+    Ref Shifted = IREmit->_Lshr(OpSize::i64Bit, BankBit, IREmit->_InlineConstant(2));
++    Ref Shifted = IREmit->_Lshr(OpSize::i64Bit, BankBit, IREmit->_InlineConstant(1));
 +    return IREmit->_Add(OpSize::i64Bit, Masked, Shifted);
 +  }
 +
