@@ -1156,6 +1156,9 @@ static void ReadGuestForSrt(uint64_t vaddr, void* data, size_t size) {
 bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
                                   bool image_sync) {
 	vaddr = Kernel::AddressFold::Fold(vaddr);
+	bool image_publication_attempted = false;
+	bool image_published = false;
+	const char* image_failure = nullptr;
 	if (image_sync && size != 0 && size <= 64u && g_gpu_resources != nullptr &&
 	    Graphics::GuestGpu::IsGpuThread() && IsGpuAddressRange(vaddr, size)) {
 		auto& renderer = GetGpuResources();
@@ -1164,7 +1167,7 @@ bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
 			static std::atomic_uint32_t dirty_buffer {0};
 			const auto n = dirty_buffer.fetch_add(1u, std::memory_order_relaxed) + 1u;
 			if (n <= 12u || (n & (n - 1u)) == 0u) {
-				std::printf("[DS_SRT_BUFFER_READY] count=%u addr=0x%llx bytes=%llu\n",
+				std::printf("[DS_SRT_BUFFER_READY] count=%u addr=0x%llx bytes=%llu\\n",
 				            n, static_cast<unsigned long long>(vaddr),
 				            static_cast<unsigned long long>(size));
 			}
@@ -1172,14 +1175,17 @@ bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
 			Graphics::TextureCache::GpuImagePublication details {};
 			const bool published = renderer.GetTextureCache().PublishGpuImageForIndirectArgs(
 			    vaddr, size, &details);
-			if (published || details.failure) {
+			image_publication_attempted = published || details.failure != nullptr;
+			image_published = published;
+			image_failure = details.failure;
+			if (image_publication_attempted) {
 				static std::atomic_uint32_t ready {0}, unresolved {0};
 				auto& counter = published ? ready : unresolved;
 				const auto n = counter.fetch_add(1u, std::memory_order_relaxed) + 1u;
 				if (n <= 12u || (n & (n - 1u)) == 0u) {
 					Log::WriteToConsoleAndLog(fmt::format(
 					    "[DS_SRT_IMAGE_{}] count={} shader=0x{:016x} addr=0x{:x} bytes={} "
-					    "owner=0x{:x} owner_bytes={} format={} samples={} reason={}\n",
+					    "owner=0x{:x} owner_bytes={} format={} samples={} reason={}\\n",
 					    published ? "READY" : "UNRESOLVED", n,
 					    Common::PerfStats::CurrentTraceShader(), vaddr, size,
 					    details.owner_address, details.owner_size, details.format,
@@ -1188,7 +1194,35 @@ bool TryReadShaderResourceBacking(uint64_t vaddr, void* data, uint64_t size,
 			}
 		}
 	}
-	return TryReadBufferBacking(vaddr, data, size);
+	// Never specialize a descriptor using a host copy whose two competing GPU
+	// image owners cannot be ordered. A false read lets the existing SRT
+	// evaluator keep the descriptor unresolved rather than embedding arbitrary
+	// stale words in a newly compiled shader.
+	if (image_failure != nullptr && std::strcmp(image_failure, "conflicting_owners") == 0) {
+		static std::atomic_uint32_t ambiguous {0};
+		if (ambiguous.fetch_add(1u, std::memory_order_relaxed) < 8u) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_SRT_REFUSE_STALE] shader=0x{:016x} addr=0x{:x} bytes={} reason={}\\n",
+			    Common::PerfStats::CurrentTraceShader(), vaddr, size, image_failure));
+		}
+		return false;
+	}
+	const bool read = TryReadBufferBacking(vaddr, data, size);
+	if (image_publication_attempted) {
+		static std::atomic_uint32_t results {0};
+		const uint32_t n = results.fetch_add(1u, std::memory_order_relaxed) + 1u;
+		if (n <= 24u || (n & (n - 1u)) == 0u) {
+			uint32_t value = 0;
+			if (read && data != nullptr)
+				std::memcpy(&value, data, static_cast<size_t>(std::min<uint64_t>(size, sizeof(value))));
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_SRT_READ_RESULT] count={} shader=0x{:016x} addr=0x{:x} bytes={} "
+			    "published={} read={} word0=0x{:08x} failure={}\\n",
+			    n, Common::PerfStats::CurrentTraceShader(), vaddr, size,
+			    image_published, read, value, image_failure ? image_failure : "none"));
+		}
+	}
+	return read;
 }
 
 bool TryReadCleanBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
