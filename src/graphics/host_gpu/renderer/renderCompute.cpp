@@ -54,6 +54,7 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -68,6 +69,7 @@ struct DsBufferProducer {
 	int32_t frame = -1;
 	bool indirect = false;
 	bool fill = false;
+	uint64_t submit = 0;
 };
 
 // Accessed under the renderer context lock. Only the lighting trace records compute writes.
@@ -93,7 +95,7 @@ bool DsTraceEnabled() {
 }
 
 void RememberDsBufferProducers(RenderContext& context, const PreparedBindings& bindings,
-                               bool indirect) {
+                               bool indirect, uint64_t submit) {
 	if (!DsTraceEnabled()) return;
 	const auto& program = *bindings.runtime->program;
 	const auto frame = context.GetGpu().GetFrameNum();
@@ -113,14 +115,12 @@ void RememberDsBufferProducers(RenderContext& context, const PreparedBindings& b
 			address += resource.written_begin - slack;
 			size = uint64_t {resource.written_end} - resource.written_begin + 2 * slack;
 		}
-		RememberDsBufferProducer({address, size, program.shader_hash, frame, indirect});
+		RememberDsBufferProducer({address, size, program.shader_hash, frame, indirect, false, submit});
 	}
 }
 
-void LogDsBufferProducer(int32_t frame, uint64_t shader, uint64_t args_addr, const char* role,
-                         uint32_t index, uint64_t address, uint64_t size) {
-	if (address == 0 || size == 0) return;
-	const DsBufferProducer* candidate = nullptr;
+const DsBufferProducer* FindDsBufferProducer(int32_t frame, uint64_t address, uint64_t size) {
+	if (address == 0 || size == 0) return nullptr;
 	for (size_t i = 0; i < ds_buffer_producers.size(); ++i) {
 		const auto pos = (ds_next_buffer_producer + ds_buffer_producers.size() - 1 - i) %
 		                 ds_buffer_producers.size();
@@ -128,20 +128,25 @@ void LogDsBufferProducer(int32_t frame, uint64_t shader, uint64_t args_addr, con
 		if (writer.size == 0 || writer.frame > frame || writer.frame < frame - 1) continue;
 		const bool overlap = address >= writer.address ? address - writer.address < writer.size
 		                                              : writer.address - address < size;
-		if (overlap) {
-			candidate = &writer;
-			break;
-		}
+		if (overlap) return &writer;
 	}
+	return nullptr;
+}
+
+void LogDsBufferProducer(int32_t frame, uint64_t shader, uint64_t args_addr, const char* role,
+                         uint32_t index, uint64_t address, uint64_t size) {
+	if (address == 0 || size == 0) return;
+	const auto* candidate = FindDsBufferProducer(frame, address, size);
 	Log::WriteToConsoleAndLog(fmt::format(
 	    "[DS_BUFFER_PRODUCER] frame={} shader=0x{:016x} args=0x{:x} role={} index={} "
 	    "address=0x{:x} bytes={} candidate={} producer_shader=0x{:016x} "
-	    "producer_frame={} producer_base=0x{:x} producer_bytes={} producer_indirect={}\n",
+	    "producer_frame={} producer_base=0x{:x} producer_bytes={} producer_indirect={} producer_submit={}\n",
 	    frame, shader, args_addr, role, index, address, size,
 	    candidate ? (candidate->fill ? "buffer_fill" : "bound_write") : "unobserved",
 	    candidate ? candidate->shader : 0,
 	    candidate ? candidate->frame : -1, candidate ? candidate->address : 0,
-	    candidate ? candidate->size : 0, candidate && candidate->indirect ? 1 : 0));
+	    candidate ? candidate->size : 0, candidate && candidate->indirect ? 1 : 0,
+	    candidate ? candidate->submit : 0));
 }
 
 } // namespace
@@ -1243,6 +1248,168 @@ static bool ReadDsGpuWords(RenderContext& context, vk::Buffer source, uint64_t o
 	return ReadDsGpuWordRanges(context, source, std::span {&copy, 1}, words);
 }
 
+static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
+                                            const PreparedBindings& bindings,
+                                            uint32_t slot, size_t max_words);
+
+namespace {
+
+constexpr uint64_t DsCoefficientWriter = 0x2f493aadc660cf03ull;
+constexpr uint64_t DsCoefficientBytes = 360u * 256u * 64u;
+
+struct DsCoefficientDispatch {
+	int32_t frame;
+	uint64_t submit;
+	uint64_t address;
+	uint32_t slot;
+	size_t writer_begin;
+	size_t writer_sequence = 0;
+	std::vector<uint32_t> before;
+	std::vector<uint32_t> after;
+	nlohmann::json inputs;
+};
+
+// These hooks run under the renderer context lock, like ds_buffer_producers.
+std::optional<DsCoefficientDispatch> ds_coefficient_dispatch;
+
+std::optional<DsCoefficientDispatch> BeginDsCoefficientDispatch(
+    RenderContext& context, const PreparedBindings& bindings, uint64_t submit) {
+	const auto& program = *bindings.runtime->program;
+	if (program.shader_hash != DsCoefficientWriter || !DsTraceEnabled()) return {};
+	const auto frame = context.GetGpu().GetFrameNum();
+	if (frame < 0 || frame % 240 != 0 ||
+	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return {};
+	const auto& resources = *bindings.runtime->resources;
+	for (const auto& resource : program.info.buffers) {
+		const auto slot = resource.descriptor_index;
+		if (!resource.written || slot >= bindings.buffer_sources.size()) continue;
+		const auto& output = bindings.buffer_sources[slot];
+		if (output.address == 0 || output.size != DsCoefficientBytes) continue;
+		static int32_t sampled_frame = -1;
+		static uint32_t captures = 0;
+		if (sampled_frame != frame) {
+			sampled_frame = frame;
+			captures = 0;
+			ds_coefficient_dispatch.reset();
+		}
+		if (captures >= 4) return {};
+		++captures;
+		DsCoefficientDispatch trace {frame, submit, output.address, slot, ds_next_buffer_producer,
+		                            0, {}, {}, {}};
+		trace.before = ReadDsBoundWords(context, bindings, slot, DsCoefficientBytes / 4);
+		auto buffers = nlohmann::json::array();
+		for (size_t i = 0; i < program.info.buffers.size(); ++i) {
+			const auto& binding = program.info.buffers[i];
+			const auto input_slot = binding.descriptor_index;
+			if (input_slot >= bindings.buffer_sources.size()) continue;
+			const auto& source = bindings.buffer_sources[input_slot];
+			buffers.push_back({
+			    {"slot", input_slot}, {"guest", source.address}, {"bytes", source.size},
+			    {"read", binding.read}, {"written", binding.written},
+			    {"descriptor", resources.buffers[i].dwords},
+			    {"prefix_before", input_slot != slot && binding.read
+			        ? ReadDsBoundWords(context, bindings, input_slot, 4096) : std::vector<uint32_t> {}},
+			});
+		}
+		auto images = nlohmann::json::array();
+		for (size_t i = 0; i < std::min(bindings.images.size(), resources.images.size()); ++i) {
+			const auto& image = bindings.images[i];
+			images.push_back({{"slot", i}, {"guest", image.desc.info.data.address},
+			                  {"placeholder", image.placeholder}, {"descriptor", resources.images[i].dwords}});
+		}
+		trace.inputs = {
+		    {"buffers", std::move(buffers)}, {"images", std::move(images)},
+		    {"srt", resources.flattened_srt}, {"user_data", resources.user_data},
+		    {"shader_data", bindings.shader_data}, {"bvh", program.info.bvh},
+		};
+		return trace;
+	}
+	return {};
+}
+
+void EndDsCoefficientDispatch(RenderContext& context, const PreparedBindings& bindings,
+                              std::optional<DsCoefficientDispatch> trace, DispatchGroups groups,
+                              vk::Buffer indirect_buffer = {}, uint64_t indirect_offset = 0) {
+	if (!trace) return;
+	trace->writer_sequence = ds_next_buffer_producer;
+	const bool valid_groups = !indirect_buffer ||
+	    ReadDsGpuWords(context, indirect_buffer, indirect_offset, groups);
+	trace->inputs["workgroups"] = groups;
+	trace->inputs["workgroups_valid"] = valid_groups;
+	if (valid_groups && groups[0] && groups[1] && groups[2]) {
+		trace->after = ReadDsBoundWords(context, bindings, trace->slot, DsCoefficientBytes / 4);
+	}
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "[DS_COEFFICIENT_DISPATCH] frame={} submit={} address=0x{:x} x={} y={} z={} "
+	    "groups_valid={} before_bytes={} after_bytes={}\n",
+	    trace->frame, trace->submit, trace->address, groups[0], groups[1], groups[2],
+	    valid_groups, trace->before.size() * 4, trace->after.size() * 4));
+	ds_coefficient_dispatch = std::move(trace);
+}
+
+nlohmann::json CompareDsCoefficientDispatch(int32_t frame, uint64_t address, uint64_t bytes,
+                                            std::span<const uint32_t> indices,
+                                            std::span<const uint32_t> index_valid,
+                                            std::span<const uint32_t> valid_words,
+                                            std::span<const uint32_t> observed) {
+	const auto* writer = FindDsBufferProducer(frame, address, bytes);
+	if (!writer) return {{"status", "no_bound_writer"}};
+	nlohmann::json result {{"writer_shader", fmt::format("{:016x}", writer->shader)},
+	                      {"writer_frame", writer->frame}, {"writer_submit", writer->submit}};
+	const auto& capture = ds_coefficient_dispatch;
+	if (!capture || capture->frame != writer->frame || capture->submit != writer->submit ||
+	    writer->shader != DsCoefficientWriter || capture->address != address ||
+	    capture->after.size() * 4 != bytes) {
+		result["status"] = "writer_snapshot_unavailable";
+		return result;
+	}
+	const auto slot = static_cast<size_t>(writer - ds_buffer_producers.data());
+	const auto age = ds_next_buffer_producer - capture->writer_sequence;
+	const auto offset = (capture->writer_sequence + ds_buffer_producers.size() - 1 -
+	                     slot) % ds_buffer_producers.size();
+	if (age >= ds_buffer_producers.size() || offset >= ds_buffer_producers.size() - age ||
+	    offset >= capture->writer_sequence - capture->writer_begin) {
+		result["status"] = "writer_snapshot_replaced";
+		return result;
+	}
+	result["status"] = "captured";
+	result["inputs_before"] = capture->inputs;
+	auto before = nlohmann::json::array();
+	auto after = nlohmann::json::array();
+	size_t compared = 0;
+	size_t different = 0;
+	size_t changed = 0;
+	constexpr size_t payload_words = 14;
+	for (size_t i = 0; i < indices.size(); ++i) {
+		const size_t begin = size_t {indices[i] & 0x00ffffffu} * 16u;
+		if (!index_valid[i] || valid_words[i] != payload_words ||
+		    begin + payload_words > capture->after.size()) {
+			before.push_back(nullptr);
+			after.push_back(nullptr);
+			continue;
+		}
+		const auto words = std::span{capture->after}.subspan(begin, payload_words);
+		after.push_back(std::vector<uint32_t>(words.begin(), words.end()));
+		++compared;
+		different += !std::ranges::equal(words, observed.subspan(i * payload_words, payload_words));
+		if (begin + payload_words <= capture->before.size()) {
+			const auto prior = std::span{capture->before}.subspan(begin, payload_words);
+			before.push_back(std::vector<uint32_t>(prior.begin(), prior.end()));
+			changed += !std::ranges::equal(prior, words);
+		} else {
+			before.push_back(nullptr);
+		}
+	}
+	result["compared_records"] = compared;
+	result["changed_by_writer"] = capture->before.empty() ? nlohmann::json() : nlohmann::json(changed);
+	result["different_at_atlas"] = different;
+	result["before_words"] = std::move(before);
+	result["after_words"] = std::move(after);
+	return result;
+}
+
+} // namespace
+
 static nlohmann::json ReadDsAtlasWriterTexels(RenderContext& context,
                                             const PreparedBindings& bindings,
                                             std::span<const uint32_t> srt,
@@ -1426,6 +1593,10 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 		    {"coefficient_words_per_record", coefficient_words},
 		    {"coefficient_in_bounds_words", coefficient_valid_words},
 		    {"coefficient_words", coefficient_values},
+		    {"coefficient_writer", coefficient_adjustment == 0 ? CompareDsCoefficientDispatch(
+		        frame, bindings.buffer_sources[1].address, bindings.buffer_sources[1].size,
+		        index_values, index_valid, coefficient_valid_words, coefficient_values)
+		        : nlohmann::json{{"status", "unaligned_atlas_buffer"}}},
 		    {"atlas_after_writer", ReadDsAtlasWriterTexels(context, bindings, srt,
 		                                                  selected_groups, index_values)},
 		};
@@ -1831,6 +2002,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	auto* post = BeginDsPostCompute(bindings, submit_id);
 	const bool material_probe = ProbeDsMaterialLight(bindings, submit_id, true);
+	auto coefficient_trace = BeginDsCoefficientDispatch(m_context, bindings, submit_id);
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
@@ -1927,11 +2099,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().NoteWork();
 
 	buffer.MarkGpu("cs", program.shader_hash);
-	RememberDsBufferProducers(m_context, bindings, false);
+	RememberDsBufferProducers(m_context, bindings, false, submit_id);
 
 	// Record the shader barriers and diagnostics before the BDA settle submits the
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	EndDsCoefficientDispatch(m_context, bindings, std::move(coefficient_trace),
+	                         {thread_group_x, thread_group_y, thread_group_z});
 	if (post) ProbeDsPostImages(bindings, *post, submit_id, program.shader_hash, true, false);
 	if (material_probe) {
 		ProbeDsMaterialLight(bindings, submit_id, false,
@@ -2311,6 +2485,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		indirect_buffer = clamped.buffer;
 		indirect_offset = clamped.offset;
 	}
+	auto coefficient_trace = BeginDsCoefficientDispatch(m_context, bindings, submit_id);
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
 	const auto vk_buffer = buffer.Handle();
@@ -2356,7 +2531,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().NoteWork();
 
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
-	RememberDsBufferProducers(m_context, bindings, true);
+	RememberDsBufferProducers(m_context, bindings, true, submit_id);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	if (light_math_sample) {
 		vk::MemoryBarrier host_read {};
@@ -2366,6 +2541,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		                          vk::PipelineStageFlagBits::eHost, {}, 1, &host_read, 0, nullptr, 0, nullptr);
 		ReadDsLightMath(*queue_capture, submit_id, bindings);
 	}
+	EndDsCoefficientDispatch(m_context, bindings, std::move(coefficient_trace), {args.x, args.y, args.z},
+	                         split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	if (post) ProbeDsPostImages(bindings, *post, submit_id, program.shader_hash, true, false);
 	if (material_probe) {
 		std::array<uint32_t, 3> groups {args.x, args.y, args.z};

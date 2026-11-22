@@ -233,9 +233,10 @@ object Diagnostics {
         // Vulkan already records this 360-layer light-atlas storage writer, but
         // older Android exports silently excluded its SPIR-V and pipeline JSON.
         val atlasWriterShaders = setOf("c03afccb96a13c5d")
+        val coefficientWriterShaders = setOf("2f493aadc660cf03")
         val postShaders = setOf("3265b01ed00a5c01", "17defa333d9d1e22", "d1768d02fcf96a58",
             "844e5697cf62ecd7", "a5fc1658592e3cba", "41a57a218d07a778")
-        val watched = queueShaders + producerShaders + atlasWriterShaders + postShaders + setOf(
+        val watched = queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
             "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
             "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",
             "e75589aa0bb3ae52", "93b0be7f1a0293d1"
@@ -255,6 +256,8 @@ object Diagnostics {
                             })
                     }
                     .sortedWith(compareByDescending<File> { file ->
+                        coefficientWriterShaders.any { hash -> file.name.contains("_${hash}_") }
+                    }.thenByDescending { file ->
                         (queueShaders + producerShaders + atlasWriterShaders).any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { it.lastModified() })
                     .take(if (subdir == "queue-state") 72 else 24)
@@ -278,6 +281,8 @@ object Diagnostics {
                 "atlas writer's live SRT words, workgroup Z indices, selected coefficient words and raw " +
                 "atlas texels copied immediately after that dispatch. " +
                 "Use the in-bounds fields to distinguish zero values from reads outside the bound slots. " +
+                "The coefficient_writer object compares the same records immediately before and after the " +
+                "coefficient dispatch and at the atlas. DS_COEFFICIENT_DISPATCH logs capture coverage. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
