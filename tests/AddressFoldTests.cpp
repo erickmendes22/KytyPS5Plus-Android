@@ -172,7 +172,7 @@ void TestSarosMappedGuestOwner() {
 void TestSarosRelocatedHighHostBank() {
 	constexpr uint64_t high_guest = 0x9cc0000000ull;
 	constexpr uint64_t low_guest  = 0x1cc0000000ull;
-	constexpr uint64_t shift = 256ull * kGiB;
+	constexpr uint64_t shift = 32ull * kGiB;
 	static_assert(Fold(high_guest) == low_guest, "constant evaluation keeps the baseline");
 	Check(HostShift() == 0, "other titles use zero host shift");
 	SetHostShift(shift);
@@ -181,10 +181,20 @@ void TestSarosRelocatedHighHostBank() {
 	Check(FoldSpan(high_guest, 192ull * 1024 * 1024, &high_host),
 	      "Saros 192 MiB map remains a contiguous high-bank host span");
 	Check(FoldSpan(low_guest, 0x10000, &low_host), "Saros 64 KiB low span remains valid");
-	Check(high_host == 0x5cc0000000ull && low_host == low_guest && high_host != low_host,
+	Check(high_host == 0x24c0000000ull && low_host == low_guest && high_host != low_host,
 	      "the two observed Saros guest mappings must never share host addresses");
 	Check(high_host + 192ull * 1024 * 1024 <= kWindowEnd,
 	      "relocated guest range remains inside the 39-bit host user arena");
+	uint64_t far_host = 0;
+	constexpr uint64_t far_guest = 0xcfc0000000ull;
+	constexpr uint64_t far_size = 32ull << 20u;
+	Check(FoldSpan(far_guest, far_size, &far_host) &&
+	      far_host == 0x57c0000000ull && far_host + far_size <= kWindowEnd,
+	      "regression #649: Saros far 32 MiB fixed map fits host VA");
+	Check(far_host != 0x3c00000000ull && high_host != low_guest,
+	      "both observed low guest maps remain distinct from the sparse high bank");
+	Check((far_guest & kFoldMask) + 256ull * kGiB >= kWindowEnd,
+	      "old 256 GiB host offset was invalid for the far mapping");
 	Check(Fold(0x8000000000ull) == shift, "first upper-bank guest page is relocated");
 	Check(Fold(0x1cc0000000ull) == low_guest, "lower bank preserves guest identity");
 	SetHostShift(0);

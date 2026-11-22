@@ -112,7 +112,7 @@
        Result_Dst = Sub(OpSize::i64Bit, Result_Dst, DstSegment);
 --- /dev/null
 +++ b/FEXCore/Source/Interface/IR/Passes/GuestAddressFoldPass.cpp
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,193 @@
 +// SPDX-License-Identifier: MIT
 +/*
 +$info$
@@ -159,13 +159,14 @@
 +namespace FEXCore::IR {
 +namespace {
 +
-+  // Saros maps two guest banks whose low 39 bits match. Route the high bank
-+  // through another 256 GiB host region (guest bit39 -> host bit38).
++  // Saros maps two guest banks with equal low 39 bits. FEX must use the same
++  // power-of-two displacement as kernel/addressFold.h, not a fixed 256 GiB.
 +  Ref FoldEffectiveAddress(IREmitter* IREmit, Ref Address, Ref Masked) {
 +    if (FEXCore::GuestAddressFold::GetShift() == 0) return Masked;
 +    Ref BankBit = IREmit->_And(OpSize::i64Bit, Address,
 +                              IREmit->_InlineConstant(0x8000000000ull));
-+    Ref Shifted = IREmit->_Lshr(OpSize::i64Bit, BankBit, IREmit->_InlineConstant(1));
++    Ref Shifted = IREmit->_Lshr(OpSize::i64Bit, BankBit,
++                              IREmit->_InlineConstant(39u - std::countr_zero(FEXCore::GuestAddressFold::GetShift())));
 +    return IREmit->_Add(OpSize::i64Bit, Masked, Shifted);
 +  }
 +

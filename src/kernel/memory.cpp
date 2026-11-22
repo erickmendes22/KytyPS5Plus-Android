@@ -927,10 +927,12 @@ static constexpr uint64_t kSarosFoldAliasSize = 48ull << 30u;
 // headroom beyond the planned folded image; increasing the image itself merely
 // moves this game-derived allocation by the same amount.
 static constexpr uint64_t kSarosFoldHeadroom = 4ull << 30u;
-// The FEX JIT uses this same host shift for the upper 512 GiB guest bank.
-// The 256 GiB offset puts the mapped Saros heap in host 0x500..0x5d,
-// away from the observed legitimate low mappings at 0x1cc0000000 and\n// 0x3c00000000 (the latter was blocked by the previous 128 GiB host bank).
-static constexpr uint64_t kSarosHighHostShift = 256ull << 30u;
+// The FEX JIT must use this same displacement for the upper guest bank.
+// 256 GiB mapped guest 0xcfc0000000 to impossible host 0x8fc0000000.
+// 32 GiB keeps that 32 MiB map at host 0x57c0000000, while the 192 MiB
+// 0x9cc0000000 mapping goes to 0x24c0000000, separate from both observed
+// low guest allocations at 0x1cc0000000 and 0x3c00000000.
+static constexpr uint64_t kSarosHighHostShift = 32ull << 30u;
 #endif
 
 } // namespace Libs::LibKernel::Memory
@@ -1461,23 +1463,10 @@ void Initialize() {
 	g_virtual_ranges      = std::make_unique<VirtualRanges>();
 #if defined(__ANDROID__) && KYTY_HOST_ARM64
 	if (g_keep_fold_alias_free) {
-		// Protect Saros's low 48 GiB fold image from *fixed* guest allocations,
-		// not just the hint-less searches already excluded by FindGuestFreeRange.
-		// Otherwise a valid early mapping can consume part of this host range;
-		// a later fixed 192 MiB direct map of guest 0x98c0000000 then folds to
-		// host 0x18c0000000 and fails with address-range-unavailable.
-		constexpr uint64_t alias_start = HOST_USER_MIN;
-		constexpr uint64_t alias_size  = kSarosFoldAliasSize;
-		const uint64_t host_alias_start = alias_start + Kernel::AddressFold::HostShift();
-		if (host_alias_start <= HOST_USER_MAX - (alias_size + kSarosFoldHeadroom - 1) &&
-		    g_guest_address_space->ReserveFixed(host_alias_start, alias_size + kSarosFoldHeadroom)) {
-			EXIT_IF(!g_virtual_ranges->Add(alias_start, alias_size, 0, 0, 0,
-			                               VirtualRangeType::Reserved, "fold-alias", true));
-			Log::WriteToConsoleAndLog("[SAROS_FOLD_ALIAS] reserved upper-bank host window with separate 256 GiB shift and 4 GiB headroom\n");
-		} else {
-			Log::WriteToConsoleAndLog(
-			    "[SAROS_FOLD_ALIAS] initial image or 4 GiB headroom is host-fragmented; use checked fold placement\n");
-		}
+		// Preserve real, already-mapped low guest pages. A contiguous shifted
+		// 48+4 GiB reservation conflicts with the verified low mapping at
+		// 0x1cc0000000 even when the actual high sparse pages do not.
+		Log::WriteToConsoleAndLog("[SAROS_FOLD_ALIAS] sparse high-bank address mapping; no blanket 52 GiB reservation\\n");
 	}
 #endif
 	EXIT_IF(!g_guest_address_space->SelfTest());
@@ -3565,17 +3554,9 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 		MapGpuRange(in_addr, len);
 	};
 	if (fixed) {
-#if defined(__ANDROID__) && KYTY_HOST_ARM64
-		// A low fixed mapping in the *physical* host bank of Saros's high
-		// reservation would destroy the high mapping's bytes. A genuine
-		// guest address collision cannot be resolved by replacing the view.
-		const auto shift = Kernel::AddressFold::HostShift();
-		if (g_keep_fold_alias_free && shift != 0 && !Kernel::AddressFold::InDomain(in_addr) &&
-		    in_addr < HOST_USER_MIN + shift + kSarosFoldAliasSize + kSarosFoldHeadroom &&
-		    in_addr + len > HOST_USER_MIN + shift) {
-			return fail(KERNEL_ERROR_ENOMEM, "saros_high_host_bank_reserved");
-		}
-#endif
+		// Do not deny a real low fixed map merely because it is inside the
+		// theoretical high bank. MapBacking checks existing mapped-guest
+		// ownership at the actual host span and refuses genuine collisions.
 		if (in_addr == 0 || (in_addr & (PAGE_SIZE - 1u)) != 0 ||
 		    (alignment != 0 && in_addr % alignment != 0)) {
 			return fail(KERNEL_ERROR_EINVAL, "fixed_address_alignment");
@@ -4059,6 +4040,14 @@ static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size) {
 // guest as a reserved "fold-alias" range, and folding is switched on.
 static uint64_t FindFoldedReservation(uint64_t hint, uint64_t size, uint64_t alignment) {
 #if KYTY_HOST_ARM64
+#if defined(__ANDROID__)
+	if (g_keep_fold_alias_free) {
+		// The huge UE5 reservation is virtual bookkeeping on Android. Do
+		// not reserve an entire speculative high bank over legitimate low
+		// guest pages; sparse direct maps are individually host-checked.
+		return 0;
+	}
+#endif
 	namespace Fold = Kernel::AddressFold;
 	const uint64_t from = std::max<uint64_t>(hint, Common::AddressLayout::kHostUserMin);
 	if (size > UINT64_MAX - from || from + size <= Fold::kFoldSize) {
