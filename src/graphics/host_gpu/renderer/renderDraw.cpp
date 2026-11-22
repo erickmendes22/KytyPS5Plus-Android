@@ -53,6 +53,7 @@
 
 #include <algorithm>
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
 #include <array>
 #include <atomic>
 #include <bit>
@@ -61,6 +62,8 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -1440,6 +1443,78 @@ static void ProbeDsPostFixedInput(RenderContext& context, const PreparedBindings
 	ProbeDsColorOutputs(context, &color, 1u, shader, false, true, &view->info);
 }
 
+// Only the actual Demon's Souls scene writer and its R16G16B16A16
+// inputs are sampled. The same normalized 8x8 points are used in each
+// frame and each pass; tile-following samples cannot prove full-scene loss.
+struct DsSceneGridSnapshot {
+	bool valid = false;
+	uint32_t width = 0, height = 0;
+	double luminance = 0.0;
+	double peak = 0.0;
+	uint32_t lit = 0;
+	std::array<uint16_t, 64 * 4> rgba {};
+};
+
+static DsSceneGridSnapshot SnapshotDsSceneGrid(RenderContext& context, ImageId id,
+                                                const ImageViewInfo& view) {
+	DsSceneGridSnapshot result {};
+	if (!id) return result;
+	auto& image = context.GetTextureCache().GetImage(id);
+	const auto& backing = image.backing;
+	if (!backing.image || backing.image_type != vk::ImageType::e2D ||
+	    backing.samples != 1 || backing.format != vk::Format::eR16G16B16A16Sfloat ||
+	    !(backing.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+	    view.base_level >= backing.mip_levels || view.base_layer >= backing.layers) return result;
+	const auto width = std::max(backing.extent.width >> view.base_level, 1u);
+	const auto height = std::max(backing.extent.height >> view.base_level, 1u);
+	if (width < 16u || height < 16u) return result;
+	constexpr uint32_t count = 64u, texel_bytes = 8u;
+	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	auto [mapped, offset] = download.Map(count * texel_bytes, 16u, true);
+	if (!mapped) return result;
+	download.Commit();
+	std::array<vk::BufferImageCopy, count> copies {};
+	for (uint32_t i = 0; i < count; ++i) {
+		auto& copy = copies[i];
+		copy.bufferOffset = offset + uint64_t{i} * texel_bytes;
+		copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, view.base_level, view.base_layer, 1};
+		copy.imageOffset = {static_cast<int32_t>((i % 8u * 2u + 1u) * width / 16u),
+		                    static_cast<int32_t>((i / 8u * 2u + 1u) * height / 16u), 0};
+		copy.imageExtent = {1u, 1u, 1u};
+	}
+	image.Download(std::span{copies}, download.Handle(), offset, count * texel_bytes);
+	context.GetCommandScheduler().Finish();
+	download.Invalidate(offset, count * texel_bytes);
+	std::memcpy(result.rgba.data(), mapped, result.rgba.size() * sizeof(uint16_t));
+	result.valid = true;
+	result.width = width;
+	result.height = height;
+	const auto half = [](uint16_t value) -> double {
+		if (value & 0x8000u || (value & 0x7c00u) == 0x7c00u) return 0.0;
+		const auto exponent = (value >> 10u) & 31u;
+		const auto fraction = value & 1023u;
+		return exponent == 0 ? std::ldexp(double(fraction), -24)
+		                     : std::ldexp(1.0 + double(fraction) / 1024.0, int(exponent) - 15);
+	};
+	for (uint32_t i = 0; i < count; ++i) {
+		const auto r = half(result.rgba[4u * i]);
+		const auto g = half(result.rgba[4u * i + 1u]);
+		const auto b = half(result.rgba[4u * i + 2u]);
+		const double lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+		result.luminance += std::min(lum, 4.0);
+		result.peak = std::max(result.peak, lum);
+		result.lit += lum >= 0.006;
+	}
+	result.luminance /= count;
+	return result;
+}
+
+static nlohmann::json DsSceneGridJson(const DsSceneGridSnapshot& value) {
+	return {{"valid", value.valid}, {"width", value.width}, {"height", value.height},
+	        {"level", value.luminance}, {"peak", value.peak}, {"lit_pixels", value.lit},
+	        {"rgba16_bits", value.valid ? nlohmann::json(value.rgba) : nlohmann::json()}};
+}
+
 uint32_t PickDsColoredTilePixels(RenderContext& context, ImageId id,
                                 const ImageViewInfo& view, std::span<const uint32_t> tiles,
                                 uint32_t width, uint32_t height, DsProbePixels& pixels) {
@@ -2535,12 +2610,66 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	constexpr uint8_t DsHdrReader = 1, DsComposite = 2, DsHdrWriter = 4;
 	std::array<uint8_t, DemonsQueueProbe::Queues.size()> ds_draw_stage {};
 	bool ds_live_composite_output = false;
+	bool ds_scene_trace = false;
+	uint32_t ds_scene_pass = 0;
+	RenderColorInfo ds_scene_target {};
+	DsSceneGridSnapshot ds_scene_before {};
+	nlohmann::json ds_scene_inputs = nlohmann::json::array();
 	if (state.ps_active && bindings.pixel && state.ps_input_info.stage.program && state.color_count) {
 		const auto frame = m_context.GetGpu().GetFrameNum();
 		const auto shader = state.ps_input_info.stage.program->shader_hash;
 		const bool composite = shader == 0x3265b01ed00a5c01ull;
 		ProbeDsPostFixedInput(m_context, *bindings.pixel, shader, frame);
 		const auto& inputs = bindings.pixel->images;
+		// Target the scene-writing draws only, on the first verified
+		// bright reference frame and on successfully paired dark frames.
+		static int32_t scene_frame = -1;
+		static uint32_t scene_passes = 0;
+		static int32_t bright_baseline_frame = -1;
+		if (scene_frame != frame) { scene_frame = frame; scene_passes = 0; }
+		const auto& gate = DemonsAdaptiveCapture::Current();
+		const auto colors = std::span {state.color_info, state.color_count};
+		const auto scene = std::ranges::find_if(colors, [](const auto& color) {
+			return color.image_id && color.desc.info.data.address == DemonsQueueProbe::SceneAddress;
+		});
+		if (bright_baseline_frame < 0 && scene != colors.end() && gate.BrightBaselineDue(frame))
+			bright_baseline_frame = frame;
+		if (scene != colors.end() && scene_passes < 12u &&
+		    (frame == bright_baseline_frame || gate.CapturedFrame(frame)) &&
+		    Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps") {
+			ds_scene_trace = true;
+			ds_scene_pass = ++scene_passes;
+			ds_scene_target = *scene;
+			ds_scene_before = SnapshotDsSceneGrid(
+			    m_context, ds_scene_target.image_id, ds_scene_target.desc.view_info);
+			const auto& shader_images = state.ps_input_info.stage.program->info.images;
+			for (size_t i = 0; i < inputs.size(); ++i) {
+				const auto& input = inputs[i];
+				nlohmann::json entry {
+				    {"slot", i}, {"guest", input.desc.info.data.address},
+				    {"bound", static_cast<bool>(input.image_id)}, {"placeholder", input.placeholder},
+				    {"read", i < shader_images.size() && shader_images[i].read},
+				    {"written", i < shader_images.size() && shader_images[i].written}
+				};
+				if (input.image_id && !input.placeholder) {
+					const auto& image = m_context.GetTextureCache().GetImage(input.image_id);
+					const auto view = std::ranges::find(image.views, input.image_view,
+					                                   &CachedImageView::view);
+					entry["owner"] = image.info.data.address;
+					entry["version"] = image.ContentVersion();
+					entry["format"] = static_cast<uint32_t>(image.backing.format);
+					if (view != image.views.end()) {
+						entry["mip"] = view->info.base_level;
+						entry["layer"] = view->info.base_layer;
+						if (i < shader_images.size() && shader_images[i].read &&
+						    !shader_images[i].written)
+							entry["grid"] = DsSceneGridJson(SnapshotDsSceneGrid(
+							    m_context, input.image_id, view->info));
+					}
+				}
+				ds_scene_inputs.push_back(std::move(entry));
+			}
+		}
 		if (composite) MonitorDsCompositeLight(m_context, *bindings.pixel, frame);
 		if (composite && DemonsAdaptiveCapture::Current().CapturedFrame(frame)) {
 			// A completed coefficient->atlas pair belongs to this exact
@@ -3160,6 +3289,73 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		capture.composite_sampled |= (stage & DsComposite) != 0;
 	}
 	if (ds_post && ds_post_final) ds_post->composite_sampled = true;
+	if (ds_scene_trace) {
+		const auto frame = m_context.GetGpu().GetFrameNum();
+		const auto shader = state.ps_input_info.stage.program->shader_hash;
+		const auto after = SnapshotDsSceneGrid(
+		    m_context, ds_scene_target.image_id, ds_scene_target.desc.view_info);
+		uint32_t changed_cells = 0;
+		if (ds_scene_before.valid && after.valid) {
+			for (uint32_t i = 0; i < 64u; ++i) {
+				changed_cells += !std::equal(ds_scene_before.rgba.begin() + i * 4u,
+				                             ds_scene_before.rgba.begin() + (i + 1u) * 4u,
+				                             after.rgba.begin() + i * 4u);
+			}
+		}
+		const auto& regs = buffer.GetRegisters();
+		const auto& blend = regs.GetBlendControl(ds_scene_target.target_slot);
+		const auto& cc = regs.GetColorControl();
+		const auto& sh = regs.GetShaderRegisters();
+		const auto& dyn = m_context.GetCommandScheduler().GetDynamicState();
+		const vk::Rect2D scissor = dyn.num_scissors ? dyn.scissors[0] : vk::Rect2D {};
+		nlohmann::json payload {
+		    {"frame", frame}, {"pass", ds_scene_pass}, {"shader", fmt::format("{:016x}", shader)},
+		    {"guest", ds_scene_target.desc.info.data.address},
+		    {"target_slot", ds_scene_target.target_slot},
+		    {"bright_baseline", DemonsAdaptiveCapture::Current().BrightSceneActive(frame)},
+		    {"paired_event", DemonsAdaptiveCapture::Current().CapturedFrame(frame)},
+		    {"before", DsSceneGridJson(ds_scene_before)}, {"after", DsSceneGridJson(after)},
+		    {"changed_cells", changed_cells}, {"inputs", ds_scene_inputs},
+		    {"raster", {
+		        {"indices", draw.index_count}, {"instances", draw.instance_count},
+		        {"indexed", draw.IsIndexed()}, {"indirect", indirect != nullptr},
+		        {"mesh", mesh_active}, {"render_width", rendering.width},
+		        {"render_height", rendering.height},
+		        {"target_mask", regs.GetRenderTargetMask()},
+		        {"shader_mask", sh.m_cbShaderMask},
+		        {"pixel_output_mode", state.ps_input_info.target_output_mode[ds_scene_target.target_slot]},
+		        {"pixel_kill", state.ps_input_info.ps_pixel_kill_enable},
+		        {"color_control_mode", cc.mode}, {"color_control_op", cc.op},
+		        {"blend", blend.enable}, {"blend_src", blend.color_srcblend},
+		        {"blend_dst", blend.color_destblend}, {"blend_op", blend.color_comb_fcn},
+		        {"depth_test", state.depth_info.depth_test_enable},
+		        {"depth_write", state.depth_info.depth_write_enable},
+		        {"depth_compare", static_cast<uint32_t>(state.depth_info.depth_compare_op)},
+		        {"stencil_test", state.depth_info.stencil_test_enable},
+		        {"scissor", {scissor.offset.x, scissor.offset.y,
+		                    scissor.extent.width, scissor.extent.height}},
+		        {"native_color_write", static_cast<bool>(
+		            dyn.color_write_enables[ds_scene_target.target_slot])},
+		        {"load_clear", rendering.color_attachments[ds_scene_target.target_slot].is_clear}
+		    }}
+		};
+		const auto folder = Config::GetShaderDumpFolder() / "queue-state";
+		std::error_code ec;
+		std::filesystem::create_directories(folder, ec);
+		const auto name = fmt::format("ds_scene_writer_f{}_p{}.json", frame, ds_scene_pass);
+		std::ofstream file(folder / name, std::ios::trunc);
+		if (file) file << payload;
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_SCENE_WRITE] frame={} pass={} shader=0x{:016x} before={:.7f} "
+		    "after={:.7f} lit={}/{} changed_cells={} blend={} depth={} stencil={} "
+		    "write={} clear={} file={} saved={}\n",
+		    frame, ds_scene_pass, shader, ds_scene_before.luminance, after.luminance,
+		    ds_scene_before.lit, after.lit, changed_cells, blend.enable,
+		    state.depth_info.depth_test_enable, state.depth_info.stencil_test_enable,
+		    static_cast<bool>(dyn.color_write_enables[ds_scene_target.target_slot]),
+		    rendering.color_attachments[ds_scene_target.target_slot].is_clear, name,
+		    file.good()));
+	}
 	if (ds_live_composite_output) {
 		const auto frame = m_context.GetGpu().GetFrameNum();
 		const auto shader = state.ps_input_info.stage.program->shader_hash;
