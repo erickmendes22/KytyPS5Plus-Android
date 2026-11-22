@@ -3360,6 +3360,18 @@ bool TextureCache::PublishGpuImageForIndirectArgs(uint64_t address, uint64_t siz
 		*details = {nullptr, image.info.data.address, image.info.data.size,
 		            static_cast<uint32_t>(image.backing.format), image.backing.samples};
 	}
+	// The #645 Demon capture recorded 21 unresolved SRT reads from a GPU-owned
+	// image with owner_cpu_dirty. A readback of the old Vulkan image is unsafe
+	// while guest CPU writes are pending; merely ignoring the dirty flag would
+	// return stale data. First publish the CPU changes into that *same* image
+	// using the existing coherent upload, then publish its updated native
+	// contents to the GPU buffer cache for subsequent indirect/SRT reads.
+	// This does not fabricate any shader values or bypass data ownership.
+	if ((image.IsCpuDirty() || image.IsBufferModified()) &&
+	    image.info.samples == 1 &&
+	    image.info.metadata.compression == VideoOutCompression::Uncompressed) {
+		RefreshImage(selected);
+	}
 	if (!image.SafeToDownload()) {
 		if (details) details->failure = image.IsBufferModified() ? "owner_buffer_dirty" :
 		                                image.IsCpuDirty() ? "owner_cpu_dirty" : "owner_not_readable";
