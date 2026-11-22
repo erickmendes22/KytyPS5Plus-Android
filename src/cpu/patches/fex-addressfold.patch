@@ -166,7 +166,7 @@
 +    Ref BankBit = IREmit->_And(OpSize::i64Bit, Address,
 +                              IREmit->_InlineConstant(0x8000000000ull));
 +    Ref Shifted = IREmit->_Mul(OpSize::i64Bit, IREmit->_Lshr(OpSize::i64Bit, BankBit,
-+                              IREmit->_InlineConstant(39)), IREmit->_InlineConstant(FEXCore::GuestAddressFold::GetShift()));
++                              IREmit->_InlineConstant(39)), IREmit->_Constant(FEXCore::GuestAddressFold::GetShift()));
 +    return IREmit->_Add(OpSize::i64Bit, Masked, Shifted);
 +  }
 +

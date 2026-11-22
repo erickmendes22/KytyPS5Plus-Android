@@ -13,6 +13,7 @@
 #include "cpu/guestCpu.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 #include "kernel/addressFold.h"
+#include "kernel/sarosHostBankPolicy.h"
 #include "kernel/lazyReservation.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -202,6 +203,7 @@ static callback_func_t g_test_before_backing_map                   = nullptr;
 static callback_func_t g_test_backing_read                         = nullptr;
 #endif
 
+static bool EnsureSarosHostBank(uint64_t guest,uint64_t size);
 #include "memoryAddressSpace.inc"
 
 enum class VirtualRangeType {
@@ -927,14 +929,9 @@ static constexpr uint64_t kSarosFoldAliasSize = 48ull << 30u;
 // headroom beyond the planned folded image; increasing the image itself merely
 // moves this game-derived allocation by the same amount.
 static constexpr uint64_t kSarosFoldHeadroom = 4ull << 30u;
-// Saros has fixed low mappings at 0x18c0000000 and 0x1cc0000000.
-// The 32 GiB host shift mapped guest 0x90c0000000 onto the first low
-// mapping (build d122b78), while the prior 16/8 GiB alternatives map
-// the other observed high pages onto the second. Use a *non-power-of-two*
-// 24 GiB relocation; both FEX's normal IR and REP memory ops must emit
-// (guest_high_bit >> 39) * HostShift(), not a ctz-based right shift.
-// The furthest observed guest 0xcfc0000000 maps below kHostUserEnd.
-static constexpr uint64_t kSarosHighHostShift = 24ull << 30u;
+// The host bank is selected once from the actual free VM ledger, not
+// guessed at 24/32 GiB. FEX reads that immutable choice after activation.
+
 #endif
 
 } // namespace Libs::LibKernel::Memory
@@ -953,6 +950,33 @@ namespace Libs::LibKernel::Memory {
 // assume mappings it did not place explicitly are at or above this (Sony's libc rejects a
 // heap below it), so hint-less searches must not fall back to the low system-managed range.
 static constexpr uint64_t GUEST_DEFAULT_MAP_BASE = 0x200000000ull;
+static bool EnsureSarosHostBank(uint64_t guest,uint64_t size) {
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+  if(!g_keep_fold_alias_free || !Kernel::AddressFold::InDomain(guest))return true;
+  static std::mutex select_lock;
+  std::lock_guard lock(select_lock);
+  if(Kernel::AddressFold::HostShift()!=0)return true;
+  if(Kernel::AddressFold::IsEnabled() || !g_guest_address_space) {
+    LOGF("[SAROS_HOST_BANK] cannot move an active FEX bank\n");
+    return false;
+  }
+  const auto selection=Kernel::SarosHostBank::Select(guest,size,
+    [](uint64_t host,uint64_t bytes){return g_guest_address_space->HostSpanFreeMargin(host,bytes);});
+  if(!selection) {
+    LOGF("[SAROS_HOST_BANK] no physically free placement for guest=0x%016" PRIx64
+         " size=0x%016" PRIx64 "\n",guest,size);
+    return false;
+  }
+  Kernel::AddressFold::SetHostShift(selection->shift);
+  LOGF("[SAROS_HOST_BANK] selected=0x%016" PRIx64
+       " real_host_margin=%" PRIu64 " guest=0x%016" PRIx64 " frozen=1\n",
+       selection->shift,selection->margin-1,guest);
+#else
+  (void)guest;(void)size;
+#endif
+  return true;
+}
+
 
 static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t alignment) {
 	EXIT_IF(g_guest_address_space == nullptr || g_virtual_ranges == nullptr);
@@ -1438,7 +1462,7 @@ void Initialize() {
 	    Loader::SystemContentParamSfoGetString("TITLE_ID", &title) && title == "PPSA07631";
 	// Configure before any guest memory/translator initialization; no game
 	// except Saros observes the relocated high-address bank.
-	Kernel::AddressFold::SetHostShift(g_keep_fold_alias_free ? kSarosHighHostShift : 0);
+	Kernel::AddressFold::SetHostShift(0); // Saros selects on its first upper map.
 #endif
 	VirtualMemory::Init();
 	g_guest_address_space = std::make_unique<GuestAddressSpace>(PhysicalMemory::TotalSize());

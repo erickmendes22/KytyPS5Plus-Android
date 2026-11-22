@@ -912,6 +912,10 @@ public:
 	                VirtualMemory::Mode               mode,
 	                GuestBackingStore::FailureReason* failure_reason = nullptr) {
 		const uint64_t guest_vaddr = vaddr;
+		if(!EnsureSarosHostBank(guest_vaddr,size)) {
+			if(failure_reason)*failure_reason=GuestBackingStore::FailureReason::AddressRangeUnavailable;
+			return false;
+		}
 		vaddr = HostAddress(vaddr, size);
 		std::lock_guard lock(m_mutex);
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
@@ -999,6 +1003,14 @@ public:
 		return FindFreeAlignedUnlocked(search_addr, HOST_USER_MAX + 1u, size, alignment);
 	}
 
+	// Evaluate physical host free placeholders, not translated guest addresses.
+	uint64_t HostSpanFreeMargin(uint64_t host,uint64_t size) {
+		if (!host || !size || host>UINT64_MAX-size)return 0;
+		std::lock_guard lock(m_mutex);
+		const auto it=FindContaining(host,size);
+		if(it==m_free.end())return 0;
+		return 1+std::min(host-it->first,it->first+it->second-(host+size));
+	}
 	uint64_t FindFreeAligned(uint64_t search_start, uint64_t search_end, uint64_t size,
 	                         uint64_t alignment) {
 		if (size == 0 || alignment == 0) {
@@ -1010,6 +1022,7 @@ public:
 	}
 
 	bool ReserveFixed(uint64_t vaddr, uint64_t size) {
+		if(!EnsureSarosHostBank(vaddr,size))return false;
 		vaddr = HostAddress(vaddr, size);
 		if (vaddr == 0 || size == 0 || !IsPageAligned(vaddr) || !IsPageAligned(size)) {
 			return false;
@@ -1061,6 +1074,7 @@ public:
 
 	bool Commit(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
 		const uint64_t guest_vaddr = vaddr;
+		if(!EnsureSarosHostBank(guest_vaddr,size))return false;
 		vaddr = HostAddress(vaddr, size);
 		std::lock_guard lock(m_mutex);
 		if (!ConsumeUnlocked(vaddr, size)) {
