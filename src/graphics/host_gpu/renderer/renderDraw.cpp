@@ -2611,6 +2611,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	std::array<uint8_t, DemonsQueueProbe::Queues.size()> ds_draw_stage {};
 	bool ds_live_composite_output = false;
 	bool ds_scene_trace = false;
+	bool ds_scene_bright = false, ds_scene_onset = false, ds_scene_paired = false;
 	uint32_t ds_scene_pass = 0;
 	RenderColorInfo ds_scene_target {};
 	DsSceneGridSnapshot ds_scene_before {};
@@ -2657,6 +2658,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			                 ordinal == 64u || ordinal == 128u || ordinal == 256u;
 		}
 		if (ds_scene_trace) {
+			ds_scene_bright = frame == bright_baseline_frame;
+			ds_scene_onset = frame == dark_onset_frame;
+			ds_scene_paired = frame == paired_dark_frame;
 			ds_scene_pass = scene_ordinal;
 			ds_scene_target = *scene;
 			ds_scene_before = SnapshotDsSceneGrid(
@@ -3330,11 +3334,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    {"frame", frame}, {"pass", ds_scene_pass}, {"shader", fmt::format("{:016x}", shader)},
 		    {"guest", ds_scene_target.desc.info.data.address},
 		    {"target_slot", ds_scene_target.target_slot},
-		    {"capture_phase", frame == bright_baseline_frame ? "bright" :
-		                      frame == dark_onset_frame ? "onset" : "paired_dark"},
-		    {"bright_baseline", frame == bright_baseline_frame},
-		    {"dark_onset", frame == dark_onset_frame},
-		    {"paired_event", frame == paired_dark_frame},
+		    {"capture_phase", ds_scene_bright ? "bright" :
+		                      ds_scene_onset ? "onset" : "paired_dark"},
+		    {"bright_baseline", ds_scene_bright},
+		    {"dark_onset", ds_scene_onset},
+		    {"paired_event", ds_scene_paired},
 		    {"before", DsSceneGridJson(ds_scene_before)}, {"after", DsSceneGridJson(after)},
 		    {"changed_cells", changed_cells}, {"inputs", ds_scene_inputs},
 		    {"pixel_shader_data", std::vector<uint32_t>(
