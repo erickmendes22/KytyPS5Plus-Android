@@ -911,6 +911,7 @@ public:
 	bool MapBacking(uint64_t vaddr, uint64_t size, uint64_t backing_offset,
 	                VirtualMemory::Mode               mode,
 	                GuestBackingStore::FailureReason* failure_reason = nullptr) {
+		const uint64_t guest_vaddr = vaddr;
 		vaddr = HostAddress(vaddr, size);
 		std::lock_guard lock(m_mutex);
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
@@ -918,7 +919,31 @@ public:
 #else
 		constexpr bool replacing = false;
 #endif
+		// A 39-bit ARM64 host cannot distinguish two guest addresses whose
+		// low 39 bits coincide. Replacing a different guest's backing at the
+		// folded address corrupts the original mapping and is not a remap.
+		if (replacing && Kernel::AddressFold::InDomain(guest_vaddr)) {
+			bool foreign_alias = false;
+			uint64_t cursor = vaddr;
+			while (cursor < vaddr + size) {
+				const auto old = FindMappedContainingUnlocked(cursor);
+				if (old == m_mapped.end() ||
+				    old->second.guest_vaddr + (cursor - old->second.vaddr) !=
+				        guest_vaddr + (cursor - vaddr)) {
+					foreign_alias = true;
+					break;
+				}
+				cursor = std::min(vaddr + size, old->second.vaddr + old->second.size);
+			}
+			if (foreign_alias) {
+				if (failure_reason) *failure_reason = GuestBackingStore::FailureReason::AddressRangeUnavailable;
+				LogFoldedMapConflictUnlocked(guest_vaddr, vaddr, size, "foreign_guest_alias");
+				return false;
+			}
+		}
 		if (!replacing && !ConsumeUnlocked(vaddr, size)) {
+			if (Kernel::AddressFold::InDomain(guest_vaddr) && vaddr != UINT64_MAX)
+				LogFoldedMapConflictUnlocked(guest_vaddr, vaddr, size, "host_span_unavailable");
 			if (failure_reason != nullptr) {
 				*failure_reason = GuestBackingStore::FailureReason::AddressRangeUnavailable;
 			}
@@ -929,7 +954,7 @@ public:
 		                           : VirtualMemory::Mode::ReadWrite;
 		if (m_backing->MapFixed(vaddr, size, backing_offset, host_mode, failure_reason)) {
 			if (!replacing) {
-				EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Backing));
+				EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Backing, guest_vaddr));
 			}
 			return true;
 		}
@@ -1034,6 +1059,7 @@ public:
 	}
 
 	bool Commit(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
+		const uint64_t guest_vaddr = vaddr;
 		vaddr = HostAddress(vaddr, size);
 		std::lock_guard lock(m_mutex);
 		if (!ConsumeUnlocked(vaddr, size)) {
@@ -1054,11 +1080,11 @@ public:
 			AddFreeUnlocked(vaddr, size);
 			return false;
 		}
-		EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Private));
+		EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Private, guest_vaddr));
 		return true;
 #else
 		if (VirtualMemory::Protect(vaddr, size, host_mode)) {
-			EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Private));
+			EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Private, guest_vaddr));
 			return true;
 		}
 		AddFreeUnlocked(vaddr, size);
@@ -1143,6 +1169,7 @@ private:
 		uint64_t    vaddr = 0;
 		uint64_t    size  = 0;
 		MappingType type  = MappingType::Private;
+		uint64_t    guest_vaddr = 0; // Original guest range before address folding
 	};
 
 	static constexpr uint64_t PageSize() { return 0x4000; }
@@ -1186,6 +1213,42 @@ private:
 		return true;
 	}
 
+	// The previous batch-map log gave only a host address, not why that
+	// address was unavailable. Record its mapped guest owner, mapped kind,
+	// and nearest free placeholder only for the first eight folded failures.
+	void LogFoldedMapConflictUnlocked(uint64_t guest, uint64_t host, uint64_t size,
+	                                  const char* stage) {
+		static std::atomic_uint32_t reports {0};
+		const uint32_t seq = reports.fetch_add(1, std::memory_order_relaxed);
+		if (seq >= 8) return;
+		auto mapped = FindMappedContainingUnlocked(host);
+		if (mapped == m_mapped.end()) {
+			auto next = m_mapped.lower_bound(host);
+			if (next != m_mapped.end() && next->second.vaddr < host + size) mapped = next;
+		}
+		const bool occupied = mapped != m_mapped.end();
+		const auto next_free = m_free.upper_bound(host);
+		const auto prior_free = next_free != m_free.begin()
+		    ? std::prev(next_free) : m_free.end();
+		const bool has_free = prior_free != m_free.end();
+		const bool owned = std::any_of(m_owned.begin(), m_owned.end(),
+		    [host,size](const auto& region) {
+		        return host >= region.first && host - region.first <= region.second &&
+		               size <= region.second - (host - region.first);
+		    });
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[FOLD_MAP_CONFLICT] stage={} guest=0x{:x} host=0x{:x} size=0x{:x} "
+		    "owned={} mapped={} mapped_host=0x{:x} mapped_size=0x{:x} mapped_guest=0x{:x} "
+		    "mapped_type={} prior_free=0x{:x} prior_free_size=0x{:x} seq={}\\n",
+		    stage, guest, host, size, owned, occupied,
+		    occupied ? mapped->second.vaddr : 0,
+		    occupied ? mapped->second.size : 0,
+		    occupied ? mapped->second.guest_vaddr : 0,
+		    occupied ? (mapped->second.type == MappingType::Backing ? "backing" : "private") : "none",
+		    has_free ? prior_free->first : 0,
+		    has_free ? prior_free->second : 0, seq));
+	}
+
 	bool ConsumeUnlocked(uint64_t vaddr, uint64_t size) {
 		auto it = FindContaining(vaddr, size);
 		if (it == m_free.end() || !SplitUnlocked(it, vaddr, size)) {
@@ -1224,7 +1287,8 @@ private:
 		return true;
 	}
 
-	bool AddMappedUnlocked(uint64_t vaddr, uint64_t size, MappingType type) {
+	bool AddMappedUnlocked(uint64_t vaddr, uint64_t size, MappingType type,
+	                       uint64_t guest_vaddr = 0) {
 		if (size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
 		}
@@ -1239,7 +1303,8 @@ private:
 				return false;
 			}
 		}
-		return m_mapped.emplace(vaddr, MappedRegion {vaddr, size, type}).second;
+		return m_mapped.emplace(vaddr, MappedRegion {vaddr, size, type,
+		    guest_vaddr ? guest_vaddr : vaddr}).second;
 	}
 
 	bool RemoveMappedUnlocked(uint64_t vaddr, uint64_t size, MappingType type) {
@@ -1255,11 +1320,14 @@ private:
 			m_mapped.erase(it);
 			if (original.vaddr < current) {
 				const auto left_size = current - original.vaddr;
-				EXIT_IF(!AddMappedUnlocked(original.vaddr, left_size, original.type));
+				EXIT_IF(!AddMappedUnlocked(original.vaddr, left_size, original.type,
+			                                  original.guest_vaddr));
 			}
 			if (part_end < original.vaddr + original.size) {
 				const auto right_size = original.vaddr + original.size - part_end;
-				EXIT_IF(!AddMappedUnlocked(part_end, right_size, original.type));
+				EXIT_IF(!AddMappedUnlocked(part_end, right_size, original.type,
+			                                  original.guest_vaddr + (part_end - original.vaddr)));
+
 			}
 			current = part_end;
 		}
