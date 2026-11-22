@@ -2708,7 +2708,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				}
 			}
 		}
-		const auto colors = std::span {state.color_info, state.color_count};
 		const auto hdr_target = std::ranges::find_if(colors, [](const auto& color) {
 			return color.image_id && color.desc.info.data.address == DemonsQueueProbe::HdrAddress;
 		});
