@@ -1241,6 +1241,46 @@ static DsAlbedoSnapshot SnapshotDsAlbedo(RenderContext& context, const RenderCol
 	return result;
 }
 
+// Targeted G-buffer preservation proof. Same fixed 8x8 R32_UINT grid as
+// DS_LIGHT_BRIDGE, but sampled immediately before and after a material
+// draw. This distinguishes a legitimate clear followed by missing geometry
+// from a color write that produces black. Nine captures maximum per run.
+static std::optional<std::array<uint32_t, 64>> SnapshotDsGBufferGrid(
+    RenderContext& context, const RenderColorInfo& color) {
+	if (!color.image_id) return std::nullopt;
+	auto& image = context.GetTextureCache().GetImage(color.image_id);
+	const auto& backing = image.backing;
+	const auto& view = color.desc.view_info;
+	if (!backing.image || backing.image_type != vk::ImageType::e2D ||
+	    backing.samples != 1 || backing.format != vk::Format::eR32Uint ||
+	    !(backing.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+	    view.base_level >= backing.mip_levels || view.base_layer >= backing.layers) return std::nullopt;
+	const auto width = std::max(backing.extent.width >> view.base_level, 1u);
+	const auto height = std::max(backing.extent.height >> view.base_level, 1u);
+	if (width < 16u || height < 16u) return std::nullopt;
+	constexpr uint32_t count = 64u;
+	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	auto [mapped, offset] = download.Map(count * 4u, 16u, true);
+	if (!mapped) return std::nullopt;
+	download.Commit();
+	std::array<vk::BufferImageCopy, count> copies {};
+	for (uint32_t i = 0; i < count; ++i) {
+		auto& c = copies[i];
+		c.bufferOffset = offset + uint64_t{i} * 4u;
+		c.imageSubresource = {vk::ImageAspectFlagBits::eColor,
+		                      view.base_level, view.base_layer, 1};
+		c.imageOffset = {static_cast<int32_t>((i % 8u * 2u + 1u) * width / 16u),
+		                 static_cast<int32_t>((i / 8u * 2u + 1u) * height / 16u), 0};
+		c.imageExtent = {1u, 1u, 1u};
+	}
+	image.Download(std::span{copies}, download.Handle(), offset, count * 4u);
+	context.GetCommandScheduler().Finish();
+	download.Invalidate(offset, count * 4u);
+	std::array<uint32_t, count> words {};
+	std::memcpy(words.data(), mapped, words.size() * 4u);
+	return words;
+}
+
 static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
                                    const DsAlbedoSnapshot& before,
                                    const DsAlbedoSnapshot& after,
@@ -2519,6 +2559,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	const int32_t ds_gbuffer_frame = m_context.GetGpu().GetFrameNum();
 	DemonsQueueProbe::MaterialTrace* ds_material_trace = nullptr;
 	DsAlbedoSnapshot ds_albedo_before;
+	bool ds_live_material_capture = false;
+	int ds_live_material_phase = -1;
+	RenderColorInfo ds_live_material_target {};
+	std::optional<std::array<uint32_t, 64>> ds_live_material_before {};
 	if (ds_gbuffer_enabled && state.ps_active && bindings.pixel) {
 		ds_gbuffer_shader = state.ps_input_info.stage.program->shader_hash;
 		const auto& watched = DemonsQueueProbe::GBufferShaders;
@@ -2603,6 +2647,43 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					++material_probes;
 				}
 				ds_albedo_before = SnapshotDsAlbedo(m_context, *ds_gbuffer);
+			}
+		}
+	}
+	// The 722 comparison established loss of R32_UINT G-buffer content
+	// before the lighting queue. Inspect only three observed material
+	// shaders, at the first bright/onset/dark frame in which they draw.
+	if (state.ps_active && state.ps_input_info.stage.program &&
+	    Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps") {
+		const auto shader = state.ps_input_info.stage.program->shader_hash;
+		const auto& watched = DemonsQueueProbe::GBufferShaders;
+		const auto match = std::ranges::find(watched, shader);
+		if (match != watched.end()) {
+			const auto colors = std::span{state.color_info, state.color_count};
+			const auto target = std::ranges::find_if(colors, [](const auto& color) {
+				return color.image_id && color.desc.info.data.address == DemonsQueueProbe::GBufferAddress &&
+				       color.desc.view_info.base_layer == 0 && color.desc.view_info.base_level == 0;
+			});
+			if (target != colors.end()) {
+				const auto& gate = DemonsAdaptiveCapture::Current();
+				static std::array<int32_t, 3> phase_frame {-1, -1, -1};
+				static std::array<std::array<bool, 3>, 3> phase_shader_done {};
+				const int phase = gate.DarkOnsetDue(ds_gbuffer_frame) ? 1
+				    : gate.BrightBaselineDue(ds_gbuffer_frame) ? 0
+				    : gate.CaptureDue(ds_gbuffer_frame) ? 2 : -1;
+				if (phase >= 0) {
+					if (phase_frame[phase] < 0) phase_frame[phase] = ds_gbuffer_frame;
+					const auto shader_index = static_cast<size_t>(match - watched.begin());
+					if (phase_frame[phase] == ds_gbuffer_frame &&
+					    !phase_shader_done[phase][shader_index]) {
+						phase_shader_done[phase][shader_index] = true;
+						ds_live_material_target = *target;
+						ds_live_material_phase = phase;
+						ds_live_material_before = SnapshotDsGBufferGrid(
+						    m_context, ds_live_material_target);
+						ds_live_material_capture = ds_live_material_before.has_value();
+					}
+				}
 			}
 		}
 	}
@@ -3274,6 +3355,72 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		RecordDsMaterialPixels(*ds_material_trace, ds_albedo_before, after,
 		                       std::span{coverage_points.data(), coverage_points_used}, hits,
 		                       rendering.color_attachments[ds_gbuffer->target_slot].is_clear);
+	}
+	if (ds_live_material_capture) {
+		const auto after = SnapshotDsGBufferGrid(m_context, ds_live_material_target);
+		if (after && ds_live_material_before) {
+			const auto frame = m_context.GetGpu().GetFrameNum();
+			const auto shader = state.ps_input_info.stage.program->shader_hash;
+			uint32_t changed = 0, before_colored = 0, after_colored = 0;
+			uint32_t before_clear = 0, after_clear = 0;
+			for (size_t i = 0; i < after->size(); ++i) {
+				changed += (*ds_live_material_before)[i] != (*after)[i];
+				before_colored += ((*ds_live_material_before)[i] & 0x00ffffffu) != 0u;
+				after_colored += ((*after)[i] & 0x00ffffffu) != 0u;
+				before_clear += (*ds_live_material_before)[i] == 0xff000000u;
+				after_clear += (*after)[i] == 0xff000000u;
+			}
+			const auto& regs = buffer.GetRegisters();
+			const auto& dyn = m_context.GetCommandScheduler().GetDynamicState();
+			const vk::Rect2D scissor = dyn.num_scissors ? dyn.scissors[0] : vk::Rect2D {};
+			const auto& target_image = m_context.GetTextureCache().GetImage(ds_live_material_target.image_id);
+			const nlohmann::json payload {
+			    {"frame", frame}, {"phase", ds_live_material_phase == 0 ? "bright" :
+			         ds_live_material_phase == 1 ? "onset" : "dark"},
+			    {"submit", submit_id}, {"shader", fmt::format("{:016x}", shader)},
+			    {"guest", ds_live_material_target.desc.info.data.address},
+			    {"image_owner", target_image.info.data.address},
+			    {"image_version", target_image.ContentVersion()},
+			    {"before_r32", *ds_live_material_before}, {"after_r32", *after},
+			    {"before_colored", before_colored}, {"after_colored", after_colored},
+			    {"before_ff000000", before_clear}, {"after_ff000000", after_clear},
+			    {"changed", changed},
+			    {"raster", {
+			        {"indices", draw.index_count}, {"instances", draw.instance_count},
+			        {"indexed", draw.IsIndexed()}, {"mesh", mesh_active},
+			        {"render_width", rendering.width}, {"render_height", rendering.height},
+			        {"target_mask", regs.GetRenderTargetMask()},
+			        {"shader_mask", regs.GetShaderRegisters().m_cbShaderMask},
+			        {"depth_test", state.depth_info.depth_test_enable},
+			        {"depth_write", state.depth_info.depth_write_enable},
+			        {"depth_func", static_cast<uint32_t>(state.depth_info.depth_compare_op)},
+			        {"stencil_test", state.depth_info.stencil_test_enable},
+			        {"stencil_func", static_cast<uint32_t>(state.depth_info.stencil_front.compareOp)},
+			        {"stencil_ref", state.depth_info.stencil_front.reference},
+			        {"native_color_write", static_cast<bool>(
+			            dyn.color_write_enables[ds_live_material_target.target_slot])},
+			        {"load_clear", rendering.color_attachments[ds_live_material_target.target_slot].is_clear},
+			        {"scissor", {scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height}}
+			    }}
+			};
+			const auto folder = Config::GetShaderDumpFolder() / "queue-state";
+			std::error_code ec;
+			std::filesystem::create_directories(folder, ec);
+			const auto name = fmt::format("ds_gbuffer_material_{}_f{}_s{}.json",
+			    ds_live_material_phase == 0 ? "bright" :
+			    ds_live_material_phase == 1 ? "onset" : "dark", frame, submit_id);
+			std::ofstream file(folder / name, std::ios::trunc);
+			if (file) file << payload;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_GBUFFER_MATERIAL] frame={} phase={} shader=0x{:016x} "
+			    "changed={}/64 colored={}/64 -> {}/64 clear={}/64 -> {}/64 "
+			    "depth={} stencil={} load_clear={} file={} saved={}\n",
+			    frame, ds_live_material_phase, shader, changed, before_colored, after_colored,
+			    before_clear, after_clear,
+			    state.depth_info.depth_test_enable, state.depth_info.stencil_test_enable,
+			    rendering.color_attachments[ds_live_material_target.target_slot].is_clear,
+			    name, file.good()));
+		}
 	}
 	if (ds_post) {
 		const auto shader = state.ps_input_info.stage.program->shader_hash;
