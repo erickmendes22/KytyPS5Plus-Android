@@ -130,6 +130,28 @@ void TestSarosObservedFoldedDirectMapping() {
 	      "original 32 GiB plan excluded the observed crash address");
 }
 
+void TestSarosFixedMappingBeyondFoldedArena() {
+	// Reproduced from build #645 on the device. Saros computes this guest
+	// mapping *outside* the 512 GiB reservation rather than inside its top.
+	// A larger folded image shifts both the reservation and the failed mapping
+	// together, so the host image needs independent extra VA headroom.
+	FoldPlan plan {};
+	Check(PlanFold(512 * kGiB, k2MiB, kWindowStart, kWindowEnd, 48 * kGiB, &plan),
+	      "Saros 48 GiB plan exists");
+	constexpr uint64_t guest = 0x9cc0000000ull;
+	constexpr uint64_t bytes = 192ull << 20;
+	constexpr uint64_t host = 0x1cc0000000ull;
+	uint64_t folded = 0;
+	Check(FoldSpan(guest, bytes, &folded) && folded == host,
+	      "Saros 192 MiB fixed map folds to observed host target");
+	Check(guest - (plan.start + 512 * kGiB) == 3 * kGiB,
+	      "Saros fixed direct map is three GiB beyond the 512 GiB arena");
+	Check(folded >= plan.alias_end && folded + bytes <= plan.alias_end + 4 * kGiB,
+	      "4 GiB host headroom covers the previously unavailable mapping");
+	Check(plan.alias_end + 4 * kGiB < kWindowEnd,
+	      "host folded headroom stays inside ARM64 address window");
+}
+
 void TestAprReadBackingRange() {
 	constexpr uint64_t limit = 0x7000000000ull;
 	uint64_t host = 0;
@@ -190,6 +212,7 @@ int main() {
 	TestAprReadBackingRange();
 	TestUnrealPlan();
 	TestSarosObservedFoldedDirectMapping();
+	TestSarosFixedMappingBeyondFoldedArena();
 	TestSmallerRequestsAndRejections();
 	TestHostPlanMatchesLayout();
 	std::printf("AddressFoldTests: all passed\n");
