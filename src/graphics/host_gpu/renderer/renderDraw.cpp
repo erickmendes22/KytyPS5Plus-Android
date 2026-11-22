@@ -1281,6 +1281,47 @@ static std::optional<std::array<uint32_t, 64>> SnapshotDsGBufferGrid(
 	return words;
 }
 
+// Read the actual D32 depth content used by a G-buffer material's EQUAL
+// test at the same coordinates as its R32_UINT output. No test override.
+static std::optional<std::array<uint32_t, 64>> SnapshotDsMaterialDepthGrid(
+    RenderContext& context, const RenderDepthInfo& depth) {
+	if (!depth.image_id) return std::nullopt;
+	auto& image = context.GetTextureCache().GetImage(depth.image_id);
+	const auto& backing = image.backing;
+	const auto& view = depth.desc.view_info;
+	if (!backing.image || backing.image_type != vk::ImageType::e2D ||
+	    backing.samples != 1 ||
+	    (backing.format != vk::Format::eD32Sfloat &&
+	     backing.format != vk::Format::eD32SfloatS8Uint) ||
+	    !(backing.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+	    view.base_level >= backing.mip_levels || view.base_layer >= backing.layers)
+		return std::nullopt;
+	const auto width = std::max(backing.extent.width >> view.base_level, 1u);
+	const auto height = std::max(backing.extent.height >> view.base_level, 1u);
+	if (width < 16u || height < 16u) return std::nullopt;
+	constexpr uint32_t count = 64u;
+	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	auto [mapped, offset] = download.Map(count * sizeof(uint32_t), 16u, true);
+	if (!mapped) return std::nullopt;
+	download.Commit();
+	std::array<vk::BufferImageCopy, count> copies {};
+	for (uint32_t i = 0; i < count; ++i) {
+		auto& c = copies[i];
+		c.bufferOffset = offset + uint64_t{i} * 4u;
+		c.imageSubresource = {vk::ImageAspectFlagBits::eDepth,
+		                      view.base_level, view.base_layer, 1};
+		c.imageOffset = {static_cast<int32_t>((i % 8u * 2u + 1u) * width / 16u),
+		                 static_cast<int32_t>((i / 8u * 2u + 1u) * height / 16u), 0};
+		c.imageExtent = {1u, 1u, 1u};
+	}
+	image.Download(std::span{copies}, download.Handle(), offset, count * 4u);
+	context.GetCommandScheduler().Finish();
+	download.Invalidate(offset, count * 4u);
+	std::array<uint32_t, count> bits {};
+	std::memcpy(bits.data(), mapped, bits.size() * 4u);
+	return bits;
+}
+
 static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
                                    const DsAlbedoSnapshot& before,
                                    const DsAlbedoSnapshot& after,
@@ -2562,7 +2603,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	bool ds_live_material_capture = false;
 	int ds_live_material_phase = -1;
 	RenderColorInfo ds_live_material_target {};
+	RenderDepthInfo ds_live_material_depth {};
 	std::optional<std::array<uint32_t, 64>> ds_live_material_before {};
+	std::optional<std::array<uint32_t, 64>> ds_live_depth_before {};
 	std::optional<std::array<uint64_t, 2>> ds_live_material_coverage {};
 	if (ds_gbuffer_enabled && state.ps_active && bindings.pixel) {
 		ds_gbuffer_shader = state.ps_input_info.stage.program->shader_hash;
@@ -2679,9 +2722,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					    !phase_shader_done[phase][shader_index]) {
 						phase_shader_done[phase][shader_index] = true;
 						ds_live_material_target = *target;
+						ds_live_material_depth = state.depth_info;
 						ds_live_material_phase = phase;
 						ds_live_material_before = SnapshotDsGBufferGrid(
 						    m_context, ds_live_material_target);
+						ds_live_depth_before = SnapshotDsMaterialDepthGrid(
+						    m_context, ds_live_material_depth);
 						ds_live_material_capture = ds_live_material_before.has_value();
 					}
 				}
@@ -3385,6 +3431,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			const auto shader = state.ps_input_info.stage.program->shader_hash;
 			uint32_t changed = 0, before_colored = 0, after_colored = 0;
 			uint32_t before_clear = 0, after_clear = 0;
+			const auto depth_after = SnapshotDsMaterialDepthGrid(m_context, ds_live_material_depth);
+			uint32_t depth_zero_before = 0, depth_zero_after = 0;
+			uint32_t depth_changed = 0;
+			if (ds_live_depth_before && depth_after) {
+				for (size_t i = 0; i < depth_after->size(); ++i) {
+					depth_zero_before += (*ds_live_depth_before)[i] == 0u;
+					depth_zero_after += (*depth_after)[i] == 0u;
+					depth_changed += (*ds_live_depth_before)[i] != (*depth_after)[i];
+				}
+			}
 			for (size_t i = 0; i < after->size(); ++i) {
 				changed += (*ds_live_material_before)[i] != (*after)[i];
 				before_colored += ((*ds_live_material_before)[i] & 0x00ffffffu) != 0u;
@@ -3404,6 +3460,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"image_owner", target_image.info.data.address},
 			    {"image_version", target_image.ContentVersion()},
 			    {"before_r32", *ds_live_material_before}, {"after_r32", *after},
+			    {"depth_before_bits", ds_live_depth_before ?
+			         nlohmann::json(*ds_live_depth_before) : nlohmann::json()},
+			    {"depth_after_bits", depth_after ?
+			         nlohmann::json(*depth_after) : nlohmann::json()},
+			    {"depth_zero_before", depth_zero_before},
+			    {"depth_zero_after", depth_zero_after},
+			    {"depth_changed", depth_changed},
+			    {"depth_owner", ds_live_material_depth.desc.info.data.address},
+			    {"depth_load_clear", ds_live_material_depth.depth_load_clear_enable},
+			    {"depth_attachment_clear", ds_live_material_depth.depth_clear_enable},
 			    {"before_colored", before_colored}, {"after_colored", after_colored},
 			    {"before_ff000000", before_clear}, {"after_ff000000", after_clear},
 			    {"changed", changed},
@@ -3432,18 +3498,22 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			const auto folder = Config::GetShaderDumpFolder() / "queue-state";
 			std::error_code ec;
 			std::filesystem::create_directories(folder, ec);
-			const auto name = fmt::format("ds_gbuffer_material_{}_f{}_s{}.json",
+			// Multiple material shaders share a guest submit. Name by shader
+			// as well: 723 overwrote the first writer in both dark phases.
+			const auto name = fmt::format("ds_gbuffer_material_{}_f{}_s{}_ps{:016x}.json",
 			    ds_live_material_phase == 0 ? "bright" :
-			    ds_live_material_phase == 1 ? "onset" : "dark", frame, submit_id);
+			    ds_live_material_phase == 1 ? "onset" : "dark", frame, submit_id, shader);
 			std::ofstream file(folder / name, std::ios::trunc);
 			if (file) file << payload;
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_GBUFFER_MATERIAL] frame={} phase={} shader=0x{:016x} "
 			    "changed={}/64 colored={}/64 -> {}/64 clear={}/64 -> {}/64 "
-			    "depth={} stencil={} load_clear={} file={} saved={}\n",
+			    "depth={} stencil={} depth_zero={}/64 -> {}/64 depth_changed={} "
+			    "load_clear={} file={} saved={}\n",
 			    frame, ds_live_material_phase, shader, changed, before_colored, after_colored,
 			    before_clear, after_clear,
 			    state.depth_info.depth_test_enable, state.depth_info.stencil_test_enable,
+			    depth_zero_before, depth_zero_after, depth_changed,
 			    rendering.color_attachments[ds_live_material_target.target_slot].is_clear,
 			    name, file.good()));
 		}

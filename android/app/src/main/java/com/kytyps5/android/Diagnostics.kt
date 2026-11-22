@@ -251,7 +251,7 @@ object Diagnostics {
                                 (subdir == "queue-state" &&
                                     (file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark)_f[0-9]+\\.json")) ||
-                                     file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark)_f[0-9]+_s[0-9]+\\.json")))) ||
+                                     file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark)_f[0-9]+_s[0-9]+(_ps[0-9a-f]{16})?\\.json")))) ||
                                 watched.any { hash -> file.name.contains("_${hash}_") }) &&
                             (when (subdir) {
                                 "spv" -> file.extension == "spv"
@@ -319,7 +319,8 @@ object Diagnostics {
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass. " +
                 "ds_gbuffer_material_* captures the same 8x8 fixed R32_UINT grid before and " +
                 "after a verified material draw in bright/onset/dark phases, with color masks, " +
-                "depth/stencil and load state. " +
+                "depth/stencil, exact D32 depth samples and load state; shader hashes are part of " +
+                "the filename so materials sharing a submit cannot overwrite one another. " +
                 "ds_light_bridge_* captures the same 8x8 normalized grid of R32_UINT " +
                 "G-buffer albedo and R16G16B16A16 HDR immediately after queue 33, " +
                 "in observed bright, onset and paired-dark phases. " +
