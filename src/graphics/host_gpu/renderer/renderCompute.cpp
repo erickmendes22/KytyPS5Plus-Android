@@ -1636,6 +1636,27 @@ static nlohmann::json CaptureDsRelightInputs(RenderContext& context, const Prepa
 			record["guest"] = address;
 			record["cpu_modified"] = ray_cache.IsRegionCpuModified(address, bytes_per_probe);
 			record["gpu_dirty_bytes"] = ray_cache.HasGpuDirtyBytes(address, bytes_per_probe);
+			const auto writer = ray_cache.LastProbeRayWrite(address, bytes_per_probe);
+			if (writer.path != nullptr) {
+				record["last_watched_page_write"] = {
+				    {"path", writer.path}, {"tick", writer.tick}, {"source", writer.source},
+				    {"shader", fmt::format("{:016x}", writer.shader)},
+				    {"begin", writer.begin}, {"end", writer.end}};
+			}
+			// Read the raw backing without asking the buffer cache to write
+			// the GPU result back first. This distinguishes stale CPU data
+			// from the actual bytes read by the relight shader.
+			std::array<uint32_t, words_per_probe> backing {};
+			if (LibKernel::Memory::TryReadBacking(address, backing.data(), bytes_per_probe)) {
+				uint32_t differences = 0;
+				uint32_t backing_albedo = 0;
+				for (size_t i = 0; i < backing.size(); i += 2) {
+					differences += backing[i] != words[i] || backing[i + 1] != words[i + 1];
+					backing_albedo += (backing[i] & 0x00ffffffu) != 0;
+				}
+				record["guest_backing_different_pairs"] = differences;
+				record["guest_backing_albedo_nonzero"] = backing_albedo;
+			}
 			if (const auto* writer = FindDsBufferProducer(frame, address, bytes_per_probe, false)) {
 				const auto begin = std::max(address, writer->address);
 				const auto end = std::min(address + bytes_per_probe, writer->address + writer->size);

@@ -496,6 +496,40 @@ void BufferCache::MarkWritten(uint64_t vaddr, uint64_t size) {
 	m_pending_writes.emplace_back(vaddr, end);
 }
 
+void BufferCache::WatchProbeRays(uint64_t address, uint64_t size) {
+	address = Kernel::AddressFold::Fold(address);
+	if (!GuestRange {address, size}.Valid()) return;
+	const std::pair range {address, address + size};
+	if (std::ranges::find(m_probe_ray_ranges, range) != m_probe_ray_ranges.end()) return;
+	if (m_probe_ray_ranges.size() == 8) return;
+	m_probe_ray_ranges.push_back(range);
+}
+
+void BufferCache::NoteProbeRayWrite(uint64_t address, uint64_t size, const char* path,
+                                    uint64_t source, uint64_t shader) {
+	if (m_probe_ray_ranges.empty() || size == 0) return;
+	address = Kernel::AddressFold::Fold(address);
+	source = Kernel::AddressFold::Fold(source);
+	if (!GuestRange {address, size}.Valid()) return;
+	for (const auto& [first, last]: m_probe_ray_ranges) {
+		const auto begin = std::max(first, address);
+		const auto end = std::min(last, address + size);
+		if (begin >= end) continue;
+		const ProbeRayWrite write {path, m_scheduler.CurrentTick(), source, shader, address, address + size};
+		for (auto page = begin >> CACHING_PAGEBITS; page <= (end - 1) >> CACHING_PAGEBITS; ++page) {
+			m_probe_ray_writes.insert_or_assign(page, write);
+		}
+	}
+}
+
+BufferCache::ProbeRayWrite BufferCache::LastProbeRayWrite(uint64_t address, uint64_t size) const {
+	const auto page = Kernel::AddressFold::Fold(address);
+	const auto it = m_probe_ray_writes.find(page >> CACHING_PAGEBITS);
+	if (it == m_probe_ray_writes.end() || it->second.begin >= page + size || it->second.end <= page)
+		return {};
+	return it->second;
+}
+
 void BufferCache::StampPendingWritesSlow() {
 	const auto tick = m_scheduler.CurrentTick();
 	for (const auto& [begin, end]: m_pending_writes) {
@@ -1472,6 +1506,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	if (vaddr == 0) {
 		EXIT("BufferCache: invalid fill memory address\n");
 	}
+	NoteProbeRayWrite(vaddr, size, "dma_fill", value);
 	(void)m_texture_cache.ClearMeta(vaddr);
 	if (!IsRegionGpuModified(vaddr, size)) {
 		// Access the guest mapping so write faults invalidate cached buffers and images.
@@ -1506,6 +1541,7 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 		     " size=0x%016" PRIx64 " src_gds=%d dst_gds=%d\n",
 		     src_vaddr, dst_vaddr, size, static_cast<int>(src_gds), static_cast<int>(dst_gds));
 	}
+	if (dst_memory) NoteProbeRayWrite(dst_vaddr, size, src_memory ? "dma_copy" : "gds_copy", src_vaddr);
 	if (src_memory && dst_memory && !IsRegionGpuModified(dst_vaddr, size) &&
 	    !IsRegionGpuModified(src_vaddr, size) && !m_texture_cache.FindImageFromRange(src_vaddr, size)) {
 		{
@@ -1937,6 +1973,7 @@ void BufferCache::SettleBdaWrites(uint64_t shader_hash) {
 			if (low >= high) continue;
 			// Transfer actual GPU writes to cache tracking before lighting consumes them.
 			(void)ObtainBuffer(low, high - low, true, false, id);
+			NoteProbeRayWrite(low, high - low, writes.overflow ? "bda_overflow" : "bda", 0, shader_hash);
 			m_texture_cache.InvalidateMemoryFromGPU(low, high - low);
 			++settled;
 		}

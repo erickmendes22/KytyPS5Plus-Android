@@ -1651,6 +1651,29 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
                                           std::span<PreparedBindings* const> prepared_bindings) {
 	KYTY_PROFILER_FUNCTION();
 	const UfcPerf::Scoped descriptor_prep(UfcPerf::Site::DescriptorPrepare);
+	static const bool trace_probe_rays = [] {
+		const auto* flag = std::getenv("KYTY_DS_FRAME_TRACE");
+		return flag && std::strcmp(flag, "1") == 0;
+	}();
+	if (trace_probe_rays) {
+		auto& cache = m_context.GetBufferCache();
+		for (const auto* prepared: prepared_bindings) {
+			const auto& program = *prepared->runtime->program;
+			if (program.shader_hash == 0xbcbcc6ba1e68c974ull && program.info.buffers.size() > 1) {
+				const auto slot = program.info.buffers[1].descriptor_index;
+				if (slot < prepared->buffer_sources.size()) {
+					const auto& source = prepared->buffer_sources[slot];
+					if (source.size == 92160ull * 256u * 8u)
+						cache.WatchProbeRays(source.address, source.size);
+				}
+			}
+			for (const auto& resource: program.info.buffers) {
+				if (!resource.written || resource.descriptor_index >= prepared->buffer_sources.size()) continue;
+				const auto& source = prepared->buffer_sources[resource.descriptor_index];
+				cache.NoteProbeRayWrite(source.address, source.size, "shader_binding", 0, program.shader_hash);
+			}
+		}
+	}
 	if (BufferCache::ShaderWriteRetickEnabled()) {
 		const auto tick = m_context.GetCommandScheduler().CurrentTick();
 		for (auto* prepared: prepared_bindings) {

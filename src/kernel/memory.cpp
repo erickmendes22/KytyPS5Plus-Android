@@ -3405,9 +3405,13 @@ int KYTY_SYSV_ABI KernelCheckedReleaseDirectMemory(int64_t start, size_t len) {
 // The ABI entry points and batch operations hold g_memory_operation_mutex.
 static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
                            int64_t direct_memory_start, size_t alignment, const char* name,
-                           int type = -1) {
+                           int type = -1, const char** failure_stage = nullptr) {
+	const auto fail = [&](int result, const char* stage) {
+		if (failure_stage != nullptr) *failure_stage = stage;
+		return result;
+	};
 	if (addr == nullptr) {
-		return KERNEL_ERROR_EFAULT;
+		return fail(KERNEL_ERROR_EFAULT, "null_address_pointer");
 	}
 	constexpr uint64_t PAGE_SIZE              = 0x4000;
 	constexpr int      GUEST_MAP_FIXED        = 0x10;
@@ -3417,10 +3421,10 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 	    (static_cast<uint64_t>(direct_memory_start) & (PAGE_SIZE - 1u)) != 0 ||
 	    (alignment != 0 && (alignment & (alignment - 1u)) != 0 &&
 	     (alignment & (PAGE_SIZE - 1u)) != 0)) {
-		return KERNEL_ERROR_EINVAL;
+		return fail(KERNEL_ERROR_EINVAL, "size_offset_or_alignment");
 	}
 	if ((prot & PROT_CPU_EXEC) != 0) {
-		return KERNEL_ERROR_EACCES;
+		return fail(KERNEL_ERROR_EACCES, "executable_direct_mapping");
 	}
 
 	bool fixed        = ((flags & GUEST_MAP_FIXED) != 0);
@@ -3430,10 +3434,10 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 	GpuAccessMode       gpu_mode = GpuAccessMode::NoAccess;
 
 	if (!DecodeMemoryProtection(prot, &mode, &gpu_mode)) {
-		return KERNEL_ERROR_EINVAL;
+		return fail(KERNEL_ERROR_EINVAL, "protection");
 	}
 	if (!g_physical_memory->CanMapDirect(static_cast<uint64_t>(direct_memory_start), len)) {
-		return KERNEL_ERROR_ENOMEM;
+		return fail(KERNEL_ERROR_ENOMEM, "physical_range_not_allocated");
 	}
 
 	auto     in_addr         = reinterpret_cast<uint64_t>(*addr);
@@ -3464,10 +3468,10 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 	if (fixed) {
 		if (in_addr == 0 || (in_addr & (PAGE_SIZE - 1u)) != 0 ||
 		    (alignment != 0 && in_addr % alignment != 0)) {
-			return KERNEL_ERROR_EINVAL;
+			return fail(KERNEL_ERROR_EINVAL, "fixed_address_alignment");
 		}
 		if (no_overwrite && g_virtual_ranges->HasOverlap(in_addr, len)) {
-			return KERNEL_ERROR_ENOMEM;
+			return fail(KERNEL_ERROR_ENOMEM, "fixed_no_overwrite");
 		}
 
 		std::vector<VirtualRanges::Range> reserved_ranges;
@@ -3494,7 +3498,7 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 				}
 			}
 			if (covered != len) {
-				return KERNEL_ERROR_EBUSY;
+				return fail(KERNEL_ERROR_EBUSY, "existing_direct_span_incomplete");
 			}
 			UnmapGpuRange(in_addr, len);
 			for (size_t index = 0; index < replaced_mappings.size(); ++index) {
@@ -3502,14 +3506,14 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 				GpuAccessMode old_gpu_mode = GpuAccessMode::NoAccess;
 				if (!g_physical_memory->Unmap(old.map_vaddr, old.map_size, &old_gpu_mode)) {
 					restore_mappings(index, false);
-					return KERNEL_ERROR_EBUSY;
+					return fail(KERNEL_ERROR_EBUSY, "unregister_previous_direct_mapping");
 				}
 			}
 			// Keep the old view accessible until mmap atomically replaces it. In particular,
 			// do not publish a temporary reserved/PROT_NONE range between two direct views.
 			if (!map_shared_fixed(in_addr)) {
 				restore_mappings(replaced_mappings.size(), true);
-				return KERNEL_ERROR_ENOMEM;
+				return fail(KERNEL_ERROR_ENOMEM, GuestBackingStore::GetFailureReasonName(shared_failure));
 			}
 			out_addr       = in_addr;
 			shared_backing = true;
@@ -3527,7 +3531,7 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 				reserved_target = true;
 			}
 			if (!reserved_target) {
-				return KERNEL_ERROR_ENOMEM;
+				return fail(KERNEL_ERROR_ENOMEM, "reserve_fixed_guest_span");
 			}
 			if (map_shared_fixed(in_addr)) {
 				out_addr       = in_addr;
@@ -3583,7 +3587,8 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 	     magic_enum::enum_name(gpu_mode), shared_backing ? "yes" : "no", shared_reason);
 
 	if (out_addr == 0) {
-		return KERNEL_ERROR_ENOMEM;
+		return fail(KERNEL_ERROR_ENOMEM, shared_failure != GuestBackingStore::FailureReason::None
+		                ? shared_reason : "map_backing_view");
 	}
 
 	PhysicalMemory::AllocatedBlock mapped_block {};
@@ -3597,7 +3602,7 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 		} else {
 			restore_mappings(replaced_mappings.size(), true);
 		}
-		return KERNEL_ERROR_EBUSY;
+		return fail(KERNEL_ERROR_EBUSY, "register_physical_alias");
 	}
 
 	const bool published = !replaced_mappings.empty() || reserved_target
@@ -3618,7 +3623,7 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 		} else {
 			restore_mappings(replaced_mappings.size(), true);
 		}
-		return KERNEL_ERROR_EBUSY;
+		return fail(KERNEL_ERROR_EBUSY, "publish_virtual_range");
 	}
 
 #if KYTY_HOST_ARM64
@@ -4510,6 +4515,18 @@ int KYTY_SYSV_ABI KernelBatchMap2(KernelBatchMapEntry* entries, int num_entries,
 	}
 
 	int processed = 0;
+	const auto report_failure = [&](const KernelBatchMapEntry& entry, int result, const char* stage) {
+		// Normal LOGF output is suppressed on Android. Keep this report on
+		// failure only so the fatal batch entry survives into session.log.
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[KERNEL_BATCH_MAP_FAILURE] result=0x{:08x} stage={} index={} total={} op={} "
+		    "guest=0x{:x} host=0x{:x} physical=0x{:x} size=0x{:x} prot=0x{:02x} "
+		    "type=0x{:02x} flags=0x{:x}\n",
+		    static_cast<uint32_t>(result), stage, processed, num_entries, entry.operation,
+		    reinterpret_cast<uint64_t>(entry.start),
+		    Kernel::AddressFold::Fold(reinterpret_cast<uint64_t>(entry.start)),
+		    entry.offset, entry.length, entry.protection, entry.type, static_cast<uint32_t>(flags)));
+	};
 
 	for (int i = 0; i < num_entries; i++, processed++) {
 		auto* entry = &entries[i];
@@ -4522,14 +4539,17 @@ int KYTY_SYSV_ABI KernelBatchMap2(KernelBatchMapEntry* entries, int num_entries,
 
 		if (entry->length == 0 || entry->operation < MAP_OP_MAP_DIRECT ||
 		    entry->operation > MAP_OP_TYPE_PROTECT) {
+			report_failure(*entry, KERNEL_ERROR_EINVAL, "invalid_batch_entry");
 			break;
 		}
 
+		const auto requested = *entry;
+		const char* stage = "batch_operation";
 		int result = OK;
 		switch (entry->operation) {
 			case MAP_OP_MAP_DIRECT:
 				result = MapDirectMemory(&entry->start, entry->length, entry->protection, flags,
-				                         static_cast<int64_t>(entry->offset), 0, "anon");
+				                         static_cast<int64_t>(entry->offset), 0, "anon", -1, &stage);
 				break;
 			case MAP_OP_UNMAP:
 				result = UnmapMemory(reinterpret_cast<uint64_t>(entry->start), entry->length);
@@ -4546,6 +4566,7 @@ int KYTY_SYSV_ABI KernelBatchMap2(KernelBatchMapEntry* entries, int num_entries,
 		}
 
 		if (result != OK) {
+			report_failure(requested, result, stage);
 			if (num_entries_out != nullptr) {
 				*num_entries_out = processed;
 			}
