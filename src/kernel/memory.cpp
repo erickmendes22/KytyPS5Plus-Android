@@ -928,9 +928,9 @@ static constexpr uint64_t kSarosFoldAliasSize = 48ull << 30u;
 // moves this game-derived allocation by the same amount.
 static constexpr uint64_t kSarosFoldHeadroom = 4ull << 30u;
 // The FEX JIT uses this same host shift for the upper 512 GiB guest bank.
-// The 128 GiB offset puts the mapped Saros heap in host 0x300..0x3d,
-// away from the observed legitimate low guest mapping at 0x1cc0000000.
-static constexpr uint64_t kSarosHighHostShift = 128ull << 30u;
+// The 256 GiB offset puts the mapped Saros heap in host 0x500..0x5d,
+// away from the observed legitimate low mappings at 0x1cc0000000 and\n// 0x3c00000000 (the latter was blocked by the previous 128 GiB host bank).
+static constexpr uint64_t kSarosHighHostShift = 256ull << 30u;
 #endif
 
 } // namespace Libs::LibKernel::Memory
@@ -1473,7 +1473,7 @@ void Initialize() {
 		    g_guest_address_space->ReserveFixed(host_alias_start, alias_size + kSarosFoldHeadroom)) {
 			EXIT_IF(!g_virtual_ranges->Add(alias_start, alias_size, 0, 0, 0,
 			                               VirtualRangeType::Reserved, "fold-alias", true));
-			Log::WriteToConsoleAndLog("[SAROS_FOLD_ALIAS] reserved upper-bank host window with separate 128 GiB shift and 4 GiB headroom\n");
+			Log::WriteToConsoleAndLog("[SAROS_FOLD_ALIAS] reserved upper-bank host window with separate 256 GiB shift and 4 GiB headroom\n");
 		} else {
 			Log::WriteToConsoleAndLog(
 			    "[SAROS_FOLD_ALIAS] initial image or 4 GiB headroom is host-fragmented; use checked fold placement\n");
