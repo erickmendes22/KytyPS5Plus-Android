@@ -244,7 +244,7 @@ object Diagnostics {
         )
         return try {
             val candidates = listOf("queue-state", "guest-shaders", "spv", "pipelines", "buffers").flatMap { subdir ->
-                File(dump, subdir).listFiles().orEmpty()
+                val files = File(dump, subdir).listFiles().orEmpty()
                     .filter { file ->
                         file.isFile && file.length() > 0L &&
                             (subdir == "guest-shaders" ||
@@ -273,13 +273,24 @@ object Diagnostics {
                     }.thenByDescending { file ->
                         postShaders.any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { it.lastModified() })
-                    .take(when (subdir) {
-                        "queue-state" -> 96
+                val selected = if (subdir == "queue-state") {
+                    // A busy scene can produce more than 96 small JSON
+                    // files. Give the producer captures their own slots so
+                    // the ZIP actually contains the data cited by the log.
+                    val newest = files.sortedByDescending { it.lastModified() }
+                    val producer = newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
+                        .take(18) +
+                        newest.filter { it.name.startsWith("cs_bcbcc6ba1e68c974_ray_hits_") }.take(18) +
+                        newest.filter { it.name.startsWith("cs_567d21ad45386c8d_radiance_") }.take(16)
+                    producer + (files - producer.toSet()).take(96 - producer.size)
+                } else {
+                    files.take(when (subdir) {
                         "guest-shaders" -> 96
                         "spv" -> 48
                         else -> 24
                     })
-                    .map { subdir to it }
+                }
+                selected.map { subdir to it }
             }
             var count = 0
             var budget = 40L * 1024L * 1024L
