@@ -918,6 +918,10 @@ static void GtDiscardFreedPoolMappings(const std::vector<PooledMemory::Mapping>&
 static std::atomic<bool> g_address_fold_enabled {false};
 #if defined(__ANDROID__) && KYTY_HOST_ARM64
 static bool g_keep_fold_alias_free = false;
+// Saros maps the UE5 heap beyond the old 32 GiB image: the captured
+// 0x98c0000000 guest mapping folds to host 0x18c0000000 and is 192 MiB.
+// Reserve 48 GiB to cover that region with room for later top-down commits.
+static constexpr uint64_t kSarosFoldAliasSize = 48ull << 30u;
 #endif
 
 } // namespace Libs::LibKernel::Memory
@@ -951,7 +955,7 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 #if defined(__ANDROID__) && KYTY_HOST_ARM64
 			// Saros allocates in the low user window before reserving its large UE5
 			// arena. Keep the host VA for the arena's folded top free from boot.
-			constexpr auto fold_alias_end = HOST_USER_MIN + Kernel::AddressFold::kAliasSize;
+			const auto fold_alias_end = HOST_USER_MIN + kSarosFoldAliasSize;
 			if (g_keep_fold_alias_free && candidate < fold_alias_end &&
 			    candidate + size > HOST_USER_MIN) {
 				current = fold_alias_end;
@@ -1407,14 +1411,14 @@ void Initialize() {
 		// a later fixed 192 MiB direct map of guest 0x90c0000000 then folds to
 		// host 0x10c0000000 and fails with address-range-unavailable.
 		constexpr uint64_t alias_start = HOST_USER_MIN;
-		constexpr uint64_t alias_size  = Kernel::AddressFold::kAliasSize;
+		constexpr uint64_t alias_size  = kSarosFoldAliasSize;
 		if (g_guest_address_space->ReserveFixed(alias_start, alias_size)) {
 			EXIT_IF(!g_virtual_ranges->Add(alias_start, alias_size, 0, 0, 0,
 			                               VirtualRangeType::Reserved, "fold-alias", true));
-			Log::WriteToConsoleAndLog("[SAROS_FOLD_ALIAS] protected initial 32 GiB host image\\n");
+			Log::WriteToConsoleAndLog("[SAROS_FOLD_ALIAS] protected initial 48 GiB host image\n");
 		} else {
 			Log::WriteToConsoleAndLog(
-			    "[SAROS_FOLD_ALIAS] initial image is host-fragmented; use checked fold placement\\n");
+			    "[SAROS_FOLD_ALIAS] initial 48 GiB image is host-fragmented; use checked fold placement\n");
 		}
 	}
 #endif
@@ -4003,13 +4007,19 @@ static uint64_t FindFoldedReservation(uint64_t hint, uint64_t size, uint64_t ali
 	// Repositioning an active alias would invalidate existing guest pointers.
 	static uint64_t active_alias_start = 0;
 	constexpr uint64_t alias_step = 1ull << 30u;
-	const auto alias_max = Common::AddressLayout::kHostUserEnd - Fold::kAliasSize;
+	const uint64_t wanted_alias_size =
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+	    g_keep_fold_alias_free ? kSarosFoldAliasSize : Fold::kAliasSize;
+#else
+	    Fold::kAliasSize;
+#endif
+	const auto alias_max = Common::AddressLayout::kHostUserEnd - wanted_alias_size;
 	for (uint64_t alias_start = Common::AddressLayout::kHostUserMin;
 	     alias_start <= alias_max; alias_start += alias_step) {
 		if (active_alias_start != 0 && alias_start != active_alias_start) continue;
 		Fold::FoldPlan candidate {};
 		if (!Fold::PlanFold(size, alignment, alias_start,
-		                    Common::AddressLayout::kHostUserEnd, Fold::kAliasSize,
+		                    Common::AddressLayout::kHostUserEnd, wanted_alias_size,
 		                    &candidate)) continue;
 		if (g_virtual_ranges->HasOverlap(
 		        candidate.alias_end, candidate.start + size - candidate.alias_end)) continue;
