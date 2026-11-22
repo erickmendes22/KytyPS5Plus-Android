@@ -1335,6 +1335,24 @@ bool DsCoefficientPairDue(int32_t frame) {
 	                      int64_t{frame} - ds_last_coefficient_pair >= 240);
 }
 
+bool DsCoefficientCaptureDue(int32_t frame) {
+	// Capture the exact queue-comparison frames (241, 481, 721, ...)
+	// without moving the independent 240-frame coefficient cadence.
+	return DsCoefficientPairDue(frame) || (frame > 0 && frame % 240 == 1);
+}
+
+void RetagDsRecordedComputeWrites(RenderContext& context, const PreparedBindings& bindings,
+                                  uint64_t preparation_tick) {
+	auto& cache = context.GetBufferCache();
+	if (!BufferCache::ShaderWriteRetickEnabled()) return;
+	for (const auto& write : bindings.runtime->program->info.buffers) {
+		if (!write.written || write.descriptor_index >= bindings.buffer_sources.size()) continue;
+		const auto& source = bindings.buffer_sources[write.descriptor_index];
+		if (source.address && source.size)
+			cache.RetagShaderWrite(source.address, source.size, preparation_tick);
+	}
+}
+
 const DsBufferProducer* FindDsProbeSourceWriter(int32_t frame, uint64_t address, uint64_t bytes) {
 	if (!address || !bytes) return nullptr;
 	if (const auto* latest = FindDsBufferProducer(frame, address, bytes)) return latest;
@@ -1390,7 +1408,7 @@ static void CaptureDsRelightMaskWriter(RenderContext& context, const PreparedBin
 	const auto& program = *bindings.runtime->program;
 	if (program.shader_hash != DemonsRadianceTrace::MaskWriter || !DsTraceEnabled()) return;
 	const auto frame = context.GetGpu().GetFrameNum();
-	if (!DsCoefficientPairDue(frame) || ds_relight_mask.frame == frame ||
+	if (!DsCoefficientCaptureDue(frame) || ds_relight_mask.frame == frame ||
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	for (const auto& buffer: program.info.buffers) {
 		const auto slot = buffer.descriptor_index;
@@ -1634,7 +1652,7 @@ void CaptureDsRadianceComputeWriter(RenderContext& context, const PreparedBindin
 	if (!DemonsRadianceTrace::Enabled()) return;
 	const auto& program = *bindings.runtime->program;
 	const auto frame = context.GetGpu().GetFrameNum();
-	if (program.shader_hash == DsProbeProjector || !DsCoefficientPairDue(frame) ||
+	if (program.shader_hash == DsProbeProjector || !DsCoefficientCaptureDue(frame) ||
 	    (ds_radiance_writer.frame == frame && ds_radiance_writer.attempts >= 2) ||
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	for (size_t slot = 0; slot < std::min(bindings.images.size(), program.info.images.size()); ++slot) {
@@ -1673,6 +1691,21 @@ void CaptureDsRadianceComputeWriter(RenderContext& context, const PreparedBindin
 		report["buffer_descriptors"] = nlohmann::json::array();
 		for (const auto& resource: resources.buffers)
 			report["buffer_descriptors"].push_back(resource.dwords);
+		// Preserve the exact relight inputs at the queue-comparison frame.
+		report["srt"] = resources.flattened_srt;
+		report["shader_data"] = bindings.shader_data;
+		report["buffer_inputs"] = nlohmann::json::array();
+		for (const auto& resource : program.info.buffers) {
+			const auto index = resource.descriptor_index;
+			if (index >= bindings.buffer_sources.size()) continue;
+			const auto& source = bindings.buffer_sources[index];
+			nlohmann::json entry {{"slot", index}, {"guest", source.address},
+			    {"bytes", source.size}, {"read", resource.read}, {"written", resource.written}};
+			if (resource.read && source.address && source.size)
+				entry["prefix_words"] = ReadDsBoundWords(context, bindings, index, 256);
+			report["buffer_inputs"].push_back(std::move(entry));
+		}
+		report["checkpoint"] = DsCoefficientCaptureDue(frame);
 		const auto digest = report.value("radiance_digest", std::string{"unavailable"});
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_RADIANCE_COMPUTE_OUTPUT] frame={} submit={} shader=0x{:016x} "
@@ -1691,7 +1724,7 @@ void CaptureDsProbeSourceWrite(RenderContext& context, const PreparedBindings& b
 	if (program.shader_hash == DsCoefficientWriter || program.shader_hash == 0xc03afccb96a13c5dull ||
 	    !DsTraceEnabled()) return;
 	const auto frame = context.GetGpu().GetFrameNum();
-	if (!DsCoefficientPairDue(frame) ||
+	if (!DsCoefficientCaptureDue(frame) ||
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	static int32_t last_frame = -1;
 	static uint32_t count = 0;
@@ -1759,7 +1792,7 @@ std::optional<DsCoefficientDispatch> BeginDsCoefficientDispatch(
 	const auto& program = *bindings.runtime->program;
 	if (program.shader_hash != DsCoefficientWriter || !DsTraceEnabled()) return {};
 	const auto frame = context.GetGpu().GetFrameNum();
-	if (!DsCoefficientPairDue(frame) ||
+	if (!DsCoefficientCaptureDue(frame) ||
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return {};
 	const auto& resources = *bindings.runtime->resources;
 	for (const auto& resource : program.info.buffers) {
@@ -2034,7 +2067,7 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 	// A periodic atlas-only sample is still useful. Once a real writer was
 	// captured, however, keep trying live consumers in that frame until one
 	// uses its output. Empty dispatches cannot consume the paired sample.
-	const bool paired_candidate = DsCoefficientPairDue(frame) && ds_coefficient_dispatch &&
+	const bool paired_candidate = DsCoefficientCaptureDue(frame) && ds_coefficient_dispatch &&
 	    !ds_coefficient_dispatch->after.empty() && ds_coefficient_dispatch->frame == frame;
 	const bool periodic = gate.Due(frame, 240);
 	if (!periodic && !paired_candidate) return;
@@ -2178,7 +2211,8 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 		file.close();
 	}
 	if (file.good() && paired) {
-		ds_last_coefficient_pair = frame;
+		// Supplemental dark-frame captures must not reset the periodic cadence.
+		if (DsCoefficientPairDue(frame)) ds_last_coefficient_pair = frame;
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_COEFFICIENT_PAIRED] frame={} writer_submit={} atlas_submit={} records={}\n",
 		    frame, writer.value("writer_submit", uint64_t{0}), submit,
@@ -2557,6 +2591,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	auto& pipeline =
 	    m_context.GetPipelineCache().GetComputePipeline(input_info, compute_program);
 	auto& bindings = m_compute_bindings;
+	const uint64_t ds_preparation_tick = m_context.GetCommandScheduler().CurrentTick();
 	PrepareBindings(input_info.stage, bindings);
 	if (program.bindings.dispatch_thread_dword != ShaderRecompiler::IR::PushData::NoStart) {
 		std::copy(std::begin(input_info.dispatch_threads_num), std::end(input_info.dispatch_threads_num),
@@ -2686,6 +2721,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().NoteWork();
 
 	buffer.MarkGpu("cs", program.shader_hash);
+	RetagDsRecordedComputeWrites(m_context, bindings, ds_preparation_tick);
 	RememberDsBufferProducers(m_context, bindings, false, submit_id);
 
 	// Record the shader barriers and diagnostics before the BDA settle submits the
@@ -2862,6 +2898,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(input_info, compute_program);
 	auto& bindings = m_compute_bindings;
+	const uint64_t ds_preparation_tick = m_context.GetCommandScheduler().CurrentTick();
 	PrepareBindings(input_info.stage, bindings);
 	PreparedBindings* descriptor_stage = &bindings;
 	if (input_info.stage.program->info.uses_dma)
@@ -3126,6 +3163,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().NoteWork();
 
 	buffer.MarkGpu("cs-indirect", program.shader_hash);
+	RetagDsRecordedComputeWrites(m_context, bindings, ds_preparation_tick);
 	RememberDsBufferProducers(m_context, bindings, true, submit_id);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	if (light_math_sample) {
@@ -3200,6 +3238,7 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 	}
 	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(input_info, compute_program);
 	auto& bindings = m_compute_bindings;
+	const uint64_t ds_preparation_tick = m_context.GetCommandScheduler().CurrentTick();
 	PrepareBindings(input_info.stage, bindings);
 	PreparedBindings* descriptor_stage = &bindings;
 	if (input_info.stage.program->info.uses_dma)
@@ -3235,6 +3274,7 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 	Common::PerfStats::Count(Common::PerfStats::Counter::Dispatches);
 
 	buffer.MarkGpu("cs-retrace", input_info.stage.program->shader_hash);
+	RetagDsRecordedComputeWrites(m_context, bindings, ds_preparation_tick);
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	ProbeDsComputeWrites(m_context, input_info, bindings);
 	CaptureDsLightTiles(bindings);

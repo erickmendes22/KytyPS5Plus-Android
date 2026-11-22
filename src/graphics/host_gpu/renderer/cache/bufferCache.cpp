@@ -464,7 +464,11 @@ BufferCache::ReadBackInPlace(Buffer& buffer, const std::vector<std::pair<uint64_
 bool BufferCache::ShaderWriteRetickEnabled() {
 	static const bool enabled = [] {
 		const char* v = std::getenv("KYTY_DS_SHADER_WRITE_RETICK");
-		return v != nullptr && v[0] == '1' && v[1] == '\0';
+		if (v != nullptr) return v[0] == '1' && v[1] == '\0';
+		// This per-title source-order fix is enabled by the existing
+		// Demon's Souls BVH/SRT synchronization flag, with explicit opt-out.
+		const char* ds = std::getenv("KYTY_DS_BVH_SRT_COHERENCE");
+		return ds != nullptr && ds[0] == '1' && ds[1] == '\0';
 	}();
 	return enabled;
 }
