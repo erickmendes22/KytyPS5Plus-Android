@@ -98,6 +98,38 @@ void TestUnrealPlan() {
 	      "UE5 top allocation lands in the alias");
 }
 
+void TestSarosObservedFoldedDirectMapping() {
+	// Captured PPSA07631 #644: initial protection covered 32 GiB, yet
+	// sceKernelBatchMap mapped guest 0x98c0000000 (+192 MiB) to host
+	// 0x18c0000000 and aborted with address-range-unavailable.
+	// The guest mapping must lie inside *both* the 512 GiB reservation and the
+	// real host alias. A larger reserved alias is not an arbitrary host-memory
+	// allocation: the host only reserves VA with PROT_NONE / MAP_NORESERVE.
+	constexpr uint64_t guest = 0x98c0000000ull;
+	constexpr uint64_t bytes = 192ull << 20u;
+	constexpr uint64_t host = 0x18c0000000ull;
+	constexpr uint64_t saros_alias = 48 * kGiB;
+	FoldPlan plan {};
+	Check(PlanFold(512 * kGiB, k2MiB, kWindowStart, kWindowEnd, saros_alias, &plan),
+	      "Saros 48 GiB fold placement exists");
+	Check(plan.start == 0x1c00000000ull &&
+	          plan.start + 512 * kGiB == 0x9c00000000ull,
+	      "Saros planned guest arena includes captured fixed direct mapping");
+	uint64_t mapped = 0;
+	Check(FoldSpan(guest, bytes, &mapped) && mapped == host,
+	      "Saros captured 192 MiB guest mapping folds to the host");
+	Check(guest >= plan.start && guest + bytes <= plan.start + 512 * kGiB,
+	      "Saros captured direct mapping is inside its guest reservation");
+	Check(mapped >= plan.alias_start && mapped + bytes <= plan.alias_end,
+	      "Saros captured direct mapping has protected host alias");
+	FoldPlan old_plan {};
+	Check(PlanFold(512 * kGiB, k2MiB, kWindowStart, kWindowEnd, 32 * kGiB, &old_plan),
+	      "original 32 GiB fold exists");
+	Check(guest >= old_plan.start + 512 * kGiB &&
+	          mapped >= old_plan.alias_end,
+	      "original 32 GiB plan excluded the observed crash address");
+}
+
 void TestAprReadBackingRange() {
 	constexpr uint64_t limit = 0x7000000000ull;
 	uint64_t host = 0;
@@ -157,6 +189,7 @@ int main() {
 	TestFoldSpan();
 	TestAprReadBackingRange();
 	TestUnrealPlan();
+	TestSarosObservedFoldedDirectMapping();
 	TestSmallerRequestsAndRejections();
 	TestHostPlanMatchesLayout();
 	std::printf("AddressFoldTests: all passed\n");
