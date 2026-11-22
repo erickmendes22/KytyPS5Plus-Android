@@ -458,6 +458,10 @@ private:
 		const char* path = nullptr;
 	};
 	uint64_t m_ds_atlas_address = 0, m_ds_atlas_size = 0;
+	// Most recent GPU-authored revision copied between the two overlapping
+	// 256x256x360 Demon light-atlas views (displaced by 270 layers).
+	ImageId m_ds_atlas_alias_early {}, m_ds_atlas_alias_later {};
+	uint64_t m_ds_atlas_alias_writer_order = 0;
 	uint32_t m_ds_atlas_writer_count = 0;
 	std::array<DsAtlasWriter, 16> m_ds_atlas_writers {};
 	void RememberDsAtlasWriter(ImageId id, const ImageInfo& info, const ImageViewInfo& view,
