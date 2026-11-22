@@ -2169,8 +2169,12 @@ void RenderExecutor::CaptureDsLightTiles(const PreparedBindings& bindings) {
 	using namespace DemonsQueueProbe;
 	if (!DsTraceEnabled() || bindings.runtime->program->shader_hash != TileProducer) return;
 	const auto frame = m_context.GetGpu().GetFrameNum();
+	if (m_ds_tile_frame == frame) return;
 	static DemonsRollingProbe::FrameGate gate;
-	if (!gate.Due(frame, 240)) return;
+	const bool paired = ds_last_coefficient_pair == frame ||
+	    (ds_radiance_writer.frame == frame &&
+	     ds_radiance_writer.dispatch.contains("radiance_digest"));
+	if (!gate.Due(frame, 240) && !paired) return;
 	m_ds_tile_frame = frame;
 	std::vector<uint32_t> offsets, tiles;
 	for (const auto& resource : bindings.runtime->program->info.buffers) {
@@ -2189,9 +2193,9 @@ void RenderExecutor::CaptureDsLightTiles(const PreparedBindings& bindings) {
 			selected_ids.assign(tiles.begin() + selected.first, tiles.begin() + selected.end);
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_QUEUE_TILES] frame={} queue={} first={} end={} prefix_words={} list_words={} valid={} "
-		    "ids={},{},{},{},{}\n", frame, Queues[i], selected.first, selected.end,
+		    "ids={},{},{},{},{} radiance_paired={}\n", frame, Queues[i], selected.first, selected.end,
 		    offsets.size(), tiles.size(), selected.valid, selected.ids[0], selected.ids[1],
-		    selected.ids[2], selected.ids[3], selected.ids[4]));
+		    selected.ids[2], selected.ids[3], selected.ids[4], paired));
 	}
 	const auto state = nlohmann::json {
 	    {"frame", frame}, {"prefix_words", offsets.size()}, {"tile_words", tiles.size()}

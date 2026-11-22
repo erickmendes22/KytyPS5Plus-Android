@@ -261,8 +261,15 @@ object Diagnostics {
                         coefficientWriterShaders.any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { file ->
                         (queueShaders + producerShaders + atlasWriterShaders).any { hash -> file.name.contains("_${hash}_") }
+                    }.thenByDescending { file ->
+                        postShaders.any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { it.lastModified() })
-                    .take(when (subdir) { "queue-state" -> 72; "guest-shaders" -> 96; else -> 24 })
+                    .take(when (subdir) {
+                        "queue-state" -> 72
+                        "guest-shaders" -> 96
+                        "spv" -> 48
+                        else -> 24
+                    })
                     .map { subdir to it }
             }
             var count = 0
@@ -295,6 +302,7 @@ object Diagnostics {
                 "DS_RADIANCE_IMAGE_WRITER, DS_RADIANCE_BUFFER_WRITER and DS_RADIANCE_CACHE by tick and owner. " +
                 "The relight_inputs record lists the exact probe indices, ray-hit summaries and light masks " +
                 "read by bcbcc6ba1e68c974, with bound-buffer writer candidates. " +
+                "A DS_QUEUE_TILES record with radiance_paired=true shares its frame with an atlas or radiance capture. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
