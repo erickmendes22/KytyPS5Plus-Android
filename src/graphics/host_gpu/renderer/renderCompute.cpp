@@ -2224,14 +2224,26 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 		return false;
 	});
 	static std::atomic<uint32_t> next_pair {0}, next_periodic {0}, next_dark {0};
+	// Rolling slots overwrote the recorded event (355) and bright reference.
+	// Keep actual paired writers by unique guest frame + submit, bounded
+	// to 16 records. Nonpaired scout slots continue rotating as before.
+	static uint32_t saved_pairs = 0;
+	static bool bright_saved = false;
+	const bool event_pair = paired && DemonsAdaptiveCapture::Current().CaptureDue(frame);
+	const bool bright_pair = paired && !bright_saved &&
+	    DemonsAdaptiveCapture::Current().BrightSceneActive(frame);
+	const bool preserve_pair = (event_pair || bright_pair) && saved_pairs < 16u;
 	const auto file_slot = !paired ? 4u + next_periodic.fetch_add(1, std::memory_order_relaxed) % 2u
 	                       : low_radiance ? 6u + next_dark.fetch_add(1, std::memory_order_relaxed) % 2u
 	                                      : next_pair.fetch_add(1, std::memory_order_relaxed) % 4u;
-	const auto name = fmt::format("cs_c03afccb96a13c5d_atlas_inputs_{}.json", file_slot);
+	const auto suffix = preserve_pair
+	    ? fmt::format("{}_f{}_s{}", event_pair ? "event" : "bright", frame, submit)
+	    : fmt::format("{}", file_slot);
+	const auto name = fmt::format("cs_c03afccb96a13c5d_atlas_inputs_{}.json", suffix);
 	std::ofstream file(folder / name, std::ios::trunc);
 	if (file) {
 		if (!radiance.empty()) {
-			const auto radiance_name = fmt::format("cs_567d21ad45386c8d_radiance_{}.bin", file_slot);
+			const auto radiance_name = fmt::format("cs_567d21ad45386c8d_radiance_{}.bin", suffix);
 			std::ofstream image_file(folder / radiance_name, std::ios::binary | std::ios::trunc);
 			image_file.write(reinterpret_cast<const char*>(radiance.data()),
 			                 static_cast<std::streamsize>(radiance.size_bytes()));
@@ -2257,6 +2269,10 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 		};
 		file << payload;
 		file.close();
+	}
+	if (file.good() && preserve_pair) {
+		++saved_pairs;
+		if (bright_pair) bright_saved = true;
 	}
 	if (file.good() && paired) {
 		DemonsAdaptiveCapture::Current().NoteCaptured(frame);

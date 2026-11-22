@@ -27,6 +27,9 @@ int main(int argc, char** argv) {
 		assert(!ignored.triggered && detector.ShouldSample(boot_offset + 24));
 		detector.MarkGeometry(boot_offset + 24, 5);
 		detector.Observe(boot_offset + 24, 0.25, 14, 0x281a80000ull);
+		assert(detector.BrightSceneActive(boot_offset + 25));
+		assert(detector.BrightBaselineDue(boot_offset + 25));
+		assert(!detector.BrightBaselineDue(boot_offset + 33));
 		for (int i = 1; i <= 3; ++i) {
 			assert(detector.ShouldSample(boot_offset + (i + 1) * 24));
 			const auto event = detector.Observe(

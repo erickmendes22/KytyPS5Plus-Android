@@ -41,6 +41,7 @@ public:
 			m_scene_samples = 0;
 			m_dark_latched = false;
 			m_recovered_streak = 0;
+			m_last_bright_sample = -1;
 		}
 		m_scene_guest = guest;
 		if (m_last_geometry < 0 || frame - m_last_geometry > 300) {
@@ -48,11 +49,13 @@ public:
 			m_low_streak = 0;
 			m_scene_samples = 0;
 			m_bright_reference = 0.0;
+			m_last_bright_sample = -1;
 			return {false, false, 0, 0.0, "no_deferred_geometry"};
 		}
 		++m_scene_samples;
 		const bool lit = level >= 0.02 && visible >= 3;
 		if (lit) {
+			m_last_bright_sample = frame;
 			// A prolonged blackout is one transition, not a new event every
 			// 180 frames. Rearm only when actual lighting recovers twice.
 			m_recovered_streak = m_dark_latched ? m_recovered_streak + 1 : 0;
@@ -114,6 +117,16 @@ public:
 		       (m_last_event_capture < 0 || frame - m_last_event_capture >= 24);
 	}
 
+	bool BrightSceneActive(int32_t frame) const {
+		return frame >= m_last_sample && m_last_sample >= 0 &&
+		       frame - m_last_sample <= 24 && !m_dark_latched &&
+		       m_last_bright_sample == m_last_sample && m_bright_reference >= 0.02;
+	}
+	bool BrightBaselineDue(int32_t frame) const {
+		return BrightSceneActive(frame) && frame > m_last_sample &&
+		       frame - m_last_sample <= 8;
+	}
+
 	bool CapturedFrame(int32_t frame) const {
 		// Align the compositor check with the actual coefficient/atlas pair
 		// recorded in this guest frame, not with an approximate timer.
@@ -140,8 +153,10 @@ private:
 		m_dark_latched = false;
 		m_recovered_streak = 0;
 		m_low_streak = 0;
+		m_last_bright_sample = -1;
 	}
 	int32_t m_last_sample = -1;
+	int32_t m_last_bright_sample = -1;
 	int32_t m_last_trigger = -1;
 	int32_t m_last_event_capture = -1;
 	uint32_t m_event_capture_count = 0;
