@@ -326,6 +326,12 @@ jobs:
             g++ -std=c++20 -Wall -Wextra -Werror -Isrc "tests/manual/${test}.cpp" -o "/tmp/${test}"
             "/tmp/${test}"
           done
+      - name: Regress exact Saros folded guest mappings and 4 GiB host headroom
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -Werror -Isrc tests/AddressFoldTests.cpp -o /tmp/address-fold-saros
+          /tmp/address-fold-saros
       - name: Validate launch policies, Vulkan batch and GPU-side dispatch evidence
         run: |
           python3 scripts/android/check_descriptor_pool_contract.py
