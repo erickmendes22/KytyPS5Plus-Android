@@ -248,6 +248,8 @@ object Diagnostics {
                     .filter { file ->
                         file.isFile && file.length() > 0L &&
                             (subdir == "guest-shaders" ||
+                                (subdir == "queue-state" &&
+                                    file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json"))) ||
                                 watched.any { hash -> file.name.contains("_${hash}_") }) &&
                             (when (subdir) {
                                 "spv" -> file.extension == "spv"
@@ -259,6 +261,8 @@ object Diagnostics {
                             })
                     }
                     .sortedWith(compareByDescending<File> { file ->
+                        file.name.startsWith("ds_scene_writer_f")
+                    }.thenByDescending { file ->
                         coefficientWriterShaders.any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { file ->
                         (queueShaders + producerShaders + atlasWriterShaders).any { hash -> file.name.contains("_${hash}_") }
@@ -266,7 +270,7 @@ object Diagnostics {
                         postShaders.any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { it.lastModified() })
                     .take(when (subdir) {
-                        "queue-state" -> 72
+                        "queue-state" -> 96
                         "guest-shaders" -> 96
                         "spv" -> 48
                         else -> 24
@@ -308,7 +312,10 @@ object Diagnostics {
                 "probe_positions and probe_bounds are indexed by probe_indices. Full paired snapshots " +
                 "and low-radiance snapshots have separate storage from periodic atlas samples. " +
                 "A DS_QUEUE_TILES record with radiance_paired=true shares its frame with an atlas or radiance capture. " +
-                "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
+                "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass. " +
+                "ds_scene_writer_f*_p*.json captures the 0x17defa... scene writer at " +
+                "observed bright, first dark onset and paired dark phases, with fixed " +
+                "64-point pre/post grids and shader buffer bindings.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
             zip.closeEntry()

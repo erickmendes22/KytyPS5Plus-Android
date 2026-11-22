@@ -124,7 +124,14 @@ public:
 	}
 	bool BrightBaselineDue(int32_t frame) const {
 		return BrightSceneActive(frame) && frame > m_last_sample &&
-		       frame - m_last_sample <= 8;
+		       frame - m_last_sample <= 24;
+	}
+	bool DarkOnsetDue(int32_t frame) const {
+		// Capture the first loss of light, not only the later adaptive
+		// trigger. The reference is from the same observed scene image.
+		return !m_dark_latched && m_last_sample >= 0 && frame > m_last_sample &&
+		       frame - m_last_sample <= 24 && m_bright_reference >= 0.02 &&
+		       m_low_streak == 1;
 	}
 
 	bool CapturedFrame(int32_t frame) const {

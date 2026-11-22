@@ -2621,30 +2621,43 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const bool composite = shader == 0x3265b01ed00a5c01ull;
 		ProbeDsPostFixedInput(m_context, *bindings.pixel, shader, frame);
 		const auto& inputs = bindings.pixel->images;
-		// Target the scene-writing draws only, on the first verified
-		// bright reference frame and on successfully paired dark frames.
+		// The recovered 720 samples were twelve small additive overlay
+		// draws. The frequent 0x17defa... shader writes the SAME scene
+		// target in both the illuminated and dark phases, but was excluded.
+		// Limit readbacks to that verified writer, in three observed phases.
 		static int32_t scene_frame = -1;
-		static uint32_t scene_passes = 0;
+		static uint32_t scene_ordinal = 0;
 		static int32_t bright_baseline_frame = -1;
-		if (scene_frame != frame) { scene_frame = frame; scene_passes = 0; }
+		static int32_t dark_onset_frame = -1;
+		static int32_t paired_dark_frame = -1;
+		if (scene_frame != frame) { scene_frame = frame; scene_ordinal = 0; }
 		const auto& gate = DemonsAdaptiveCapture::Current();
 		const auto colors = std::span {state.color_info, state.color_count};
 		const auto scene = std::ranges::find_if(colors, [](const auto& color) {
 			return color.image_id && color.desc.info.data.address == DemonsQueueProbe::SceneAddress;
 		});
-		if (bright_baseline_frame < 0 && scene != colors.end() && gate.BrightBaselineDue(frame))
-			bright_baseline_frame = frame;
-		// These are the three confirmed scene-target shaders in the 719
-		// trace. Other fullscreen/geometry passes are outside this probe.
-		const bool known_scene_writer =
-		    shader == 0xd1768d02fcf96a58ull ||
-		    shader == 0xd9a54cb7b549b1b9ull ||
-		    shader == 0x844e5697cf62ecd7ull;
-		if (scene != colors.end() && known_scene_writer && scene_passes < 12u &&
-		    (frame == bright_baseline_frame || gate.CapturedFrame(frame)) &&
+		const bool core_writer = shader == 0x17defa333d9d1e22ull;
+		if (scene != colors.end() && core_writer) {
+			if (bright_baseline_frame < 0 && gate.BrightBaselineDue(frame))
+				bright_baseline_frame = frame;
+			if (dark_onset_frame < 0 && gate.DarkOnsetDue(frame))
+				dark_onset_frame = frame;
+			if (paired_dark_frame < 0 && gate.CapturedFrame(frame))
+				paired_dark_frame = frame;
+		}
+		const bool relevant_frame = frame == bright_baseline_frame ||
+		                            frame == dark_onset_frame ||
+		                            frame == paired_dark_frame;
+		if (scene != colors.end() && core_writer && relevant_frame &&
 		    Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps") {
-			ds_scene_trace = true;
-			ds_scene_pass = ++scene_passes;
+			const uint32_t ordinal = ++scene_ordinal;
+			// Bounded 64-pixel snapshots across the actual writer sequence,
+			// rather than sampling the first twelve small overlays.
+			ds_scene_trace = ordinal == 1u || ordinal == 8u || ordinal == 32u ||
+			                 ordinal == 64u || ordinal == 128u || ordinal == 256u;
+		}
+		if (ds_scene_trace) {
+			ds_scene_pass = scene_ordinal;
 			ds_scene_target = *scene;
 			ds_scene_before = SnapshotDsSceneGrid(
 			    m_context, ds_scene_target.image_id, ds_scene_target.desc.view_info);
@@ -3317,10 +3330,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    {"frame", frame}, {"pass", ds_scene_pass}, {"shader", fmt::format("{:016x}", shader)},
 		    {"guest", ds_scene_target.desc.info.data.address},
 		    {"target_slot", ds_scene_target.target_slot},
-		    {"bright_baseline", DemonsAdaptiveCapture::Current().BrightSceneActive(frame)},
-		    {"paired_event", DemonsAdaptiveCapture::Current().CapturedFrame(frame)},
+		    {"capture_phase", frame == bright_baseline_frame ? "bright" :
+		                      frame == dark_onset_frame ? "onset" : "paired_dark"},
+		    {"bright_baseline", frame == bright_baseline_frame},
+		    {"dark_onset", frame == dark_onset_frame},
+		    {"paired_event", frame == paired_dark_frame},
 		    {"before", DsSceneGridJson(ds_scene_before)}, {"after", DsSceneGridJson(after)},
 		    {"changed_cells", changed_cells}, {"inputs", ds_scene_inputs},
+		    {"pixel_shader_data", std::vector<uint32_t>(
+		        bindings.pixel->shader_data.begin(),
+		        bindings.pixel->shader_data.begin() +
+		        std::min<size_t>(bindings.pixel->shader_data.size(), 64u))},
+		    {"pixel_buffers", nlohmann::json::array()},
 		    {"raster", {
 		        {"indices", draw.index_count}, {"instances", draw.instance_count},
 		        {"indexed", draw.IsIndexed()}, {"indirect", indirect != nullptr},
@@ -3344,6 +3365,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		        {"load_clear", rendering.color_attachments[ds_scene_target.target_slot].is_clear}
 		    }}
 		};
+		const auto& ps_buffers = bindings.pixel->runtime->program->info.buffers;
+		for (const auto& resource : ps_buffers) {
+			const auto slot = resource.descriptor_index;
+			if (slot >= bindings.pixel->buffer_sources.size()) continue;
+			const auto& input = bindings.pixel->buffer_sources[slot];
+			payload["pixel_buffers"].push_back({
+			    {"slot", slot}, {"guest", input.address}, {"bytes", input.size},
+			    {"read", resource.read}, {"written", resource.written}});
+		}
 		const auto folder = Config::GetShaderDumpFolder() / "queue-state";
 		std::error_code ec;
 		std::filesystem::create_directories(folder, ec);

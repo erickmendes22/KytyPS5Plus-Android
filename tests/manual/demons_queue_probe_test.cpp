@@ -29,11 +29,14 @@ int main(int argc, char** argv) {
 		detector.Observe(boot_offset + 24, 0.25, 14, 0x281a80000ull);
 		assert(detector.BrightSceneActive(boot_offset + 25));
 		assert(detector.BrightBaselineDue(boot_offset + 25));
-		assert(!detector.BrightBaselineDue(boot_offset + 33));
+		assert(detector.BrightBaselineDue(boot_offset + 33));
+		assert(!detector.BrightBaselineDue(boot_offset + 49));
 		for (int i = 1; i <= 3; ++i) {
 			assert(detector.ShouldSample(boot_offset + (i + 1) * 24));
 			const auto event = detector.Observe(
 			    boot_offset + (i + 1) * 24, 0.001, 0, 0x281a80000ull);
+			if (i == 1) assert(detector.DarkOnsetDue(boot_offset + 49));
+			if (i > 1) assert(!detector.DarkOnsetDue(boot_offset + (i + 1) * 24 + 1));
 			assert(event.triggered == (i == 3));
 		}
 		assert(detector.CaptureDue(boot_offset + 100));
