@@ -2340,15 +2340,15 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	});
 	const auto hdr = find_image(HdrAddress, TextureCache::BindingType::Storage);
 	if (albedo == bindings.images.end() || hdr == bindings.images.end()) return;
-	const auto& textures = context.GetTextureCache();
-	const auto& albedo_image = textures.GetImage(albedo->image_id);
-	const auto& hdr_image = textures.GetImage(hdr->image_id);
+	auto& textures = context.GetTextureCache();
+	auto& albedo_image = textures.GetImage(albedo->image_id);
+	auto& hdr_image = textures.GetImage(hdr->image_id);
 	if (albedo_image.backing.format != vk::Format::eR32Uint ||
 	    hdr_image.backing.format != vk::Format::eR16G16B16A16Sfloat) return;
 
 	const auto snapshot = [&context](const auto& binding, uint32_t texel_bytes) {
 		std::vector<uint8_t> raw;
-		const auto& image = context.GetTextureCache().GetImage(binding.image_id);
+		auto& image = context.GetTextureCache().GetImage(binding.image_id);
 		const auto& backing = image.backing;
 		const auto view = std::ranges::find(image.views, binding.image_view, &CachedImageView::view);
 		if (view == image.views.end() || !backing.image || backing.samples != 1 ||
