@@ -4,7 +4,9 @@
 #include "kernel/addressLayout.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
+#include <type_traits>
 
 // Guest-to-host address folding (ARM64 hosts with a 39-bit user address space).
 //
@@ -32,6 +34,19 @@ inline constexpr uint64_t kFoldSize   = uint64_t {1} << kFoldBits;
 inline constexpr uint64_t kFoldMask   = kFoldSize - 1;
 inline constexpr uint64_t kDomainEnd  = kFoldSize * 2;
 
+// Some PS5 titles map both the low and the folded high guest ranges at once.
+// On a 39-bit host, AND alone aliases those unrelated pages. Saros uses a
+// separate free host VA bank for high guest addresses; every native consumer
+// and the FEX translated memory operands must apply the same displacement.
+// Configured before initializing the game's guest address space.
+inline std::atomic<uint64_t> g_host_shift {0};
+[[nodiscard]] inline uint64_t HostShift() noexcept {
+	return g_host_shift.load(std::memory_order_acquire);
+}
+inline void SetHostShift(uint64_t shift) noexcept {
+	g_host_shift.store(shift, std::memory_order_release);
+}
+
 // True for a guest address that folding moves.
 [[nodiscard]] constexpr bool InDomain(uint64_t guest) noexcept {
 	return guest >= kFoldSize && guest < kDomainEnd;
@@ -39,7 +54,10 @@ inline constexpr uint64_t kDomainEnd  = kFoldSize * 2;
 
 // Host address backing guest address `guest`.
 [[nodiscard]] constexpr uint64_t Fold(uint64_t guest) noexcept {
-	return InDomain(guest) ? guest & kFoldMask : guest;
+	if (!InDomain(guest)) return guest;
+	const uint64_t folded = guest & kFoldMask;
+	// Keep compile-time layout assertions describing the unshifted baseline.
+	return std::is_constant_evaluated() ? folded : folded + HostShift();
 }
 
 // Folds [guest, guest + size) into one contiguous host span. Fails for an empty span, one that
