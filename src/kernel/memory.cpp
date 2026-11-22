@@ -927,6 +927,10 @@ static constexpr uint64_t kSarosFoldAliasSize = 48ull << 30u;
 // headroom beyond the planned folded image; increasing the image itself merely
 // moves this game-derived allocation by the same amount.
 static constexpr uint64_t kSarosFoldHeadroom = 4ull << 30u;
+// The FEX JIT uses this same host shift for the upper 512 GiB guest bank.
+// The 128 GiB offset puts the mapped Saros heap in host 0x300..0x3d,
+// away from the observed legitimate low guest mapping at 0x1cc0000000.
+static constexpr uint64_t kSarosHighHostShift = 128ull << 30u;
 #endif
 
 } // namespace Libs::LibKernel::Memory
@@ -964,6 +968,16 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 			if (g_keep_fold_alias_free && candidate < fold_alias_end &&
 			    candidate + size > HOST_USER_MIN) {
 				current = fold_alias_end;
+				continue;
+			}
+			// The high Saros guest bank is relocated to a second physical host
+			// window. Exclude that physical window from low guest allocations too.
+			const auto shift = Kernel::AddressFold::HostShift();
+			const auto shifted_begin = HOST_USER_MIN + shift;
+			const auto shifted_end = fold_alias_end + shift;
+			if (g_keep_fold_alias_free && shift != 0 &&
+			    candidate < shifted_end && candidate + size > shifted_begin) {
+				current = shifted_end;
 				continue;
 			}
 #endif
@@ -1435,6 +1449,9 @@ void Initialize() {
 	std::string title;
 	g_keep_fold_alias_free =
 	    Loader::SystemContentParamSfoGetString("TITLE_ID", &title) && title == "PPSA07631";
+	// Configure before any guest memory/translator initialization; no game
+	// except Saros observes the relocated high-address bank.
+	Kernel::AddressFold::SetHostShift(g_keep_fold_alias_free ? kSarosHighHostShift : 0);
 #endif
 	VirtualMemory::Init();
 	g_guest_address_space = std::make_unique<GuestAddressSpace>(PhysicalMemory::TotalSize());
@@ -1451,10 +1468,12 @@ void Initialize() {
 		// host 0x18c0000000 and fails with address-range-unavailable.
 		constexpr uint64_t alias_start = HOST_USER_MIN;
 		constexpr uint64_t alias_size  = kSarosFoldAliasSize;
-		if (g_guest_address_space->ReserveFixed(alias_start, alias_size + kSarosFoldHeadroom)) {
+		const uint64_t host_alias_start = alias_start + Kernel::AddressFold::HostShift();
+		if (host_alias_start <= HOST_USER_MAX - (alias_size + kSarosFoldHeadroom - 1) &&
+		    g_guest_address_space->ReserveFixed(host_alias_start, alias_size + kSarosFoldHeadroom)) {
 			EXIT_IF(!g_virtual_ranges->Add(alias_start, alias_size, 0, 0, 0,
 			                               VirtualRangeType::Reserved, "fold-alias", true));
-			Log::WriteToConsoleAndLog("[SAROS_FOLD_ALIAS] protected initial 48 GiB host image and checked 4 GiB headroom\n");
+			Log::WriteToConsoleAndLog("[SAROS_FOLD_ALIAS] reserved upper-bank host window with separate 128 GiB shift and 4 GiB headroom\n");
 		} else {
 			Log::WriteToConsoleAndLog(
 			    "[SAROS_FOLD_ALIAS] initial image or 4 GiB headroom is host-fragmented; use checked fold placement\n");
@@ -3546,6 +3565,17 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 		MapGpuRange(in_addr, len);
 	};
 	if (fixed) {
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+		// A low fixed mapping in the *physical* host bank of Saros's high
+		// reservation would destroy the high mapping's bytes. A genuine
+		// guest address collision cannot be resolved by replacing the view.
+		const auto shift = Kernel::AddressFold::HostShift();
+		if (g_keep_fold_alias_free && shift != 0 && !Kernel::AddressFold::InDomain(in_addr) &&
+		    in_addr < HOST_USER_MIN + shift + kSarosFoldAliasSize + kSarosFoldHeadroom &&
+		    in_addr + len > HOST_USER_MIN + shift) {
+			return fail(KERNEL_ERROR_ENOMEM, "saros_high_host_bank_reserved");
+		}
+#endif
 		if (in_addr == 0 || (in_addr & (PAGE_SIZE - 1u)) != 0 ||
 		    (alignment != 0 && in_addr % alignment != 0)) {
 			return fail(KERNEL_ERROR_EINVAL, "fixed_address_alignment");
@@ -4069,9 +4099,10 @@ static uint64_t FindFoldedReservation(uint64_t hint, uint64_t size, uint64_t ali
 		// Verify that the host tail can back those real allocations *before*
 		// committing to the fold placement; the tail itself is left unregistered
 		// so it can be used as the bottom of the game's guest reservation.
+		const auto shifted_alias_end = candidate.alias_end + Fold::HostShift();
 		if (g_keep_fold_alias_free &&
-		    (candidate.alias_end > Common::AddressLayout::kHostUserEnd - kSarosFoldHeadroom ||
-		     !g_guest_address_space->ReserveFixed(candidate.alias_end, kSarosFoldHeadroom))) {
+		    (shifted_alias_end > Common::AddressLayout::kHostUserEnd - kSarosFoldHeadroom ||
+		     !g_guest_address_space->ReserveFixed(shifted_alias_end, kSarosFoldHeadroom))) {
 			continue;
 		}
 #endif
@@ -4080,7 +4111,7 @@ static uint64_t FindFoldedReservation(uint64_t hint, uint64_t size, uint64_t ali
 		    alias.start == candidate.alias_start && alias.size == candidate_size &&
 		    std::strncmp(alias.name, "fold-alias", sizeof(alias.name)) == 0;
 		if (!present && (g_virtual_ranges->HasOverlap(candidate.alias_start, candidate_size) ||
-		                 !g_guest_address_space->ReserveFixed(candidate.alias_start, candidate_size))) {
+		                 !g_guest_address_space->ReserveFixed(candidate.alias_start + Fold::HostShift(), candidate_size))) {
 			continue;
 		}
 		plan = candidate;
