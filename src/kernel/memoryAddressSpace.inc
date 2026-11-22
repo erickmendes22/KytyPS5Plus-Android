@@ -922,14 +922,16 @@ public:
 		// A 39-bit ARM64 host cannot distinguish two guest addresses whose
 		// low 39 bits coincide. Replacing a different guest's backing at the
 		// folded address corrupts the original mapping and is not a remap.
-		if (replacing && Kernel::AddressFold::InDomain(guest_vaddr)) {
+		if (replacing && (Kernel::AddressFold::InDomain(guest_vaddr) ||
+		                  Kernel::AddressFold::InDomain(vaddr))) {
 			bool foreign_alias = false;
 			uint64_t cursor = vaddr;
 			while (cursor < vaddr + size) {
 				const auto old = FindMappedContainingUnlocked(cursor);
 				if (old == m_mapped.end() ||
-				    old->second.guest_vaddr + (cursor - old->second.vaddr) !=
-				        guest_vaddr + (cursor - vaddr)) {
+				    !Kernel::AddressFold::SameGuestAtHost(
+				        guest_vaddr, vaddr, old->second.guest_vaddr,
+				        old->second.vaddr, cursor)) {
 					foreign_alias = true;
 					break;
 				}
