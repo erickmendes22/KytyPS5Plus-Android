@@ -337,7 +337,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           p = Path('src/cpu/patches/fex-addressfold.patch').read_text()
-          assert p.count('Constant(FEXCore::GuestAddressFold::GetShift()))') == 3
+          assert p.count('Constant(FEXCore::GuestAddressFold::GetShift()))') == 4  # three REP + one InlineConstant IR
           assert "IREmit->_InlineConstant(FEXCore::GuestAddressFold::GetShift())" in p
           assert '39u - __builtin_ctzll(FEXCore::GuestAddressFold::GetShift())' not in p
           assert '39u - std::countr_zero(FEXCore::GuestAddressFold::GetShift())' not in p
