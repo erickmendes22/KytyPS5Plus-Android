@@ -313,13 +313,21 @@ CompactBoxNode DecodeCompactBox(EmitterState& s, const NodeWords& first) {
 	return result;
 }
 
-// The four children's slab tests and the sort; `box(child)` emits a child's six bounds.
+// Match GPURT's BVH4 fast_intersect_bbox used by the working U59 PC renderer:
+// clamp the near and far planes to [0, extent] and grow the far distance with a
+// relative factor (1 + grow * 2^-24). The former Android path grew the raw
+// floating-point *bits* and rejected entry == extent, producing different
+// traversal/hit results for grazing rays and distant scene probes.
 template <typename ChildFn, typename BoxFn>
 uint32_t SortedChildren(EmitterState& s, uint32_t grow, uint32_t sort,
                         uint32_t extent, const Vec3& origin, const Vec3& inverse, const Vec3& forward,
                         ChildFn&& pointer_of, BoxFn&& box_of) {
 	const auto f = TypeF32(s), u = TypeU32(s), b = TypeBool(s);
 	const auto zero = ConstantF32Value(s, 0.0f);
+	const auto one = ConstantF32Value(s, 1.0f);
+	const auto grow_float = Unary(s, spv::OpConvertUToF, f, grow);
+	const auto factor = Binary(s, spv::OpFAdd, f, one,
+	    Binary(s, spv::OpFMul, f, grow_float, ConstantF32(s, 0x33800000u)));
 	std::array<uint32_t, 4> depths, indices;
 	for (uint32_t child = 0; child < 4; ++child) {
 		const auto box = box_of(child);
@@ -336,41 +344,42 @@ uint32_t SortedChildren(EmitterState& s, uint32_t grow, uint32_t sort,
 		    EmitGlsl<GLSLstd450FMax, IR::Type::F32>(s, near[0], near[1]), near[2]);
 		const auto exit = EmitGlsl<GLSLstd450FMin, IR::Type::F32>(s,
 		    EmitGlsl<GLSLstd450FMin, IR::Type::F32>(s, far[0], far[1]), far[2]);
-		// Valid hits have nonnegative exit distance. Saturate ULP growth at +infinity.
-		const auto bits = Unary(s, spv::OpBitcast, u, Select(s, f,
-		    Binary(s, spv::OpFOrdEqual, b, exit, zero), zero, exit));
-		const auto grown_bits = EmitGlsl<GLSLstd450UMin, IR::Type::U32>(s,
-		    Binary(s, spv::OpIAdd, u, bits, grow), ConstantU32(s, 0x7f800000));
-		const auto grown = Unary(s, spv::OpBitcast, f, grown_bits);
-		auto hit = Binary(s, spv::OpLogicalAnd, b,
-		    Binary(s, spv::OpFOrdGreaterThanEqual, b, exit, zero),
-		    Binary(s, spv::OpFOrdLessThan, b, entry, extent));
-		hit = Binary(s, spv::OpLogicalAnd, b, hit,
-		    Binary(s, spv::OpFOrdLessThanEqual, b, entry, grown));
+		const auto nan = Binary(s, spv::OpLogicalOr, b,
+		    Unary(s, spv::OpIsNan, b, entry), Unary(s, spv::OpIsNan, b, exit));
+		const auto near_t = Select(s, f, nan, ConstantF32(s, 0x7f800000u),
+		    EmitGlsl<GLSLstd450FMax, IR::Type::F32>(s, entry, zero));
+		const auto far_t = Select(s, f, nan, ConstantF32(s, 0xff800000u),
+		    EmitGlsl<GLSLstd450FMin, IR::Type::F32>(s, exit, extent));
+		const auto expanded_far = Binary(s, spv::OpFMul, f, far_t, factor);
+		const auto valid = Binary(s, spv::OpFOrdLessThanEqual, b, near_t, expanded_far);
 		const auto pointer = pointer_of(child);
-		hit = Binary(s, spv::OpLogicalAnd, b, hit,
+		const auto hit = Binary(s, spv::OpLogicalAnd, b, valid,
 		    Binary(s, spv::OpINotEqual, b, pointer, ConstantU32(s, ~0u)));
-		depths[child] = Unary(s, spv::OpBitcast, u, Select(s, f, hit,
-		    Select(s, f, Binary(s, spv::OpFOrdGreaterThan, b, entry, zero), entry, zero),
-		    ConstantF32(s, 0x7f800000)));
+		depths[child] = Unary(s, spv::OpBitcast, u, near_t);
 		indices[child] = Select(s, u, hit, pointer, ConstantU32(s, ~0u));
 	}
-	// A select network keeps the original child order when sorting is disabled.
-	constexpr std::array<std::pair<uint32_t, uint32_t>, 5> network {{{0,1}, {2,3}, {0,2}, {1,3}, {1,2}}};
+	// U59/GPURT network: an empty first slot takes a valid second slot;
+	// otherwise swap when the second child is both valid and closer.
+	constexpr std::array<std::pair<uint32_t, uint32_t>, 5> network {{
+	    {0, 2}, {1, 3}, {0, 1}, {2, 3}, {1, 2}}};
 	for (size_t step = 0; step < network.size(); ++step) {
 		const auto [a, c] = network[step];
+		const auto b_valid = Binary(s, spv::OpINotEqual, b, indices[c], ConstantU32(s, ~0u));
+		const auto a_empty = Binary(s, spv::OpIEqual, b, indices[a], ConstantU32(s, ~0u));
+		const auto nearer = Binary(s, spv::OpULessThan, b, depths[c], depths[a]);
 		const auto swap = Binary(s, spv::OpLogicalAnd, b, sort,
-		    Binary(s, spv::OpUGreaterThan, b, depths[a], depths[c]));
-		const auto depth = depths[a], index = indices[a];
+		    Binary(s, spv::OpLogicalOr, b, a_empty,
+		        Binary(s, spv::OpLogicalAnd, b, b_valid, nearer)));
+		const auto old_depth = depths[a], old_index = indices[a];
 		const auto later = [&](uint32_t position) {
 			return std::ranges::any_of(std::span(network).subspan(step + 1), [=](auto pair) {
 				return pair.first == position || pair.second == position;
 			});
 		};
-		if (later(a)) depths[a] = Select(s, u, swap, depths[c], depth);
-		if (later(c)) depths[c] = Select(s, u, swap, depth, depths[c]);
-		indices[a] = Select(s, u, swap, indices[c], index);
-		indices[c] = Select(s, u, swap, index, indices[c]);
+		if (later(a)) depths[a] = Select(s, u, swap, depths[c], old_depth);
+		if (later(c)) depths[c] = Select(s, u, swap, old_depth, depths[c]);
+		indices[a] = Select(s, u, swap, indices[c], old_index);
+		indices[c] = Select(s, u, swap, old_index, indices[c]);
 	}
 	return Vector(s, TypeU32Vector(s, 4), indices);
 }
