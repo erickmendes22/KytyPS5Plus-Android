@@ -42,6 +42,22 @@ int main(int argc, char** argv) {
 		assert(detector.CaptureDue(boot_offset + 148));
 		detector.NoteCaptured(boot_offset + 148);
 		assert(!detector.CaptureDue(boot_offset + 172)); // three-frame budget
+		// Constant darkness must never open a fresh capture just because
+		// 180 frames passed. This happened three times in the 717 ZIP.
+		for (int i = 1; i <= 10; ++i) {
+			const auto state = detector.Observe(
+			    boot_offset + 148 + i * 24, 0.000335, 0, 0x281a80000ull);
+			assert(!state.triggered);
+		}
+		// Real recovery must permit another independently observed transition.
+		detector.MarkGeometry(boot_offset + 412, 5);
+		detector.Observe(boot_offset + 412, 0.08, 14, 0x281a80000ull);
+		detector.Observe(boot_offset + 436, 0.09, 15, 0x281a80000ull);
+		for (int i = 1; i <= 3; ++i) {
+			const auto event = detector.Observe(
+			    boot_offset + 436 + i * 24, 0.0002, 0, 0x281a80000ull);
+			assert(event.triggered == (i == 3));
+		}
 	}
 	static_assert(DefaultPixels(1600, 900)[4] == std::pair{1200u, 675u});
 	constexpr auto coverage = MaterialCoveragePixels(1600, 900, 0);

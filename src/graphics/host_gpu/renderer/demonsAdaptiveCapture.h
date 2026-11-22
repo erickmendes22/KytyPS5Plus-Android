@@ -39,6 +39,8 @@ public:
 			m_bright_reference = 0.0;
 			m_low_streak = 0;
 			m_scene_samples = 0;
+			m_dark_latched = false;
+			m_recovered_streak = 0;
 		}
 		m_scene_guest = guest;
 		if (m_last_geometry < 0 || frame - m_last_geometry > 300) {
@@ -51,17 +53,36 @@ public:
 		++m_scene_samples;
 		const bool lit = level >= 0.02 && visible >= 3;
 		if (lit) {
-			m_bright_reference = std::max(m_bright_reference * 0.98, level);
+			// A prolonged blackout is one transition, not a new event every
+			// 180 frames. Rearm only when actual lighting recovers twice.
+			m_recovered_streak = m_dark_latched ? m_recovered_streak + 1 : 0;
+			if (m_dark_latched && m_recovered_streak >= 2) {
+				m_dark_latched = false;
+				m_last_trigger = -1;
+				m_last_event_capture = -1;
+				m_event_capture_count = 0;
+				m_bright_reference = level;
+				m_scene_samples = 1;
+			}
+			if (!m_dark_latched)
+				m_bright_reference = std::max(m_bright_reference * 0.98, level);
 			m_low_streak = 0;
 		} else {
-			const bool dark_relative = m_bright_reference >= 0.02 &&
-			    level <= m_bright_reference * 0.10;
-			const bool dark_absolute = level < 0.006 && visible <= 2;
-			m_low_streak = (dark_relative || dark_absolute)
-			    ? m_low_streak + 1 : 0;
+			m_recovered_streak = 0;
+			if (!m_dark_latched) {
+				const bool dark_relative = m_bright_reference >= 0.02 &&
+				    level <= m_bright_reference * 0.10;
+				const bool dark_absolute = level < 0.006 && visible <= 2;
+				m_low_streak = (dark_relative || dark_absolute)
+				    ? m_low_streak + 1 : 0;
+			}
 		}
 		Observation result {false, m_bright_reference >= 0.02, m_low_streak,
 		                    m_bright_reference, "scouting"};
+		if (m_dark_latched) {
+			result.reason = "sustained_dark";
+			return result;
+		}
 		if (m_last_trigger >= 0 && frame - m_last_trigger < 180) {
 			result.reason = "cooldown";
 			return result;
@@ -71,6 +92,8 @@ public:
 		const bool dark_entry = m_bright_reference < 0.02 &&
 		    m_scene_samples >= 5 && m_low_streak >= 5;
 		if (transition || dark_entry) {
+			m_dark_latched = true;
+			m_recovered_streak = 0;
 			m_last_trigger = frame;
 			m_last_event_capture = -1;
 			m_event_capture_count = 0;
@@ -108,6 +131,8 @@ private:
 		m_scene_guest = 0;
 		m_last_geometry = -1;
 		m_scene_samples = 0;
+		m_dark_latched = false;
+		m_recovered_streak = 0;
 		m_low_streak = 0;
 	}
 	int32_t m_last_sample = -1;
@@ -118,6 +143,8 @@ private:
 	uint64_t m_scene_guest = 0;
 	int32_t m_last_geometry = -1;
 	uint32_t m_scene_samples = 0;
+	bool m_dark_latched = false;
+	uint32_t m_recovered_streak = 0;
 	uint32_t m_low_streak = 0;
 };
 

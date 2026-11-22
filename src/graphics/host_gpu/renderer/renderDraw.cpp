@@ -1329,7 +1329,7 @@ static void MonitorDsCompositeLight(RenderContext& context, const PreparedBindin
 	const auto w = std::max(backing.extent.width >> view->info.base_level, 1u);
 	const auto h = std::max(backing.extent.height >> view->info.base_level, 1u);
 	if (w < 16 || h < 16) return;
-	constexpr uint32_t count = 16;
+	constexpr uint32_t count = 64;
 	constexpr uint32_t texel_bytes = 8;
 	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
 	auto [mapped, offset] = download.Map(count * texel_bytes, 16u, true);
@@ -1341,8 +1341,8 @@ static void MonitorDsCompositeLight(RenderContext& context, const PreparedBindin
 		r.bufferOffset = offset + uint64_t{i} * texel_bytes;
 		r.imageSubresource = {vk::ImageAspectFlagBits::eColor,
 		                      view->info.base_level, view->info.base_layer, 1};
-		r.imageOffset = {static_cast<int32_t>((i % 4u * 2u + 1u) * w / 8u),
-		                 static_cast<int32_t>((i / 4u * 2u + 1u) * h / 8u), 0};
+		r.imageOffset = {static_cast<int32_t>((i % 8u * 2u + 1u) * w / 16u),
+		                 static_cast<int32_t>((i / 8u * 2u + 1u) * h / 16u), 0};
 		r.imageExtent = {1, 1, 1};
 	}
 	image.Download(std::span{regions}, download.Handle(), offset, count * texel_bytes);
@@ -1357,6 +1357,7 @@ static void MonitorDsCompositeLight(RenderContext& context, const PreparedBindin
 		                                  int(exponent) - 15);
 	};
 	double total = 0.0;
+	double peak = 0.0;
 	uint32_t visible = 0;
 	for (uint32_t i = 0; i < count; ++i) {
 		std::array<uint16_t, 4> rgba {};
@@ -1364,6 +1365,7 @@ static void MonitorDsCompositeLight(RenderContext& context, const PreparedBindin
 		const auto lum = 0.2126 * half(rgba[0]) + 0.7152 * half(rgba[1]) +
 		                 0.0722 * half(rgba[2]);
 		total += std::min(lum, 4.0);
+		peak = std::max(peak, lum);
 		visible += lum >= 0.006;
 	}
 	const auto level = total / count;
@@ -1371,11 +1373,57 @@ static void MonitorDsCompositeLight(RenderContext& context, const PreparedBindin
 	    frame, level, visible, selected->desc.info.data.address);
 	Log::WriteToConsoleAndLog(fmt::format(
 	    "[DS_GAMEPLAY_LIGHT_MONITOR] frame={} scene=0x{:x} level={:.7f} "
-	    "lit_pixels={}/{} bright_reference={:.7f} low_streak={} "
+	    "lit_pixels={}/{} peak_luminance={:.7f} bright_reference={:.7f} low_streak={} "
 	    "triggered={} reason={} owner=0x{:x} version={}\n",
-	    frame, selected->desc.info.data.address, level, visible, count,
+	    frame, selected->desc.info.data.address, level, visible, count, peak,
 	    state.bright_reference, state.low_streak, state.triggered, state.reason,
 	    image.info.data.address, image.ContentVersion()));
+}
+
+// The older post-pass probe followed the active light tiles, so its source
+// coordinates changed with the camera. A black sample in frame B cannot be
+// compared to a nonblack sample in frame A unless both use the same XY.
+// Sample the post-processing texture at fixed normalized coordinates once per
+// selected frame, preserving its native view/mip and ownership metadata.
+static void ProbeDsPostFixedInput(RenderContext& context, const PreparedBindings& pixel,
+                                  uint64_t shader, int32_t frame) {
+	if (shader != 0xd1768d02fcf96a58ull && shader != 0x844e5697cf62ecd7ull) return;
+	static const bool enabled = [] {
+		const auto* v = std::getenv("KYTY_DS_FRAME_TRACE");
+		return v != nullptr && v[0] == '1' && v[1] == '\0';
+	}();
+	if (!enabled || Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
+	static DemonsRollingProbe::FrameGate baseline;
+	static DemonsRollingProbe::FrameGate event_capture;
+	static uint32_t samples = 0;
+	if (samples >= 20u) return;
+	const bool baseline_due = baseline.Due(frame, 192);
+	const bool event_due = DemonsAdaptiveCapture::Current().CaptureDue(frame) &&
+	                       event_capture.Due(frame, 24);
+	if (!baseline_due && !event_due) return;
+	const auto found = std::ranges::find_if(pixel.images, [](const auto& input) {
+		return input.image_id && !input.placeholder &&
+		       input.desc.info.data.address == 0x346d00000ull;
+	});
+	if (found == pixel.images.end()) return;
+	const auto& image = context.GetTextureCache().GetImage(found->image_id);
+	const auto view = std::ranges::find(image.views, found->image_view,
+	                                   &CachedImageView::view);
+	if (view == image.views.end()) return;
+	++samples;
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "[DS_POST_FIXED_INPUT] frame={} shader=0x{:016x} guest=0x{:x} "
+	    "owner=0x{:x} version={} mip={} layer={} "
+	    "gpu_modified={} cpu_dirty={} trigger={}\n",
+	    frame, shader, found->desc.info.data.address, image.info.data.address,
+	    image.ContentVersion(), view->info.base_level, view->info.base_layer,
+	    image.IsGpuModified(), image.IsCpuDirty(), event_due));
+	RenderColorInfo color {};
+	color.image_id = found->image_id;
+	color.desc = found->desc;
+	// Null pixel coordinates use the same 5 fixed normalized positions on
+	// every sample. Unlike the old tile-following comparison this is valid.
+	ProbeDsColorOutputs(context, &color, 1u, shader, false, true, &view->info);
 }
 
 uint32_t PickDsColoredTilePixels(RenderContext& context, ImageId id,
@@ -2476,6 +2524,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const auto frame = m_context.GetGpu().GetFrameNum();
 		const auto shader = state.ps_input_info.stage.program->shader_hash;
 		const bool composite = shader == 0x3265b01ed00a5c01ull;
+		ProbeDsPostFixedInput(m_context, *bindings.pixel, shader, frame);
 		const auto& inputs = bindings.pixel->images;
 		if (composite) MonitorDsCompositeLight(m_context, *bindings.pixel, frame);
 		const auto colors = std::span {state.color_info, state.color_count};
