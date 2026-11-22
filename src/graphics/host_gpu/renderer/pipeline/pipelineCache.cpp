@@ -518,11 +518,11 @@ struct PipelineCache::ProgramCache {
 				result.spirv = std::move(copy);
 				program.bindings.descriptor_counts[slot] = 1;
 				program.bindings.descriptor_mask |= uint64_t{1} << slot;
-				program.ds_light_math_probe = true;
+				program.ds_light_math_variant = fingerprint;
 			}
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_LIGHT_MATH_VARIANT] shader=0x{:016x} binary=0x{:016x} instrumented={}\n",
-			    options.shader_hash, fingerprint, program.ds_light_math_probe));
+			    options.shader_hash, fingerprint, program.ds_light_math_variant != 0));
 		}
 		DumpShaderSpirv(stage_name, options.shader_hash, result.spirv);
 

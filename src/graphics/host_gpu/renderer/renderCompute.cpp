@@ -321,7 +321,7 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 void RenderExecutor::BindDsLightMath(PreparedBindings& bindings,
                                     const DemonsQueueProbe::Capture* capture) {
 	using namespace DemonsLightMathProbe;
-	if (!bindings.runtime->program->ds_light_math_probe) return;
+	if (!bindings.runtime->program->ds_light_math_variant) return;
 	auto& storage = m_ds_light_math_buffers[static_cast<bool>(capture)];
 	const bool initialize = !storage;
 	if (initialize) {
@@ -345,13 +345,31 @@ void RenderExecutor::BindDsLightMath(PreparedBindings& bindings,
 	                                                   WordCount * sizeof(uint32_t)};
 }
 
-void RenderExecutor::ReadDsLightMath(const DemonsQueueProbe::Capture& capture, uint64_t submit) {
+void RenderExecutor::ReadDsLightMath(const DemonsQueueProbe::Capture& capture, uint64_t submit,
+                                    const PreparedBindings& bindings) {
 	using namespace DemonsLightMathProbe;
 	auto& storage = m_ds_light_math_buffers[1];
 	m_context.GetCommandScheduler().Finish();
 	std::array<uint32_t, WordCount> data {};
 	storage->Invalidate(0, sizeof(data));
 	std::memcpy(data.data(), storage->Mapped().data(), sizeof(data));
+	// These descriptor slots are fixed in the two verified queue 33 binaries.
+	const auto variant = bindings.runtime->program->ds_light_math_variant;
+	for (const uint32_t index : {6u, 7u}) {
+		if (index >= bindings.images.size()) continue;
+		const auto& binding = bindings.images[index];
+		if (!binding.image_id || binding.placeholder) continue;
+		const auto& image = m_context.GetTextureCache().GetImage(binding.image_id);
+		const auto found = std::ranges::find(image.views, binding.image_view, &CachedImageView::view);
+		if (found == image.views.end()) continue;
+		const auto& view = found->info;
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_LIGHT_TERM_VIEW] frame={} submit={} variant={:016x} slot={} guest=0x{:x} "
+		    "owner=0x{:x} version={} view={} base_layer={} layer_count={} base_mip={}\n",
+		    capture.frame, submit, variant, index, binding.desc.info.data.address,
+		    image.info.data.address, image.ContentVersion(), vk::to_string(view.type),
+		    view.base_layer, view.layer_count, view.base_level));
+	}
 	const auto float_at = [](const uint32_t* row, size_t i) { return std::bit_cast<float>(row[i]); };
 	for (uint32_t i = 0; i < Samples; ++i) {
 		const auto* row = data.data() + Samples + i * Stride;
@@ -360,22 +378,32 @@ void RenderExecutor::ReadDsLightMath(const DemonsQueueProbe::Capture& capture, u
 		    "[DS_LIGHT_MATH] frame={} submit={} sample={} xy={},{} wrote_hdr={} "
 		    "albedo=0x{:08x} depth={:.8g} stencil=0x{:02x} accumulated={:.8g}/{:.8g}/{:.8g} "
 		    "scale={:.8g} rgb_factors={:.8g}/{:.8g}/{:.8g} incoming={:.8g}/{:.8g}/{:.8g} "
-		    "stored={:.8g}/{:.8g}/{:.8g} auxiliary={:.8g} "
-		    "shadow_a_seen={} shadow_a_result={:.8g} shadow_a_ref={:.8g} "
-		    "shadow_b_seen={} shadow_b_result={:.8g} shadow_b_ref={:.8g}\n",
+		    "stored={:.8g}/{:.8g}/{:.8g} auxiliary={:.8g}\n",
 		    capture.frame, submit, i, x, y, row[0] != 0, row[1], float_at(row, 2), row[3],
 		    float_at(row, 4), float_at(row, 5), float_at(row, 6), float_at(row, 7),
 		    float_at(row, 8), float_at(row, 9), float_at(row, 10),
 		    float_at(row, 11), float_at(row, 12), float_at(row, 13),
-		    float_at(row, 14), float_at(row, 15), float_at(row, 16), float_at(row, 17),
-		    row[18] != 0, float_at(row, 19), float_at(row, 20),
-		    row[22] != 0, float_at(row, 23), float_at(row, 24)));
+		    float_at(row, 14), float_at(row, 15), float_at(row, 16), float_at(row, 17)));
+		for (uint32_t site = 0; site < 2; ++site) {
+			const auto* term = row + TermOffset + site * TermStride;
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_LIGHT_TERM] frame={} submit={} sample={} site={} count={} "
+			    "last_uv_layer={:.8g}/{:.8g}/{:.8g} last_light_rgb={:.8g}/{:.8g}/{:.8g} "
+			    "last_weight={:.8g} last_shadow_result={:.8g} last_shadow_ref={:.8g} "
+			    "last_visibility={:.8g} last_weighted={:.8g} "
+			    "sum_before_shadow={:.8g}/{:.8g}/{:.8g} sum_after_shadow={:.8g}/{:.8g}/{:.8g}\n",
+			    capture.frame, submit, i, site, term[0], float_at(term, 9), float_at(term, 10),
+			    float_at(term, 11), float_at(term, 3), float_at(term, 4), float_at(term, 5),
+			    float_at(term, 6), float_at(term, 1), float_at(term, 2),
+			    float_at(term, 7), float_at(term, 8), float_at(term, 12), float_at(term, 13),
+			    float_at(term, 14), float_at(term, 15), float_at(term, 16), float_at(term, 17)));
+		}
 	}
 }
 
 static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& input,
                              PreparedBindings& bindings, uint64_t indirect_args = 0) {
-	if (input.stage.program->ds_light_math_probe ||
+	if (input.stage.program->ds_light_math_variant ||
 	    input.stage.program->bindings.descriptor_counts[
 	        static_cast<size_t>(ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory)] == 0) {
 		return;
@@ -1919,7 +1947,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			break;
 		}
 	}
-	const bool light_math_sample = queue_capture && program.ds_light_math_probe &&
+	const bool light_math_sample = queue_capture && program.ds_light_math_variant &&
 	    m_ds_light_tiles[captured_queue_index].valid;
 	BindDsLightMath(bindings, light_math_sample ? queue_capture : nullptr);
 	auto* post = BeginDsPostCompute(bindings, submit_id);
@@ -2005,7 +2033,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		host_read.dstAccessMask = vk::AccessFlagBits::eHostRead;
 		vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
 		                          vk::PipelineStageFlagBits::eHost, {}, 1, &host_read, 0, nullptr, 0, nullptr);
-		ReadDsLightMath(*queue_capture, submit_id);
+		ReadDsLightMath(*queue_capture, submit_id, bindings);
 	}
 	if (post) ProbeDsPostImages(bindings, *post, submit_id, program.shader_hash, true, false);
 	if (material_probe) {

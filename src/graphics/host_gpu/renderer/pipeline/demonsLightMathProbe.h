@@ -12,17 +12,26 @@ namespace Libs::Graphics::DemonsLightMathProbe {
 
 constexpr uint64_t Shader = 0xe3daeb1e7426761bull;
 constexpr uint32_t Samples = 5;
-constexpr uint32_t Stride = 26;
-constexpr uint32_t WordCount = Samples + Samples * Stride;
 constexpr uint32_t ColorWords = 17;
-constexpr uint32_t ShadowWords = 2;
+constexpr uint32_t TermWords = 11;
+constexpr uint32_t TermOffset = 1 + ColorWords;
+constexpr uint32_t TermStride = 1 + TermWords + 6;
+constexpr uint32_t Stride = TermOffset + 2 * TermStride;
+constexpr uint32_t WordCount = Samples + Samples * Stride;
 
 // IDs from the captured modules. An exact binary fingerprint is required:
 // specializing even one descriptor may renumber intermediate SSA values.
+struct TermSite {
+	uint32_t anchor, active, shadow, reference;
+	std::array<uint32_t, 3> rgb;
+	uint32_t weight, visibility, weighted;
+	std::array<uint32_t, 3> coordinates;
+};
+
 struct Sites {
 	uint32_t write_image, x, y;
 	std::array<uint32_t, ColorWords> colors;
-	std::array<uint32_t, 2> shadow_result, shadow_ref;
+	std::array<TermSite, 2> terms;
 };
 
 inline bool Instrument(std::vector<uint32_t>& spirv, uint64_t fingerprint, uint32_t binding) {
@@ -32,13 +41,19 @@ inline bool Instrument(std::vector<uint32_t>& spirv, uint64_t fingerprint, uint3
 			sites = {3727, 269, 277,
 			         {422, 315, 291, 3647, 3645, 3646, 1241, 1105, 1109, 1123,
 			          3660, 3662, 3664, 3700, 3712, 3706, 1270},
-			         {2313, 3485}, {2303, 3476}};
+			         {{{2386, 1987, 2313, 2303, {2329, 2331, 2333}, 2347, 2381, 2386,
+			            {2274, 2287, 0}},
+			           {3555, 3165, 3485, 3476, {3501, 3503, 3505}, 3518, 3550, 3555,
+			            {3447, 3460, 0}}}}};
 			break;
 		case 0xc8fc494909210500ull:
 			sites = {3738, 274, 282,
 			         {427, 320, 296, 3658, 3656, 3657, 1246, 1110, 1114, 1128,
 			          3671, 3673, 3675, 3711, 3723, 3717, 1275},
-			         {2320, 3495}, {2308, 3485}};
+			         {{{2395, 1992, 2320, 2308, {2338, 2340, 2342}, 2356, 2390, 2395,
+			            {2279, 2292, 2259}},
+			           {3566, 3174, 3495, 3485, {3512, 3514, 3516}, 3529, 3561, 3566,
+			            {3456, 3469, 3437}}}}};
 			break;
 		default: return false;
 	}
@@ -50,7 +65,7 @@ inline bool Instrument(std::vector<uint32_t>& spirv, uint64_t fingerprint, uint3
 		out.push_back((static_cast<uint32_t>(args.size() + 1) << 16) | op);
 		out.insert(out.end(), args);
 	};
-	uint32_t u32 = 0, boolean = 0, void_type = 0, ptr_word = 0;
+	uint32_t u32 = 0, f32 = 0, boolean = 0, void_type = 0, ptr_word = 0;
 	size_t first_type = 0;
 	for (size_t i = 5; i < spirv.size();) {
 		const size_t count = spirv[i] >> 16;
@@ -59,13 +74,14 @@ inline bool Instrument(std::vector<uint32_t>& spirv, uint64_t fingerprint, uint3
 		if (!first_type && op >= spv::OpTypeVoid && op <= spv::OpTypeForwardPointer)
 			first_type = i;
 		if (op == spv::OpTypeInt && spirv[i + 2] == 32 && spirv[i + 3] == 0) u32 = spirv[i + 1];
+		if (op == spv::OpTypeFloat && spirv[i + 2] == 32) f32 = spirv[i + 1];
 		if (op == spv::OpTypeBool) boolean = spirv[i + 1];
 		if (op == spv::OpTypeVoid) void_type = spirv[i + 1];
 		if (op == spv::OpTypePointer && spirv[i + 2] == spv::StorageClassStorageBuffer &&
 		    spirv[i + 3] == u32) ptr_word = spirv[i + 1];
 		i += count;
 	}
-	if (!(first_type && u32 && boolean && void_type && ptr_word)) return false;
+	if (!(first_type && u32 && f32 && boolean && void_type && ptr_word)) return false;
 
 	const auto data = id(), block = id(), ptr_block = id(), buffer = id();
 	std::array<uint32_t, WordCount> constants {};
@@ -88,20 +104,23 @@ inline bool Instrument(std::vector<uint32_t>& spirv, uint64_t fingerprint, uint3
 		emit(output, spv::OpAccessChain, {ptr_word, ptr, buffer, constants[0], constants[slot]});
 		return ptr;
 	};
+	const auto enabled = id();
+	emit(declarations, spv::OpConstantTrue, {boolean, enabled});
 	const auto recorder_type = [&](uint32_t word_count) {
 		const auto type = id();
-		declarations.push_back(((5 + word_count) << 16) | spv::OpTypeFunction);
-		declarations.insert(declarations.end(), {type, void_type, u32, u32});
+		declarations.push_back(((6 + word_count) << 16) | spv::OpTypeFunction);
+		declarations.insert(declarations.end(), {type, void_type, u32, u32, boolean});
 		declarations.insert(declarations.end(), word_count, u32);
 		return type;
 	};
-	const auto make_recorder = [&](uint32_t type, uint32_t offset, uint32_t word_count) {
-		const auto function = id(), x = id(), y = id();
+	const auto make_recorder = [&](uint32_t type, uint32_t offset, uint32_t word_count, bool sum_terms) {
+		const auto function = id(), x = id(), y = id(), active = id();
 		std::vector<uint32_t> parameters;
 		for (uint32_t i = 0; i < word_count; ++i) parameters.push_back(id());
 		emit(functions, spv::OpFunction, {void_type, function, 0, type});
 		emit(functions, spv::OpFunctionParameter, {u32, x});
 		emit(functions, spv::OpFunctionParameter, {u32, y});
+		emit(functions, spv::OpFunctionParameter, {boolean, active});
 		for (auto parameter : parameters)
 			emit(functions, spv::OpFunctionParameter, {u32, parameter});
 		emit(functions, spv::OpLabel, {id()});
@@ -110,15 +129,40 @@ inline bool Instrument(std::vector<uint32_t>& spirv, uint64_t fingerprint, uint3
 		emit(functions, spv::OpBitwiseOr, {u32, coord, x, shifted});
 		for (uint32_t sample = 0; sample < Samples; ++sample) {
 			const auto key_ptr = word_ptr(functions, sample), key = id();
-			const auto selected = id(), write = id(), merge = id();
+			const auto matches = id(), selected = id(), write = id(), merge = id();
 			emit(functions, spv::OpLoad, {u32, key, key_ptr});
-			emit(functions, spv::OpIEqual, {boolean, selected, key, coord});
+			emit(functions, spv::OpIEqual, {boolean, matches, key, coord});
+			emit(functions, spv::OpLogicalAnd, {boolean, selected, matches, active});
 			emit(functions, spv::OpSelectionMerge, {merge, 0});
 			emit(functions, spv::OpBranchConditional, {selected, write, merge});
 			emit(functions, spv::OpLabel, {write});
 			const uint32_t base = Samples + sample * Stride + offset;
 			auto pointer = word_ptr(functions, base);
-			emit(functions, spv::OpStore, {pointer, constants[1]});
+			if (sum_terms) {
+				const auto old = id(), increment = id();
+				emit(functions, spv::OpLoad, {u32, old, pointer});
+				emit(functions, spv::OpIAdd, {u32, increment, old, constants[1]});
+				emit(functions, spv::OpStore, {pointer, increment});
+				// Preserve sums across the full loop, in addition to keeping the last term.
+				for (uint32_t group = 0; group < 2; ++group) {
+					const auto weight = id();
+					emit(functions, spv::OpBitcast, {f32, weight, parameters[group == 0 ? 5 : 7]});
+					for (uint32_t channel = 0; channel < 3; ++channel) {
+						const auto color = id(), term = id(), old_bits = id(),
+						           old_value = id(), sum = id(), sum_bits = id();
+						const auto cell = word_ptr(functions, base + 1 + TermWords + group * 3 + channel);
+						emit(functions, spv::OpBitcast, {f32, color, parameters[2 + channel]});
+						emit(functions, spv::OpFMul, {f32, term, color, weight});
+						emit(functions, spv::OpLoad, {u32, old_bits, cell});
+						emit(functions, spv::OpBitcast, {f32, old_value, old_bits});
+						emit(functions, spv::OpFAdd, {f32, sum, old_value, term});
+						emit(functions, spv::OpBitcast, {u32, sum_bits, sum});
+						emit(functions, spv::OpStore, {cell, sum_bits});
+					}
+				}
+			} else {
+				emit(functions, spv::OpStore, {pointer, constants[1]});
+			}
 			for (uint32_t i = 0; i < parameters.size(); ++i) {
 				pointer = word_ptr(functions, base + 1 + i);
 				emit(functions, spv::OpStore, {pointer, parameters[i]});
@@ -130,13 +174,13 @@ inline bool Instrument(std::vector<uint32_t>& spirv, uint64_t fingerprint, uint3
 		emit(functions, spv::OpFunctionEnd, {});
 		return function;
 	};
-	const auto rgb = make_recorder(recorder_type(ColorWords), 0, ColorWords);
-	const auto shadow_type = recorder_type(ShadowWords);
-	const std::array shadow {make_recorder(shadow_type, 18, ShadowWords),
-	                         make_recorder(shadow_type, 22, ShadowWords)};
+	const auto rgb = make_recorder(recorder_type(ColorWords), 0, ColorWords, false);
+	const auto term_type = recorder_type(TermWords);
+	const std::array terms {make_recorder(term_type, TermOffset, TermWords, true),
+	                        make_recorder(term_type, TermOffset + TermStride, TermWords, true)};
 	std::vector<uint32_t> result(spirv.begin(), spirv.begin() + 5);
 	bool entry = false, globals = false, color_written = false;
-	uint32_t shadows = 0;
+	uint32_t term_sites = 0;
 	for (size_t i = 5; i < spirv.size();) {
 		const uint32_t count = spirv[i] >> 16;
 		const auto op = static_cast<spv::Op>(spirv[i] & 0xffff);
@@ -146,8 +190,8 @@ inline bool Instrument(std::vector<uint32_t>& spirv, uint64_t fingerprint, uint3
 			globals = true;
 		}
 		if (op == spv::OpImageWrite && spirv[i + 1] == sites.write_image) {
-			result.push_back(((6 + ColorWords) << 16) | spv::OpFunctionCall);
-			result.insert(result.end(), {void_type, id(), rgb, sites.x, sites.y});
+			result.push_back(((7 + ColorWords) << 16) | spv::OpFunctionCall);
+			result.insert(result.end(), {void_type, id(), rgb, sites.x, sites.y, enabled});
 			result.insert(result.end(), sites.colors.begin(), sites.colors.end());
 			color_written = true;
 		}
@@ -160,20 +204,24 @@ inline bool Instrument(std::vector<uint32_t>& spirv, uint64_t fingerprint, uint3
 		} else {
 			result.insert(result.end(), spirv.begin() + i, spirv.begin() + i + count);
 		}
-		if (op == spv::OpImageSampleDrefExplicitLod) {
-			for (uint32_t s = 0; s < shadow.size(); ++s) {
-				if (spirv[i + 2] != sites.shadow_result[s]) continue;
-				const auto factor_bits = id(), ref_bits = id();
-				emit(result, spv::OpBitcast, {u32, factor_bits, sites.shadow_result[s]});
-				emit(result, spv::OpBitcast, {u32, ref_bits, sites.shadow_ref[s]});
+		if (op == spv::OpSelect) {
+			for (uint32_t slot = 0; slot < terms.size(); ++slot) {
+				const auto& term = sites.terms[slot];
+				if (spirv[i + 2] != term.anchor) continue;
+				const auto shadow_bits = id(), ref_bits = id();
+				emit(result, spv::OpBitcast, {u32, shadow_bits, term.shadow});
+				emit(result, spv::OpBitcast, {u32, ref_bits, term.reference});
 				emit(result, spv::OpFunctionCall,
-				     {void_type, id(), shadow[s], sites.x, sites.y, factor_bits, ref_bits});
-				shadows |= 1u << s;
+				     {void_type, id(), terms[slot], sites.x, sites.y, term.active,
+				      shadow_bits, ref_bits, term.rgb[0], term.rgb[1], term.rgb[2],
+				      term.weight, term.visibility, term.weighted, term.coordinates[0],
+				      term.coordinates[1], term.coordinates[2] ? term.coordinates[2] : constants[0]});
+				term_sites |= 1u << slot;
 			}
 		}
 		i += count;
 	}
-	if (!entry || !globals || !color_written || shadows != 3) return false;
+	if (!entry || !globals || !color_written || term_sites != 3) return false;
 	result.insert(result.end(), functions.begin(), functions.end());
 	result[3] = next;
 	spirv = std::move(result);

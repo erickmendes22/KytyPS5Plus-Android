@@ -452,7 +452,8 @@ private:
 	                          const std::array<uint32_t, 3>& groups = {}, bool groups_valid = false);
 	std::array<std::unique_ptr<Buffer>, 2> m_ds_light_math_buffers;
 	void BindDsLightMath(PreparedBindings& bindings, const DemonsQueueProbe::Capture* capture);
-	void ReadDsLightMath(const DemonsQueueProbe::Capture& capture, uint64_t submit);
+	void ReadDsLightMath(const DemonsQueueProbe::Capture& capture, uint64_t submit,
+	                     const PreparedBindings& bindings);
 	DemonsQueueProbe::Capture* DsPostCapture(uint64_t shader);
 	void ProbeDsPostImages(const PreparedBindings& bindings, const DemonsQueueProbe::Capture& capture,
 	                       uint64_t submit, uint64_t shader, bool compute, bool before);
