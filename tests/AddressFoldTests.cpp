@@ -169,6 +169,28 @@ void TestSarosMappedGuestOwner() {
 	      "overflowing previous guest offsets never alias");
 }
 
+void TestSarosRelocatedHighHostBank() {
+	constexpr uint64_t high_guest = 0x9cc0000000ull;
+	constexpr uint64_t low_guest  = 0x1cc0000000ull;
+	constexpr uint64_t shift = 128ull * kGiB;
+	static_assert(Fold(high_guest) == low_guest, "constant evaluation keeps the baseline");
+	Check(HostShift() == 0, "other titles use zero host shift");
+	SetHostShift(shift);
+	uint64_t high_host = 0;
+	uint64_t low_host = 0;
+	Check(FoldSpan(high_guest, 192ull * 1024 * 1024, &high_host),
+	      "Saros 192 MiB map remains a contiguous high-bank host span");
+	Check(FoldSpan(low_guest, 0x10000, &low_host), "Saros 64 KiB low span remains valid");
+	Check(high_host == 0x3cc0000000ull && low_host == low_guest && high_host != low_host,
+	      "the two observed Saros guest mappings must never share host addresses");
+	Check(high_host + 192ull * 1024 * 1024 <= kWindowEnd,
+	      "relocated guest range remains inside the 39-bit host user arena");
+	Check(Fold(0x8000000000ull) == shift, "first upper-bank guest page is relocated");
+	Check(Fold(0x1cc0000000ull) == low_guest, "lower bank preserves guest identity");
+	SetHostShift(0);
+	Check(Fold(high_guest) == low_guest, "non-Saros folding remains unchanged");
+}
+
 void TestAprReadBackingRange() {
 	constexpr uint64_t limit = 0x7000000000ull;
 	uint64_t host = 0;
@@ -231,6 +253,7 @@ int main() {
 	TestSarosObservedFoldedDirectMapping();
 	TestSarosFixedMappingBeyondFoldedArena();
 	TestSarosMappedGuestOwner();
+	TestSarosRelocatedHighHostBank();
 	TestSmallerRequestsAndRejections();
 	TestHostPlanMatchesLayout();
 	std::printf("AddressFoldTests: all passed\n");
