@@ -172,7 +172,7 @@ void TestSarosMappedGuestOwner() {
 void TestSarosRelocatedHighHostBank() {
 	constexpr uint64_t high_guest = 0x9cc0000000ull;
 	constexpr uint64_t low_guest  = 0x1cc0000000ull;
-	constexpr uint64_t shift = 128ull * kGiB;
+	constexpr uint64_t shift = 256ull * kGiB;
 	static_assert(Fold(high_guest) == low_guest, "constant evaluation keeps the baseline");
 	Check(HostShift() == 0, "other titles use zero host shift");
 	SetHostShift(shift);
@@ -181,7 +181,7 @@ void TestSarosRelocatedHighHostBank() {
 	Check(FoldSpan(high_guest, 192ull * 1024 * 1024, &high_host),
 	      "Saros 192 MiB map remains a contiguous high-bank host span");
 	Check(FoldSpan(low_guest, 0x10000, &low_host), "Saros 64 KiB low span remains valid");
-	Check(high_host == 0x3cc0000000ull && low_host == low_guest && high_host != low_host,
+	Check(high_host == 0x5cc0000000ull && low_host == low_guest && high_host != low_host,
 	      "the two observed Saros guest mappings must never share host addresses");
 	Check(high_host + 192ull * 1024 * 1024 <= kWindowEnd,
 	      "relocated guest range remains inside the 39-bit host user arena");
