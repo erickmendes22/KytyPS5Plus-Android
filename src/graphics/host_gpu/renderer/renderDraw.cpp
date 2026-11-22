@@ -2,6 +2,7 @@
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 #include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
 #include "graphics/host_gpu/renderer/demonsMaterialFullFramePolicy.h"
+#include "graphics/host_gpu/renderer/demonsDepthFullCoveragePolicy.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
 #include "graphics/host_gpu/renderer/ufcPerf.h"
 
@@ -1391,6 +1392,49 @@ static std::optional<std::array<uint32_t, 64>> SnapshotDsMaterialDepthGrid(
 	return bits;
 }
 
+// Depth prepass proof, paired with the existing whole G-buffer capture.
+ // A sparse 8x8 grid cannot distinguish a genuinely empty depth frame
+ // from missing geometry outside its sample coordinates. One full readback
+ // per observed bright/onset/dark phase, no renderer behavior change.
+struct DsDepthFullSnapshot {
+    uint32_t width = 0, height = 0;
+    std::vector<uint32_t> bits;
+};
+static DsDepthFullSnapshot SnapshotDsDepthFull(RenderContext& context,
+                                               const RenderDepthInfo& depth) {
+    if (!depth.image_id) return {};
+    auto& image = context.GetTextureCache().GetImage(depth.image_id);
+    const auto& backing = image.backing;
+    const auto& view = depth.desc.view_info;
+    if (!backing.image || backing.image_type != vk::ImageType::e2D ||
+        backing.samples != 1 ||
+        (backing.format != vk::Format::eD32Sfloat &&
+         backing.format != vk::Format::eD32SfloatS8Uint) ||
+        !(backing.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+        view.base_level >= backing.mip_levels || view.base_layer >= backing.layers)
+        return {};
+    const auto width = std::max(backing.extent.width >> view.base_level, 1u);
+    const auto height = std::max(backing.extent.height >> view.base_level, 1u);
+    const uint64_t area = uint64_t{width} * height;
+    if (!area || area > 4ull * 1024u * 1024u) return {};
+    const auto bytes = area * sizeof(uint32_t);
+    auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+    auto [mapped, offset] = download.Map(bytes, 16u, true);
+    if (!mapped) return {};
+    download.Commit();
+    vk::BufferImageCopy copy {};
+    copy.bufferOffset = offset;
+    copy.imageSubresource = {vk::ImageAspectFlagBits::eDepth,
+                             view.base_level, view.base_layer, 1};
+    copy.imageExtent = {width, height, 1};
+    image.Download(std::span{&copy, 1u}, download.Handle(), offset, bytes);
+    context.GetCommandScheduler().Finish();
+    download.Invalidate(offset, bytes);
+    DsDepthFullSnapshot result {width, height, std::vector<uint32_t>(area)};
+    std::memcpy(result.bits.data(), mapped, bytes);
+    return result;
+}
+
 static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
                                    const DsAlbedoSnapshot& before,
                                    const DsAlbedoSnapshot& after, bool cleared) {
@@ -2666,6 +2710,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// compositor or light-atlas probe. Exactly one draw in each observed
 	// bright/onset/dark phase; no absolute frame number is assumed.
 	std::optional<std::array<uint32_t, 64>> ds_depth_prepass_before {};
+	DsDepthFullSnapshot ds_depth_full_before {};
 	RenderDepthInfo ds_depth_prepass_target {};
 	int ds_depth_prepass_phase = -1;
 	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
@@ -2681,6 +2726,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			ds_depth_prepass_phase = phase;
 			ds_depth_prepass_target = state.depth_info;
 			ds_depth_prepass_before = SnapshotDsMaterialDepthGrid(m_context, ds_depth_prepass_target);
+			ds_depth_full_before = SnapshotDsDepthFull(m_context, ds_depth_prepass_target);
 		}
 	}
 	if (ds_gbuffer_enabled && state.ps_active && bindings.pixel) {
@@ -3393,6 +3439,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		                       rendering.color_attachments[ds_gbuffer->target_slot].is_clear);
 	}
 	if (ds_depth_prepass_phase >= 0) {
+		const auto depth_full_after = ds_depth_full_before.bits.empty()
+		    ? DsDepthFullSnapshot {} : SnapshotDsDepthFull(m_context, ds_depth_prepass_target);
+		const auto depth_full = CompareDepthFull(ds_depth_full_before.bits, depth_full_after.bits,
+		                                       ds_depth_full_before.width, ds_depth_full_before.height);
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_DEPTH_FULL_LAYER] frame={} phase={} submit={} valid={} extent={}x{} "
+		    "changed={} filled={}->{} zero={}->{} bbox={},{},{},{}\n",
+		    ds_gbuffer_frame, ds_depth_prepass_phase, submit_id, depth_full.valid,
+		    ds_depth_full_before.width, ds_depth_full_before.height, depth_full.changed,
+		    depth_full.filled_before, depth_full.filled_after,
+		    depth_full.far_before, depth_full.far_after,
+		    depth_full.min_x, depth_full.min_y, depth_full.max_x, depth_full.max_y));
 		const auto after = SnapshotDsMaterialDepthGrid(m_context, ds_depth_prepass_target);
 		if (ds_depth_prepass_before && after) {
 			uint32_t before_nonzero = 0, after_nonzero = 0, changed = 0;
@@ -3407,6 +3465,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"frame", ds_gbuffer_frame}, {"phase", ds_depth_prepass_phase},
 			    {"submit", submit_id}, {"shader", fmt::format("{:016x}", shader)},
 			    {"target", ds_depth_prepass_target.desc.info.data.address},
+			    {"full_depth", {
+			        {"valid", depth_full.valid},
+			        {"width", ds_depth_full_before.width},
+			        {"height", ds_depth_full_before.height},
+			        {"changed", depth_full.changed},
+			        {"filled_before", depth_full.filled_before},
+			        {"filled_after", depth_full.filled_after},
+			        {"zero_before", depth_full.far_before},
+			        {"zero_after", depth_full.far_after},
+			        {"bbox", {depth_full.min_x, depth_full.min_y, depth_full.max_x, depth_full.max_y}}
+			    }},
 			    {"before_bits", *ds_depth_prepass_before}, {"after_bits", *after},
 			    {"nonzero_before", before_nonzero}, {"nonzero_after", after_nonzero},
 			    {"changed", changed}, {"depth_test", state.depth_info.depth_test_enable},

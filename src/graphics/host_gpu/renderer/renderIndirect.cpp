@@ -276,7 +276,7 @@ void IndirectDrawFixup::CommitFeedback(uint32_t slot, uint64_t site, bool mesh, 
 	m_feedback[slot] = {.tick     = m_context.GetCommandScheduler().CurrentTick(),
 	                    .site     = site,
 	                    .shader_hash = shader_hash,
-	                    .frame = shader_hash != 0 ? m_context.GetGpu().GetFrameNum() : -1,
+	                    .frame = m_context.GetGpu().GetFrameNum(), // stamp indirect DRAW and dispatch for real frame attribution
 	                    .reserved = reserved,
 	                    .mesh     = mesh,
 	                    .dispatch = dispatch};
@@ -392,6 +392,33 @@ void IndirectDrawFixup::PollFeedback() {
 			return v != nullptr && v[0] == '1' && v[1] == '\0';
 		}();
 		if (ds_trace) {
+			// GPU-culled draw zeros may be expected, or may explain the
+			// missing deferred geometry. Aggregate actual completed GPU
+			// records per source-frame window, without a CPU readback stall
+			// or replacing any draw count. The first and 128th/256th etc
+			// records provide bounded, comparable bright/onset/dark evidence.
+			if (feedback.frame >= 0) {
+				struct Period {
+					int32_t bucket = -1;
+					uint32_t total = 0;
+					uint32_t nonempty = 0;
+				};
+				static std::array<Period, 64> periods {};
+				const int32_t bucket = feedback.frame / 24;
+				auto& period = periods[static_cast<uint32_t>(bucket) % periods.size()];
+				if (period.bucket != bucket) {
+					period = {bucket, 0u, 0u};
+				}
+				++period.total;
+				period.nonempty += requested != 0u;
+				if (period.total == 1u || period.total % 128u == 0u) {
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_INDIRECT_FRAME_COUNTS] submitted={}..{} completed={} "
+					    "nonempty={} zero={} last_site=0x{:x}\n",
+					    bucket * 24, bucket * 24 + 23, period.total,
+					    period.nonempty, period.total - period.nonempty, feedback.site));
+				}
+			}
 			static std::atomic_uint64_t feedback_total {0};
 			static std::atomic_uint64_t feedback_nonempty {0};
 			const uint64_t n = feedback_total.fetch_add(1u, std::memory_order_relaxed) + 1u;

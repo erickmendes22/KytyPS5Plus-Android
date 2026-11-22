@@ -245,6 +245,34 @@ static void WriteAndroidAbortContext(uint64_t rip, uint64_t rsp, uint64_t rbp,
 	};
 	for (size_t i = 0; i < args.size(); ++i) append_text(fmt::format("arg{}", i), args[i]);
 
+	// Saros #6a8a523 aborts at the same eboot code even though *no high
+	// memory bank is selected or mapped*. The current raw register capture
+	// cannot reveal the guest error object, commonly FString/FText through
+	// a pointer in a register or a stack-local structure. Inspect bounded,
+	// readable words and one level of pointers only on this explicit abort;
+	// do not change execution or reinterpret the abort as a map failure.
+	uint32_t text_candidates = 0;
+	const auto append_object = [&](std::string_view label, uint64_t address) {
+		if (address < 0x10000 || address >= (uint64_t{1} << 40)) return;
+		std::array<uint64_t, 8> words {};
+		const auto nbytes = ReadSelf(address, words.data(), sizeof(words));
+		if (nbytes < 2 * sizeof(uint64_t)) return;
+		report += fmt::format("[GUEST_ABORT_OBJECT] {}=0x{:016x} size={} "
+		                      "word0=0x{:016x} word1=0x{:016x} "
+		                      "word2=0x{:016x} word3=0x{:016x}\n",
+		                      label, address, nbytes, words[0], words[1], words[2], words[3]);
+		for (size_t w = 0; w < std::min(nbytes / sizeof(uint64_t), size_t{6}) &&
+		                    text_candidates < 28; ++w) {
+			const uint64_t ptr = words[w];
+			if (ptr >= 0x10000 && ptr < (uint64_t{1} << 40)) {
+				append_text(fmt::format("{}->word{}", label, w), ptr);
+				++text_candidates;
+			}
+		}
+	};
+	for (size_t i = 0; i < args.size(); ++i)
+		append_object(fmt::format("arg{}", i), args[i]);
+
 	for (uint32_t i = 0; i < 12 && rbp >= rsp && rbp - rsp < 1024 * 1024; ++i) {
 		std::array<uint64_t, 2> frame {};
 		if (ReadSelf(rbp, frame.data(), sizeof(frame)) != sizeof(frame) ||
@@ -253,6 +281,22 @@ static void WriteAndroidAbortContext(uint64_t rip, uint64_t rsp, uint64_t rbp,
 		// The final wrapper only calls abort(). Its callers hold the check
 		// and report path that chose to terminate.
 		if (i < 6) append_code("GUEST_ABORT_CALLER_CODE", frame[1]);
+		// The failing UE check often formats its fatal message on the
+		// caller's stack, not in abort()'s argument registers. Inspect
+		// only six stack frames, and only the first six plausible pointers
+		// from each 0x240-byte local slice; no unbounded memory scanning.
+		if (i < 6 && rbp >= 0x240) {
+			std::array<uint64_t, 72> locals {};
+			const uint64_t start = rbp - 0x240;
+			const auto length = ReadSelf(start, locals.data(), sizeof(locals));
+			size_t emitted = 0;
+			for (size_t w = 0; w < length / sizeof(uint64_t) && emitted < 6; ++w) {
+				if (locals[w] >= 0x10000 && locals[w] < (uint64_t{1} << 40)) {
+					append_text(fmt::format("frame{}-local{}", i, w), locals[w]);
+					++emitted;
+				}
+			}
+		}
 		if (frame[0] <= rbp) break;
 		rbp = frame[0];
 	}
