@@ -18,6 +18,12 @@ struct Observation {
 
 class Gate {
 public:
+	void MarkGeometry(int32_t frame, uint32_t colored) {
+		// Evidence from the *executed deferred-lighting queue*, not a
+		// cutscene frame number or the mere presence of a compositor.
+		if (colored != 0 && frame >= 0) m_last_geometry = frame;
+	}
+
 	bool ShouldSample(int32_t frame) {
 		if (frame < 0) return false;
 		if (frame < m_last_sample) Reset();
@@ -35,6 +41,13 @@ public:
 			m_scene_samples = 0;
 		}
 		m_scene_guest = guest;
+		if (m_last_geometry < 0 || frame - m_last_geometry > 300) {
+			// A fade or a black loading screen is not proof of gameplay.
+			m_low_streak = 0;
+			m_scene_samples = 0;
+			m_bright_reference = 0.0;
+			return {false, false, 0, 0.0, "no_deferred_geometry"};
+		}
 		++m_scene_samples;
 		const bool lit = level >= 0.02 && visible >= 3;
 		if (lit) {
@@ -71,8 +84,9 @@ public:
 		const auto elapsed = frame - m_last_trigger;
 		// Two opportunities to bind the complete producer->atlas chain.
 		// They follow the actual observed dark scene, NOT an assumed frame.
-		return (elapsed >= 1 && elapsed <= 8) ||
-		       (elapsed >= 28 && elapsed <= 36);
+		return (elapsed >= 1 && elapsed <= 12) ||
+		       (elapsed >= 24 && elapsed <= 48) ||
+		       (elapsed >= 72 && elapsed <= 96);
 	}
 
 private:
@@ -81,6 +95,7 @@ private:
 		m_last_trigger = -1;
 		m_bright_reference = 0.0;
 		m_scene_guest = 0;
+		m_last_geometry = -1;
 		m_scene_samples = 0;
 		m_low_streak = 0;
 	}
@@ -88,6 +103,7 @@ private:
 	int32_t m_last_trigger = -1;
 	double m_bright_reference = 0.0;
 	uint64_t m_scene_guest = 0;
+	int32_t m_last_geometry = -1;
 	uint32_t m_scene_samples = 0;
 	uint32_t m_low_streak = 0;
 };

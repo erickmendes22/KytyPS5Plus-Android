@@ -23,15 +23,18 @@ int main(int argc, char** argv) {
 	for (const int32_t boot_offset : {0, 367, 1982}) {
 		Libs::Graphics::DemonsAdaptiveCapture::Gate detector;
 		assert(detector.ShouldSample(boot_offset));
-		detector.Observe(boot_offset, 0.25, 14, 0x281a80000ull);
+		auto ignored = detector.Observe(boot_offset, 0.001, 0, 0x281a80000ull);
+		assert(!ignored.triggered && detector.ShouldSample(boot_offset + 24));
+		detector.MarkGeometry(boot_offset + 24, 5);
+		detector.Observe(boot_offset + 24, 0.25, 14, 0x281a80000ull);
 		for (int i = 1; i <= 3; ++i) {
-			assert(detector.ShouldSample(boot_offset + i * 24));
+			assert(detector.ShouldSample(boot_offset + (i + 1) * 24));
 			const auto event = detector.Observe(
-			    boot_offset + i * 24, 0.001, 0, 0x281a80000ull);
+			    boot_offset + (i + 1) * 24, 0.001, 0, 0x281a80000ull);
 			assert(event.triggered == (i == 3));
 		}
-		assert(detector.CaptureDue(boot_offset + 73));
 		assert(detector.CaptureDue(boot_offset + 100));
+		assert(detector.CaptureDue(boot_offset + 120));
 		assert(!detector.CaptureDue(boot_offset + 200));
 	}
 	static_assert(DefaultPixels(1600, 900)[4] == std::pair{1200u, 675u});

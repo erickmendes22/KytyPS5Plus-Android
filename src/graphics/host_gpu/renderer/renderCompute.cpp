@@ -1312,7 +1312,11 @@ struct DsCoefficientDispatch {
 };
 
 // These hooks run under the renderer context lock, like ds_buffer_producers.
-std::optional<DsCoefficientDispatch> ds_coefficient_dispatch;
+std::shared_ptr<const DsCoefficientDispatch> ds_coefficient_dispatch;
+// Keep several writers from the same guest frame: the atlas can consume
+// separate 256/500-record updates before the frame counter advances.
+std::array<std::shared_ptr<const DsCoefficientDispatch>, 8> ds_coefficient_snapshots {};
+size_t ds_next_coefficient_snapshot = 0;
 int32_t ds_last_coefficient_pair = -1;
 std::array<std::shared_ptr<const DsProbeSourceWrite>, 4> ds_probe_source_snapshots;
 size_t ds_next_probe_snapshot = 0;
@@ -1573,6 +1577,39 @@ static nlohmann::json CaptureDsRelightInputs(RenderContext& context, const Prepa
 	if (!ReadDsGpuWordRanges(context, native.buffer, copies, ray_words)) {
 		report["status"] = "ray_readback_unavailable";
 		return report;
+	}
+	// The previous ZIP gave only first_pairs, not the full material/depth
+	// values. Preserve every selected 256-ray record, with its exact probe
+	// mapping and buffer provenance, so a missing albedo can be traced back
+	// to the ray producer rather than blamed on the lighting compositor.
+	report["ray_valid_by_z"] = nlohmann::json::array();
+	for (const auto is_valid : valid) report["ray_valid_by_z"].push_back(is_valid);
+	report["ray_buffer_guest"] = bindings.buffer_sources[ray_slot].address;
+	report["ray_buffer_adjustment"] = adjustment;
+	const auto& ray_source = bindings.buffer_sources[ray_slot];
+	auto& ray_cache = context.GetBufferCache();
+	report["ray_buffer_cpu_modified"] = ray_cache.IsRegionCpuModified(ray_source.address, bytes_per_probe);
+	report["ray_buffer_gpu_modified"] = ray_cache.IsRegionGpuModified(ray_source.address, bytes_per_probe);
+	report["ray_buffer_gpu_dirty_bytes"] = ray_cache.HasGpuDirtyBytes(ray_source.address, bytes_per_probe);
+	const auto root = Config::GetShaderDumpFolder();
+	if (!root.empty() && root.filename() == "ds-lighting-dumps") {
+		const auto folder = root / "queue-state";
+		std::error_code ec;
+		std::filesystem::create_directories(folder, ec);
+		if (!ec) {
+			const auto name = fmt::format("cs_bcbcc6ba1e68c974_ray_hits_f{}_tick{}.bin",
+			    frame, context.GetCommandScheduler().CurrentTick());
+			std::ofstream file(folder / name, std::ios::binary | std::ios::trunc);
+			if (file) {
+				file.write(reinterpret_cast<const char*>(ray_words.data()),
+				           static_cast<std::streamsize>(ray_words.size() * sizeof(uint32_t)));
+				file.close();
+				if (file.good()) {
+					report["ray_hits_file"] = name;
+					report["ray_hits_bytes"] = ray_words.size() * sizeof(uint32_t);
+				} else report["ray_hits_file_error"] = "write_failed";
+			} else report["ray_hits_file_error"] = "open_failed";
+		} else report["ray_hits_file_error"] = "mkdir_failed";
 	}
 	auto ray_summary = nlohmann::json::array();
 	for (size_t z = 0; z < probes.size(); ++z) {
@@ -1888,7 +1925,10 @@ void EndDsCoefficientDispatch(RenderContext& context, const PreparedBindings& bi
 	    "groups_valid={} before_bytes={} after_bytes={}\n",
 	    trace->frame, trace->submit, trace->address, groups[0], groups[1], groups[2],
 	    valid_groups, trace->before.size() * 4, trace->after.size() * 4));
-	ds_coefficient_dispatch = std::move(trace);
+	auto snapshot = std::make_shared<const DsCoefficientDispatch>(std::move(*trace));
+	ds_coefficient_dispatch = snapshot;
+	ds_coefficient_snapshots[ds_next_coefficient_snapshot++ % ds_coefficient_snapshots.size()] =
+	    std::move(snapshot);
 }
 
 nlohmann::json CompareDsCoefficientDispatch(int32_t frame, uint64_t address, uint64_t bytes,
@@ -1901,10 +1941,16 @@ nlohmann::json CompareDsCoefficientDispatch(int32_t frame, uint64_t address, uin
 	if (!writer) return {{"status", "no_bound_writer"}};
 	nlohmann::json result {{"writer_shader", fmt::format("{:016x}", writer->shader)},
 	                      {"writer_frame", writer->frame}, {"writer_submit", writer->submit}};
-	const auto& capture = ds_coefficient_dispatch;
-	if (!capture || capture->frame != writer->frame || capture->submit != writer->submit ||
-	    writer->shader != DsCoefficientWriter || capture->address != address ||
-	    capture->after.size() * 4 != bytes) {
+	const DsCoefficientDispatch* capture = nullptr;
+	for (const auto& candidate : ds_coefficient_snapshots) {
+		if (candidate && candidate->frame == writer->frame &&
+		    candidate->submit == writer->submit && candidate->address == address &&
+		    candidate->after.size() * 4 == bytes) {
+			capture = candidate.get();
+			break;
+		}
+	}
+	if (!capture || writer->shader != DsCoefficientWriter) {
 		result["status"] = "writer_snapshot_unavailable";
 		return result;
 	}
@@ -3065,6 +3111,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 						    m_ds_light_tile_ids[i], capture.width, capture.height, capture.pixels);
 				}
 			}
+			if (covered && colored != 0 && queue == 33)
+				DemonsAdaptiveCapture::Current().MarkGeometry(frame, colored);
 			if (!covered) {
 				// Still record arguments and bindings for empty or invalid lists.
 				const auto w = capture.width;
