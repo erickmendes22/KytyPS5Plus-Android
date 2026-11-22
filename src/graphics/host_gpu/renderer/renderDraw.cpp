@@ -3372,7 +3372,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_DEPTH_PREPASS] frame={} phase={} target=0x{:x} "
 			    "depth_samples={}/64 -> {}/64 changed={} depth_test={} depth_write={} "
-			    "load_clear={} file={} saved={}\\n",
+			    "load_clear={} file={} saved={}\n",
 			    ds_gbuffer_frame, ds_depth_prepass_phase,
 			    ds_depth_prepass_target.desc.info.data.address,
 			    before_nonzero, after_nonzero, changed,
@@ -3380,7 +3380,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    state.depth_info.depth_load_clear_enable, name, file.good()));
 		} else {
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_DEPTH_PREPASS] frame={} phase={} result=depth_snapshot_unavailable\\n",
+			    "[DS_DEPTH_PREPASS] frame={} phase={} result=depth_snapshot_unavailable\n",
 			    ds_gbuffer_frame, ds_depth_prepass_phase));
 		}
 	}
