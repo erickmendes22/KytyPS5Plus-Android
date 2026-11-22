@@ -699,8 +699,9 @@ class MainActivity : Activity() {
             args = DemonsSoulsDiagnosticArgs.append(
                 args, perGame.demonsSoulsPixelTrace, perGame.demonsSoulsPerFaceBias,
             )
-            // PC-compatible depth EQUAL tolerance affects only the game's
-            // verified G-buffer D32 target and defaults to original behavior.
+            // PC reference: on the two captured missing-material draws, prefer
+            // GREATER_OR_EQUAL while keeping OFF available (per-game mode 3).
+            // This is a geometry fix trial; lighting after the G-buffer is unchanged.
             args += arrayOf("--env",
                 "KYTY_DS_DEPTH_EQUAL_RELAX=" + perGame.demonsSoulsDepthEqualRelax.coerceIn(0, 3))
             if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsIdleBackoff) {
