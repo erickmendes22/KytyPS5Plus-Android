@@ -1349,6 +1349,41 @@ const DsBufferProducer* FindDsProbeSourceWriter(int32_t frame, uint64_t address,
 	return nullptr;
 }
 
+static nlohmann::json ReadDsMaskProbeRecords(RenderContext& context,
+                                           const PreparedBindings& bindings, uint32_t slot,
+                                           std::span<const uint32_t> indices, uint32_t stride) {
+	if (slot >= bindings.buffers.size() || slot >= bindings.buffer_sources.size()) return nullptr;
+	const auto& native = bindings.buffers[slot];
+	const auto& source = bindings.buffer_sources[slot];
+	const auto offset_word = bindings.runtime->program->bindings.memory_offset_dword + slot / 4u;
+	if (!native.buffer || native.range == VK_WHOLE_SIZE ||
+	    offset_word >= bindings.shader_data.size()) return nullptr;
+	const uint64_t adjustment = (bindings.shader_data[offset_word] >> (slot % 4u * 8u)) & 255u;
+	const auto words_per_record = stride / sizeof(uint32_t);
+	std::vector<uint32_t> words(indices.size() * words_per_record);
+	std::vector<vk::BufferCopy> copies;
+	std::vector<bool> valid(indices.size());
+	for (size_t i = 0; i < indices.size(); ++i) {
+		const uint64_t guest = uint64_t{indices[i]} * stride;
+		const uint64_t begin = adjustment + guest;
+		if (guest > source.size || stride > source.size - guest ||
+		    begin > native.range || stride > native.range - begin) continue;
+		copies.emplace_back(native.offset + begin, i * stride, stride);
+		valid[i] = true;
+	}
+	if (!ReadDsGpuWordRanges(context, native.buffer, copies, words)) return nullptr;
+	auto records = nlohmann::json::array();
+	for (size_t i = 0; i < indices.size(); ++i) {
+		if (!valid[i]) {
+			records.push_back(nullptr);
+			continue;
+		}
+		const auto begin = words.begin() + i * words_per_record;
+		records.push_back(std::vector<uint32_t>(begin, begin + words_per_record));
+	}
+	return records;
+}
+
 static void CaptureDsRelightMaskWriter(RenderContext& context, const PreparedBindings& bindings,
                                        uint64_t submit, DispatchGroups groups,
                                        vk::Buffer indirect = {}, uint64_t offset = 0) {
@@ -1373,6 +1408,30 @@ static void CaptureDsRelightMaskWriter(RenderContext& context, const PreparedBin
 		    {"srt", resources.flattened_srt}};
 		for (const auto& image: resources.images)
 			dispatch["image_descriptors"].push_back(image.dwords);
+		// The captured acce347 module reads the probe ID first, then the
+		// position and bounding record at that ID. It walks 384-byte light
+		// records up to the live count in flattened SRT word 22.
+		const auto& plan = program.info.buffers;
+		if (plan.size() == 5 && resources.buffers.size() == plan.size() &&
+		    resources.flattened_srt.size() >= 24 && groups[2] <= DsRadianceExtent &&
+		    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[0]).Stride() == 4 &&
+		    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[1]).Stride() == 16 &&
+		    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[2]).Stride() == 32 &&
+		    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[3]).Stride() == 384) {
+			const auto ids = ReadDsBoundWords(context, bindings, plan[0].descriptor_index, groups[2]);
+			const auto light_count = resources.flattened_srt[22];
+			const auto light_capacity =
+			    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[3]).NumRecords();
+			dispatch["probe_indices"] = ids;
+			dispatch["probe_positions"] =
+			    ReadDsMaskProbeRecords(context, bindings, plan[1].descriptor_index, ids, 16);
+			dispatch["probe_bounds"] =
+			    ReadDsMaskProbeRecords(context, bindings, plan[2].descriptor_index, ids, 32);
+			dispatch["light_count"] = light_count;
+			dispatch["cull_threshold_bits"] = resources.flattened_srt[23];
+			dispatch["light_words"] = ReadDsBoundWords(context, bindings, plan[3].descriptor_index,
+			    std::min({light_count, light_capacity, 384u}) * 96u);
+		}
 		for (size_t i = 0; i < std::min(program.info.buffers.size(), resources.buffers.size()); ++i) {
 			const auto& resource = program.info.buffers[i];
 			const auto input_slot = resource.descriptor_index;
@@ -2074,8 +2133,19 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 	const auto folder = root / "queue-state";
 	std::error_code ec;
 	std::filesystem::create_directories(folder, ec);
-	static std::atomic<uint32_t> next_file {0};
-	const auto file_slot = next_file.fetch_add(1, std::memory_order_relaxed) % 4u;
+	// Protect low-radiance frames from both periodic atlas-only samples and
+	// subsequent pairs with brighter output. 0x1419 is binary16 for 0.001.
+	const bool low_radiance = !radiance.empty() && std::ranges::none_of(radiance, [](uint64_t texel) {
+		for (uint32_t shift: {0u, 16u, 32u}) {
+			const auto component = (texel >> shift) & 0x7fffu;
+			if (component >= 0x1419u && component < 0x7c00u) return true;
+		}
+		return false;
+	});
+	static std::atomic<uint32_t> next_pair {0}, next_periodic {0}, next_dark {0};
+	const auto file_slot = !paired ? 4u + next_periodic.fetch_add(1, std::memory_order_relaxed) % 2u
+	                       : low_radiance ? 6u + next_dark.fetch_add(1, std::memory_order_relaxed) % 2u
+	                                      : next_pair.fetch_add(1, std::memory_order_relaxed) % 4u;
 	const auto name = fmt::format("cs_c03afccb96a13c5d_atlas_inputs_{}.json", file_slot);
 	std::ofstream file(folder / name, std::ios::trunc);
 	if (file) {

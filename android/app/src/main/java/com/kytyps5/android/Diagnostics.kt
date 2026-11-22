@@ -305,6 +305,8 @@ object Diagnostics {
                 "read by bcbcc6ba1e68c974, with bound-buffer writer candidates. " +
                 "selected_lights stores the records used by the two-level light mask; mask_writer stores " +
                 "the upstream producer's live bindings, inputs and GPU mask words from the same dispatch. " +
+                "probe_positions and probe_bounds are indexed by probe_indices. Full paired snapshots " +
+                "and low-radiance snapshots have separate storage from periodic atlas samples. " +
                 "A DS_QUEUE_TILES record with radiance_paired=true shares its frame with an atlas or radiance capture. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
