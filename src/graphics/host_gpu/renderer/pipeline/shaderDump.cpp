@@ -48,8 +48,8 @@ bool DsLightingCapture() {
 }
 
 bool DsLightingShader(uint64_t hash) {
-	static constexpr std::array<uint64_t, 8> watched {{
-	    0x3dfe402653925fbfull, 0x6cbfe18ea2005263ull,
+	static constexpr std::array<uint64_t, 9> watched {{
+	    0xc03afccb96a13c5dull, 0x3dfe402653925fbfull, 0x6cbfe18ea2005263ull,
 	    0x1ce1a858f62b5a11ull, 0xc2e01fbe98f5ebabull,
 	    0x23056085c1120461ull, 0xfabe0bcb275a3005ull,
 	    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull

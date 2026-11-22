@@ -713,6 +713,23 @@ struct PipelineCache::ProgramCache {
 				options.device_features.dead_lane_fold = input_info.dead_lane_live == 2u;
 			}
 		}
+		// PPSA01341: the 360-layer RGBA16F indirect-light atlas is written by this
+		// shader. GPU texel readback confirms its RGB is already near zero before
+		// the deferred-light shader samples it, so change only the atlas producer.
+		// Preserve the guest's exact FP32 denormal operations and disable the
+		// aggressive Turnip scalar/lane rewrites while evaluating this producer.
+		// This is intentionally restricted to the captured hash, never global.
+		if (hash == 0xc03afccb96a13c5dull) {
+			options.device_features.ftz32_ops = 0;
+			options.device_features.native_float_min_max = false;
+			options.device_features.robust_buffer_loads = false;
+			options.device_features.fold_same_condition_selects = false;
+			options.device_features.single_mode_alias_slots = false;
+			options.device_features.constant_lane_broadcast = false;
+			options.device_features.lane_exec_branches = false;
+			options.device_features.dead_lane_fold = false;
+			options.device_features.relative_swizzle = false;
+		}
 		options.device_quirks = device_quirks;
 		options.shader_hash = hash;
 		options.user_data   = user_data;
