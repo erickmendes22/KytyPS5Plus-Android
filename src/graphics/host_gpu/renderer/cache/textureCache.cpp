@@ -3104,7 +3104,25 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
 void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
                                         RefreshCause::Source source) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
-	// Demon’s Souls streams CPU data into individual shadow-array slices while
+	// The PC U59 renderer preserves GPU-owned subresources when only some guest
+// layers were replaced by the CPU. Extend the Android per-layer path to the
+// RGBA16F 360-layer light atlas. Partial writes INSIDE a tiled layer are
+// intentionally excluded: uploading its entire layer would lose GPU pixels.
+static bool DsColorAtlasFullLayerUpdate(const ImageInfo& info, uint64_t addr, uint64_t bytes) {
+	constexpr uint64_t LayerBytes = uint64_t {256} * 256u * 8u;
+	if (info.pixel_format != vk::Format::eR16G16B16A16Sfloat ||
+	    info.extent.width != 256u || info.extent.height != 256u ||
+	    info.resources.levels != 1u || info.resources.layers != 360u ||
+	    info.data.size != 360u * LayerBytes ||
+	    info.linear_slice_stride != LayerBytes ||
+	    bytes == 0u || addr > UINT64_MAX - bytes) return false;
+	const auto start = std::max(addr, info.data.address);
+	const auto finish = std::min(addr + bytes, info.data.End());
+	return start < finish && (start - info.data.address) % LayerBytes == 0u &&
+	       (finish - info.data.address) % LayerBytes == 0u;
+}
+
+// Demon’s Souls streams CPU data into individual shadow-array slices while
 	// the GPU owns the other rendered slices. The old whole-image dirty flag
 	// uploaded stale guest data over all layers on next use. The opt-in below
 	// retains GPU layers and releases watchers only over the touched CPU slices.
@@ -3134,11 +3152,13 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
 			    owner->track_addr_end == info.data.End() &&
 			    info.IsTiled() && !info.IsVolume() && info.samples == 1 &&
 			    owner->backing.samples == 1 && info.resources.levels == 1 && info.linear_slice_stride != 0 &&
-			    layers >= 4 && layers <= 256 && info.data.size != 0 &&
+			    layers >= 4 && layers <= 512 && info.data.size != 0 &&
 			    info.data.size % layers == 0 && stride % TRACKER_PAGE_SIZE == 0 &&
 			    info.data.address % TRACKER_PAGE_SIZE == 0 &&
 			    info.metadata.compression == VideoOutCompression::Uncompressed &&
-			    info.IsDepth() && size != 0;
+			    size != 0 &&
+			    ((info.IsDepth() && layers <= 256) ||
+			     (!info.IsDepth() && DsColorAtlasFullLayerUpdate(info, address, size)));
 			if (partial_eligible) {
 				const auto start = std::max(address, info.data.address);
 				const auto finish = std::min(address + size, info.data.End());
@@ -3159,6 +3179,14 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
 						owner->kept_unwatched.push_back({base, stride});
 					}
 					owner->kept_gpu_layers[layer] = 1;
+				}
+				if (!info.IsDepth()) {
+					static std::atomic_uint32_t events {0};
+					const auto n = events.fetch_add(1u, std::memory_order_relaxed);
+					if (n < 16u || n % 1024u == 0u)
+						LOGF("[DS_COLOR_ATLAS_GPU_KEEP] guest=0x%016" PRIx64
+						     " affected=%u-%u/%u bytes=%" PRIu64 "\n",
+						     address, first, last, layers, size);
 				}
 				owner->MarkCpuDirty();
 				static std::atomic<uint32_t> reported {0};
@@ -3354,13 +3382,15 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 		    (!owner->IsCpuDirty() || !owner->kept_gpu_layers.empty()) &&
 		    owner->IsTracked() && owner->track_addr == info.data.address &&
 		    owner->track_addr_end == info.data.End() &&
-		    info.IsDepth() && info.IsTiled() && !info.IsVolume() &&
+		    info.IsTiled() && !info.IsVolume() &&
 		    info.samples == 1 && owner->backing.samples == 1 &&
 		    info.resources.levels == 1 && info.linear_slice_stride != 0 &&
-		    layers >= 4 && layers <= 256 && stride != 0 &&
+		    layers >= 4 && layers <= 512 && stride != 0 &&
 		    info.data.size % layers == 0 && stride % TRACKER_PAGE_SIZE == 0 &&
 		    info.data.address % TRACKER_PAGE_SIZE == 0 &&
-		    info.metadata.compression == VideoOutCompression::Uncompressed;
+		    info.metadata.compression == VideoOutCompression::Uncompressed &&
+		    ((info.IsDepth() && layers <= 256) ||
+		     (!info.IsDepth() && DsColorAtlasFullLayerUpdate(info, address, size)));
 		if (partial_eligible) {
 			const auto begin = std::max(address, info.data.address);
 			const auto end = std::min(address + size, info.data.End());
