@@ -466,7 +466,7 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	// observed depth target, never to unrelated titles/shadow maps.
 	static const int ds_depth_equal_relax = [] {
 		const char* value = std::getenv("KYTY_DS_DEPTH_EQUAL_RELAX");
-		if (value == nullptr || value[1] != '\\0') return 0;
+		if (value == nullptr || value[1] != '\0') return 0;
 		return value[0] == '1' ? 1 : value[0] == '2' ? 2 : 0;
 	}();
 	auto depth_compare = depth.depth_compare_op;
