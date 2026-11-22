@@ -63,6 +63,7 @@ public:
 	[[nodiscard]] vk::ImageView FindTexture(ImageId id, const ImageDesc& desc);
 	[[nodiscard]] vk::ImageView FindRenderTarget(ImageId id, const ImageDesc& desc);
 	[[nodiscard]] vk::ImageView FindDepthTarget(ImageId id, const ImageDesc& desc);
+	void                        MarkDepthTargetWritten(ImageId id);
 	[[nodiscard]] Image&        GetImage(ImageId id) {
 		auto& image = m_slot_images[id];
 		TouchImage(image);

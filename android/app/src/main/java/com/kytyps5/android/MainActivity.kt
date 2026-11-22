@@ -698,7 +698,6 @@ class MainActivity : Activity() {
             // helper rather than adding duplicate --env keys here.
             args = DemonsSoulsDiagnosticArgs.append(
                 args, perGame.demonsSoulsPixelTrace, perGame.demonsSoulsPerFaceBias,
-                perGame.demonsSoulsDepthAlways,
             )
             if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsIdleBackoff) {
                 args += arrayOf("--env", "KYTY_DS_IDLE_BACKOFF=1")

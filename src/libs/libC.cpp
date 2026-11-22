@@ -1,6 +1,9 @@
 #include "common/abi.h"
 #if KYTY_HOST_ARM64
 #include "cpu/guestCpu.h"
+#if defined(__ANDROID__)
+#include "cpu/fexDecodeDiagnostics.h"
+#endif
 #endif
 #include "common/assert.h"
 #include "common/common.h"
@@ -20,6 +23,7 @@
 #include "loader/symbolDatabase.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cinttypes>
@@ -31,6 +35,7 @@
 #include <fmt/format.h>
 #include <list>
 #include <mutex>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -188,6 +193,67 @@ static void PrintAbortPointerArrayCandidate(const char* name, uint64_t addr) {
 	}
 }
 
+#if KYTY_HOST_ARM64 && defined(__ANDROID__)
+static void WriteAndroidAbortContext(uint64_t rip, uint64_t rsp, uint64_t rbp,
+                                     const std::array<uint64_t, 6>& args) {
+	using Cpu::DecodeDiagnostics::ReadSelf;
+	auto* linker = Common::Singleton<Loader::RuntimeLinker>::Instance();
+	const auto describe_pc = [&](uint64_t pc) {
+		const auto* program = linker->FindProgramByAddr(pc);
+		return program == nullptr ? fmt::format("0x{:016x}", pc) :
+		       fmt::format("{}+0x{:x} (0x{:016x})",
+		                   Common::PathToString(program->file_name.filename()),
+		                   pc - program->base_vaddr, pc);
+	};
+	std::string report = fmt::format("[GUEST_ABORT_CONTEXT] caller={}\n", describe_pc(rip));
+	std::array<uint8_t, 96> code {};
+	if (rip >= 64 && linker->FindProgramByAddr(rip - 64) != nullptr) {
+		const auto size = ReadSelf(rip - 64, code.data(), code.size());
+		report += fmt::format("[GUEST_ABORT_CODE] begin=0x{:016x} bytes=", rip - 64);
+		for (size_t i = 0; i < size; ++i) report += fmt::format("{:02x}", code[i]);
+		report += '\n';
+	}
+
+	const auto append_text = [&](std::string_view name, uint64_t address) {
+		if (address < 0x10000) return;
+		std::array<char, 256> bytes {};
+		const auto size = ReadSelf(address, bytes.data(), bytes.size() - 1);
+		const auto end = std::find(bytes.cbegin(), bytes.cbegin() + size, '\0');
+		const auto printable = [](unsigned char c) {
+			return (c >= 32 && c < 127) || c == '\n' || c == '\r' || c == '\t';
+		};
+		if (end - bytes.cbegin() >= 8 && std::all_of(bytes.cbegin(), end, printable)) {
+			report += fmt::format("[GUEST_ABORT_TEXT] {}=0x{:016x} {:?}\n", name, address,
+			                      std::string_view(bytes.data(), end - bytes.cbegin()));
+			return;
+		}
+		// Unreal may keep the fatal message as UTF-16. Retain the ASCII
+		// prefix, which covers assertion expressions and source file paths.
+		size_t count = 0;
+		while (2 * count + 1 < size && bytes[2 * count + 1] == '\0' &&
+		       printable(bytes[2 * count])) {
+			bytes[count] = bytes[2 * count];
+			++count;
+		}
+		if (count >= 8) {
+			report += fmt::format("[GUEST_ABORT_TEXT] {}=0x{:016x} utf16_ascii={:?}\n", name,
+			                      address, std::string_view(bytes.data(), count));
+		}
+	};
+	for (size_t i = 0; i < args.size(); ++i) append_text(fmt::format("arg{}", i), args[i]);
+
+	for (uint32_t i = 0; i < 12 && rbp >= rsp && rbp - rsp < 1024 * 1024; ++i) {
+		std::array<uint64_t, 2> frame {};
+		if (ReadSelf(rbp, frame.data(), sizeof(frame)) != sizeof(frame) ||
+		    linker->FindProgramByAddr(frame[1]) == nullptr) break;
+		report += fmt::format("[GUEST_ABORT_FRAME] index={} return={}\n", i, describe_pc(frame[1]));
+		if (frame[0] <= rbp) break;
+		rbp = frame[0];
+	}
+	Log::WriteFatal(report);
+}
+#endif
+
 [[noreturn]] static KYTY_SYSV_ABI void abort(uint64_t arg0, uint64_t arg1, uint64_t arg2,
                                              uint64_t arg3, uint64_t arg4, uint64_t arg5) {
 	PRINT_NAME();
@@ -211,13 +277,20 @@ static void PrintAbortPointerArrayCandidate(const char* name, uint64_t addr) {
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[SAROS_ABORT_GUEST] rip=0x{:016x} rsp=0x{:016x} rbp=0x{:016x} "
 		    "rdi=0x{:016x} rsi=0x{:016x} rdx=0x{:016x} rcx=0x{:016x} "
-		    "r8=0x{:016x} r9=0x{:016x} fs=0x{:016x}\\n",
+		    "r8=0x{:016x} r9=0x{:016x} fs=0x{:016x}\n",
 		    ret, rsp, rbp, regs.gpr[Cpu::GuestCpu::GuestRegisters::kRdi],
 		    regs.gpr[Cpu::GuestCpu::GuestRegisters::kRsi],
 		    regs.gpr[Cpu::GuestCpu::GuestRegisters::kRdx],
 		    regs.gpr[Cpu::GuestCpu::GuestRegisters::kRcx],
 		    regs.gpr[Cpu::GuestCpu::GuestRegisters::kR8],
 		    regs.gpr[Cpu::GuestCpu::GuestRegisters::kR9], regs.fs_base));
+#if defined(__ANDROID__)
+		using Registers = Cpu::GuestCpu::GuestRegisters;
+		WriteAndroidAbortContext(ret, rsp, rbp,
+		                         {regs.gpr[Registers::kRdi], regs.gpr[Registers::kRsi],
+		                          regs.gpr[Registers::kRdx], regs.gpr[Registers::kRcx],
+		                          regs.gpr[Registers::kR8], regs.gpr[Registers::kR9]});
+#endif
 	}
 #endif
 

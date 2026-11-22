@@ -2463,7 +2463,6 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 		EXIT("TextureCache: depth target requires rediscovery before final acquisition\n");
 	}
 	TouchImage(image);
-	image.MarkGpuModified();
 	if (desc.info.HasStencil()) {
 		const auto layers = image.info.resources.layers;
 		EXIT_IF(layers == 0 || image.info.data.size % layers != 0 ||
@@ -2492,11 +2491,17 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 		metadata->second.owner = id;
 	}
 	RefreshImage(id);
-	CommitGpuWrite(image);
 	if (desc.info.HasStencil()) {
 		RefreshImage(AssociateStencil(id, desc.info.stencil));
 	}
 	return image.FindView(desc.view_info);
+}
+
+void TextureCache::MarkDepthTargetWritten(ImageId id) {
+	std::scoped_lock lock {m_lock};
+	auto& image = m_slot_images[id];
+	EXIT_IF(!image.registered || image.depth_id || !image.info.IsDepth());
+	CommitGpuWrite(image);
 }
 
 void TextureCache::MarkGpuWritten(ImageId id) {

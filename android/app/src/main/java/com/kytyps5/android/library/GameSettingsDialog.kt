@@ -98,11 +98,6 @@ class GameSettingsDialog(
             textSize = 14f
             isChecked = current.demonsSoulsPerFaceBias
         }
-        val dsDepthAlways = Switch(activity).apply {
-            text = "Experimental: G-buffer material depth EQUAL → ALWAYS (reversible)"
-            textSize = 14f
-            isChecked = current.demonsSoulsDepthAlways
-        }
         val dsPixelTrace = Switch(activity).apply {
             text = "GPU pixel captures (slow, diagnostics only)"
             textSize = 14f
@@ -172,8 +167,6 @@ class GameSettingsDialog(
                 addView(ds1080p)
                 addView(label("Controls the game\u0027s own PS5 renderconfig files, not just the window. Originals are preserved alongside each file. Does not fix black geometry by itself.", secondary = true))
                 addView(dsFaceBias)
-                addView(dsDepthAlways)
-                addView(label("Off by default. Affects only three measured material shaders and only when they use EQUAL with depth writes disabled. Compare the same scene with this OFF and ON; may cause hidden geometry to appear.", secondary = true))
                 addView(dsPixelTrace)
                 addView(label("Off by default: synchronous GPU pixel readbacks previously interrupted rendering and added GPU/CPU overhead.", secondary = true))
             }
@@ -231,7 +224,6 @@ class GameSettingsDialog(
                         demonsSouls1080p = titleId.equals("PPSA01341", ignoreCase = true) && ds1080p.isChecked,
                         demonsSoulsPixelTrace = titleId.equals("PPSA01341", ignoreCase = true) && dsPixelTrace.isChecked,
                         demonsSoulsPerFaceBias = titleId.equals("PPSA01341", ignoreCase = true) && dsFaceBias.isChecked,
-                        demonsSoulsDepthAlways = titleId.equals("PPSA01341", ignoreCase = true) && dsDepthAlways.isChecked,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
                     ),

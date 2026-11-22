@@ -838,6 +838,12 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		// texture bindings resolved their views (RebindImages).
 		RefreshBindingViews(stages);
 		const auto draw_writes = depth.AttachmentWriteAspects();
+		// As in U59, loading an attachment without guest writes or clears
+		// does not change its content identity. Determine this only after
+		// consuming pending HTile clears, which can write either aspect.
+		if (draw_writes) {
+			cache.MarkDepthTargetWritten(depth.image_id);
+		}
 		vk::ImageAspectFlags sampled_aspects;
 		for (const auto* stage: stages) {
 			for (const auto& binding: stage->images) {
@@ -1332,9 +1338,7 @@ static std::optional<std::array<uint32_t, 64>> SnapshotDsMaterialDepthGrid(
 
 static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
                                    const DsAlbedoSnapshot& before,
-                                   const DsAlbedoSnapshot& after,
-                                   std::span<const DemonsQueueProbe::Pixels::value_type> points,
-                                   std::span<const uint64_t> hits, bool cleared) {
+                                   const DsAlbedoSnapshot& after, bool cleared) {
 	if (before.words.empty() || before.width != after.width || before.height != after.height) {
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_GBUFFER_PIXELS] frame={} shader=0x{:016x} result=snapshot_unavailable\n",
@@ -1343,7 +1347,7 @@ static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
 	}
 	trace.width = before.width;
 	trace.height = before.height;
-	uint32_t equal_count = 0, always_count = 0, changed = 0, colored_after = 0;
+	uint32_t changed = 0, colored_after = 0;
 	const auto report = [&](DemonsQueueProbe::Pixels::value_type point, const char* evidence) {
 		const auto used = std::span{trace.pixels.data(), trace.count};
 		if (trace.count == trace.pixels.size() || std::ranges::find(used, point) != used.end())
@@ -1358,19 +1362,6 @@ static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
 		trace.output[trace.count] = after.words[index];
 		trace.pixels[trace.count++] = point;
 	};
-	// Prefer depth-accepted samples whose color stayed black, then any other
-	// depth-accepted sample. A changed word is independent evidence of a write.
-	for (size_t i = 0; i < points.size(); ++i) {
-		const auto [x, y] = points[i];
-		const auto index = size_t{y} * trace.width + x;
-		equal_count += hits[2 + 2 * i] != 0;
-		always_count += hits[3 + 2 * i] != 0;
-		if (hits[2 + 2 * i] && (after.words[index] & 0x00ffffffu) == 0)
-			report(points[i], "equal_black");
-	}
-	for (size_t i = 0; i < points.size(); ++i) {
-		if (hits[2 + 2 * i]) report(points[i], "equal");
-	}
 	for (size_t i = 0; i < after.words.size(); ++i) {
 		colored_after += (after.words[i] & 0x00ffffffu) != 0;
 		changed += before.words[i] != after.words[i];
@@ -1378,7 +1369,7 @@ static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
 	// This is earlier, real evidence of rendered 3D geometry than the
 	// periodic light-queue sample. The 718 capture showed it in the G-buffer
 	// while the HDR monitor was bright, before the dark transition. Reuse the
-	// actual material/depth coverage rather than guessing a gameplay frame.
+	// material writes rather than guessing a gameplay frame.
 	if (changed != 0 && colored_after != 0)
 		DemonsAdaptiveCapture::Current().MarkGeometry(trace.frame, changed);
 	if (changed && !cleared && trace.count < trace.pixels.size()) {
@@ -1393,10 +1384,9 @@ static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
 	// Keep the sampler's five lanes valid when the mesh covers fewer points.
 	std::fill(trace.pixels.begin() + trace.count, trace.pixels.end(), trace.pixels[0]);
 	Log::WriteToConsoleAndLog(fmt::format(
-	    "[DS_GBUFFER_PIXELS] frame={} shader=0x{:016x} probes={} equal={} always={} "
+	    "[DS_GBUFFER_PIXELS] frame={} shader=0x{:016x} "
 	    "changed={} cleared_on_load={} colored_after={} extent={}x{} traced={}\n",
-	    trace.frame, trace.shader, points.size(), equal_count, always_count,
-	    changed, cleared, colored_after, trace.width, trace.height, trace.count));
+	    trace.frame, trace.shader, changed, cleared, colored_after, trace.width, trace.height, trace.count));
 }
 
 // Probe the HDR scene *actually consumed* by the final compositor.  The image
@@ -2614,7 +2604,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	RenderDepthInfo ds_live_material_depth {};
 	std::optional<std::array<uint32_t, 64>> ds_live_material_before {};
 	std::optional<std::array<uint32_t, 64>> ds_live_depth_before {};
-	std::optional<std::array<uint64_t, 2>> ds_live_material_coverage {};
 	if (ds_gbuffer_enabled && state.ps_active && bindings.pixel) {
 		ds_gbuffer_shader = state.ps_input_info.stage.program->shader_hash;
 		const auto& watched = DemonsQueueProbe::GBufferShaders;
@@ -3093,8 +3082,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		m_context.GetCommandScheduler().EndRendering(PassEnd::ShaderWrite);
 		ShaderWriteHazardBarrier(buffer.Handle(), shader_write_stages);
 	}
-	// Repeat only the sampled G-buffer draw, using the same resources and
-	// native raster state. The diagnostic must not modify guest attachments.
 	const auto stage_image_writes = [](const auto& stage) {
 		if (stage.program == nullptr) return false;
 		if (stage.program->has_address_writes || stage.program->info.uses_gds) return true;
@@ -3106,42 +3093,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    std::ranges::any_of(vertex_stages, [&](const auto& stage) {
 		    return stage_image_writes(stage.stage);
 	    }) || (state.ps_active && stage_image_writes(state.ps_input_info.stage));
-	DemonsQueueProbe::CoveragePixels coverage_points {};
-	constexpr uint32_t CoverageQueries = 2 + 2 * DemonsQueueProbe::CoveragePixels{}.size();
-	vk::QueryPool coverage_pool {};
-	const auto device = m_context.GetGraphics().device;
-	const bool stencil_independent = !state.depth_info.stencil_test_enable ||
-	    (state.depth_info.stencil_front.compareOp == vk::CompareOp::eAlways &&
-	     state.depth_info.stencil_back.compareOp == vk::CompareOp::eAlways);
-	if ((ds_gbuffer || ds_live_material_capture) && state.depth_info.image_id && stencil_independent && !indirect && !mesh_active && !shader_write_stages && !image_side_effects &&
-	    state.depth_info.depth_test_enable && !state.depth_info.depth_write_enable &&
-	    state.depth_info.depth_compare_op == vk::CompareOp::eEqual &&
-	    m_context.GetGraphics().optional_features.color_write_enable) {
-		vk::QueryPoolCreateInfo info {};
-		info.queryType = vk::QueryType::eOcclusion;
-		info.queryCount = CoverageQueries;
-		const auto result = device.createQueryPool(&info, nullptr, &coverage_pool);
-		if (result == vk::Result::eSuccess) {
-			m_context.GetCommandScheduler().EndRendering(PassEnd::Buffer);
-			buffer.Handle().resetQueryPool(coverage_pool, 0, CoverageQueries);
-		} else {
-			coverage_pool = nullptr;
-			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_GBUFFER_COVERAGE_SKIP] frame={} shader=0x{:016x} reason={}\n",
-			    ds_gbuffer_frame, ds_gbuffer_shader, vk::to_string(result)));
-		}
-	} else if (ds_gbuffer || ds_live_material_capture) {
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "[DS_GBUFFER_COVERAGE_SKIP] frame={} shader=0x{:016x} "
-		    "indirect={} mesh={} storage_write={} depth_test={} depth_write={} depth_func={} stencil_independent={} color_enable={}\n",
-		    ds_gbuffer_frame, ds_gbuffer_shader, indirect != nullptr, mesh_active,
-		    static_cast<bool>(shader_write_stages) || image_side_effects,
-		    state.depth_info.depth_test_enable, state.depth_info.depth_write_enable,
-		    static_cast<uint32_t>(state.depth_info.depth_compare_op), stencil_independent,
-		    m_context.GetGraphics().optional_features.color_write_enable));
-	}
-	uint32_t coverage_count = 0;
-	uint32_t coverage_points_used = 0;
 	LogDrawPhase(draw.Name(), "BeginRendering");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
@@ -3189,44 +3140,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	auto& dynamic_state = m_context.GetCommandScheduler().GetDynamicState();
 	UpdateGraphicsDynamicState(buffer, dynamic_state, vertex_stages.back(), state.depth_info,
 	                           rendering);
-	// Opt-in comparison experiment only. The launcher exposes the switch
-	// solely for PPSA01341; the native gate independently verifies the
-	// loaded title and the three measured G-buffer material shaders.
-	// Disabled: no Vulkan state or rendering path is changed.
-	static const bool ds_gbuffer_depth_always_requested = [] {
-		const char* env = std::getenv("KYTY_DS_GBUFFER_DEPTH_ALWAYS");
-		if (!env || std::strcmp(env, "1") != 0) return false;
-		std::string title;
-		if (!Loader::SystemContentParamSfoGetString("TITLE_ID", &title) ||
-		    title != "PPSA01341") return false;
-		LOGF("[DS_GBUFFER_DEPTH_ALWAYS] opt-in enabled for PPSA01341 only\n");
-		return true;
-	}();
-	const bool ds_force_gbuffer_always = ds_gbuffer_depth_always_requested &&
-	    state.ps_active && state.ps_input_info.stage.program &&
-	    std::ranges::find(DemonsQueueProbe::GBufferShaders,
-	                      state.ps_input_info.stage.program->shader_hash) !=
-	        DemonsQueueProbe::GBufferShaders.end() &&
-	    state.depth_info.image_id && state.depth_info.depth_test_enable &&
-	    !state.depth_info.depth_write_enable &&
-	    state.depth_info.depth_compare_op == vk::CompareOp::eEqual &&
-	    std::ranges::any_of(std::span{state.color_info, state.color_count},
-	        [](const auto& color) {
-		        return color.image_id &&
-		               color.desc.info.data.address == DemonsQueueProbe::GBufferAddress;
-	        });
-	if (ds_force_gbuffer_always) {
-		// The guest EQUAL is retained in state.depth_info and in all
-		// diagnostics. The actual draw temporarily uses ALWAYS. The
-		// subsequent draw resets its own dynamic state normally.
-		dynamic_state.SetDepthCompareOp(vk::CompareOp::eAlways);
-		static std::atomic_uint32_t reported {0};
-		if (reported.fetch_add(1, std::memory_order_relaxed) < 16u)
-			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_GBUFFER_DEPTH_ALWAYS] frame={} shader=0x{:016x} guest=EQUAL native=ALWAYS\n",
-			    m_context.GetGpu().GetFrameNum(),
-			    state.ps_input_info.stage.program->shader_hash));
-	}
 	dynamic_state.SetAttachmentFeedbackLoopAspects(feedback_aspects);
 	dynamic_state.Commit(m_context.GetGraphics(), vk_buffer);
 
@@ -3371,44 +3284,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		} else {
 			issue_draw();
 		}
-		if (coverage_pool) {
-			const std::array<vk::Bool32, RENDER_COLOR_ATTACHMENTS_MAX> no_writes {};
-			vk_buffer.setColorWriteEnableEXT(rendering.num_color_attachments, no_writes.data());
-			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFrontAndBack, 0u);
-			const auto query = [&](vk::CompareOp op) {
-				vk_buffer.setDepthCompareOp(op);
-				vk_buffer.beginQuery(coverage_pool, coverage_count, {});
-				issue_draw();
-				vk_buffer.endQuery(coverage_pool, coverage_count++);
-			};
-			query(vk::CompareOp::eEqual);
-			query(vk::CompareOp::eAlways);
-			if (dynamic_state.num_scissors == 1 && !m_pass_scaled && !ds_albedo_before.words.empty()) {
-				const auto original = dynamic_state.scissors[0];
-				const auto pixels = DemonsQueueProbe::MaterialCoveragePixels(
-				    ds_albedo_before.width, ds_albedo_before.height,
-				    static_cast<uint32_t>(ds_gbuffer_frame) / 240u);
-				for (const auto& point : pixels) {
-					const auto [x, y] = point;
-					if (x >= rendering.width || y >= rendering.height ||
-					    !DemonsQueueProbe::PixelInScissor(point, original.offset.x,
-					        original.offset.y, original.extent.width, original.extent.height)) continue;
-					const vk::Rect2D one {{static_cast<int32_t>(x), static_cast<int32_t>(y)}, {1, 1}};
-					vk_buffer.setScissorWithCount(1, &one);
-					query(vk::CompareOp::eEqual);
-					query(vk::CompareOp::eAlways);
-					coverage_points[coverage_points_used++] = point;
-				}
-				vk_buffer.setScissorWithCount(1, &original);
-			}
-			vk_buffer.setDepthCompareOp(state.depth_info.depth_compare_op);
-			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFront,
-			                              dynamic_state.stencil_front_write_mask);
-			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eBack,
-			                              dynamic_state.stencil_back_write_mask);
-			vk_buffer.setColorWriteEnableEXT(rendering.num_color_attachments,
-			                                 dynamic_state.color_write_enables.data());
-		}
 	}
 
 	if (draw_marks) {
@@ -3430,45 +3305,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const auto after = SnapshotDsAlbedo(m_context, *ds_gbuffer);
 		ds_material_trace->content_version =
 		    m_context.GetTextureCache().GetImage(ds_gbuffer->image_id).ContentVersion();
-		std::array<uint64_t, CoverageQueries> hits {};
-		if (coverage_pool) {
-			if (after.words.empty()) m_context.GetCommandScheduler().Finish();
-			const auto result = device.getQueryPoolResults(
-			    coverage_pool, 0, coverage_count, coverage_count * sizeof(uint64_t), hits.data(),
-			    sizeof(uint64_t), vk::QueryResultFlagBits::e64);
-			device.destroyQueryPool(coverage_pool);
-			if (result != vk::Result::eSuccess) {
-				coverage_points_used = 0;
-				hits = {};
-			}
-			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_GBUFFER_COVERAGE] frame={} shader=0x{:016x} result={} equal_any={} always_any={} equal_fragments={} always_fragments={}\n",
-			    ds_gbuffer_frame, ds_gbuffer_shader, vk::to_string(result), hits[0] != 0, hits[1] != 0, hits[0], hits[1]));
-			if (ds_live_material_capture && result == vk::Result::eSuccess)
-				ds_live_material_coverage = std::array<uint64_t, 2> {hits[0], hits[1]};
-		}
 		RecordDsMaterialPixels(*ds_material_trace, ds_albedo_before, after,
-		                       std::span{coverage_points.data(), coverage_points_used}, hits,
 		                       rendering.color_attachments[ds_gbuffer->target_slot].is_clear);
-	}
-	if (ds_live_material_capture && coverage_pool && !ds_gbuffer) {
-		// The two existing write-disabled replay queries distinguish real
-		// depth-EQUAL rejection from a shader that simply writes black.
-		// Snapshot the attachment after the pass so the GPU queries finish
-		// before getQueryPoolResults, and do not replay side-effect shaders.
-		const auto sample_after = SnapshotDsGBufferGrid(m_context, ds_live_material_target);
-		std::array<uint64_t, CoverageQueries> hits {};
-		const auto result = device.getQueryPoolResults(
-		    coverage_pool, 0, coverage_count, coverage_count * sizeof(uint64_t), hits.data(),
-		    sizeof(uint64_t), vk::QueryResultFlagBits::e64);
-		device.destroyQueryPool(coverage_pool);
-		if (result == vk::Result::eSuccess)
-			ds_live_material_coverage = std::array<uint64_t, 2> {hits[0], hits[1]};
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "[DS_GBUFFER_MATERIAL_COVERAGE] frame={} shader=0x{:016x} result={} "
-		    "equal_fragments={} always_fragments={} readback={}\n",
-		    m_context.GetGpu().GetFrameNum(), state.ps_input_info.stage.program->shader_hash,
-		    vk::to_string(result), hits[0], hits[1], sample_after.has_value()));
 	}
 	if (ds_live_material_capture) {
 		const auto after = SnapshotDsGBufferGrid(m_context, ds_live_material_target);
@@ -3514,15 +3352,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"depth_zero_after", depth_zero_after},
 			    {"depth_changed", depth_changed},
 			    {"depth_owner", ds_live_material_depth.desc.info.data.address},
-			    {"depth_load_clear", ds_live_material_depth.depth_load_clear_enable},
-			    {"depth_attachment_clear", ds_live_material_depth.depth_clear_enable},
+			    {"depth_load_clear", state.depth_info.depth_load_clear_enable},
+			    {"depth_attachment_clear", state.depth_info.depth_clear_enable},
+			    {"depth_write_aspects",
+			        static_cast<uint32_t>(state.depth_info.AttachmentWriteAspects())},
+			    {"depth_load_clear_aspects",
+			        static_cast<uint32_t>(state.depth_info.load_clear_aspects)},
 			    {"before_colored", before_colored}, {"after_colored", after_colored},
 			    {"before_ff000000", before_clear}, {"after_ff000000", after_clear},
 			    {"changed", changed},
-			    {"occlusion_equal_fragments", ds_live_material_coverage ?
-			        nlohmann::json((*ds_live_material_coverage)[0]) : nlohmann::json()},
-			    {"occlusion_always_fragments", ds_live_material_coverage ?
-			        nlohmann::json((*ds_live_material_coverage)[1]) : nlohmann::json()},
 			    {"raster", {
 			        {"indices", draw.index_count}, {"instances", draw.instance_count},
 			        {"indexed", draw.IsIndexed()}, {"mesh", mesh_active},
@@ -3781,12 +3619,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_DEPTH_DRAW] seq={} frame={} target=0x{:x} format={} extent={}x{} "
 			    "depth_write={} depth_test={} gpu_modified={} cpu_dirty={} "
+			    "write_aspects=0x{:x} clear_aspects=0x{:x} "
 			    "content_version={} seen_102a4={} seen_20926={}\n",
 			    n, m_context.GetGpu().GetFrameNum(), address,
 			    static_cast<uint32_t>(tracked.backing.format),
 			    tracked.backing.extent.width, tracked.backing.extent.height,
 			    di.depth_write_enable ? 1 : 0, di.depth_test_enable ? 1 : 0,
 			    tracked.IsGpuModified() ? 1 : 0, tracked.IsCpuDirty() ? 1 : 0,
+			    static_cast<uint32_t>(di.AttachmentWriteAspects()),
+			    static_cast<uint32_t>(di.load_clear_aspects),
 			    tracked.ContentVersion(), depth_102a4.load(std::memory_order_relaxed),
 			    depth_20926.load(std::memory_order_relaxed)));
 		}
