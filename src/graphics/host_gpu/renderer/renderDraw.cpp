@@ -1323,28 +1323,29 @@ void ProbeDsComputeImage(RenderContext& context, ImageId id, uint64_t shader_has
 	ProbeDsColorOutputs(context, &color, 1u, shader_hash, true, forced, view, pixels, 0, 0, first_words);
 }
 
-DemonsQueueProbe::Capture* RenderExecutor::DsPostCapture(uint64_t shader) {
+DemonsQueueProbe::Capture* RenderExecutor::DsPostCapture() {
 	using namespace DemonsQueueProbe;
 	const auto frame = m_context.GetGpu().GetFrameNum();
 	auto& capture = m_ds_queue_captures.back();
 	// The second measured queue completes after the primary light passes.
 	// Keep a separate slot for the final composite even if many passes match.
 	if (!capture.light_output_sampled || capture.composite_sampled ||
-	    !PostTracePending(capture.frame, frame) ||
-	    (capture.post_passes >= 24 && shader != CompositeShader)) return nullptr;
+	    !PostTracePending(capture.frame, frame)) return nullptr;
 	return &capture;
 }
 
 void RenderExecutor::ProbeDsPostImages(const PreparedBindings& bindings,
                                        const DemonsQueueProbe::Capture& capture,
-                                       uint64_t submit, uint64_t shader, bool compute, bool before) {
+                                       uint64_t submit, uint64_t shader, bool compute, bool before,
+                                       bool all_inputs) {
 	using namespace DemonsQueueProbe;
 	for (uint32_t i = 0; i < bindings.images.size(); ++i) {
 		const auto& binding = bindings.images[i];
 		const auto address = binding.desc.info.data.address;
 		const bool written = i < bindings.runtime->program->info.images.size() &&
 		    bindings.runtime->program->info.images[i].written;
-		if (!capture.TracesImage(address) || (!before && !written)) continue;
+		if ((!capture.TracesImage(address) && !(all_inputs && before && !written)) ||
+		    (!before && !written)) continue;
 		if (binding.placeholder || !binding.image_id) {
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_POST_BINDING] light_frame={} pass={} submit={} shader=0x{:016x} phase={} "
@@ -1372,17 +1373,23 @@ void RenderExecutor::ProbeDsPostImages(const PreparedBindings& bindings,
 DemonsQueueProbe::Capture* RenderExecutor::BeginDsPostCompute(const PreparedBindings& bindings,
                                                                uint64_t submit) {
 	const auto shader = bindings.runtime->program->shader_hash;
-	auto* capture = DsPostCapture(shader);
+	auto* capture = DsPostCapture();
 	if (!capture || shader == DemonsQueueProbe::Shaders.back() ||
 	    std::ranges::none_of(bindings.images, [capture](const auto& binding) {
 		    return capture->TracesImage(binding.desc.info.data.address);
 	    })) return nullptr;
 	const auto& resources = bindings.runtime->program->info.images;
+	bool writes_scene = false;
 	bool reads_tracked = false;
 	for (size_t i = 0; i < bindings.images.size() && i < resources.size(); ++i) {
 		const auto& binding = bindings.images[i];
+		writes_scene |= resources[i].written &&
+		    binding.desc.info.data.address == DemonsQueueProbe::SceneAddress;
 		reads_tracked |= !resources[i].written && capture->TracesImage(binding.desc.info.data.address);
 	}
+	if (!DemonsQueueProbe::TracePostPass(capture->post_passes, capture->scene_passes,
+	                                    writes_scene, false)) return nullptr;
+	capture->scene_passes += writes_scene;
 	if (reads_tracked) {
 		for (size_t i = 0; i < bindings.images.size() && i < resources.size(); ++i) {
 			const auto& binding = bindings.images[i];
@@ -1393,9 +1400,11 @@ DemonsQueueProbe::Capture* RenderExecutor::BeginDsPostCompute(const PreparedBind
 	}
 	++capture->post_passes;
 	Log::WriteToConsoleAndLog(fmt::format(
-	    "[DS_POST_PASS] light_frame={} frame={} pass={} submit={} shader=0x{:016x} path=compute\n",
-	    capture->frame, m_context.GetGpu().GetFrameNum(), capture->post_passes, submit, shader));
-	ProbeDsPostImages(bindings, *capture, submit, shader, true, true);
+	    "[DS_POST_PASS] light_frame={} frame={} pass={} submit={} shader=0x{:016x} "
+	    "path=compute writes_scene={}\n",
+	    capture->frame, m_context.GetGpu().GetFrameNum(), capture->post_passes, submit, shader,
+	    writes_scene));
+	ProbeDsPostImages(bindings, *capture, submit, shader, true, true, writes_scene);
 	return capture;
 }
 
@@ -2442,13 +2451,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const auto shader = state.ps_input_info.stage.program->shader_hash;
 		const auto colors = std::span{state.color_info, state.color_count};
 		ds_post_final = shader == CompositeShader;
-		if (auto* capture = DsPostCapture(shader)) {
+		if (auto* capture = DsPostCapture()) {
 			const auto traces_image = [capture](const auto& item) {
 				return capture->TracesImage(item.desc.info.data.address);
 			};
 			const bool reads_tracked = std::ranges::any_of(bindings.pixel->images, traces_image);
-			if (ds_post_final || reads_tracked || std::ranges::any_of(colors, traces_image)) {
+			const bool writes_scene = std::ranges::any_of(colors, [](const auto& color) {
+				return color.image_id && color.desc.info.data.address == SceneAddress;
+			});
+			if (TracePostPass(capture->post_passes, capture->scene_passes, writes_scene, ds_post_final) &&
+			    (ds_post_final || reads_tracked || std::ranges::any_of(colors, traces_image))) {
 				ds_post = capture;
+				ds_post->scene_passes += writes_scene && !ds_post_final;
 				if (reads_tracked && !ds_post_final) {
 					for (const auto& color : colors) {
 						if (!color.image_id) continue;
@@ -2459,10 +2473,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				++ds_post->post_passes;
 				Log::WriteToConsoleAndLog(fmt::format(
 				    "[DS_POST_PASS] light_frame={} frame={} pass={} submit={} shader=0x{:016x} path=graphics "
-				    "targets={} target0=0x{:x} final={}\n",
+				    "targets={} target0=0x{:x} writes_scene={} final={}\n",
 				    ds_post->frame, m_context.GetGpu().GetFrameNum(), ds_post->post_passes, submit_id,
-				    shader, state.color_count, colors.front().desc.info.data.address, ds_post_final));
-				ProbeDsPostImages(*bindings.pixel, *ds_post, submit_id, shader, false, true);
+				    shader, state.color_count, colors.front().desc.info.data.address, writes_scene,
+				    ds_post_final));
+				ProbeDsPostImages(*bindings.pixel, *ds_post, submit_id, shader, false, true,
+				                  writes_scene);
 				for (const auto& color : colors) {
 					if (!color.image_id || !traces_image(color)) continue;
 					Log::WriteToConsoleAndLog(fmt::format(
@@ -3475,12 +3491,32 @@ bool RenderExecutor::ResolveColorTargets(CommandBuffer& buffer, uint32_t render_
 	// The resolve addresses guest texels of both images.
 	source.SetScaled(false);
 	destination.SetScaled(false);
+	auto* post = dst.desc.info.data.address == DemonsQueueProbe::SceneAddress ? DsPostCapture() : nullptr;
+	if (post && !DemonsQueueProbe::TracePostPass(post->post_passes, post->scene_passes, true, false))
+		post = nullptr;
+	if (post) {
+		++post->post_passes;
+		++post->scene_passes;
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_POST_RESOLVE] light_frame={} frame={} pass={} phase=before source=0x{:x} target=0x{:x}\n",
+		    post->frame, m_context.GetGpu().GetFrameNum(), post->post_passes,
+		    src.desc.info.data.address, dst.desc.info.data.address));
+		ProbeDsColorOutputs(m_context, &src, 1, 0, false, true, &src.desc.view_info,
+		                    &post->pixels, post->width, post->height);
+	}
 	// A target can live inside a larger image: GTA V resolves each face of its reflection cube by
 	// pointing CB_COLOR1 at that face's slice. FindImage() then moved the view to the matching
 	// level and layer of that image, which is where the resolve has to read and write.
 	destination.Resolve(source,
 	                    {src.desc.view_info.base_level, 1, src.desc.view_info.base_layer, 1},
 	                    {dst.desc.view_info.base_level, 1, dst.desc.view_info.base_layer, 1});
+	if (post) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_POST_RESOLVE] light_frame={} frame={} pass={} phase=after target=0x{:x}\n",
+		    post->frame, m_context.GetGpu().GetFrameNum(), post->post_passes, dst.desc.info.data.address));
+		ProbeDsColorOutputs(m_context, &dst, 1, 0, false, true, &dst.desc.view_info,
+		                    &post->pixels, post->width, post->height);
+	}
 	return true;
 }
 

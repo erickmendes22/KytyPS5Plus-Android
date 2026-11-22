@@ -465,9 +465,10 @@ private:
 	void BindDsLightMath(PreparedBindings& bindings, const DemonsQueueProbe::Capture* capture);
 	void ReadDsLightMath(const DemonsQueueProbe::Capture& capture, uint64_t submit,
 	                     const PreparedBindings& bindings);
-	DemonsQueueProbe::Capture* DsPostCapture(uint64_t shader);
+	DemonsQueueProbe::Capture* DsPostCapture();
 	void ProbeDsPostImages(const PreparedBindings& bindings, const DemonsQueueProbe::Capture& capture,
-	                       uint64_t submit, uint64_t shader, bool compute, bool before);
+	                       uint64_t submit, uint64_t shader, bool compute, bool before,
+	                       bool all_inputs = false);
 	DemonsQueueProbe::Capture* BeginDsPostCompute(const PreparedBindings& bindings, uint64_t submit);
 	void CaptureDsLightTiles(const PreparedBindings& bindings);
 	int32_t m_ds_tile_frame = -1;

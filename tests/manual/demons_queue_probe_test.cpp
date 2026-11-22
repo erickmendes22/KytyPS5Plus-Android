@@ -45,6 +45,10 @@ int main(int argc, char** argv) {
 	assert(ColoredTilePixels(albedo, std::array<uint32_t, 1>{0}, 17, 9, covered_albedo) == 0);
 	static_assert(PostTracePending(961, 963) && !PostTracePending(961, 964));
 	static_assert(!PostTracePending(-1, 0));
+	static_assert(!TracePostPass(24, 0, false, false));
+	static_assert(TracePostPass(24, 0, true, false));
+	static_assert(!TracePostPass(24, 8, true, false));
+	static_assert(TracePostPass(32, 8, false, true));
 	Capture scene {961, Shaders[1], 1600, 900};
 	assert(scene.TracesImage(HdrAddress) && scene.TracesImage(SceneAddress));
 	assert(!scene.TracesImage(0) && !scene.TracesImage(0x123000));

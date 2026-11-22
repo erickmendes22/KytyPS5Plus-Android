@@ -42,6 +42,11 @@ constexpr bool PostTracePending(int32_t start, int32_t current) {
 	const int64_t age = int64_t{current} - start;
 	return start >= 0 && age >= 0 && age <= 2;
 }
+// The scene transfer and composite may occur after the bloom mip chain.
+constexpr bool TracePostPass(uint32_t pass_count, uint32_t scene_count,
+                             bool writes_scene, bool final_composite) {
+	return final_composite || (writes_scene ? scene_count < 8u : pass_count < 24u);
+}
 constexpr uint64_t TileProducer = 0x32c7da582db1795aull;
 constexpr uint64_t PrefixAddress = 0x208e41a00ull;
 constexpr uint64_t TilesAddress = 0x208cc5ee0ull;
@@ -192,6 +197,7 @@ struct Capture {
 	bool composite_sampled = false;
 	bool light_output_sampled = false;
 	uint32_t post_passes = 0;
+	uint32_t scene_passes = 0;
 	std::array<uint64_t, 12> post_intermediates {};
 
 	bool TracesImage(uint64_t address) const {
