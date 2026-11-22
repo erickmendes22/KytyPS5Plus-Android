@@ -39,7 +39,7 @@
  #include "Interface/Core/X86Tables/X86Tables.h"
  #include "Interface/IR/IR.h"
  #include "Interface/IR/IREmitter.h"
-@@ -3252,7 +3253,18 @@
+@@ -3252,7 +3253,27 @@
  
      Ref Counter = LoadGPRRegister(X86State::REG_RCX);
  
@@ -47,19 +47,28 @@
 +    // Kyty Android port: fold the address the fill uses, keep RDI's unfolded high bits.
 +    const uint64_t FoldMask = FEXCore::GuestAddressFold::GetMask();
 +    Ref DestHigh {};
++    Ref DestRelocation {};
 +    if (FoldMask != 0) {
 +      DestHigh = _And(OpSize::i64Bit, Dest, Constant(~FoldMask));
 +      Dest = _And(OpSize::i64Bit, Dest, Constant(FoldMask));
++      if (FEXCore::GuestAddressFold::GetShift() != 0) {
++        DestRelocation = _Lshr(OpSize::i64Bit,
++          _And(OpSize::i64Bit, DestHigh, Constant(0x8000000000ull)), Constant(2));
++        Dest = _Or(OpSize::i64Bit, Dest, DestRelocation);
++      }
 +    }
 +
 +    Ref Result = _MemSet(CTX->IsAtomicTSOEnabled(), Size, Segment ?: InvalidNode, Dest, Src, Counter, LoadDir(1));
 +    if (FoldMask != 0) {
++      if (FEXCore::GuestAddressFold::GetShift() != 0) {
++        Result = _Sub(OpSize::i64Bit, Result, DestRelocation);
++      }
 +      Result = _Or(OpSize::i64Bit, Result, DestHigh);
 +    }
      StoreGPRRegister(X86State::REG_RCX, Constant(0));
      StoreGPRRegister(X86State::REG_RDI, Result);
    }
-@@ -3282,11 +3294,27 @@
+@@ -3282,11 +3303,41 @@
  
      if (SrcSegment) {
        SrcAddr = Add(OpSize::i64Bit, SrcAddr, SrcSegment);
@@ -69,11 +78,21 @@
 +    const uint64_t FoldMask = FEXCore::GuestAddressFold::GetMask();
 +    Ref DstHigh {};
 +    Ref SrcHigh {};
++    Ref DstRelocation {};
++    Ref SrcRelocation {};
 +    if (FoldMask != 0) {
 +      DstHigh = _And(OpSize::i64Bit, DstAddr, Constant(~FoldMask));
 +      SrcHigh = _And(OpSize::i64Bit, SrcAddr, Constant(~FoldMask));
 +      DstAddr = _And(OpSize::i64Bit, DstAddr, Constant(FoldMask));
 +      SrcAddr = _And(OpSize::i64Bit, SrcAddr, Constant(FoldMask));
++      if (FEXCore::GuestAddressFold::GetShift() != 0) {
++        DstRelocation = _Lshr(OpSize::i64Bit,
++          _And(OpSize::i64Bit, DstHigh, Constant(0x8000000000ull)), Constant(2));
++        SrcRelocation = _Lshr(OpSize::i64Bit,
++          _And(OpSize::i64Bit, SrcHigh, Constant(0x8000000000ull)), Constant(2));
++        DstAddr = _Or(OpSize::i64Bit, DstAddr, DstRelocation);
++        SrcAddr = _Or(OpSize::i64Bit, SrcAddr, SrcRelocation);
++      }
      }
  
      Ref Result_Src = _AllocateGPR(false);
@@ -81,6 +100,10 @@
      _MemCpy(CTX->IsAtomicTSOEnabled(), Size, DstAddr, SrcAddr, Counter, LoadDir(1), Result_Dst, Result_Src);
 +
 +    if (FoldMask != 0) {
++      if (FEXCore::GuestAddressFold::GetShift() != 0) {
++        Result_Dst = _Sub(OpSize::i64Bit, Result_Dst, DstRelocation);
++        Result_Src = _Sub(OpSize::i64Bit, Result_Src, SrcRelocation);
++      }
 +      Result_Dst = _Or(OpSize::i64Bit, Result_Dst, DstHigh);
 +      Result_Src = _Or(OpSize::i64Bit, Result_Src, SrcHigh);
 +    }
@@ -89,7 +112,7 @@
        Result_Dst = Sub(OpSize::i64Bit, Result_Dst, DstSegment);
 --- /dev/null
 +++ b/FEXCore/Source/Interface/IR/Passes/GuestAddressFoldPass.cpp
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,192 @@
 +// SPDX-License-Identifier: MIT
 +/*
 +$info$
@@ -113,6 +136,7 @@
 +namespace FEXCore::GuestAddressFold {
 +namespace {
 +  std::atomic<uint64_t> CurrentMask {0};
++  std::atomic<uint64_t> CurrentShift {0};
 +}
 +
 +void SetMask(uint64_t Mask) {
@@ -122,10 +146,28 @@
 +uint64_t GetMask() {
 +  return CurrentMask.load(std::memory_order_acquire);
 +}
++
++void SetShift(uint64_t Shift) {
++  CurrentShift.store(Shift, std::memory_order_release);
++}
++
++uint64_t GetShift() {
++  return CurrentShift.load(std::memory_order_acquire);
++}
 +} // namespace FEXCore::GuestAddressFold
 +
 +namespace FEXCore::IR {
 +namespace {
++
++  // Saros maps two guest banks whose low 39 bits match. Route the high bank
++  // through another 128 GiB host region (guest bit39 -> host bit37).
++  Ref FoldEffectiveAddress(IREmitter* IREmit, Ref Address, Ref Masked) {
++    if (FEXCore::GuestAddressFold::GetShift() == 0) return Masked;
++    Ref BankBit = IREmit->_And(OpSize::i64Bit, Address,
++                              IREmit->_InlineConstant(0x8000000000ull));
++    Ref Shifted = IREmit->_Lshr(OpSize::i64Bit, BankBit, IREmit->_InlineConstant(2));
++    return IREmit->_Or(OpSize::i64Bit, Masked, Shifted);
++  }
 +
 +  // Immediate offsets up to this size are kept on the access: folding the base alone is then
 +  // equivalent to folding the sum unless base and offset straddle a fold boundary.
@@ -152,7 +194,8 @@
 +    auto CurrentIR = IREmit->ViewIR();
 +    Ref Addr = CurrentIR.GetNode(IROp->Args[AddrIndex]);
 +    IREmit->SetWriteCursorBefore(CodeNode);
-+    Ref Folded = IREmit->_And(OpSize::i64Bit, Addr, IREmit->_InlineConstant(Mask));
++    Ref Masked = IREmit->_And(OpSize::i64Bit, Addr, IREmit->_InlineConstant(Mask));
++    Ref Folded = FoldEffectiveAddress(IREmit, Addr, Masked);
 +    IREmit->ReplaceNodeArgument(CodeNode, AddrIndex, Folded);
 +  }
 +
@@ -191,7 +234,8 @@
 +    }
 +    const auto Shift = static_cast<uint8_t>(std::countr_zero(static_cast<uint32_t>(Op->OffsetScale)));
 +    Ref Sum = IREmit->_AddShift(OpSize::i64Bit, Addr, Extended, ShiftType::LSL, Shift);
-+    Ref Folded = IREmit->_And(OpSize::i64Bit, Sum, IREmit->_InlineConstant(Mask));
++    Ref Masked = IREmit->_And(OpSize::i64Bit, Sum, IREmit->_InlineConstant(Mask));
++    Ref Folded = FoldEffectiveAddress(IREmit, Sum, Masked);
 +    IREmit->ReplaceNodeArgument(CodeNode, T::Addr_Index, Folded);
 +    IREmit->ReplaceNodeArgument(CodeNode, T::Offset_Index, IREmit->Invalid());
 +    Op->OffsetType = MemOffsetType::SXTX;
@@ -263,7 +307,7 @@
 +} // namespace FEXCore::IR
 --- /dev/null
 +++ b/FEXCore/include/FEXCore/Core/GuestAddressFold.h
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,25 @@
 +// SPDX-License-Identifier: MIT
 +#pragma once
 +
@@ -285,5 +329,7 @@
 +
 +FEX_DEFAULT_VISIBILITY void SetMask(uint64_t Mask);
 +FEX_DEFAULT_VISIBILITY uint64_t GetMask();
++FEX_DEFAULT_VISIBILITY void SetShift(uint64_t Shift);
++FEX_DEFAULT_VISIBILITY uint64_t GetShift();
 +
 +} // namespace FEXCore::GuestAddressFold
