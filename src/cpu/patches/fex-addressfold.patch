@@ -54,7 +54,7 @@
 +      if (FEXCore::GuestAddressFold::GetShift() != 0) {
 +        DestRelocation = _Lshr(OpSize::i64Bit,
 +          _And(OpSize::i64Bit, DestHigh, Constant(0x8000000000ull)), Constant(2));
-+        Dest = _Or(OpSize::i64Bit, Dest, DestRelocation);
++        Dest = _Add(OpSize::i64Bit, Dest, DestRelocation);
 +      }
 +    }
 +
@@ -90,8 +90,8 @@
 +          _And(OpSize::i64Bit, DstHigh, Constant(0x8000000000ull)), Constant(2));
 +        SrcRelocation = _Lshr(OpSize::i64Bit,
 +          _And(OpSize::i64Bit, SrcHigh, Constant(0x8000000000ull)), Constant(2));
-+        DstAddr = _Or(OpSize::i64Bit, DstAddr, DstRelocation);
-+        SrcAddr = _Or(OpSize::i64Bit, SrcAddr, SrcRelocation);
++        DstAddr = _Add(OpSize::i64Bit, DstAddr, DstRelocation);
++        SrcAddr = _Add(OpSize::i64Bit, SrcAddr, SrcRelocation);
 +      }
      }
  
@@ -166,7 +166,7 @@
 +    Ref BankBit = IREmit->_And(OpSize::i64Bit, Address,
 +                              IREmit->_InlineConstant(0x8000000000ull));
 +    Ref Shifted = IREmit->_Lshr(OpSize::i64Bit, BankBit, IREmit->_InlineConstant(2));
-+    return IREmit->_Or(OpSize::i64Bit, Masked, Shifted);
++    return IREmit->_Add(OpSize::i64Bit, Masked, Shifted);
 +  }
 +
 +  // Immediate offsets up to this size are kept on the access: folding the base alone is then
