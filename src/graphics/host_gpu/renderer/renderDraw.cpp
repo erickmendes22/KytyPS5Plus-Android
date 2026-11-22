@@ -819,7 +819,7 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		// stale or zero depth, even though their draw shaders are valid.
 		if (metadata.kind == ImageMetadataKind::Htile && depth.depth_clear_enable &&
 		    !cache.ClearMeta(metadata.range.address)) {
-			EXIT("failed to acquire HTile metadata for a depth clear\\n");
+			EXIT("failed to acquire HTile metadata for a depth clear\n");
 		}
 		const bool meta_clear =
 		    metadata.kind == ImageMetadataKind::Htile &&
