@@ -813,6 +813,14 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		}
 		auto        image_view = cache.FindDepthTarget(depth.image_id, depth.desc);
 		const auto& metadata   = depth.desc.info.metadata;
+		// PC renderer parity: a guest depth clear invalidates the previous HTile
+		// fast-clear identity and publishes a fresh metadata clear before attachment
+		// acquisition. Without it the later depth-only/material passes can reload
+		// stale or zero depth, even though their draw shaders are valid.
+		if (metadata.kind == ImageMetadataKind::Htile && depth.depth_clear_enable &&
+		    !cache.ClearMeta(metadata.range.address)) {
+			EXIT("failed to acquire HTile metadata for a depth clear\\n");
+		}
 		const bool meta_clear =
 		    metadata.kind == ImageMetadataKind::Htile &&
 		    cache.IsMetaCleared(metadata.range.address, depth.desc.view_info.base_layer);
