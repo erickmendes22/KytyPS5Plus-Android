@@ -922,6 +922,11 @@ static bool g_keep_fold_alias_free = false;
 // 0x98c0000000 guest mapping folds to host 0x18c0000000 and is 192 MiB.
 // Reserve 48 GiB to cover that region with room for later top-down commits.
 static constexpr uint64_t kSarosFoldAliasSize = 48ull << 30u;
+// The latest captured fixed map is 3 GiB *past* the reserved 512 GiB arena's
+// top, at guest 0x9cc0000000 (host 0x1cc0000000). Keep 4 GiB of host
+// headroom beyond the planned folded image; increasing the image itself merely
+// moves this game-derived allocation by the same amount.
+static constexpr uint64_t kSarosFoldHeadroom = 4ull << 30u;
 #endif
 
 } // namespace Libs::LibKernel::Memory
@@ -955,7 +960,7 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 #if defined(__ANDROID__) && KYTY_HOST_ARM64
 			// Saros allocates in the low user window before reserving its large UE5
 			// arena. Keep the host VA for the arena's folded top free from boot.
-			const auto fold_alias_end = HOST_USER_MIN + kSarosFoldAliasSize;
+			const auto fold_alias_end = HOST_USER_MIN + kSarosFoldAliasSize + kSarosFoldHeadroom;
 			if (g_keep_fold_alias_free && candidate < fold_alias_end &&
 			    candidate + size > HOST_USER_MIN) {
 				current = fold_alias_end;
@@ -1412,13 +1417,13 @@ void Initialize() {
 		// host 0x18c0000000 and fails with address-range-unavailable.
 		constexpr uint64_t alias_start = HOST_USER_MIN;
 		constexpr uint64_t alias_size  = kSarosFoldAliasSize;
-		if (g_guest_address_space->ReserveFixed(alias_start, alias_size)) {
+		if (g_guest_address_space->ReserveFixed(alias_start, alias_size + kSarosFoldHeadroom)) {
 			EXIT_IF(!g_virtual_ranges->Add(alias_start, alias_size, 0, 0, 0,
 			                               VirtualRangeType::Reserved, "fold-alias", true));
-			Log::WriteToConsoleAndLog("[SAROS_FOLD_ALIAS] protected initial 48 GiB host image\n");
+			Log::WriteToConsoleAndLog("[SAROS_FOLD_ALIAS] protected initial 48 GiB host image and checked 4 GiB headroom\n");
 		} else {
 			Log::WriteToConsoleAndLog(
-			    "[SAROS_FOLD_ALIAS] initial 48 GiB image is host-fragmented; use checked fold placement\n");
+			    "[SAROS_FOLD_ALIAS] initial image or 4 GiB headroom is host-fragmented; use checked fold placement\n");
 		}
 	}
 #endif
@@ -4024,6 +4029,18 @@ static uint64_t FindFoldedReservation(uint64_t hint, uint64_t size, uint64_t ali
 		if (g_virtual_ranges->HasOverlap(
 		        candidate.alias_end, candidate.start + size - candidate.alias_end)) continue;
 		const auto candidate_size = candidate.alias_end - candidate.alias_start;
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+		// A 512 GiB Unreal reservation is not the upper bound of the title's
+		// subsequent fixed direct maps: 0x9cc0000000 is 3 GiB beyond it.
+		// Verify that the host tail can back those real allocations *before*
+		// committing to the fold placement; the tail itself is left unregistered
+		// so it can be used as the bottom of the game's guest reservation.
+		if (g_keep_fold_alias_free &&
+		    (candidate.alias_end > Common::AddressLayout::kHostUserEnd - kSarosFoldHeadroom ||
+		     !g_guest_address_space->ReserveFixed(candidate.alias_end, kSarosFoldHeadroom))) {
+			continue;
+		}
+#endif
 		VirtualRanges::Range alias {};
 		const bool present = g_virtual_ranges->Query(candidate.alias_start, 0, &alias) &&
 		    alias.start == candidate.alias_start && alias.size == candidate_size &&
