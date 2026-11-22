@@ -1283,6 +1283,12 @@ static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
 		colored_after += (after.words[i] & 0x00ffffffu) != 0;
 		changed += before.words[i] != after.words[i];
 	}
+	// This is earlier, real evidence of rendered 3D geometry than the
+	// periodic light-queue sample. The 718 capture showed it in the G-buffer
+	// while the HDR monitor was bright, before the dark transition. Reuse the
+	// actual material/depth coverage rather than guessing a gameplay frame.
+	if (changed != 0 && colored_after != 0)
+		DemonsAdaptiveCapture::Current().MarkGeometry(trace.frame, changed);
 	if (changed && !cleared && trace.count < trace.pixels.size()) {
 		const uint32_t step = std::max(changed / static_cast<uint32_t>(trace.pixels.size()), 1u);
 		uint32_t ordinal = 0;
@@ -1401,9 +1407,16 @@ static void ProbeDsPostFixedInput(RenderContext& context, const PreparedBindings
 	const bool event_due = DemonsAdaptiveCapture::Current().CaptureDue(frame) &&
 	                       event_capture.Due(frame, 24);
 	if (!baseline_due && !event_due) return;
-	const auto found = std::ranges::find_if(pixel.images, [](const auto& input) {
-		return input.image_id && !input.placeholder &&
-		       input.desc.info.data.address == 0x346d00000ull;
+	// The source image is dynamically allocated. The prior hard-coded
+	// 0x346d00000 address was absent in the 718 capture (the same shader
+	// sampled 0x346900000 instead), silently disabling the diagnostic.
+	// Select an actual shader read binding, never a stale allocation.
+	const auto& resources = pixel.runtime->program->info.images;
+	const auto first = pixel.images.begin();
+	const auto found = std::find_if(first, pixel.images.end(), [&](const auto& input) {
+		const auto index = static_cast<size_t>(&input - pixel.images.data());
+		return index < resources.size() && resources[index].read &&
+		       !resources[index].written && input.image_id && !input.placeholder;
 	});
 	if (found == pixel.images.end()) return;
 	const auto& image = context.GetTextureCache().GetImage(found->image_id);
@@ -1414,10 +1427,11 @@ static void ProbeDsPostFixedInput(RenderContext& context, const PreparedBindings
 	Log::WriteToConsoleAndLog(fmt::format(
 	    "[DS_POST_FIXED_INPUT] frame={} shader=0x{:016x} guest=0x{:x} "
 	    "owner=0x{:x} version={} mip={} layer={} "
-	    "gpu_modified={} cpu_dirty={} trigger={}\n",
+	    "gpu_modified={} cpu_dirty={} trigger={} slot={}\n",
 	    frame, shader, found->desc.info.data.address, image.info.data.address,
 	    image.ContentVersion(), view->info.base_level, view->info.base_layer,
-	    image.IsGpuModified(), image.IsCpuDirty(), event_due));
+	    image.IsGpuModified(), image.IsCpuDirty(), event_due,
+	    static_cast<size_t>(found - pixel.images.begin())));
 	RenderColorInfo color {};
 	color.image_id = found->image_id;
 	color.desc = found->desc;

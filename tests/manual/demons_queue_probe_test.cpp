@@ -61,6 +61,28 @@ int main(int argc, char** argv) {
 			assert(event.triggered == (i == 3));
 		}
 	}
+	// Reproduce the *observed* 718 ordering: the G-buffer shows changing
+	// colored geometry before the lighting queue is sampled; the compositor
+	// sees a bright scene, then three progressively dark observations.
+	for (const int32_t base : {0, 351, 2400}) {
+		Libs::Graphics::DemonsAdaptiveCapture::Gate detector;
+		detector.MarkGeometry(base + 80, 1439860); // a real changed material attachment
+		for (int i = 0; i < 4; ++i) {
+			const int frame = base + 80 + 24 * i;
+			assert(detector.ShouldSample(frame));
+			const auto observation = detector.Observe(
+			    frame, 0.101, 64, 0x281a80000ull);
+			assert(!observation.triggered);
+		}
+		for (int i = 1; i <= 3; ++i) {
+			const auto observed = detector.Observe(
+			    base + 176 + i * 24, 0.0062383, 2, 0x281a80000ull);
+			assert(observed.triggered == (i == 3));
+		}
+		assert(detector.CaptureDue(base + 300));
+		detector.NoteCaptured(base + 300);
+		assert(detector.CapturedFrame(base + 300));
+	}
 	static_assert(DefaultPixels(1600, 900)[4] == std::pair{1200u, 675u});
 	constexpr auto coverage = MaterialCoveragePixels(1600, 900, 0);
 	static_assert(coverage.size() == 96 && coverage.front() == std::pair{33u, 28u});
