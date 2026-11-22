@@ -22,6 +22,7 @@
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/hostShaderQuirks.h"
 #include "graphics/host_gpu/renderer/pipeline/deadLaneDefaults.h"
+#include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/colorWritePolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightingMemoryPolicy.h"
 #include "graphics/guest_gpu/graphicsRun.h"
@@ -2040,7 +2041,19 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
 	    m_graphics.GetPhysicalDeviceProperties().limits.maxComputeSharedMemorySize;
 	uint32_t          push_data_cursor = 0;
 	// The dispatch's results feed the game: it waits for its program.
-	return m_program_cache->Get(params, input_info, push_data_cursor, false);
+	const auto program = m_program_cache->Get(params, input_info, push_data_cursor, false);
+	if (program && ShaderDump::DsLightingCapture()) {
+		const auto& plan = input_info.stage.program->info.buffers;
+		const auto& buffers = input_info.stage.resources->buffers;
+		for (size_t i = 0; i < std::min(plan.size(), buffers.size()); ++i) {
+			if (!plan[i].written) continue;
+			const auto desc = DecodeNativeDescriptor<ShaderBufferResource>(buffers[i]);
+			if (desc.GetSize() != DemonsLightingMemoryPolicy::ProbeCoefficientBytes) continue;
+			ShaderDump::RecordDsProbeGuestCode(params.hash, params.code);
+			break;
+		}
+	}
+	return program;
 }
 
 bool PipelineStaticParameters::operator==(const PipelineStaticParameters& other) const noexcept {

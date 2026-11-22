@@ -13,6 +13,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
+#include <unordered_set>
 #include <xxhash.h>
 
 namespace Libs::Graphics::ShaderDump {
@@ -27,6 +28,7 @@ struct DumpedModule {
 struct State {
 	std::mutex                                     mutex;
 	std::unordered_map<VkShaderModule, DumpedModule> modules;
+	std::unordered_set<uint64_t>                   ds_probe_guest_code;
 	bool                                           device_written = false;
 	bool                                           failed         = false;
 };
@@ -43,10 +45,6 @@ const std::filesystem::path& Root() {
 // With Android's automatic Demon trace, save the affected compute pipelines
 // and observed G-buffer fragment shaders. The diagnostic ZIP exports these exact
 // SPIR-V binaries and Vulkan pipeline JSON without needing RenderDoc.
-bool DsLightingCapture() {
-	return Root().filename() == "ds-lighting-dumps";
-}
-
 bool DsLightingShader(uint64_t hash) {
 	static constexpr std::array<uint64_t, 10> watched {{
 	    0x2f493aadc660cf03ull,
@@ -130,6 +128,20 @@ PipelineRecord::ModuleNamer Namer(State& state) {
 
 bool Enabled() {
 	return !Root().empty();
+}
+
+bool DsLightingCapture() {
+	return Root().filename() == "ds-lighting-dumps";
+}
+
+void RecordDsProbeGuestCode(uint64_t hash, std::span<const uint32_t> code) {
+	if (code.empty() || code.size_bytes() > 1024u * 1024u) return;
+	auto& state = GetState();
+	std::scoped_lock lock(state.mutex);
+	if (state.ds_probe_guest_code.size() >= 96 || state.ds_probe_guest_code.contains(hash)) return;
+	const auto file = Root() / "guest-shaders" / fmt::format("cs_{:016x}_probe.bin", hash);
+	if (WriteFile(file, code.data(), code.size_bytes())) state.ds_probe_guest_code.insert(hash);
+	else ReportFailure(state, fmt::format("cannot write {}", file.filename().string()));
 }
 
 void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t guest_hash,

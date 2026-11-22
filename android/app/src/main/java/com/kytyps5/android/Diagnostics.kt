@@ -242,16 +242,18 @@ object Diagnostics {
             "e75589aa0bb3ae52", "93b0be7f1a0293d1"
         )
         return try {
-            val candidates = listOf("queue-state", "spv", "pipelines", "buffers").flatMap { subdir ->
+            val candidates = listOf("queue-state", "guest-shaders", "spv", "pipelines", "buffers").flatMap { subdir ->
                 File(dump, subdir).listFiles().orEmpty()
                     .filter { file ->
                         file.isFile && file.length() > 0L &&
-                            watched.any { hash -> file.name.contains("_${hash}_") } &&
+                            (subdir == "guest-shaders" ||
+                                watched.any { hash -> file.name.contains("_${hash}_") }) &&
                             (when (subdir) {
                                 "spv" -> file.extension == "spv"
                                 "pipelines" -> file.extension == "json"
                                 "buffers" -> file.extension == "bin"
                                 "queue-state" -> file.extension == "json" || file.extension == "bin"
+                                "guest-shaders" -> file.name.matches(Regex("cs_[0-9a-f]{16}_probe\\.bin"))
                                 else -> false
                             })
                     }
@@ -260,7 +262,7 @@ object Diagnostics {
                     }.thenByDescending { file ->
                         (queueShaders + producerShaders + atlasWriterShaders).any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { it.lastModified() })
-                    .take(if (subdir == "queue-state") 72 else 24)
+                    .take(when (subdir) { "queue-state" -> 72; "guest-shaders" -> 96; else -> 24 })
                     .map { subdir to it }
             }
             var count = 0
@@ -284,7 +286,9 @@ object Diagnostics {
                 "The coefficient_writer object compares the same records immediately before and after the " +
                 "coefficient dispatch and at the atlas. Its matched_source fields contain slot 3 coefficients " +
                 "and slot 2 weight bits for the same probe IDs. DS_COEFFICIENT_PAIRED confirms a matching " +
-                "writer and atlas in the same frame. " +
+                "writer and atlas in the same frame. inputs_before.source_writer gives the upstream binding " +
+                "provenance. When available, source_dispatch and source_words_after_writer describe the " +
+                "dispatch producing the slot 3 values. guest-shaders contains their guest compute code. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))

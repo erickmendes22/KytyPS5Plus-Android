@@ -7,6 +7,8 @@
 // Never turn on CPU/GPU synchronization in unrelated games or shader stages.
 namespace Libs::Graphics::DemonsLightingMemoryPolicy {
 
+inline constexpr uint64_t ProbeCoefficientBytes = 360u * 256u * 64u;
+
 [[nodiscard]] constexpr bool NeedsCoherentScalarReads(uint64_t hash) noexcept {
     switch (hash) {
         case 0xc2e01fbe98f5ebabull:

@@ -22,6 +22,8 @@ struct GraphicContext;
 namespace ShaderDump {
 
 [[nodiscard]] bool Enabled();
+[[nodiscard]] bool DsLightingCapture();
+void RecordDsProbeGuestCode(uint64_t hash, std::span<const uint32_t> code);
 
 // Writes the module's SPIR-V (once per distinct content) and remembers the file for `module`.
 void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t guest_hash,
