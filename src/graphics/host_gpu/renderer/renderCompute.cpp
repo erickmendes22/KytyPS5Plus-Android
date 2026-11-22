@@ -1266,18 +1266,26 @@ struct DsCoefficientDispatch {
 	size_t writer_sequence = 0;
 	std::vector<uint32_t> before;
 	std::vector<uint32_t> after;
+	std::vector<uint32_t> source_coefficients;
+	std::vector<uint32_t> source_weights;
 	nlohmann::json inputs;
 };
 
 // These hooks run under the renderer context lock, like ds_buffer_producers.
 std::optional<DsCoefficientDispatch> ds_coefficient_dispatch;
+int32_t ds_last_coefficient_pair = -1;
+
+bool DsCoefficientPairDue(int32_t frame) {
+	return frame >= 0 && (ds_last_coefficient_pair < 0 || frame < ds_last_coefficient_pair ||
+	                      int64_t{frame} - ds_last_coefficient_pair >= 240);
+}
 
 std::optional<DsCoefficientDispatch> BeginDsCoefficientDispatch(
     RenderContext& context, const PreparedBindings& bindings, uint64_t submit) {
 	const auto& program = *bindings.runtime->program;
 	if (program.shader_hash != DsCoefficientWriter || !DsTraceEnabled()) return {};
 	const auto frame = context.GetGpu().GetFrameNum();
-	if (frame < 0 || frame % 240 != 0 ||
+	if (!DsCoefficientPairDue(frame) ||
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return {};
 	const auto& resources = *bindings.runtime->resources;
 	for (const auto& resource : program.info.buffers) {
@@ -1295,8 +1303,15 @@ std::optional<DsCoefficientDispatch> BeginDsCoefficientDispatch(
 		if (captures >= 4) return {};
 		++captures;
 		DsCoefficientDispatch trace {frame, submit, output.address, slot, ds_next_buffer_producer,
-		                            0, {}, {}, {}};
+		                            0, {}, {}, {}, {}, {}};
 		trace.before = ReadDsBoundWords(context, bindings, slot, DsCoefficientBytes / 4);
+		// In the exported seven-slot shader, slot 4 receives the updated
+		// coefficients. Slots 2 and 3 supply its weight and 64-byte input
+		// coefficients, both indexed by the same probe ID loaded from slot 1.
+		if (slot == 4 && bindings.buffers.size() == 7 && program.bindings.UsesPushData()) {
+			trace.source_weights = ReadDsBoundWords(context, bindings, 2, DsCoefficientBytes / 64);
+			trace.source_coefficients = ReadDsBoundWords(context, bindings, 3, DsCoefficientBytes / 4);
+		}
 		auto buffers = nlohmann::json::array();
 		for (size_t i = 0; i < program.info.buffers.size(); ++i) {
 			const auto& binding = program.info.buffers[i];
@@ -1376,20 +1391,33 @@ nlohmann::json CompareDsCoefficientDispatch(int32_t frame, uint64_t address, uin
 	result["inputs_before"] = capture->inputs;
 	auto before = nlohmann::json::array();
 	auto after = nlohmann::json::array();
+	auto source = nlohmann::json::array();
+	auto weights = nlohmann::json::array();
 	size_t compared = 0;
 	size_t different = 0;
 	size_t changed = 0;
 	constexpr size_t payload_words = 14;
 	for (size_t i = 0; i < indices.size(); ++i) {
-		const size_t begin = size_t {indices[i] & 0x00ffffffu} * 16u;
+		const size_t probe = indices[i] & 0x00ffffffu;
+		const size_t begin = probe * 16u;
 		if (!index_valid[i] || valid_words[i] != payload_words ||
 		    begin + payload_words > capture->after.size()) {
 			before.push_back(nullptr);
 			after.push_back(nullptr);
+			source.push_back(nullptr);
+			weights.push_back(nullptr);
 			continue;
 		}
 		const auto words = std::span{capture->after}.subspan(begin, payload_words);
 		after.push_back(std::vector<uint32_t>(words.begin(), words.end()));
+		if (begin + 16 <= capture->source_coefficients.size()) {
+			const auto input = std::span{capture->source_coefficients}.subspan(begin, 16);
+			source.push_back(std::vector<uint32_t>(input.begin(), input.end()));
+		} else {
+			source.push_back(nullptr);
+		}
+		if (probe < capture->source_weights.size()) weights.push_back(capture->source_weights[probe]);
+		else weights.push_back(nullptr);
 		++compared;
 		different += !std::ranges::equal(words, observed.subspan(i * payload_words, payload_words));
 		if (begin + payload_words <= capture->before.size()) {
@@ -1405,6 +1433,8 @@ nlohmann::json CompareDsCoefficientDispatch(int32_t frame, uint64_t address, uin
 	result["different_at_atlas"] = different;
 	result["before_words"] = std::move(before);
 	result["after_words"] = std::move(after);
+	result["matched_source_coefficients"] = std::move(source);
+	result["matched_source_weights"] = std::move(weights);
 	return result;
 }
 
@@ -1486,7 +1516,13 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 	if (program.shader_hash != 0xc03afccb96a13c5dull || !DsTraceEnabled()) return;
 	const auto frame = context.GetGpu().GetFrameNum();
 	static DemonsRollingProbe::FrameGate gate;
-	if (!gate.Due(frame, 240)) return;
+	// A periodic atlas-only sample is still useful. Once a real writer was
+	// captured, however, keep trying live consumers in that frame until one
+	// uses its output. Empty dispatches cannot consume the paired sample.
+	const bool paired_candidate = DsCoefficientPairDue(frame) && ds_coefficient_dispatch &&
+	    !ds_coefficient_dispatch->after.empty() && ds_coefficient_dispatch->frame == frame;
+	const bool periodic = gate.Due(frame, 240);
+	if (!periodic && !paired_candidate) return;
 	const auto report = [frame, submit](const char* reason) {
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_LIGHT_ATLAS_INPUT] frame={} submit={} capture={}\n", frame, submit, reason));
@@ -1496,7 +1532,7 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 		return;
 	}
 	if (groups[0] == 0 || groups[1] == 0 || groups[2] == 0) {
-		report("empty_dispatch");
+		if (periodic) report("empty_dispatch");
 		return;
 	}
 	const auto& srt = bindings.runtime->resources->flattened_srt;
@@ -1563,6 +1599,12 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 		report("coefficients_unreadable");
 		return;
 	}
+	const auto writer = coefficient_adjustment == 0 ? CompareDsCoefficientDispatch(
+	    frame, bindings.buffer_sources[1].address, bindings.buffer_sources[1].size,
+	    index_values, index_valid, coefficient_valid_words, coefficient_values)
+	    : nlohmann::json{{"status", "unaligned_atlas_buffer"}};
+	const bool paired = writer.value("compared_records", size_t{0}) > 0;
+	if (!periodic && !paired) return;
 	LogDsBufferProducer(frame, program.shader_hash, 0, "atlas_index", 0,
 	                    bindings.buffer_sources[0].address, bindings.buffer_sources[0].size);
 	LogDsBufferProducer(frame, program.shader_hash, 0, "atlas_coefficients", 1,
@@ -1593,15 +1635,19 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 		    {"coefficient_words_per_record", coefficient_words},
 		    {"coefficient_in_bounds_words", coefficient_valid_words},
 		    {"coefficient_words", coefficient_values},
-		    {"coefficient_writer", coefficient_adjustment == 0 ? CompareDsCoefficientDispatch(
-		        frame, bindings.buffer_sources[1].address, bindings.buffer_sources[1].size,
-		        index_values, index_valid, coefficient_valid_words, coefficient_values)
-		        : nlohmann::json{{"status", "unaligned_atlas_buffer"}}},
+		    {"coefficient_writer", writer},
 		    {"atlas_after_writer", ReadDsAtlasWriterTexels(context, bindings, srt,
 		                                                  selected_groups, index_values)},
 		};
 		file << payload;
 		file.close();
+	}
+	if (file.good() && paired) {
+		ds_last_coefficient_pair = frame;
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_COEFFICIENT_PAIRED] frame={} writer_submit={} atlas_submit={} records={}\n",
+		    frame, writer.value("writer_submit", uint64_t{0}), submit,
+		    writer.value("compared_records", size_t{0})));
 	}
 	report(file.good() ? name.c_str() : "file_write_failed");
 }

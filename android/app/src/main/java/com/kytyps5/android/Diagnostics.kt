@@ -282,7 +282,9 @@ object Diagnostics {
                 "atlas texels copied immediately after that dispatch. " +
                 "Use the in-bounds fields to distinguish zero values from reads outside the bound slots. " +
                 "The coefficient_writer object compares the same records immediately before and after the " +
-                "coefficient dispatch and at the atlas. DS_COEFFICIENT_DISPATCH logs capture coverage. " +
+                "coefficient dispatch and at the atlas. Its matched_source fields contain slot 3 coefficients " +
+                "and slot 2 weight bits for the same probe IDs. DS_COEFFICIENT_PAIRED confirms a matching " +
+                "writer and atlas in the same frame. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
