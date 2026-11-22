@@ -2601,42 +2601,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		return;
 	}
 
-	// The Demon's Souls 360-layer RGBA16F light atlas has a graphics-stage
-	// storage-image writer. Buffer-only hazard detection previously omitted it:
-	// an image-only writer can race reads from the lighting compute queue even
-	// when the descriptor has already been transitioned to GENERAL.
-	// Do not serialize unrelated games or make inactive indirect passes execute.
-	const auto ds_atlas_storage_writer = [](const ShaderStageRuntime& stage) {
-		if (!stage.program || stage.program->shader_hash != 0xc03afccb96a13c5dull)
-			return false;
-		return std::ranges::any_of(stage.program->info.images, [](const auto& image) {
-			return image.written &&
-			       image.resource_class == ShaderRecompiler::IR::ImageResourceClass::Storage;
-		});
-	};
 	vk::PipelineStageFlags shader_write_stages = {};
-	bool ds_atlas_hazard = false;
 	for (const auto& stage: vertex_stages) {
-		const bool atlas_write = ds_atlas_storage_writer(stage.stage);
-		if (HasShaderBufferWrites(stage.stage) || atlas_write) {
+		if (HasShaderBufferWrites(stage.stage)) {
 			shader_write_stages |= ShaderPipelineStages(NativeShaderStage(*stage.stage.program));
 		}
-		ds_atlas_hazard |= atlas_write;
 	}
-	if (state.ps_active) {
-		const bool atlas_write = ds_atlas_storage_writer(state.ps_input_info.stage);
-		if (HasShaderBufferWrites(state.ps_input_info.stage) || atlas_write) {
-			shader_write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
-		}
-		ds_atlas_hazard |= atlas_write;
-	}
-	if (ds_atlas_hazard) {
-		static std::atomic_uint32_t traced {0};
-		if (traced.fetch_add(1, std::memory_order_relaxed) < 8) {
-			LOGF("[DS_LIGHT_ATLAS_SYNC] frame=%d shader=0xc03afccb96a13c5d "
-			     "storage_image_writer=1 stage_barriers=1\\n",
-			     m_context.GetGpu().GetFrameNum());
-		}
+	if (state.ps_active && HasShaderBufferWrites(state.ps_input_info.stage)) {
+		shader_write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
 	}
 	if (shader_write_stages) {
 		// As for dispatches, buffer writes wait for earlier accesses to the memory (upstream

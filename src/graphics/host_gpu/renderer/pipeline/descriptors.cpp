@@ -1395,6 +1395,13 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	    DemonsLightingMemoryPolicy::NeedsStableSampledImages(
 	        program.shader_hash, program.stage == ShaderType::Compute,
 	        program.stage == ShaderType::Pixel, sampled);
+	// The gameplay light atlas is a 360-layer RGBA16F storage image. Its
+	// producer uses the same address through multiple guest frames while
+	// sampled/attachment owners can be retired during resource discovery.
+	// The stable-view pass previously refreshed readers only; revalidate
+	// this producer's storage destinations too, with the final owner.
+	const bool verify_light_atlas_storage = ds_stable_image_bindings &&
+	    program.shader_hash == 0xc03afccb96a13c5dull;
 	const uint32_t passes = ds_stable_image_bindings ? 8u : 1u;
 	for (uint32_t attempt = 0; attempt < passes; ++attempt) {
 		for (uint32_t i = 0; i < program.info.images.size(); i++) {
@@ -1405,10 +1412,13 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 			    (!old_image->registered && !old_image->info.data.Empty()) ||
 			    (old_image != nullptr && old_image->binding.needs_rebind) ||
 			    (old_image != nullptr && ds_stable_image_bindings && old_image->depth_id);
-			const bool verify = verify_lighting_images &&
-			    program.info.images[i].resource_class ==
-			        ShaderRecompiler::IR::ImageResourceClass::Sampled &&
-			    !images[i].placeholder;
+			const bool verify = !images[i].placeholder && (
+			    (verify_lighting_images &&
+			     program.info.images[i].resource_class ==
+			         ShaderRecompiler::IR::ImageResourceClass::Sampled) ||
+			    (verify_light_atlas_storage &&
+			     program.info.images[i].resource_class ==
+			         ShaderRecompiler::IR::ImageResourceClass::Storage));
 			if (retired || verify) {
 				// A fresh lookup does NOT mean the old native view is invalid.
 				// Only reset binding state when an actual retirement was observed.

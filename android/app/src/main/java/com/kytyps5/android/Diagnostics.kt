@@ -230,9 +230,12 @@ object Diagnostics {
         if (!dump.isDirectory) return 0
         val queueShaders = setOf("f0c482b0b355e9de", "e3daeb1e7426761b", "32c7da582db1795a")
         val producerShaders = setOf("afd9334e8581cda2", "e31a5473e9ee7503", "b631777eb4aee68c")
+        // Vulkan already records this 360-layer light-atlas storage writer, but
+        // older Android exports silently excluded its SPIR-V and pipeline JSON.
+        val atlasWriterShaders = setOf("c03afccb96a13c5d")
         val postShaders = setOf("3265b01ed00a5c01", "17defa333d9d1e22", "d1768d02fcf96a58",
             "844e5697cf62ecd7", "a5fc1658592e3cba", "41a57a218d07a778")
-        val watched = queueShaders + producerShaders + postShaders + setOf(
+        val watched = queueShaders + producerShaders + atlasWriterShaders + postShaders + setOf(
             "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
             "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",
             "e75589aa0bb3ae52", "93b0be7f1a0293d1"
@@ -252,7 +255,7 @@ object Diagnostics {
                             })
                     }
                     .sortedWith(compareByDescending<File> { file ->
-                        (queueShaders + producerShaders).any { hash -> file.name.contains("_${hash}_") }
+                        (queueShaders + producerShaders + atlasWriterShaders).any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { it.lastModified() })
                     .take(if (subdir == "queue-state") 72 else 24)
                     .map { subdir to it }
