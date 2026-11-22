@@ -3101,10 +3101,7 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
 	}
 }
 
-void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
-                                        RefreshCause::Source source) {
-	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
-	// The PC U59 renderer preserves GPU-owned subresources when only some guest
+// The PC U59 renderer preserves GPU-owned subresources when only some guest
 // layers were replaced by the CPU. Extend the Android per-layer path to the
 // RGBA16F 360-layer light atlas. Partial writes INSIDE a tiled layer are
 // intentionally excluded: uploading its entire layer would lose GPU pixels.
@@ -3122,7 +3119,10 @@ static bool DsColorAtlasFullLayerUpdate(const ImageInfo& info, uint64_t addr, ui
 	       (finish - info.data.address) % LayerBytes == 0u;
 }
 
-// Demon’s Souls streams CPU data into individual shadow-array slices while
+void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
+                                        RefreshCause::Source source) {
+	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
+	// Demon’s Souls streams CPU data into individual shadow-array slices while
 	// the GPU owns the other rendered slices. The old whole-image dirty flag
 	// uploaded stale guest data over all layers on next use. The opt-in below
 	// retains GPU layers and releases watchers only over the touched CPU slices.
