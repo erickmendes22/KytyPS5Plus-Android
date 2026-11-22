@@ -72,6 +72,8 @@ public:
 		    m_scene_samples >= 5 && m_low_streak >= 5;
 		if (transition || dark_entry) {
 			m_last_trigger = frame;
+			m_last_event_capture = -1;
+			m_event_capture_count = 0;
 			m_low_streak = 0;
 			result.triggered = true;
 			result.reason = transition ? "bright_to_dark" : "dark_scene_entry";
@@ -80,19 +82,28 @@ public:
 	}
 
 	bool CaptureDue(int32_t frame) const {
-		if (frame <= m_last_trigger || m_last_trigger < 0) return false;
-		const auto elapsed = frame - m_last_trigger;
-		// Two opportunities to bind the complete producer->atlas chain.
-		// They follow the actual observed dark scene, NOT an assumed frame.
-		return (elapsed >= 1 && elapsed <= 12) ||
-		       (elapsed >= 24 && elapsed <= 48) ||
-		       (elapsed >= 72 && elapsed <= 96);
+		if (m_last_trigger < 0 || frame <= m_last_trigger) return false;
+		// Allow all coefficient writers sharing one frame (the atlas can use
+		// several), but bound the heavy readbacks to three successful frames
+		// separated by at least 24 *observed* guest frames.
+		if (frame == m_last_event_capture) return true;
+		return m_event_capture_count < 3 && frame - m_last_trigger <= 144 &&
+		       (m_last_event_capture < 0 || frame - m_last_event_capture >= 24);
+	}
+
+	void NoteCaptured(int32_t frame) {
+		if (frame != m_last_event_capture && CaptureDue(frame)) {
+			m_last_event_capture = frame;
+			++m_event_capture_count;
+		}
 	}
 
 private:
 	void Reset() {
 		m_last_sample = -1;
 		m_last_trigger = -1;
+		m_last_event_capture = -1;
+		m_event_capture_count = 0;
 		m_bright_reference = 0.0;
 		m_scene_guest = 0;
 		m_last_geometry = -1;
@@ -101,6 +112,8 @@ private:
 	}
 	int32_t m_last_sample = -1;
 	int32_t m_last_trigger = -1;
+	int32_t m_last_event_capture = -1;
+	uint32_t m_event_capture_count = 0;
 	double m_bright_reference = 0.0;
 	uint64_t m_scene_guest = 0;
 	int32_t m_last_geometry = -1;

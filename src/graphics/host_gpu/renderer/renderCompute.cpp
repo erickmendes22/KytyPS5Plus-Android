@@ -2259,6 +2259,7 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 		file.close();
 	}
 	if (file.good() && paired) {
+		DemonsAdaptiveCapture::Current().NoteCaptured(frame);
 		// Supplemental dark-frame captures must not reset the periodic cadence.
 		if (DsCoefficientPairDue(frame)) ds_last_coefficient_pair = frame;
 		Log::WriteToConsoleAndLog(fmt::format(

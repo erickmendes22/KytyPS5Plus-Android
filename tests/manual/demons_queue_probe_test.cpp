@@ -34,8 +34,14 @@ int main(int argc, char** argv) {
 			assert(event.triggered == (i == 3));
 		}
 		assert(detector.CaptureDue(boot_offset + 100));
-		assert(detector.CaptureDue(boot_offset + 120));
-		assert(!detector.CaptureDue(boot_offset + 200));
+		detector.NoteCaptured(boot_offset + 100);
+		assert(detector.CaptureDue(boot_offset + 100)); // same-frame writes
+		assert(!detector.CaptureDue(boot_offset + 120));
+		assert(detector.CaptureDue(boot_offset + 124));
+		detector.NoteCaptured(boot_offset + 124);
+		assert(detector.CaptureDue(boot_offset + 148));
+		detector.NoteCaptured(boot_offset + 148);
+		assert(!detector.CaptureDue(boot_offset + 172)); // three-frame budget
 	}
 	static_assert(DefaultPixels(1600, 900)[4] == std::pair{1200u, 675u});
 	constexpr auto coverage = MaterialCoveragePixels(1600, 900, 0);
