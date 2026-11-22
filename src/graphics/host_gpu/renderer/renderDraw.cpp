@@ -1305,7 +1305,11 @@ static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
 // is sampled at a bounded cadence, avoiding an assumed start-of-game frame.
 static void MonitorDsCompositeLight(RenderContext& context, const PreparedBindings& pixel,
                                     int32_t frame) {
-	if (!DsTraceEnabled() || !DemonsAdaptiveCapture::Current().ShouldSample(frame)) return;
+	static const bool ds_trace_enabled = [] {
+		const auto* value = std::getenv("KYTY_DS_FRAME_TRACE");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	if (!ds_trace_enabled || !DemonsAdaptiveCapture::Current().ShouldSample(frame)) return;
 	if (Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	const auto selected = std::ranges::find_if(pixel.images, [](const auto& binding) {
 		return binding.image_id && !binding.placeholder &&
