@@ -9,6 +9,8 @@ inline constexpr uint64_t Address = 0x21dd00000ull;
 inline constexpr uint64_t ByteSize = 256ull * 256 * 8;
 inline constexpr uint64_t MetadataAddress = 0x20907a000ull;
 inline constexpr uint64_t MetadataSize = 0x1000;
+inline constexpr uint64_t MaskWriter = 0xacce347eef557bd2ull;
+inline constexpr uint64_t MaskBytes = 256ull * 16 * sizeof(uint32_t);
 
 constexpr bool Overlap(uint64_t base, uint64_t size, uint64_t target, uint64_t bytes) {
 	return size != 0 && bytes != 0 &&

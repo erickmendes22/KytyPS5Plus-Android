@@ -233,7 +233,8 @@ object Diagnostics {
         // Vulkan already records this 360-layer light-atlas storage writer, but
         // older Android exports silently excluded its SPIR-V and pipeline JSON.
         val atlasWriterShaders = setOf("c03afccb96a13c5d")
-        val coefficientWriterShaders = setOf("2f493aadc660cf03", "567d21ad45386c8d", "bcbcc6ba1e68c974")
+        val coefficientWriterShaders = setOf("2f493aadc660cf03", "567d21ad45386c8d",
+            "bcbcc6ba1e68c974", "acce347eef557bd2")
         val postShaders = setOf("3265b01ed00a5c01", "17defa333d9d1e22", "d1768d02fcf96a58",
             "844e5697cf62ecd7", "a5fc1658592e3cba", "41a57a218d07a778")
         val watched = queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
@@ -302,6 +303,8 @@ object Diagnostics {
                 "DS_RADIANCE_IMAGE_WRITER, DS_RADIANCE_BUFFER_WRITER and DS_RADIANCE_CACHE by tick and owner. " +
                 "The relight_inputs record lists the exact probe indices, ray-hit summaries and light masks " +
                 "read by bcbcc6ba1e68c974, with bound-buffer writer candidates. " +
+                "selected_lights stores the records used by the two-level light mask; mask_writer stores " +
+                "the upstream producer's live bindings, inputs and GPU mask words from the same dispatch. " +
                 "A DS_QUEUE_TILES record with radiance_paired=true shares its frame with an atlas or radiance capture. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))

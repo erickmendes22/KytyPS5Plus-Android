@@ -1321,6 +1321,14 @@ struct DsRadianceWriterSample {
 	nlohmann::json dispatch;
 };
 DsRadianceWriterSample ds_radiance_writer;
+struct DsRelightMaskSample {
+	int32_t frame = -1;
+	uint64_t submit = 0;
+	uint64_t address = 0;
+	std::vector<uint32_t> words;
+	nlohmann::json dispatch;
+};
+DsRelightMaskSample ds_relight_mask;
 
 bool DsCoefficientPairDue(int32_t frame) {
 	return frame >= 0 && (ds_last_coefficient_pair < 0 || frame < ds_last_coefficient_pair ||
@@ -1339,6 +1347,50 @@ const DsBufferProducer* FindDsProbeSourceWriter(int32_t frame, uint64_t address,
 		                              : writer.address - address < bytes) return &writer;
 	}
 	return nullptr;
+}
+
+static void CaptureDsRelightMaskWriter(RenderContext& context, const PreparedBindings& bindings,
+                                       uint64_t submit, DispatchGroups groups,
+                                       vk::Buffer indirect = {}, uint64_t offset = 0) {
+	const auto& program = *bindings.runtime->program;
+	if (program.shader_hash != DemonsRadianceTrace::MaskWriter || !DsTraceEnabled()) return;
+	const auto frame = context.GetGpu().GetFrameNum();
+	if (!DsCoefficientPairDue(frame) || ds_relight_mask.frame == frame ||
+	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
+	for (const auto& buffer: program.info.buffers) {
+		const auto slot = buffer.descriptor_index;
+		if (!buffer.written || slot >= bindings.buffer_sources.size()) continue;
+		const auto& output = bindings.buffer_sources[slot];
+		if (output.size != DemonsRadianceTrace::MaskBytes) continue;
+		if (indirect && !ReadDsGpuWords(context, indirect, offset, groups)) return;
+		if (!groups[0] || !groups[1] || !groups[2]) return;
+		auto words = ReadDsBoundWords(context, bindings, slot, output.size / sizeof(uint32_t));
+		if (words.empty()) return;
+		const auto& resources = *bindings.runtime->resources;
+		nlohmann::json dispatch {{"frame", frame}, {"submit", submit}, {"groups", groups},
+		    {"indirect", static_cast<bool>(indirect)}, {"output_slot", slot},
+		    {"image_descriptors", nlohmann::json::array()}, {"buffers", nlohmann::json::array()},
+		    {"srt", resources.flattened_srt}};
+		for (const auto& image: resources.images)
+			dispatch["image_descriptors"].push_back(image.dwords);
+		for (size_t i = 0; i < std::min(program.info.buffers.size(), resources.buffers.size()); ++i) {
+			const auto& resource = program.info.buffers[i];
+			const auto input_slot = resource.descriptor_index;
+			if (input_slot >= bindings.buffer_sources.size()) continue;
+			const auto& source = bindings.buffer_sources[input_slot];
+			nlohmann::json entry {{"slot", input_slot}, {"guest", source.address}, {"bytes", source.size},
+			    {"read", resource.read}, {"written", resource.written},
+			    {"descriptor", resources.buffers[i].dwords}};
+			if (resource.read && !resource.written)
+				entry["prefix_words"] = ReadDsBoundWords(context, bindings, input_slot, 2048);
+			dispatch["buffers"].push_back(std::move(entry));
+		}
+		ds_relight_mask = {frame, submit, output.address, std::move(words), std::move(dispatch)};
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_RELIGHT_MASK_WRITER] frame={} submit={} guest=0x{:x} words={}\n",
+		    frame, submit, output.address, ds_relight_mask.words.size()));
+		return;
+	}
 }
 
 // Match the relight shader's indexer: slot 0 maps workgroup Z to the probe
@@ -1379,10 +1431,45 @@ static nlohmann::json CaptureDsRelightInputs(RenderContext& context, const Prepa
 		slots.push_back(std::move(entry));
 	}
 	nlohmann::json report {{"slots", std::move(slots)}, {"probes", probes}, {"mask_words", masks}};
+	if (mask_slot < bindings.buffer_sources.size() && ds_relight_mask.frame == frame &&
+	    ds_relight_mask.address == bindings.buffer_sources[mask_slot].address && !masks.empty()) {
+		const auto* writer = FindDsBufferProducer(frame, ds_relight_mask.address,
+		                                          DemonsRadianceTrace::MaskBytes);
+		if (writer && writer->shader == DemonsRadianceTrace::MaskWriter &&
+		    writer->submit == ds_relight_mask.submit) {
+			const auto count = std::min(masks.size(), ds_relight_mask.words.size());
+			const auto begin = ds_relight_mask.words.begin();
+			report["mask_writer"] = ds_relight_mask.dispatch;
+			report["mask_writer"]["compared_words"] = count;
+			report["mask_writer"]["same_words"] = std::equal(begin, begin + count, masks.begin());
+			if (!report["mask_writer"].value("same_words", false))
+				report["mask_writer"]["output_words"] = ds_relight_mask.words;
+		}
+	}
 	auto light_headers = nlohmann::json::array();
 	for (size_t i = 0; i < lights.size() / 96u; ++i)
 		light_headers.push_back({lights[i * 96u], lights[i * 96u + 1u]});
 	report["light_headers"] = std::move(light_headers);
+	auto selected_lights = nlohmann::json::array();
+	std::array<uint32_t, 13u * 32u> references {};
+	for (size_t z = 0; z < masks.size() / 16u; ++z) {
+		const size_t base = z * 16u;
+		for (uint32_t group = 0; group < 13u; ++group) {
+			if (!(masks[base + 13] & (1u << group))) continue;
+			for (uint32_t bits = masks[base + group]; bits; bits &= bits - 1u)
+				++references[group * 32u + std::countr_zero(bits)];
+		}
+	}
+	for (size_t index = 0; index < references.size(); ++index) {
+		if (references[index] == 0) continue;
+		nlohmann::json entry {{"index", index}, {"references", references[index]}};
+		if ((index + 1u) * 96u <= lights.size()) {
+			const auto begin = lights.begin() + index * 96u;
+			entry["words"] = std::vector<uint32_t>(begin, begin + 96u);
+		}
+		selected_lights.push_back(std::move(entry));
+	}
+	report["selected_lights"] = std::move(selected_lights);
 
 	const auto offset_word = program.bindings.memory_offset_dword + ray_slot / 4u;
 	const auto& native = bindings.buffers[ray_slot];
@@ -2534,6 +2621,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// Record the shader barriers and diagnostics before the BDA settle submits the
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	CaptureDsRelightMaskWriter(m_context, bindings, submit_id,
+	                           {thread_group_x, thread_group_y, thread_group_z});
 	CaptureDsRadianceComputeWriter(m_context, bindings, submit_id,
 	                               {thread_group_x, thread_group_y, thread_group_z});
 	CaptureDsProbeSourceWrite(m_context, bindings, submit_id,
@@ -2977,6 +3066,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		                          vk::PipelineStageFlagBits::eHost, {}, 1, &host_read, 0, nullptr, 0, nullptr);
 		ReadDsLightMath(*queue_capture, submit_id, bindings);
 	}
+	CaptureDsRelightMaskWriter(m_context, bindings, submit_id, {args.x, args.y, args.z},
+	                           split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	CaptureDsRadianceComputeWriter(m_context, bindings, submit_id, {args.x, args.y, args.z},
 	                               split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	CaptureDsProbeSourceWrite(m_context, bindings, submit_id, {args.x, args.y, args.z},

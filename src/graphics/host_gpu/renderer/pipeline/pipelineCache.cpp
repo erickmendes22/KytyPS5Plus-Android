@@ -2044,6 +2044,10 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
 	// The dispatch's results feed the game: it waits for its program.
 	const auto program = m_program_cache->Get(params, input_info, push_data_cursor, false);
 	if (program && ShaderDump::DsLightingCapture()) {
+		if (params.hash == DemonsRadianceTrace::MaskWriter) {
+			ShaderDump::RecordDsProbeGuestCode(params.hash, params.code);
+			return program;
+		}
 		const auto& plan = input_info.stage.program->info;
 		const auto& resources = *input_info.stage.resources;
 		for (size_t i = 0; i < std::min(plan.images.size(), resources.images.size()); ++i) {
