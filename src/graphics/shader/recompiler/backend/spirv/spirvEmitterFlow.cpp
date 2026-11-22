@@ -1005,7 +1005,21 @@ static uint32_t EmitLanePresent(ValueEmitContext& ctx, uint32_t lane) {
 uint32_t EmitDppUpdateU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&      state = ctx.state;
 	const auto flags = inst.Flags<IR::DppMoveFlags>();
-	const auto write = EmitDppWriteCondition(ctx, flags, ctx.Arg(inst, 2));
+	auto write = EmitDppWriteCondition(ctx, flags, ctx.Arg(inst, 2));
+	// Jetsku/KytyPS5 U59: without bound_ctrl, an EXEC-inactive source lane
+	// must preserve the destination instead of replacing it with shuffle(0).
+	// This is required for DPP row reductions and probe work-list scans.
+	static const bool ds_dpp_skip_inactive = [] {
+		const auto* value = std::getenv("KYTY_DS_DPP_SKIP_INACTIVE");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
+	}();
+	if (ds_dpp_skip_inactive && state.program.stage == ShaderType::Compute &&
+	    !flags.bound_control && !flags.fetch_inactive && !flags.dpp8) {
+		const auto target = EmitDppTargetLane(state, flags);
+		const auto ballot = ctx.Ballot(inst.Arg(2));
+		const auto active = EmitBallotLaneActiveBool(state, ballot, target.lane);
+		write = Binary(state, spv::OpLogicalAnd, TypeBool(state), write, active);
+	}
 	// KYTY_QUAD_DPP: a quad read never lacks its source lane (pixel quads are complete, helper
 	// invocations included; EmitDppMoveU32 reads it with a quad operation).
 	if (!MayLackLanes(state) || (QuadDppAvailable(ctx) && DppQuadSourceXors(flags))) {

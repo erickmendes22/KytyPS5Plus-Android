@@ -273,6 +273,9 @@ object LaunchArgs {
                     // U59: keep shader-runtime/loop-carried SRT loads on the GPU;
                     // do not pre-evaluate their addresses on the host.
                     "--env", "KYTY_SRT_VARIANT_READS=1",
+                    // Port PS5 DPP source-EXEC semantics from PC Kyty U59.
+                    // Keep the change title-scoped; preserve UFC6.
+                    "--env", "KYTY_DS_DPP_SKIP_INACTIVE=1",
                     // Stamp actual writer tick when preparation submits early.
                     "--env", "KYTY_DS_SHADER_WRITE_RETICK=1",
                     // Prioritize reclaiming cold buffers over G-buffer,

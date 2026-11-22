@@ -1887,6 +1887,23 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		if ((mrt_mask & (1u << slot)) != 0) {
 			ResolveRenderColorTarget(buffer, state.color_info[state.color_count],
 			                         render_target_slice_offset, slot);
+			if (Config::GraphicsDebugDumpEnabled() &&
+			    state.color_info[state.color_count].image_id) {
+				constexpr uint64_t radiance_guest = 0x21dd00000ull;
+				const auto& desc = state.color_info[state.color_count].desc.info.data;
+				if (desc.address <= radiance_guest && radiance_guest - desc.address < desc.size) {
+					static std::atomic_uint32_t logged {0};
+					const auto n = logged.fetch_add(1u, std::memory_order_relaxed);
+					if (n < 48u || (n % 512u) == 0u) {
+						const auto hash = state.ps_active ?
+						    state.ps_input_info.stage.program->shader_hash : 0ull;
+						Log::WriteToConsoleAndLog(fmt::format(
+						    "[DS_RADIANCE_GRAPHICS_PRODUCER] frame={} ps=0x{:016x} slot={} "
+						    "guest=0x{:x} bytes={}\n",
+						    m_context.GetGpu().GetFrameNum(), hash, slot, desc.address, desc.size));
+					}
+				}
+			}
 			if (state.color_info[state.color_count].image_id) {
 				state.color_count++;
 			}

@@ -2344,6 +2344,31 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().NoteWork();
 
 	buffer.MarkGpu("cs", program.shader_hash);
+	// The 708 capture proves radiance is almost zero before coefficient
+	// projection. Record which compute shader GPU-writes that image.
+	// Sampling and diagnostics are unchanged outside --dump-shaders.
+	if (Config::GraphicsDebugDumpEnabled()) {
+		constexpr uint64_t radiance_guest = 0x21dd00000ull;
+		for (uint32_t i = 0; i < program.info.images.size() && i < bindings.images.size(); ++i) {
+			const auto& resource = program.info.images[i];
+			const auto& image_binding = bindings.images[i];
+			if (!resource.written ||
+			    image_binding.desc.type != TextureCache::BindingType::Storage ||
+			    !image_binding.image_id || image_binding.placeholder) continue;
+			const auto& desc = image_binding.desc.info.data;
+			if (desc.address > radiance_guest || radiance_guest - desc.address >= desc.size) continue;
+			static std::atomic_uint32_t logged {0};
+			const uint32_t n = logged.fetch_add(1u, std::memory_order_relaxed);
+			if (n < 48u || (n % 512u) == 0u) {
+				auto& image = m_context.GetTextureCache().GetImage(image_binding.image_id);
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_RADIANCE_COMPUTE_PRODUCER] frame={} submit={} shader=0x{:016x} slot={} "
+				    "guest=0x{:x} bytes={} owner=0x{:x} version={}\n",
+				    m_context.GetGpu().GetFrameNum(), submit_id, program.shader_hash, i,
+				    desc.address, desc.size, image.info.data.address, image.ContentVersion()));
+			}
+		}
+	}
 	RememberDsBufferProducers(m_context, bindings, false, submit_id);
 
 	// Record the shader barriers and diagnostics before the BDA settle submits the
