@@ -1284,6 +1284,7 @@ namespace {
 constexpr uint64_t DsCoefficientWriter = 0x2f493aadc660cf03ull;
 constexpr uint64_t DsCoefficientBytes = DemonsLightingMemoryPolicy::ProbeCoefficientBytes;
 constexpr uint64_t DsProbeProjector = 0x567d21ad45386c8dull;
+constexpr uint64_t DsRadianceRelight = 0xbcbcc6ba1e68c974ull;
 constexpr uint32_t DsRadianceExtent = 256;
 
 struct DsProbeSourceWrite {
@@ -1338,6 +1339,100 @@ const DsBufferProducer* FindDsProbeSourceWriter(int32_t frame, uint64_t address,
 		                              : writer.address - address < bytes) return &writer;
 	}
 	return nullptr;
+}
+
+// Match the relight shader's indexer: slot 0 maps workgroup Z to the probe
+// ID, slot 1 holds 256 packed ray hits per probe, and slots 4/5 supply the
+// per-workgroup light masks and the light records they select.
+static nlohmann::json CaptureDsRelightInputs(RenderContext& context, const PreparedBindings& bindings,
+                                            uint32_t groups_z) {
+	const auto& program = *bindings.runtime->program;
+	const auto& resources = *bindings.runtime->resources;
+	const auto& buffers = program.info.buffers;
+	if (buffers.size() < 6 || resources.buffers.size() != buffers.size() ||
+	    groups_z > DsRadianceExtent) return {{"status", "unexpected_relight_layout"}};
+	const auto map_slot = buffers[0].descriptor_index;
+	const auto ray_slot = buffers[1].descriptor_index;
+	const auto mask_slot = buffers[4].descriptor_index;
+	const auto light_slot = buffers[5].descriptor_index;
+	const auto rays_desc = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[1]);
+	const auto masks_desc = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[4]);
+	const auto lights_desc = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[5]);
+	if (rays_desc.Stride() != 8 || rays_desc.NumRecords() != 92160u * 256u ||
+	    masks_desc.Stride() != 4 || masks_desc.NumRecords() != 4096u ||
+	    lights_desc.Stride() != 384 || ray_slot >= bindings.buffers.size())
+		return {{"status", "unexpected_relight_descriptors"}};
+	const auto probes = ReadDsBoundWords(context, bindings, map_slot, groups_z);
+	const auto masks = ReadDsBoundWords(context, bindings, mask_slot, groups_z * 16u);
+	const auto lights = ReadDsBoundWords(context, bindings, light_slot, 384u * 384u / 4u);
+	const auto frame = context.GetGpu().GetFrameNum();
+	auto slots = nlohmann::json::array();
+	for (const auto slot: {map_slot, ray_slot, mask_slot, light_slot}) {
+		if (slot >= bindings.buffer_sources.size() || slot >= bindings.buffers.size()) continue;
+		const auto& source = bindings.buffer_sources[slot];
+		nlohmann::json entry {{"slot", slot}, {"guest", source.address}, {"bytes", source.size},
+		                      {"native_range", static_cast<uint64_t>(bindings.buffers[slot].range)}};
+		if (const auto* writer = FindDsBufferProducer(frame, source.address, source.size)) {
+			entry["bound_writer"] = {{"shader", fmt::format("{:016x}", writer->shader)},
+			    {"frame", writer->frame}, {"submit", writer->submit}, {"clear", writer->fill}};
+		}
+		slots.push_back(std::move(entry));
+	}
+	nlohmann::json report {{"slots", std::move(slots)}, {"probes", probes}, {"mask_words", masks}};
+	auto light_headers = nlohmann::json::array();
+	for (size_t i = 0; i < lights.size() / 96u; ++i)
+		light_headers.push_back({lights[i * 96u], lights[i * 96u + 1u]});
+	report["light_headers"] = std::move(light_headers);
+
+	const auto offset_word = program.bindings.memory_offset_dword + ray_slot / 4u;
+	const auto& native = bindings.buffers[ray_slot];
+	if (offset_word >= bindings.shader_data.size() || !native.buffer ||
+	    native.range == VK_WHOLE_SIZE || probes.empty()) {
+		report["status"] = "ray_view_unavailable";
+		return report;
+	}
+	const auto adjustment = (bindings.shader_data[offset_word] >> (ray_slot % 4u * 8u)) & 255u;
+	constexpr size_t words_per_probe = 256u * 2u;
+	constexpr size_t bytes_per_probe = words_per_probe * sizeof(uint32_t);
+	std::vector<uint32_t> ray_words(probes.size() * words_per_probe);
+	std::vector<vk::BufferCopy> copies;
+	std::vector<bool> valid(probes.size());
+	for (size_t z = 0; z < probes.size(); ++z) {
+		const auto begin = uint64_t{probes[z]} * bytes_per_probe + adjustment;
+		if (probes[z] >= rays_desc.NumRecords() / 256u ||
+		    begin > native.range || bytes_per_probe > native.range - begin) continue;
+		copies.emplace_back(native.offset + begin, z * bytes_per_probe, bytes_per_probe);
+		valid[z] = true;
+	}
+	if (!ReadDsGpuWordRanges(context, native.buffer, copies, ray_words)) {
+		report["status"] = "ray_readback_unavailable";
+		return report;
+	}
+	auto ray_summary = nlohmann::json::array();
+	for (size_t z = 0; z < probes.size(); ++z) {
+		if (!valid[z]) {
+			ray_summary.push_back(nullptr);
+			continue;
+		}
+		const auto words = std::span{ray_words}.subspan(z * words_per_probe, words_per_probe);
+		uint64_t digest = 14695981039346656037ull;
+		uint32_t nonzero = 0;
+		uint32_t albedo = 0;
+		uint32_t finite_depth = 0;
+		for (size_t i = 0; i < words.size(); i += 2) {
+			nonzero += (words[i] | words[i + 1]) != 0;
+			albedo += (words[i] & 0x00ffffffu) != 0;
+			const auto depth = (words[i + 1] >> 16u) & 0x7fffu;
+			finite_depth += depth != 0 && depth < 0x7c00u;
+			digest = (digest ^ (uint64_t{words[i + 1]} << 32 | words[i])) * 1099511628211ull;
+		}
+		ray_summary.push_back({{"nonzero_pairs", nonzero}, {"digest", fmt::format("{:016x}", digest)},
+		    {"albedo_nonzero", albedo}, {"finite_nonzero_depth", finite_depth},
+		    {"first_pairs", std::vector<uint32_t>(words.begin(), words.begin() + 8)}});
+	}
+	report["ray_hits_by_z"] = std::move(ray_summary);
+	report["status"] = "captured";
+	return report;
 }
 
 static std::vector<uint64_t> ReadDsProbeRadiance(RenderContext& context,
@@ -1405,16 +1500,30 @@ void CaptureDsRadianceComputeWriter(RenderContext& context, const PreparedBindin
 		if (ds_radiance_writer.frame != frame) ds_radiance_writer = {frame, 0, {}};
 		++ds_radiance_writer.attempts;
 		const bool valid = !indirect || ReadDsGpuWords(context, indirect, offset, groups);
+		if (valid && (!groups[0] || !groups[1] || !groups[2])) return;
 		nlohmann::json report {{"shader", fmt::format("{:016x}", program.shader_hash)},
 		    {"frame", frame}, {"submit", submit}, {"groups", groups}, {"groups_valid", valid},
 		    {"indirect", static_cast<bool>(indirect)}, {"output_slot", slot},
 		    {"dma", program.info.uses_dma}, {"bvh", program.info.bvh}};
 		if (valid && groups[0] && groups[1] && groups[2]) {
 			ReadDsProbeRadiance(context, bindings, slot, report);
+			if (program.shader_hash == DsRadianceRelight)
+				report["relight_inputs"] = CaptureDsRelightInputs(context, bindings, groups[2]);
 		}
 		const auto& resources = *bindings.runtime->resources;
 		report["image_descriptors"] = nlohmann::json::array();
 		for (const auto& image: resources.images) report["image_descriptors"].push_back(image.dwords);
+		report["image_bindings"] = nlohmann::json::array();
+		for (const auto& image: bindings.images) {
+			nlohmann::json entry {{"guest", image.desc.info.data.address},
+			    {"placeholder", image.placeholder}, {"bound", static_cast<bool>(image.image_id)}};
+			if (image.image_id && !image.placeholder) {
+				const auto& owner = context.GetTextureCache().GetImage(image.image_id);
+				entry["owner"] = owner.info.data.address;
+				entry["version"] = owner.ContentVersion();
+			}
+			report["image_bindings"].push_back(std::move(entry));
+		}
 		report["buffer_descriptors"] = nlohmann::json::array();
 		for (const auto& resource: resources.buffers)
 			report["buffer_descriptors"].push_back(resource.dwords);

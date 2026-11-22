@@ -233,7 +233,7 @@ object Diagnostics {
         // Vulkan already records this 360-layer light-atlas storage writer, but
         // older Android exports silently excluded its SPIR-V and pipeline JSON.
         val atlasWriterShaders = setOf("c03afccb96a13c5d")
-        val coefficientWriterShaders = setOf("2f493aadc660cf03", "567d21ad45386c8d")
+        val coefficientWriterShaders = setOf("2f493aadc660cf03", "567d21ad45386c8d", "bcbcc6ba1e68c974")
         val postShaders = setOf("3265b01ed00a5c01", "17defa333d9d1e22", "d1768d02fcf96a58",
             "844e5697cf62ecd7", "a5fc1658592e3cba", "41a57a218d07a778")
         val watched = queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
@@ -293,6 +293,8 @@ object Diagnostics {
                 "as tightly packed little-endian RGBA16F rows. guest-shaders contains their guest compute code. " +
                 "Compare radiance_digest with sampled_compute_writer.radiance_digest and join " +
                 "DS_RADIANCE_IMAGE_WRITER, DS_RADIANCE_BUFFER_WRITER and DS_RADIANCE_CACHE by tick and owner. " +
+                "The relight_inputs record lists the exact probe indices, ray-hit summaries and light masks " +
+                "read by bcbcc6ba1e68c974, with bound-buffer writer candidates. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
