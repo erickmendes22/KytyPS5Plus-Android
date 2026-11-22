@@ -392,7 +392,7 @@ static ScissorRect HostScissor(const HW::Context& ctx, const RenderState& render
 }
 
 static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState& dynamic_state,
-                                       const ShaderVertexInputInfo& vs_input_info,
+                                       const ShaderVertexInputInfo& vs_input_info, uint64_t pixel_shader_hash,
                                        const RenderDepthInfo& depth, const RenderState& rendering) {
 	KYTY_PROFILER_FUNCTION();
 
@@ -458,23 +458,34 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	dynamic_state.SetBlendConstants(blend_constants);
 	dynamic_state.SetDepthTestEnabled(depth.depth_test_enable);
 	dynamic_state.SetDepthWriteEnabled(depth.depth_write_enable);
-	// Demon's Souls uses a depth-only prepass followed by EQUAL-tested material
-	// draws. The supplied #647 captures prove that the prepass produces valid
-	// D32, yet the next material draw can leave the entire observed G-buffer
-	// unchanged. Jetsku PC has KYTY_DEPTH_EQUAL_RELAX for testing this precise
-	// disagreement; provide the same opt-in on Android, scoped to PPSA01341's
-	// observed depth target, never to unrelated titles/shadow maps.
-	static const int ds_depth_equal_relax = [] {
+	// #648 proved the EQUAL comparison remained OFF in the user's actual game log.
+	// The D32 prepass uses GREATER_OR_EQUAL; after the cinematic the material
+	// shaders below have valid depth, stencil ALWAYS and enabled color writes,
+	// but leave the observed G-buffer at its clear value. Use the PC fork's
+	// depth-equality compatibility mechanism automatically on those shaders.
+	// Preserve guest EQUAL for all other materials and depth/shadow passes.
+	// Mode 3 is an explicit reversible OFF; mode 1 tests LESS_OR_EQUAL.
+	static const int ds_depth_equal_mode = [] {
 		const char* value = std::getenv("KYTY_DS_DEPTH_EQUAL_RELAX");
-		if (value == nullptr || value[1] != '\0') return 0;
-		return value[0] == '1' ? 1 : value[0] == '2' ? 2 : 0;
+		if (value == nullptr || value[1] != '\0' || value[0] < '0' || value[0] > '3')
+			return 0;
+		return value[0] - '0';
 	}();
 	auto depth_compare = depth.depth_compare_op;
-	if (ds_depth_equal_relax != 0 && depth.depth_test_enable &&
+	const bool ds_material_ps =
+	    pixel_shader_hash == 0xafd9334e8581cda2ull ||
+	    pixel_shader_hash == 0xe31a5473e9ee7503ull;
+	if (ds_depth_equal_mode != 3 && ds_material_ps && depth.depth_test_enable &&
 	    !depth.depth_write_enable && depth.desc.info.data.address == 0x282b60000ull &&
 	    depth_compare == vk::CompareOp::eEqual) {
-		depth_compare = ds_depth_equal_relax == 1 ? vk::CompareOp::eLessOrEqual
-		                                       : vk::CompareOp::eGreaterOrEqual;
+		depth_compare = ds_depth_equal_mode == 1 ? vk::CompareOp::eLessOrEqual
+		                                         : vk::CompareOp::eGreaterOrEqual;
+		static std::atomic_bool once {false};
+		if (!once.exchange(true))
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_GBUFFER_DEPTH_EQUAL] material=0x{:x} original=EQUAL effective={} mode={}\\n",
+			    pixel_shader_hash, ds_depth_equal_mode == 1 ? "LESS_OR_EQUAL" : "GREATER_OR_EQUAL",
+			    ds_depth_equal_mode));
 	}
 	dynamic_state.SetDepthCompareOp(depth_compare);
 	if (buffer.GetGraphics().optional_features.depth_bounds) {
@@ -3187,8 +3198,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 
 	auto& dynamic_state = m_context.GetCommandScheduler().GetDynamicState();
-	UpdateGraphicsDynamicState(buffer, dynamic_state, vertex_stages.back(), state.depth_info,
-	                           rendering);
+	UpdateGraphicsDynamicState(buffer, dynamic_state, vertex_stages.back(),
+	                           state.ps_active && state.ps_input_info.stage.program
+	                               ? state.ps_input_info.stage.program->shader_hash : 0,
+	                           state.depth_info, rendering);
 	dynamic_state.SetAttachmentFeedbackLoopAspects(feedback_aspects);
 	dynamic_state.Commit(m_context.GetGraphics(), vk_buffer);
 
