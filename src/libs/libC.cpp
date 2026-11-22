@@ -206,13 +206,16 @@ static void WriteAndroidAbortContext(uint64_t rip, uint64_t rsp, uint64_t rbp,
 		                   pc - program->base_vaddr, pc);
 	};
 	std::string report = fmt::format("[GUEST_ABORT_CONTEXT] caller={}\n", describe_pc(rip));
-	std::array<uint8_t, 96> code {};
-	if (rip >= 64 && linker->FindProgramByAddr(rip - 64) != nullptr) {
-		const auto size = ReadSelf(rip - 64, code.data(), code.size());
-		report += fmt::format("[GUEST_ABORT_CODE] begin=0x{:016x} bytes=", rip - 64);
+	const auto append_code = [&](const char* label, uint64_t pc) {
+		const auto* module = linker->FindProgramByAddr(pc);
+		if (!module || pc < 96 || linker->FindProgramByAddr(pc - 96) != module) return;
+		std::array<uint8_t, 112> code {};
+		const auto size = ReadSelf(pc - 96, code.data(), code.size());
+		report += fmt::format("[{}] pc=0x{:016x} begin=0x{:016x} bytes=", label, pc, pc - 96);
 		for (size_t i = 0; i < size; ++i) report += fmt::format("{:02x}", code[i]);
 		report += '\n';
-	}
+	};
+	append_code("GUEST_ABORT_CODE", rip);
 
 	const auto append_text = [&](std::string_view name, uint64_t address) {
 		if (address < 0x10000) return;
@@ -247,6 +250,9 @@ static void WriteAndroidAbortContext(uint64_t rip, uint64_t rsp, uint64_t rbp,
 		if (ReadSelf(rbp, frame.data(), sizeof(frame)) != sizeof(frame) ||
 		    linker->FindProgramByAddr(frame[1]) == nullptr) break;
 		report += fmt::format("[GUEST_ABORT_FRAME] index={} return={}\n", i, describe_pc(frame[1]));
+		// The final wrapper only calls abort(). Its callers hold the check
+		// and report path that chose to terminate.
+		if (i < 6) append_code("GUEST_ABORT_CALLER_CODE", frame[1]);
 		if (frame[0] <= rbp) break;
 		rbp = frame[0];
 	}

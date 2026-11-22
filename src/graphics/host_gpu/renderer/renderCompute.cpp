@@ -134,13 +134,15 @@ void RememberDsBufferProducers(RenderContext& context, const PreparedBindings& b
 	}
 }
 
-const DsBufferProducer* FindDsBufferProducer(int32_t frame, uint64_t address, uint64_t size) {
+const DsBufferProducer* FindDsBufferProducer(int32_t frame, uint64_t address, uint64_t size,
+                                            bool recent_only = true) {
 	if (address == 0 || size == 0) return nullptr;
 	for (size_t i = 0; i < ds_buffer_producers.size(); ++i) {
 		const auto pos = (ds_next_buffer_producer + ds_buffer_producers.size() - 1 - i) %
 		                 ds_buffer_producers.size();
 		const auto& writer = ds_buffer_producers[pos];
-		if (writer.size == 0 || writer.frame > frame || writer.frame < frame - 1) continue;
+		if (writer.size == 0 || writer.frame > frame ||
+		    (recent_only && writer.frame < frame - 1)) continue;
 		const bool overlap = address >= writer.address ? address - writer.address < writer.size
 		                                              : writer.address - address < size;
 		if (overlap) return &writer;
@@ -1588,9 +1590,6 @@ static nlohmann::json CaptureDsRelightInputs(RenderContext& context, const Prepa
 	report["ray_buffer_adjustment"] = adjustment;
 	const auto& ray_source = bindings.buffer_sources[ray_slot];
 	auto& ray_cache = context.GetBufferCache();
-	report["ray_buffer_cpu_modified"] = ray_cache.IsRegionCpuModified(ray_source.address, bytes_per_probe);
-	report["ray_buffer_gpu_modified"] = ray_cache.IsRegionGpuModified(ray_source.address, bytes_per_probe);
-	report["ray_buffer_gpu_dirty_bytes"] = ray_cache.HasGpuDirtyBytes(ray_source.address, bytes_per_probe);
 	const auto root = Config::GetShaderDumpFolder();
 	if (!root.empty() && root.filename() == "ds-lighting-dumps") {
 		const auto folder = root / "queue-state";
@@ -1629,9 +1628,24 @@ static nlohmann::json CaptureDsRelightInputs(RenderContext& context, const Prepa
 			finite_depth += depth != 0 && depth < 0x7c00u;
 			digest = (digest ^ (uint64_t{words[i + 1]} << 32 | words[i])) * 1099511628211ull;
 		}
-		ray_summary.push_back({{"nonzero_pairs", nonzero}, {"digest", fmt::format("{:016x}", digest)},
+		const auto address = ray_source.address + uint64_t{probes[z]} * bytes_per_probe;
+		nlohmann::json record {{"nonzero_pairs", nonzero}, {"digest", fmt::format("{:016x}", digest)},
 		    {"albedo_nonzero", albedo}, {"finite_nonzero_depth", finite_depth},
-		    {"first_pairs", std::vector<uint32_t>(words.begin(), words.begin() + 8)}});
+		    {"first_pairs", std::vector<uint32_t>(words.begin(), words.begin() + 8)}};
+		if (ray_source.address != 0) {
+			record["guest"] = address;
+			record["cpu_modified"] = ray_cache.IsRegionCpuModified(address, bytes_per_probe);
+			record["gpu_dirty_bytes"] = ray_cache.HasGpuDirtyBytes(address, bytes_per_probe);
+			if (const auto* writer = FindDsBufferProducer(frame, address, bytes_per_probe, false)) {
+				const auto begin = std::max(address, writer->address);
+				const auto end = std::min(address + bytes_per_probe, writer->address + writer->size);
+				record["overlapping_write_binding"] = {
+				    {"shader", fmt::format("{:016x}", writer->shader)}, {"frame", writer->frame},
+				    {"submit", writer->submit}, {"fill", writer->fill},
+				    {"offset", begin - address}, {"bytes", end - begin}};
+			}
+		}
+		ray_summary.push_back(std::move(record));
 	}
 	report["ray_hits_by_z"] = std::move(ray_summary);
 	report["status"] = "captured";
