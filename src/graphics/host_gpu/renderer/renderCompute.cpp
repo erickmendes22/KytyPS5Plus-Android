@@ -2223,6 +2223,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		          bindings.shader_data.begin() + program.bindings.dispatch_thread_dword);
 	}
 	PreparedBindings* descriptor_stage = &bindings;
+	if (program.info.uses_dma)
+		PrefaultDmaPointers(m_context.GetBufferCache(), input_info.stage);
 	FindBuffers(std::span {&descriptor_stage, 1u});
 
 	if (program.info.uses_dma) {
@@ -2346,8 +2348,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	buffer.MarkGpu("cs", program.shader_hash);
 	// The 708 capture proves radiance is almost zero before coefficient
 	// projection. Record which compute shader GPU-writes that image.
-	// Sampling and diagnostics are unchanged outside --dump-shaders.
-	if (Config::GraphicsDebugDumpEnabled()) {
+	// Existing DS frame trace is enabled in the exported 709 diagnostics.
+	if (DsTraceEnabled()) {
 		constexpr uint64_t radiance_guest = 0x21dd00000ull;
 		for (uint32_t i = 0; i < program.info.images.size() && i < bindings.images.size(); ++i) {
 			const auto& resource = program.info.images[i];
@@ -2543,6 +2545,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	auto& bindings = m_compute_bindings;
 	PrepareBindings(input_info.stage, bindings);
 	PreparedBindings* descriptor_stage = &bindings;
+	if (input_info.stage.program->info.uses_dma)
+		PrefaultDmaPointers(m_context.GetBufferCache(), input_info.stage);
 	FindBuffers(std::span {&descriptor_stage, 1u});
 	const auto& program = *input_info.stage.program;
 	if (DsTraceEnabled()) {
@@ -2875,6 +2879,8 @@ void RenderExecutor::DispatchRetracePass(CommandBuffer& buffer, const HW::Comput
 	auto& bindings = m_compute_bindings;
 	PrepareBindings(input_info.stage, bindings);
 	PreparedBindings* descriptor_stage = &bindings;
+	if (input_info.stage.program->info.uses_dma)
+		PrefaultDmaPointers(m_context.GetBufferCache(), input_info.stage);
 	FindBuffers(std::span {&descriptor_stage, 1u});
 
 	if (input_info.stage.program->info.uses_dma) {

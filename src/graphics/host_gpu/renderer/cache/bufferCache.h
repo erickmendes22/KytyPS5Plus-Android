@@ -80,6 +80,10 @@ public:
 	static void SetGuestReadWait(bool enabled);
 	[[nodiscard]] static bool GuestReadWaitStartValue();
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
+	// KytyPC 5570e3e5: DMA/BDA shader reads must not see unmapped cache
+	// pages as zeros when the guest memory is actually committed.
+	// Returns the number of newly materialized cache pages.
+	[[nodiscard]] uint32_t MakeResident(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
 	// For an opted-in shader storage write that aliases a GPU-authored image,
 	// preserve its existing texels on the GPU before the writer takes ownership.

@@ -1569,9 +1569,40 @@ void NoteRebindAfterJoin(const char* kind, const char* name) {
         std::printf("Kyty rebind after join: %s (%s; %u)\n", kind, name ? name : "-", n);
 }
 
+void PrefaultDmaPointers(BufferCache& cache, const ShaderStageRuntime& stage) {
+	// Default off for other games. Only the Demon's Souls Android launcher
+	// enables 4 KiB, matching the upstream PC light-probe page-fault fix.
+	static const uint64_t span = [] {
+		const char* v = std::getenv("KYTY_DS_DMA_PREFAULT_KB");
+		return v && v[0] != '\0' ? std::min<uint64_t>(std::strtoull(v, nullptr, 10), 16u) * 1024u : 0u;
+	}();
+	if (span == 0 || !stage || !stage.program->info.uses_dma) return;
+	const auto& program = *stage.program;
+	const auto& user = stage.resources->user_data;
+	for (size_t reg = program.user_data_base % 2u; reg + 1u < user.size(); reg += 2u) {
+		const uint32_t low = user[reg], high = user[reg + 1u];
+		if ((low & 3u) != 0u || high == 0u || high > 0xffffu) continue;
+		const uint64_t addr = uint64_t {low} | (uint64_t {high} << 32u);
+		const uint32_t added = cache.MakeResident(addr, span);
+		if (added == 0) continue;
+		static std::atomic_uint64_t total {0};
+		const uint64_t n = total.fetch_add(added, std::memory_order_relaxed) + added;
+		if (n <= 32u || (n & (n - 1u)) == 0u) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_DMA_PREFAULT] shader=0x{:016x} sgpr={}-{} addr=0x{:x} "
+			    "pages={} total={}\\n", program.shader_hash, program.user_data_base + reg,
+			    program.user_data_base + reg + 1u, addr, added, n));
+		}
+	}
+}
+
 void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
                                              std::span<RenderColorInfo> colors) {
 	bool uses_dma = false;
+	for (auto* stage: stages) {
+		if (stage->runtime->program->info.uses_dma)
+			PrefaultDmaPointers(m_context.GetBufferCache(), *stage->runtime);
+	}
 	FindBuffers(stages);
 	for (auto* stage: stages) {
 		uses_dma |= stage->runtime->program->info.uses_dma;

@@ -961,6 +961,31 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 	});
 }
 
+// Port of the PC renderer's DMA-prefault path (GT7 light-probe fix).
+// The guest page-table lookup in a shader cannot fault in CPU-backed pages
+// itself. Make them GPU-resident before a shader using DMA runs.
+uint32_t BufferCache::MakeResident(uint64_t vaddr, uint64_t size) {
+	vaddr = Kernel::AddressFold::Fold(vaddr);
+	if (size == 0 || vaddr > UINT64_MAX - size || !GuestRange {vaddr, size}.Valid()) return 0;
+	const auto first = Common::AlignDown(vaddr, CACHING_PAGESIZE);
+	const auto last = Common::AlignDown(vaddr + size - 1u, CACHING_PAGESIZE);
+	uint32_t added = 0;
+	for (uint64_t page = first;; page += CACHING_PAGESIZE) {
+		if (GuestRange {page, CACHING_PAGESIZE}.Valid() &&
+		    Libs::LibKernel::Memory::IsMappedRange(page, CACHING_PAGESIZE)) {
+			const auto* id = m_page_table.Find(page >> PageTable::kPageBits);
+			if (id != nullptr && *id) {
+				TouchBuffer(m_slot_buffers[*id]);
+			} else {
+				(void)ObtainBuffer(page, CACHING_PAGESIZE, false, false);
+				++added;
+			}
+		}
+		if (page == last) break;
+	}
+	return added;
+}
+
 BufferId BufferCache::FindBuffer(uint64_t vaddr, uint64_t size) {
 	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if (vaddr == 0) {

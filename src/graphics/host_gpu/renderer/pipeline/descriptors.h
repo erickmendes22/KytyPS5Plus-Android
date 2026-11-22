@@ -19,6 +19,10 @@ namespace Libs::Graphics {
 
 struct ShaderStageRuntime;
 
+// Demon's Souls GPU radiance: port KytyPC's eager residency for shaders
+// that dereference guest memory through BDA/DMA user-data pointers.
+void PrefaultDmaPointers(BufferCache& cache, const ShaderStageRuntime& stage);
+
 struct TextureBinding {
 	ImageId                    image_id;
 	vk::ImageView              image_view = nullptr;

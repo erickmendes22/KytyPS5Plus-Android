@@ -276,6 +276,9 @@ object LaunchArgs {
                     // Port PS5 DPP source-EXEC semantics from PC Kyty U59.
                     // Keep the change title-scoped; preserve UFC6.
                     "--env", "KYTY_DS_DPP_SKIP_INACTIVE=1",
+                    // PC Kyty light-probe fix: BDA/DMA pointers need resident
+                    // guest pages, otherwise the shader reads zeros.
+                    "--env", "KYTY_DS_DMA_PREFAULT_KB=4",
                     // Stamp actual writer tick when preparation submits early.
                     "--env", "KYTY_DS_SHADER_WRITE_RETICK=1",
                     // Prioritize reclaiming cold buffers over G-buffer,

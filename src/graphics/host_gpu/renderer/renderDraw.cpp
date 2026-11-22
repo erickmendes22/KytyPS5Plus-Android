@@ -1887,8 +1887,11 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		if ((mrt_mask & (1u << slot)) != 0) {
 			ResolveRenderColorTarget(buffer, state.color_info[state.color_count],
 			                         render_target_slice_offset, slot);
-			if (Config::GraphicsDebugDumpEnabled() &&
-			    state.color_info[state.color_count].image_id) {
+			static const bool ds_radiance_trace = [] {
+				const char* v = std::getenv("KYTY_DS_FRAME_TRACE");
+				return v != nullptr && v[0] == '1' && v[1] == '\0';
+			}();
+			if (ds_radiance_trace && state.color_info[state.color_count].image_id) {
 				constexpr uint64_t radiance_guest = 0x21dd00000ull;
 				const auto& desc = state.color_info[state.color_count].desc.info.data;
 				if (desc.address <= radiance_guest && radiance_guest - desc.address < desc.size) {
