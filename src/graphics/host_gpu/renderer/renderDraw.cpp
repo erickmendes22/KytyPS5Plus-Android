@@ -2563,6 +2563,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	int ds_live_material_phase = -1;
 	RenderColorInfo ds_live_material_target {};
 	std::optional<std::array<uint32_t, 64>> ds_live_material_before {};
+	std::optional<std::array<uint64_t, 2>> ds_live_material_coverage {};
 	if (ds_gbuffer_enabled && state.ps_active && bindings.pixel) {
 		ds_gbuffer_shader = state.ps_input_info.stage.program->shader_hash;
 		const auto& watched = DemonsQueueProbe::GBufferShaders;
@@ -3058,7 +3059,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	const bool stencil_independent = !state.depth_info.stencil_test_enable ||
 	    (state.depth_info.stencil_front.compareOp == vk::CompareOp::eAlways &&
 	     state.depth_info.stencil_back.compareOp == vk::CompareOp::eAlways);
-	if (ds_gbuffer && state.depth_info.image_id && stencil_independent && !indirect && !mesh_active && !shader_write_stages && !image_side_effects &&
+	if ((ds_gbuffer || ds_live_material_capture) && state.depth_info.image_id && stencil_independent && !indirect && !mesh_active && !shader_write_stages && !image_side_effects &&
 	    state.depth_info.depth_test_enable && !state.depth_info.depth_write_enable &&
 	    state.depth_info.depth_compare_op == vk::CompareOp::eEqual &&
 	    m_context.GetGraphics().optional_features.color_write_enable) {
@@ -3075,7 +3076,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    "[DS_GBUFFER_COVERAGE_SKIP] frame={} shader=0x{:016x} reason={}\n",
 			    ds_gbuffer_frame, ds_gbuffer_shader, vk::to_string(result)));
 		}
-	} else if (ds_gbuffer) {
+	} else if (ds_gbuffer || ds_live_material_capture) {
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_GBUFFER_COVERAGE_SKIP] frame={} shader=0x{:016x} "
 		    "indirect={} mesh={} storage_write={} depth_test={} depth_write={} depth_func={} stencil_independent={} color_enable={}\n",
@@ -3349,12 +3350,33 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				hits = {};
 			}
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_GBUFFER_COVERAGE] frame={} shader=0x{:016x} result={} equal_any={} always_any={}\n",
-			    ds_gbuffer_frame, ds_gbuffer_shader, vk::to_string(result), hits[0] != 0, hits[1] != 0));
+			    "[DS_GBUFFER_COVERAGE] frame={} shader=0x{:016x} result={} equal_any={} always_any={} equal_fragments={} always_fragments={}\n",
+			    ds_gbuffer_frame, ds_gbuffer_shader, vk::to_string(result), hits[0] != 0, hits[1] != 0, hits[0], hits[1]));
+			if (ds_live_material_capture && result == vk::Result::eSuccess)
+				ds_live_material_coverage = std::array<uint64_t, 2> {hits[0], hits[1]};
 		}
 		RecordDsMaterialPixels(*ds_material_trace, ds_albedo_before, after,
 		                       std::span{coverage_points.data(), coverage_points_used}, hits,
 		                       rendering.color_attachments[ds_gbuffer->target_slot].is_clear);
+	}
+	if (ds_live_material_capture && coverage_pool && !ds_gbuffer) {
+		// The two existing write-disabled replay queries distinguish real
+		// depth-EQUAL rejection from a shader that simply writes black.
+		// Snapshot the attachment after the pass so the GPU queries finish
+		// before getQueryPoolResults, and do not replay side-effect shaders.
+		const auto sample_after = SnapshotDsGBufferGrid(m_context, ds_live_material_target);
+		std::array<uint64_t, CoverageQueries> hits {};
+		const auto result = device.getQueryPoolResults(
+		    coverage_pool, 0, coverage_count, coverage_count * sizeof(uint64_t), hits.data(),
+		    sizeof(uint64_t), vk::QueryResultFlagBits::e64);
+		device.destroyQueryPool(coverage_pool);
+		if (result == vk::Result::eSuccess)
+			ds_live_material_coverage = std::array<uint64_t, 2> {hits[0], hits[1]};
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_GBUFFER_MATERIAL_COVERAGE] frame={} shader=0x{:016x} result={} "
+		    "equal_fragments={} always_fragments={} readback={}\n",
+		    m_context.GetGpu().GetFrameNum(), state.ps_input_info.stage.program->shader_hash,
+		    vk::to_string(result), hits[0], hits[1], sample_after.has_value()));
 	}
 	if (ds_live_material_capture) {
 		const auto after = SnapshotDsGBufferGrid(m_context, ds_live_material_target);
@@ -3385,6 +3407,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"before_colored", before_colored}, {"after_colored", after_colored},
 			    {"before_ff000000", before_clear}, {"after_ff000000", after_clear},
 			    {"changed", changed},
+			    {"occlusion_equal_fragments", ds_live_material_coverage ?
+			        nlohmann::json((*ds_live_material_coverage)[0]) : nlohmann::json()},
+			    {"occlusion_always_fragments", ds_live_material_coverage ?
+			        nlohmann::json((*ds_live_material_coverage)[1]) : nlohmann::json()},
 			    {"raster", {
 			        {"indices", draw.index_count}, {"instances", draw.instance_count},
 			        {"indexed", draw.IsIndexed()}, {"mesh", mesh_active},
