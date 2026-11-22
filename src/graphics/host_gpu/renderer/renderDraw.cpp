@@ -2520,6 +2520,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// Follow the first post-compute HDR writer and reader, then the compositor.
 	constexpr uint8_t DsHdrReader = 1, DsComposite = 2, DsHdrWriter = 4;
 	std::array<uint8_t, DemonsQueueProbe::Queues.size()> ds_draw_stage {};
+	bool ds_live_composite_output = false;
 	if (state.ps_active && bindings.pixel && state.ps_input_info.stage.program && state.color_count) {
 		const auto frame = m_context.GetGpu().GetFrameNum();
 		const auto shader = state.ps_input_info.stage.program->shader_hash;
@@ -2527,6 +2528,37 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		ProbeDsPostFixedInput(m_context, *bindings.pixel, shader, frame);
 		const auto& inputs = bindings.pixel->images;
 		if (composite) MonitorDsCompositeLight(m_context, *bindings.pixel, frame);
+		if (composite && DemonsAdaptiveCapture::Current().CapturedFrame(frame)) {
+			// A completed coefficient->atlas pair belongs to this exact
+			// frame. Sample the compositing inputs at fixed normalized
+			// coordinates, then the final attachment after the draw.
+			static int32_t last_paired_frame = -1;
+			if (last_paired_frame != frame) {
+				last_paired_frame = frame;
+				ds_live_composite_output = true;
+				for (const auto& input : inputs) {
+					const auto addr = input.desc.info.data.address;
+					if (addr != DemonsQueueProbe::SceneAddress &&
+					    addr != DemonsQueueProbe::HdrAddress &&
+					    addr != DemonsQueueProbe::CompositeAuxAddress) continue;
+					Log::WriteToConsoleAndLog(fmt::format(
+					    "[DS_PAIRED_COMPOSITOR_INPUT] frame={} shader=0x{:016x} "
+					    "guest=0x{:x} bound={} placeholder={}\n",
+					    frame, shader, addr, static_cast<bool>(input.image_id),
+					    input.placeholder));
+					if (!input.image_id || input.placeholder) continue;
+					const auto& image = m_context.GetTextureCache().GetImage(input.image_id);
+					const auto view = std::ranges::find(image.views, input.image_view,
+					                                   &CachedImageView::view);
+					if (view == image.views.end()) continue;
+					RenderColorInfo source {};
+					source.image_id = input.image_id;
+					source.desc = input.desc;
+					ProbeDsColorOutputs(m_context, &source, 1, shader, false, true,
+					                    &view->info);
+				}
+			}
+		}
 		const auto colors = std::span {state.color_info, state.color_count};
 		const auto hdr_target = std::ranges::find_if(colors, [](const auto& color) {
 			return color.image_id && color.desc.info.data.address == DemonsQueueProbe::HdrAddress;
@@ -3114,6 +3146,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		capture.composite_sampled |= (stage & DsComposite) != 0;
 	}
 	if (ds_post && ds_post_final) ds_post->composite_sampled = true;
+	if (ds_live_composite_output) {
+		const auto frame = m_context.GetGpu().GetFrameNum();
+		const auto shader = state.ps_input_info.stage.program->shader_hash;
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_PAIRED_COMPOSITOR_OUTPUT] frame={} shader=0x{:016x} "
+		    "targets={} target0=0x{:x}\n",
+		    frame, shader, state.color_count, state.color_info[0].desc.info.data.address));
+		ProbeDsColorOutputs(m_context, state.color_info, state.color_count,
+		                    shader, false, true);
+	}
 	// Diagnose the Demon scene chain at most twice per run: the actual
 	// sampled HUD/scene inputs versus the compositor's final color target.
 	// One short set after initialization and another during live play. Normal

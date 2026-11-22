@@ -114,6 +114,12 @@ public:
 		       (m_last_event_capture < 0 || frame - m_last_event_capture >= 24);
 	}
 
+	bool CapturedFrame(int32_t frame) const {
+		// Align the compositor check with the actual coefficient/atlas pair
+		// recorded in this guest frame, not with an approximate timer.
+		return frame >= 0 && frame == m_last_event_capture;
+	}
+
 	void NoteCaptured(int32_t frame) {
 		if (frame != m_last_event_capture && CaptureDue(frame)) {
 			m_last_event_capture = frame;

@@ -35,6 +35,8 @@ int main(int argc, char** argv) {
 		}
 		assert(detector.CaptureDue(boot_offset + 100));
 		detector.NoteCaptured(boot_offset + 100);
+		assert(detector.CapturedFrame(boot_offset + 100));
+		assert(!detector.CapturedFrame(boot_offset + 101));
 		assert(detector.CaptureDue(boot_offset + 100)); // same-frame writes
 		assert(!detector.CaptureDue(boot_offset + 120));
 		assert(detector.CaptureDue(boot_offset + 124));
