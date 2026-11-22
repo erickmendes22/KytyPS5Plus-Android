@@ -2305,6 +2305,144 @@ static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
 	return words;
 }
 
+// Scene HDR and its deferred G-buffer sampled at precisely the SAME
+// normalized 8x8 coordinates, immediately after queue 33 executes.
+// Only the first observed bright, dark-onset and paired-dark frames
+// qualify; unlike the former post-process sweep, this targets one
+// compute shader and two real image bindings, never a guessed frame.
+static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings& bindings,
+                                 uint64_t submit, const std::array<uint32_t, 3>& groups,
+                                 bool groups_valid) {
+	using namespace DemonsQueueProbe;
+	if (!DsTraceEnabled() || bindings.runtime->program->shader_hash != Shaders[1] ||
+	    !groups_valid || groups[0] == 0 || groups[1] == 0 || groups[2] == 0 ||
+	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
+	const int32_t frame = context.GetGpu().GetFrameNum();
+	const auto& gate = DemonsAdaptiveCapture::Current();
+	const char* phase = gate.DarkOnsetDue(frame) ? "onset"
+	    : gate.BrightSceneActive(frame) ? "bright"
+	    : gate.CapturedFrame(frame) ? "paired_dark" : nullptr;
+	if (!phase) return;
+	static bool captured_bright = false, captured_onset = false, captured_dark = false;
+	bool& captured = phase[0] == 'b' ? captured_bright
+	    : phase[0] == 'o' ? captured_onset : captured_dark;
+	if (captured) return;
+
+	const auto find_image = [&bindings](uint64_t addr, TextureCache::BindingType kind) {
+		return std::ranges::find_if(bindings.images, [addr, kind](const auto& b) {
+			return b.image_id && !b.placeholder && b.desc.info.data.address == addr &&
+			       b.desc.type == kind;
+		});
+	};
+	const auto albedo = std::ranges::find_if(bindings.images, [](const auto& b) {
+		return b.image_id && !b.placeholder &&
+		       b.desc.info.data.address == GBufferAddress;
+	});
+	const auto hdr = find_image(HdrAddress, TextureCache::BindingType::Storage);
+	if (albedo == bindings.images.end() || hdr == bindings.images.end()) return;
+	const auto& textures = context.GetTextureCache();
+	const auto& albedo_image = textures.GetImage(albedo->image_id);
+	const auto& hdr_image = textures.GetImage(hdr->image_id);
+	if (albedo_image.backing.format != vk::Format::eR32Uint ||
+	    hdr_image.backing.format != vk::Format::eR16G16B16A16Sfloat) return;
+
+	const auto snapshot = [&context](const auto& binding, uint32_t texel_bytes) {
+		std::vector<uint8_t> raw;
+		const auto& image = context.GetTextureCache().GetImage(binding.image_id);
+		const auto& backing = image.backing;
+		const auto view = std::ranges::find(image.views, binding.image_view, &CachedImageView::view);
+		if (view == image.views.end() || !backing.image || backing.samples != 1 ||
+		    backing.image_type != vk::ImageType::e2D ||
+		    !(backing.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+		    view->info.base_level >= backing.mip_levels ||
+		    view->info.base_layer >= backing.layers) return raw;
+		const auto w = std::max(backing.extent.width >> view->info.base_level, 1u);
+		const auto h = std::max(backing.extent.height >> view->info.base_level, 1u);
+		if (w < 16 || h < 16) return raw;
+		constexpr uint32_t points = 64u;
+		auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+		auto [mapped, offset] = download.Map(points * texel_bytes, 16u, true);
+		if (!mapped) return raw;
+		download.Commit();
+		std::array<vk::BufferImageCopy, points> copies {};
+		for (uint32_t i = 0; i < points; ++i) {
+			auto& c = copies[i];
+			c.bufferOffset = offset + uint64_t{i} * texel_bytes;
+			c.imageSubresource = {vk::ImageAspectFlagBits::eColor,
+			                      view->info.base_level, view->info.base_layer, 1};
+			c.imageOffset = {static_cast<int32_t>((i % 8u * 2u + 1u) * w / 16u),
+			                 static_cast<int32_t>((i / 8u * 2u + 1u) * h / 16u), 0};
+			c.imageExtent = {1u, 1u, 1u};
+		}
+		image.Download(std::span{copies}, download.Handle(), offset, points * texel_bytes);
+		context.GetCommandScheduler().Finish();
+		download.Invalidate(offset, points * texel_bytes);
+		raw.resize(points * texel_bytes);
+		std::memcpy(raw.data(), mapped, raw.size());
+		return raw;
+	};
+	const auto gbytes = snapshot(*albedo, 4u);
+	const auto hbytes = snapshot(*hdr, 8u);
+	if (gbytes.size() != 256u || hbytes.size() != 512u) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_LIGHT_BRIDGE_SKIP] frame={} phase={} reason=readback albedo={} hdr={}\n",
+		    frame, phase, gbytes.size(), hbytes.size()));
+		return;
+	}
+	std::array<uint32_t, 64> gwords {};
+	std::array<uint16_t, 256> hwords {};
+	std::memcpy(gwords.data(), gbytes.data(), gbytes.size());
+	std::memcpy(hwords.data(), hbytes.data(), hbytes.size());
+	const auto half = [](uint16_t value) -> double {
+		if ((value & 0x8000u) || (value & 0x7c00u) == 0x7c00u) return 0.0;
+		const auto exponent = (value >> 10u) & 31u;
+		const auto fraction = value & 1023u;
+		return exponent == 0 ? std::ldexp(double(fraction), -24)
+		                     : std::ldexp(1.0 + double(fraction) / 1024.0, int(exponent) - 15);
+	};
+	uint32_t colored = 0, lit = 0;
+	double total = 0.0;
+	for (uint32_t i = 0; i < 64; ++i) {
+		colored += (gwords[i] & 0x00ffffffu) != 0u;
+		const double r = half(hwords[4u * i]);
+		const double g = half(hwords[4u * i + 1u]);
+		const double b = half(hwords[4u * i + 2u]);
+		const double level = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+		total += std::min(level, 4.0);
+		lit += level >= 0.006;
+	}
+	const nlohmann::json output {
+	    {"frame", frame}, {"phase", phase}, {"submit", submit},
+	    {"shader", fmt::format("{:016x}", Shaders[1])}, {"workgroups", groups},
+	    {"gbuffer_guest", albedo->desc.info.data.address},
+	    {"gbuffer_owner", albedo_image.info.data.address},
+	    {"gbuffer_version", albedo_image.ContentVersion()},
+	    {"gbuffer_extent", {albedo_image.backing.extent.width, albedo_image.backing.extent.height}},
+	    {"gbuffer_r32", gwords}, {"gbuffer_colored", colored},
+	    {"hdr_guest", hdr->desc.info.data.address},
+	    {"hdr_owner", hdr_image.info.data.address},
+	    {"hdr_version", hdr_image.ContentVersion()},
+	    {"hdr_extent", {hdr_image.backing.extent.width, hdr_image.backing.extent.height}},
+	    {"hdr_rgba16_bits", hwords}, {"hdr_lit", lit}, {"hdr_mean", total / 64.0}
+	};
+	const auto folder = Config::GetShaderDumpFolder() / "queue-state";
+	std::error_code ec;
+	std::filesystem::create_directories(folder, ec);
+	if (ec) return;
+	const auto name = fmt::format("ds_light_bridge_{}_f{}.json", phase, frame);
+	std::ofstream file(folder / name, std::ios::trunc);
+	if (!file) return;
+	file << output;
+	file.close();
+	if (!file.good()) return;
+	captured = true;
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "[DS_LIGHT_BRIDGE] phase={} frame={} submit={} gbuffer_colored={}/64 "
+	    "hdr_lit={}/64 hdr_mean={:.8f} workgroups={}/{}/{} file={}\n",
+	    phase, frame, submit, colored, lit, total / 64.0,
+	    groups[0], groups[1], groups[2], name));
+}
+
 bool RenderExecutor::ProbeDsMaterialLight(const PreparedBindings& bindings, uint64_t submit,
                                          bool before, const std::array<uint32_t, 3>& groups,
                                          bool groups_valid) {
@@ -3275,6 +3413,12 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	ProbeDsLightingBuffers(m_context, bindings);
 	ProbeDsAtlasInputs(m_context, bindings, submit_id, {args.x, args.y, args.z},
 	                   split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
+	if (program.shader_hash == DemonsQueueProbe::Shaders[1]) {
+		std::array<uint32_t, 3> resolved_groups {args.x, args.y, args.z};
+		const bool valid_groups = split_on_cpu ||
+		    ReadDsGpuWords(m_context, indirect_buffer, indirect_offset, resolved_groups);
+		CaptureDsLightBridge(m_context, bindings, submit_id, resolved_groups, valid_groups);
+	}
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}

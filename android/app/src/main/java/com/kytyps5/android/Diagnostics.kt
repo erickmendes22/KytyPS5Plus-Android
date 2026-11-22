@@ -249,7 +249,8 @@ object Diagnostics {
                         file.isFile && file.length() > 0L &&
                             (subdir == "guest-shaders" ||
                                 (subdir == "queue-state" &&
-                                    file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json"))) ||
+                                    (file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark)_f[0-9]+\\.json")))) ||
                                 watched.any { hash -> file.name.contains("_${hash}_") }) &&
                             (when (subdir) {
                                 "spv" -> file.extension == "spv"
@@ -261,7 +262,8 @@ object Diagnostics {
                             })
                     }
                     .sortedWith(compareByDescending<File> { file ->
-                        file.name.startsWith("ds_scene_writer_f")
+                        file.name.startsWith("ds_light_bridge_") ||
+                            file.name.startsWith("ds_scene_writer_f")
                     }.thenByDescending { file ->
                         coefficientWriterShaders.any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { file ->
@@ -313,6 +315,9 @@ object Diagnostics {
                 "and low-radiance snapshots have separate storage from periodic atlas samples. " +
                 "A DS_QUEUE_TILES record with radiance_paired=true shares its frame with an atlas or radiance capture. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass. " +
+                "ds_light_bridge_* captures the same 8x8 normalized grid of R32_UINT " +
+                "G-buffer albedo and R16G16B16A16 HDR immediately after queue 33, " +
+                "in observed bright, onset and paired-dark phases. " +
                 "ds_scene_writer_f*_p*.json captures the 0x17defa... scene writer at " +
                 "observed bright, first dark onset and paired dark phases, with fixed " +
                 "64-point pre/post grids and shader buffer bindings.\n"
