@@ -61,6 +61,20 @@ template <typename T>
 	return reinterpret_cast<T*>(Fold(reinterpret_cast<uint64_t>(guest)));
 }
 
+// Return true only when the guest address already owning a host mapping
+// identifies the same bytes as a new request. Two different guest addresses
+// which fold to the same host cannot safely share a *different* direct backing.
+[[nodiscard]] constexpr bool SameGuestAtHost(uint64_t guest, uint64_t host,
+                                             uint64_t previous_guest, uint64_t previous_host,
+                                             uint64_t cursor) noexcept {
+	if (cursor < host || cursor < previous_host) return false;
+	const auto new_delta = cursor - host;
+	const auto old_delta = cursor - previous_host;
+	return new_delta <= UINT64_MAX - guest &&
+	       old_delta <= UINT64_MAX - previous_guest &&
+	       guest + new_delta == previous_guest + old_delta;
+}
+
 // Placement of a reservation that reaches into the fold domain.
 //
 // The part of [start, start + size) at or above 2^39 folds to [0, start + size - 2^39). The plan
