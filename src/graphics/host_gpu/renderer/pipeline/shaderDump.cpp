@@ -187,7 +187,12 @@ std::string RecordGraphicsPipeline(const GraphicContext& graphics,
                                    const vk::GraphicsPipelineCreateInfo& info,
                                    const LayoutState& layout,
                                    std::span<const uint64_t> guest_hashes) {
-	if (!Enabled() || DsLightingCapture()) {
+	// Graphics pipeline records are normally omitted from this focused dump,
+	// but the captured light-atlas storage writer is a graphics shader, not
+	// necessarily a compute dispatch. Include only its pipelines so we can
+	// verify the executable stage, descriptor set and guest hash.
+	if (!Enabled() || (DsLightingCapture() &&
+	    std::ranges::find(guest_hashes, 0xc03afccb96a13c5dull) == guest_hashes.end())) {
 		return {};
 	}
 	auto&            state = GetState();
