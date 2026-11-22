@@ -922,8 +922,7 @@ public:
 		// A 39-bit ARM64 host cannot distinguish two guest addresses whose
 		// low 39 bits coincide. Replacing a different guest's backing at the
 		// folded address corrupts the original mapping and is not a remap.
-		if (replacing && (Kernel::AddressFold::InDomain(guest_vaddr) ||
-		                  Kernel::AddressFold::InDomain(vaddr))) {
+		if (replacing) {
 			bool foreign_alias = false;
 			uint64_t cursor = vaddr;
 			while (cursor < vaddr + size) {
