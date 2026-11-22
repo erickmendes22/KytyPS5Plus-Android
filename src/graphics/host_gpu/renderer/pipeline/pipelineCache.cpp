@@ -16,6 +16,7 @@
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
+#include "graphics/host_gpu/renderer/demonsRadianceTrace.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
@@ -2043,14 +2044,25 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
 	// The dispatch's results feed the game: it waits for its program.
 	const auto program = m_program_cache->Get(params, input_info, push_data_cursor, false);
 	if (program && ShaderDump::DsLightingCapture()) {
-		const auto& plan = input_info.stage.program->info.buffers;
-		const auto& buffers = input_info.stage.resources->buffers;
-		for (size_t i = 0; i < std::min(plan.size(), buffers.size()); ++i) {
-			if (!plan[i].written) continue;
-			const auto desc = DecodeNativeDescriptor<ShaderBufferResource>(buffers[i]);
-			if (desc.GetSize() != DemonsLightingMemoryPolicy::ProbeCoefficientBytes) continue;
+		const auto& plan = input_info.stage.program->info;
+		const auto& resources = *input_info.stage.resources;
+		for (size_t i = 0; i < std::min(plan.images.size(), resources.images.size()); ++i) {
+			if (!plan.images[i].written) continue;
+			const auto desc = DecodeNativeDescriptor<ShaderTextureResource>(resources.images[i]);
+			if (!DemonsRadianceTrace::Data(desc.Base40(), 1)) continue;
 			ShaderDump::RecordDsProbeGuestCode(params.hash, params.code);
-			break;
+			return program;
+		}
+		for (size_t i = 0; i < std::min(plan.buffers.size(), resources.buffers.size()); ++i) {
+			if (!plan.buffers[i].written) continue;
+			const auto desc = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
+			const auto size = desc.GetSize();
+			if (size == DemonsLightingMemoryPolicy::ProbeCoefficientBytes ||
+			    DemonsRadianceTrace::Data(desc.Base48(), size) ||
+			    DemonsRadianceTrace::Metadata(desc.Base48(), size)) {
+				ShaderDump::RecordDsProbeGuestCode(params.hash, params.code);
+				break;
+			}
 		}
 	}
 	return program;

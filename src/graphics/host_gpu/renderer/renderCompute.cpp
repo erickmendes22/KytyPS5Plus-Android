@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/computeBufferFillPolicy.h"
 #include "graphics/host_gpu/renderer/indirectDispatchPolicy.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
+#include "graphics/host_gpu/renderer/demonsRadianceTrace.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/gpuPipelineItems.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
@@ -339,6 +340,19 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 void RenderExecutor::RememberDsAtlasWriter(ImageId id, const ImageInfo& info,
                                             const ImageViewInfo& view, uint64_t shader,
                                             const char* path) {
+	if (DemonsRadianceTrace::Enabled() && id && !info.data.Empty()) {
+		const auto& image = m_context.GetTextureCache().GetImage(id);
+		const auto& owner = image.info.data;
+		if (DemonsRadianceTrace::Data(info.data.address, info.data.size) ||
+		    DemonsRadianceTrace::Data(owner.address, owner.size)) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_RADIANCE_IMAGE_WRITER] frame={} tick={} path={} shader=0x{:016x} "
+			    "guest=0x{:x} bytes={} owner=0x{:x} version={} mip={} layer={} layers={}\n",
+			    m_context.GetGpu().GetFrameNum(), m_context.GetCommandScheduler().CurrentTick(),
+			    path, shader, info.data.address, info.data.size, owner.address,
+			    image.ContentVersion(), view.base_level, view.base_layer, view.layer_count));
+		}
+	}
 	static const bool trace = [] {
 		const char* value = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
 		return value && value[0] == '1' && value[1] == '\0';
@@ -1300,6 +1314,12 @@ std::optional<DsCoefficientDispatch> ds_coefficient_dispatch;
 int32_t ds_last_coefficient_pair = -1;
 std::array<std::shared_ptr<const DsProbeSourceWrite>, 4> ds_probe_source_snapshots;
 size_t ds_next_probe_snapshot = 0;
+struct DsRadianceWriterSample {
+	int32_t frame = -1;
+	uint32_t attempts = 0;
+	nlohmann::json dispatch;
+};
+DsRadianceWriterSample ds_radiance_writer;
 
 bool DsCoefficientPairDue(int32_t frame) {
 	return frame >= 0 && (ds_last_coefficient_pair < 0 || frame < ds_last_coefficient_pair ||
@@ -1321,12 +1341,11 @@ const DsBufferProducer* FindDsProbeSourceWriter(int32_t frame, uint64_t address,
 }
 
 static std::vector<uint64_t> ReadDsProbeRadiance(RenderContext& context,
-                                                const PreparedBindings& bindings,
+                                                const PreparedBindings& bindings, size_t slot,
                                                 nlohmann::json& dispatch) {
-	if (bindings.images.size() != 1) return {};
-	const auto& binding = bindings.images.front();
-	if (!binding.image_id || binding.placeholder ||
-	    binding.desc.type != TextureCache::BindingType::Texture) return {};
+	if (slot >= bindings.images.size()) return {};
+	const auto& binding = bindings.images[slot];
+	if (!binding.image_id || binding.placeholder) return {};
 	auto& image = context.GetTextureCache().GetImage(binding.image_id);
 	const auto& backing = image.backing;
 	const auto view = std::ranges::find(image.views, binding.image_view, &CachedImageView::view);
@@ -1339,7 +1358,8 @@ static std::vector<uint64_t> ReadDsProbeRadiance(RenderContext& context,
 	const auto& mapping = view->info.mapping;
 	dispatch["radiance_view"] = {{"width", DsRadianceExtent}, {"height", DsRadianceExtent},
 	    {"layer", view->info.base_layer}, {"owner", image.info.data.address},
-	    {"version", image.ContentVersion()}, {"swizzle", {static_cast<uint32_t>(mapping.r),
+	    {"version", image.ContentVersion()}, {"tick", context.GetCommandScheduler().CurrentTick()},
+	    {"swizzle", {static_cast<uint32_t>(mapping.r),
 	        static_cast<uint32_t>(mapping.g), static_cast<uint32_t>(mapping.b),
 	        static_cast<uint32_t>(mapping.a)}}};
 	constexpr size_t texels = size_t{DsRadianceExtent} * DsRadianceExtent;
@@ -1358,7 +1378,55 @@ static std::vector<uint64_t> ReadDsProbeRadiance(RenderContext& context,
 	download.Invalidate(offset, bytes);
 	std::vector<uint64_t> result(texels);
 	std::memcpy(result.data(), mapped, bytes);
+	uint64_t hash = 14695981039346656037ull;
+	for (const auto texel: result) hash = (hash ^ texel) * 1099511628211ull;
+	dispatch["radiance_digest"] = fmt::format("{:016x}", hash);
+	dispatch["radiance_rgb_nonzero"] = std::ranges::count_if(result, [](uint64_t texel) {
+		return (texel & 0x00007fff7fff7fffull) != 0;
+	});
 	return result;
+}
+
+void CaptureDsRadianceComputeWriter(RenderContext& context, const PreparedBindings& bindings,
+                                   uint64_t submit, DispatchGroups groups,
+                                   vk::Buffer indirect = {}, uint64_t offset = 0) {
+	if (!DemonsRadianceTrace::Enabled()) return;
+	const auto& program = *bindings.runtime->program;
+	const auto frame = context.GetGpu().GetFrameNum();
+	if (program.shader_hash == DsProbeProjector || !DsCoefficientPairDue(frame) ||
+	    (ds_radiance_writer.frame == frame && ds_radiance_writer.attempts >= 2) ||
+	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
+	for (size_t slot = 0; slot < std::min(bindings.images.size(), program.info.images.size()); ++slot) {
+		const auto& binding = bindings.images[slot];
+		const auto& range = binding.desc.info.data;
+		if (!program.info.images[slot].written || !binding.image_id || binding.placeholder ||
+		    binding.desc.type != TextureCache::BindingType::Storage ||
+		    !DemonsRadianceTrace::Data(range.address, range.size)) continue;
+		if (ds_radiance_writer.frame != frame) ds_radiance_writer = {frame, 0, {}};
+		++ds_radiance_writer.attempts;
+		const bool valid = !indirect || ReadDsGpuWords(context, indirect, offset, groups);
+		nlohmann::json report {{"shader", fmt::format("{:016x}", program.shader_hash)},
+		    {"frame", frame}, {"submit", submit}, {"groups", groups}, {"groups_valid", valid},
+		    {"indirect", static_cast<bool>(indirect)}, {"output_slot", slot},
+		    {"dma", program.info.uses_dma}, {"bvh", program.info.bvh}};
+		if (valid && groups[0] && groups[1] && groups[2]) {
+			ReadDsProbeRadiance(context, bindings, slot, report);
+		}
+		const auto& resources = *bindings.runtime->resources;
+		report["image_descriptors"] = nlohmann::json::array();
+		for (const auto& image: resources.images) report["image_descriptors"].push_back(image.dwords);
+		report["buffer_descriptors"] = nlohmann::json::array();
+		for (const auto& resource: resources.buffers)
+			report["buffer_descriptors"].push_back(resource.dwords);
+		const auto digest = report.value("radiance_digest", std::string{"unavailable"});
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_RADIANCE_COMPUTE_OUTPUT] frame={} submit={} shader=0x{:016x} "
+		    "groups_valid={} x={} y={} z={} digest={}\n",
+		    frame, submit, program.shader_hash, valid, groups[0], groups[1], groups[2], digest));
+		if (ds_radiance_writer.dispatch.empty() || report.contains("radiance_digest"))
+			ds_radiance_writer.dispatch = std::move(report);
+		return;
+	}
 }
 
 void CaptureDsProbeSourceWrite(RenderContext& context, const PreparedBindings& bindings,
@@ -1414,8 +1482,10 @@ void CaptureDsProbeSourceWrite(RenderContext& context, const PreparedBindings& b
 			// This compute shader only reads the radiance image and probe indices.
 			// Copy them here with its output, before another dispatch can replace them.
 			dispatch["probe_indices"] = ReadDsBoundWords(context, bindings, 0, DsRadianceExtent);
-			radiance = ReadDsProbeRadiance(context, bindings, dispatch);
+			radiance = ReadDsProbeRadiance(context, bindings, 0, dispatch);
 			dispatch["radiance_bytes"] = radiance.size() * sizeof(uint64_t);
+			if (ds_radiance_writer.frame == frame)
+				dispatch["sampled_compute_writer"] = ds_radiance_writer.dispatch;
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_PROBE_RADIANCE] frame={} submit={} bytes={} indices={}\n",
 			    frame, submit, radiance.size() * sizeof(uint64_t), dispatch["probe_indices"].size()));
@@ -2346,36 +2416,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().NoteWork();
 
 	buffer.MarkGpu("cs", program.shader_hash);
-	// The 708 capture proves radiance is almost zero before coefficient
-	// projection. Record which compute shader GPU-writes that image.
-	// Existing DS frame trace is enabled in the exported 709 diagnostics.
-	if (DsTraceEnabled()) {
-		constexpr uint64_t radiance_guest = 0x21dd00000ull;
-		for (uint32_t i = 0; i < program.info.images.size() && i < bindings.images.size(); ++i) {
-			const auto& resource = program.info.images[i];
-			const auto& image_binding = bindings.images[i];
-			if (!resource.written ||
-			    image_binding.desc.type != TextureCache::BindingType::Storage ||
-			    !image_binding.image_id || image_binding.placeholder) continue;
-			const auto& desc = image_binding.desc.info.data;
-			if (desc.address > radiance_guest || radiance_guest - desc.address >= desc.size) continue;
-			static std::atomic_uint32_t logged {0};
-			const uint32_t n = logged.fetch_add(1u, std::memory_order_relaxed);
-			if (n < 48u || (n % 512u) == 0u) {
-				auto& image = m_context.GetTextureCache().GetImage(image_binding.image_id);
-				Log::WriteToConsoleAndLog(fmt::format(
-				    "[DS_RADIANCE_COMPUTE_PRODUCER] frame={} submit={} shader=0x{:016x} slot={} "
-				    "guest=0x{:x} bytes={} owner=0x{:x} version={}\n",
-				    m_context.GetGpu().GetFrameNum(), submit_id, program.shader_hash, i,
-				    desc.address, desc.size, image.info.data.address, image.ContentVersion()));
-			}
-		}
-	}
 	RememberDsBufferProducers(m_context, bindings, false, submit_id);
 
 	// Record the shader barriers and diagnostics before the BDA settle submits the
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	CaptureDsRadianceComputeWriter(m_context, bindings, submit_id,
+	                               {thread_group_x, thread_group_y, thread_group_z});
 	CaptureDsProbeSourceWrite(m_context, bindings, submit_id,
 	                         {thread_group_x, thread_group_y, thread_group_z});
 	EndDsCoefficientDispatch(m_context, bindings, std::move(coefficient_trace),
@@ -2817,6 +2864,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		                          vk::PipelineStageFlagBits::eHost, {}, 1, &host_read, 0, nullptr, 0, nullptr);
 		ReadDsLightMath(*queue_capture, submit_id, bindings);
 	}
+	CaptureDsRadianceComputeWriter(m_context, bindings, submit_id, {args.x, args.y, args.z},
+	                               split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	CaptureDsProbeSourceWrite(m_context, bindings, submit_id, {args.x, args.y, args.z},
 	                         split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	EndDsCoefficientDispatch(m_context, bindings, std::move(coefficient_trace), {args.x, args.y, args.z},

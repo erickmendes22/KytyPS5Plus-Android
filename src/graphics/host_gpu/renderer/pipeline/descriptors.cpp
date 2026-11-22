@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsRadianceTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
 #include "common/alignment.h"
@@ -1887,6 +1888,23 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
                 }
             }
         }
+		if (DemonsRadianceTrace::Enabled()) {
+			for (const auto& resource: program.info.buffers) {
+				if (!resource.written || resource.descriptor_index >= descriptors.buffer_sources.size())
+					continue;
+				const auto& range = descriptors.buffer_sources[resource.descriptor_index];
+				const bool data = DemonsRadianceTrace::Data(range.address, range.size);
+				const bool metadata = DemonsRadianceTrace::Metadata(range.address, range.size);
+				if (!data && !metadata) continue;
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_RADIANCE_BUFFER_WRITER] frame={} tick={} shader=0x{:016x} "
+				    "stage={} slot={} guest=0x{:x} bytes={} data={} metadata={} dynamic={}\n",
+				    m_context.GetGpu().GetFrameNum(), m_context.GetCommandScheduler().CurrentTick(),
+				    program.shader_hash, vk::to_string(shader_stage),
+				    resource.descriptor_index, range.address, range.size, data, metadata,
+				    resource.written_dynamic));
+			}
+		}
 		for (uint32_t i = 0; i < program.info.images.size(); i++) {
             if (program.info.images[i].bindless) continue;
 			auto& binding = descriptors.images[i];
@@ -1898,7 +1916,9 @@ void RenderExecutor::PrepareBindingWrites(CommandBuffer&                     buf
 			const bool storage = binding.desc.type == TextureCache::BindingType::Storage;
 			if (storage && program.info.images[i].written)
 				RememberDsAtlasWriter(binding.image_id, binding.desc.info, view,
-				                     program.shader_hash, "storage");
+				                     program.shader_hash,
+					                     pipeline_bind_point == vk::PipelineBindPoint::eCompute
+					                         ? "compute_storage" : "graphics_storage");
 			if (image.info.data.Empty()) {
 				image.Transit(vk::ImageLayout::eGeneral,
 				              storage ? vk::AccessFlagBits2::eShaderRead |

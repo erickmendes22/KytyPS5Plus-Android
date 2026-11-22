@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/demonsRadianceTrace.h"
 #include "graphics/host_gpu/renderer/cache/stencilAssociationPolicy.h"
 #include "graphics/host_gpu/renderer/cache/gpuImagePublishPolicy.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
@@ -55,6 +56,19 @@ namespace {
 constexpr uint64_t NumFramesBeforeRemoval = 32;
 // Match U59's per-binding null comparison value. Never share across threads.
 thread_local uint32_t t_null_compare_funcs = 0;
+
+void NoteDsRadianceCache(uint64_t tick, const Image& image, const char* action,
+                         uint64_t source = 0, uint64_t detail = 0) {
+	const auto& range = image.info.data;
+	if (!DemonsRadianceTrace::Enabled() || !DemonsRadianceTrace::Data(range.address, range.size))
+		return;
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "[DS_RADIANCE_CACHE] tick={} action={} owner=0x{:x} bytes={} version={} "
+	    "gpu={} buffer={} cpu={} buffer_cause={} cpu_cause={} source=0x{:x} detail=0x{:x}\n",
+	    tick, action, range.address, range.size, image.ContentVersion(), image.IsGpuModified(),
+	    image.IsBufferModified(), image.IsCpuDirty(), RefreshCause::Name(image.buffer_source),
+	    RefreshCause::Name(image.dirty_source), source, detail));
+}
 
 // --perf-stats: why the cache replaces or drops an image while resolving an overlap (each
 // replacement is a new native image, uploaded again from guest memory). Logs the first 400
@@ -493,6 +507,7 @@ void TextureCache::RegisterImage(ImageId id) {
 		m_image_page_table[page].push_back(id);
 	});
 	image.registered = true;
+	NoteDsRadianceCache(m_scheduler.CurrentTick(), image, "register");
 	image.lru_id     = m_lru_cache.Insert(id, m_gc_tick);
 	m_total_used_memory += image.AccountedSize();
 }
@@ -503,6 +518,7 @@ void TextureCache::UnregisterImage(ImageId id) {
 	if (!image.registered) {
         return;
     }
+	NoteDsRadianceCache(m_scheduler.CurrentTick(), image, "unregister");
     if (image.bindless_pinned) {
         image.bindless_pinned = false;
         if (on_bindless_unregister) on_bindless_unregister(id);
@@ -1046,6 +1062,8 @@ void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
 		destination.MarkGpuModified();
 	}
 	destination.ClearBufferModified();
+	NoteDsRadianceCache(m_scheduler.CurrentTick(), destination, "copy", source.info.data.address,
+	                    source.ContentVersion());
 }
 
 void TextureCache::CopyStencil(ImageId destination_id, ImageId source_id) {
@@ -1768,6 +1786,7 @@ void TextureCache::InitializeImage(ImageId id) {
 	}
 	const bool upload = image.IsBufferModified() || image.IsCpuDirty();
 	if (upload) {
+		NoteDsRadianceCache(m_scheduler.CurrentTick(), image, "upload");
 		const auto [source, source_offset] =
 		    m_buffer_cache.ObtainBufferForImage(image.info.data.address, image.info.data.size);
 		if (source == nullptr) {
@@ -1872,6 +1891,7 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 			std::scoped_lock lock {m_lock};
 			const auto& image = m_slot_images[id];
 			const bool depth = image.info.IsDepth();
+			NoteDsRadianceCache(m_scheduler.CurrentTick(), image, "metadata_clear", address, code);
 			if (depth) {
 				const auto value = clear.color.float32[0];
 				clear.depthStencil = {value, 0u};
@@ -2642,6 +2662,8 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format format,
                               const vk::ImageSubresourceRange& range, const vk::ClearValue& clear) {
 	auto& image = m_slot_images[id];
+	NoteDsRadianceCache(m_scheduler.CurrentTick(), image, "clear", range.baseMipLevel,
+	                    range.baseArrayLayer);
 	const auto aspects = image.info.IsDepth() ? ImageViewOps::DepthAspectMask(image.backing.format)
 	                                          : vk::ImageAspectFlagBits::eColor;
 	EXIT_IF(range.baseMipLevel >= image.info.resources.levels);

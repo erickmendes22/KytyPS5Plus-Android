@@ -291,6 +291,8 @@ object Diagnostics {
                 "dispatch producing the slot 3 values. For 567d21ad45386c8d, probe_indices maps " +
                 "workgroup Z to the output record. radiance_file names the bound image in queue-state " +
                 "as tightly packed little-endian RGBA16F rows. guest-shaders contains their guest compute code. " +
+                "Compare radiance_digest with sampled_compute_writer.radiance_digest and join " +
+                "DS_RADIANCE_IMAGE_WRITER, DS_RADIANCE_BUFFER_WRITER and DS_RADIANCE_CACHE by tick and owner. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))
