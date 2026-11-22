@@ -458,7 +458,25 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	dynamic_state.SetBlendConstants(blend_constants);
 	dynamic_state.SetDepthTestEnabled(depth.depth_test_enable);
 	dynamic_state.SetDepthWriteEnabled(depth.depth_write_enable);
-	dynamic_state.SetDepthCompareOp(depth.depth_compare_op);
+	// Demon's Souls uses a depth-only prepass followed by EQUAL-tested material
+	// draws. The supplied #647 captures prove that the prepass produces valid
+	// D32, yet the next material draw can leave the entire observed G-buffer
+	// unchanged. Jetsku PC has KYTY_DEPTH_EQUAL_RELAX for testing this precise
+	// disagreement; provide the same opt-in on Android, scoped to PPSA01341's
+	// observed depth target, never to unrelated titles/shadow maps.
+	static const int ds_depth_equal_relax = [] {
+		const char* value = std::getenv("KYTY_DS_DEPTH_EQUAL_RELAX");
+		if (value == nullptr || value[1] != '\\0') return 0;
+		return value[0] == '1' ? 1 : value[0] == '2' ? 2 : 0;
+	}();
+	auto depth_compare = depth.depth_compare_op;
+	if (ds_depth_equal_relax != 0 && depth.depth_test_enable &&
+	    !depth.depth_write_enable && depth.desc.info.data.address == 0x282b60000ull &&
+	    depth_compare == vk::CompareOp::eEqual) {
+		depth_compare = ds_depth_equal_relax == 1 ? vk::CompareOp::eLessOrEqual
+		                                       : vk::CompareOp::eGreaterOrEqual;
+	}
+	dynamic_state.SetDepthCompareOp(depth_compare);
 	if (buffer.GetGraphics().optional_features.depth_bounds) {
 		dynamic_state.SetDepthBoundsTestEnabled(depth.depth_bounds_test_enable);
 		if (depth.depth_bounds_test_enable) {
