@@ -53,7 +53,7 @@
 +      Dest = _And(OpSize::i64Bit, Dest, Constant(FoldMask));
 +      if (FEXCore::GuestAddressFold::GetShift() != 0) {
 +        DestRelocation = _Lshr(OpSize::i64Bit,
-+          _And(OpSize::i64Bit, DestHigh, Constant(0x8000000000ull)), Constant(1));
++          _And(OpSize::i64Bit, DestHigh, Constant(0x8000000000ull)), Constant(39u - __builtin_ctzll(FEXCore::GuestAddressFold::GetShift())));
 +        Dest = _Add(OpSize::i64Bit, Dest, DestRelocation);
 +      }
 +    }
@@ -87,9 +87,9 @@
 +      SrcAddr = _And(OpSize::i64Bit, SrcAddr, Constant(FoldMask));
 +      if (FEXCore::GuestAddressFold::GetShift() != 0) {
 +        DstRelocation = _Lshr(OpSize::i64Bit,
-+          _And(OpSize::i64Bit, DstHigh, Constant(0x8000000000ull)), Constant(1));
++          _And(OpSize::i64Bit, DstHigh, Constant(0x8000000000ull)), Constant(39u - __builtin_ctzll(FEXCore::GuestAddressFold::GetShift())));
 +        SrcRelocation = _Lshr(OpSize::i64Bit,
-+          _And(OpSize::i64Bit, SrcHigh, Constant(0x8000000000ull)), Constant(1));
++          _And(OpSize::i64Bit, SrcHigh, Constant(0x8000000000ull)), Constant(39u - __builtin_ctzll(FEXCore::GuestAddressFold::GetShift())));
 +        DstAddr = _Add(OpSize::i64Bit, DstAddr, DstRelocation);
 +        SrcAddr = _Add(OpSize::i64Bit, SrcAddr, SrcRelocation);
 +      }

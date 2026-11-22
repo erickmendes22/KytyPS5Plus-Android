@@ -331,6 +331,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # FEX REP memcpy/memset must use the same host bank as the ordinary
+          # FEX memory IR pass and the kernel's folding function.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/cpu/patches/fex-addressfold.patch').read_text()
+          assert p.count('__builtin_ctzll(FEXCore::GuestAddressFold::GetShift())') == 3
+          assert 'std::countr_zero(FEXCore::GuestAddressFold::GetShift())' in p
+          PY
           g++ -std=c++20 -O2 -Wall -Wextra -Werror -Isrc tests/AddressFoldTests.cpp -o /tmp/address-fold-saros
           /tmp/address-fold-saros
       - name: Validate launch policies, Vulkan batch and GPU-side dispatch evidence
