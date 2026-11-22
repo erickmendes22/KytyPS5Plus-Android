@@ -1405,11 +1405,11 @@ void Initialize() {
 	g_virtual_ranges      = std::make_unique<VirtualRanges>();
 #if defined(__ANDROID__) && KYTY_HOST_ARM64
 	if (g_keep_fold_alias_free) {
-		// Protect Saros's low 32 GiB fold image from *fixed* guest allocations,
+		// Protect Saros's low 48 GiB fold image from *fixed* guest allocations,
 		// not just the hint-less searches already excluded by FindGuestFreeRange.
 		// Otherwise a valid early mapping can consume part of this host range;
-		// a later fixed 192 MiB direct map of guest 0x90c0000000 then folds to
-		// host 0x10c0000000 and fails with address-range-unavailable.
+		// a later fixed 192 MiB direct map of guest 0x98c0000000 then folds to
+		// host 0x18c0000000 and fails with address-range-unavailable.
 		constexpr uint64_t alias_start = HOST_USER_MIN;
 		constexpr uint64_t alias_size  = kSarosFoldAliasSize;
 		if (g_guest_address_space->ReserveFixed(alias_start, alias_size)) {
