@@ -152,6 +152,23 @@ void TestSarosFixedMappingBeyondFoldedArena() {
 	      "host folded headroom stays inside ARM64 address window");
 }
 
+void TestSarosMappedGuestOwner() {
+	constexpr uint64_t high_guest = 0x9cc0000000ull;
+	constexpr uint64_t low_guest  = 0x1cc0000000ull;
+	constexpr uint64_t host       = 0x1cc0000000ull;
+	static_assert(Fold(high_guest) == low_guest);
+	Check(SameGuestAtHost(high_guest, host, high_guest, host, host),
+	      "the exact high guest mapping can be renewed");
+	Check(SameGuestAtHost(high_guest, host, high_guest + 0x4000, host + 0x4000, host + 0x4000),
+	      "partial mapped-region splits retain original guest address");
+	Check(!SameGuestAtHost(high_guest, host, low_guest, host, host),
+	      "a low mapped guest must not silently own the high guest mapping");
+	Check(!SameGuestAtHost(low_guest, host, high_guest, host, host),
+	      "a high mapped guest must not silently overwrite a low guest mapping");
+	Check(!SameGuestAtHost(high_guest, host, UINT64_MAX - 1, host, host + 0x4000),
+	      "overflowing previous guest offsets never alias");
+}
+
 void TestAprReadBackingRange() {
 	constexpr uint64_t limit = 0x7000000000ull;
 	uint64_t host = 0;
@@ -213,6 +230,7 @@ int main() {
 	TestUnrealPlan();
 	TestSarosObservedFoldedDirectMapping();
 	TestSarosFixedMappingBeyondFoldedArena();
+	TestSarosMappedGuestOwner();
 	TestSmallerRequestsAndRejections();
 	TestHostPlanMatchesLayout();
 	std::printf("AddressFoldTests: all passed\n");
