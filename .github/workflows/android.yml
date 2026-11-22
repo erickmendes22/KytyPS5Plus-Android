@@ -305,6 +305,8 @@ jobs:
           set -euo pipefail
           tests=(
             demons_stencil_alias_test
+            saros_host_bank_placement_test
+            demons_full_frame_diff_test
             demons_sampled_depth_metadata_test
             demons_htile_load_decision_test
             demons_sample_htile_clear_test
@@ -338,7 +340,8 @@ jobs:
           from pathlib import Path
           p = Path('src/cpu/patches/fex-addressfold.patch').read_text()
           assert p.count('Constant(FEXCore::GuestAddressFold::GetShift()))') == 4  # three REP + one InlineConstant IR
-          assert "IREmit->_InlineConstant(FEXCore::GuestAddressFold::GetShift())" in p
+          assert "IREmit->_Constant(FEXCore::GuestAddressFold::GetShift())" in p
+          assert "IREmit->_InlineConstant(FEXCore::GuestAddressFold::GetShift())" not in p
           assert '39u - __builtin_ctzll(FEXCore::GuestAddressFold::GetShift())' not in p
           assert '39u - std::countr_zero(FEXCore::GuestAddressFold::GetShift())' not in p
           PY

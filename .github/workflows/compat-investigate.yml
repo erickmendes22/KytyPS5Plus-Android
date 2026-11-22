@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for test in demons_rolling_probe_test demons_view_placement_test demons_stencil_alias_test demons_htile_load_decision_test \
+          for test in demons_rolling_probe_test demons_full_frame_diff_test demons_view_placement_test demons_stencil_alias_test demons_htile_load_decision_test \
                       demons_indirect_dispatch_test demons_lds_int64_storage_test \
                       demons_lighting_memory_policy_test demons_gpu_image_publish_policy_test \
                       ufc6_fan_policy_test ufc6_output_resolution_test \

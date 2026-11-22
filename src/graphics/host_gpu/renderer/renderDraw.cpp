@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/renderDraw.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 #include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
+#include "graphics/host_gpu/renderer/demonsMaterialFullFramePolicy.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
 #include "graphics/host_gpu/renderer/ufcPerf.h"
 
@@ -2652,6 +2653,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	const int32_t ds_gbuffer_frame = m_context.GetGpu().GetFrameNum();
 	DemonsQueueProbe::MaterialTrace* ds_material_trace = nullptr;
 	DsAlbedoSnapshot ds_albedo_before;
+	DsAlbedoSnapshot ds_live_material_full_before {};
 	bool ds_live_material_capture = false;
 	int ds_live_material_phase = -1;
 	RenderColorInfo ds_live_material_target {};
@@ -2803,6 +2805,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 						ds_live_depth_before = SnapshotDsMaterialDepthGrid(
 						    m_context, ds_live_material_depth);
 						ds_live_material_capture = ds_live_material_before.has_value();
+						if(ds_live_material_capture)
+							ds_live_material_full_before = SnapshotDsAlbedo(
+							    m_context, ds_live_material_target);
 					}
 				}
 			}
@@ -3433,6 +3438,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 	}
 	if (ds_live_material_capture) {
+		const auto full_after = ds_live_material_full_before.words.empty()
+		    ? DsAlbedoSnapshot {} : SnapshotDsAlbedo(m_context, ds_live_material_target);
+		const auto full_diff = CompareMaterialFullFrame(
+		    ds_live_material_full_before.words, full_after.words,
+		    ds_live_material_full_before.width, ds_live_material_full_before.height);
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_GBUFFER_FULL_LAYER] frame={} phase={} submit={} shader=0x{:016x} "
+		    "valid={} extent={}x{} changed={} colored={}->{} bbox={},{},{},{}\n",
+		    ds_gbuffer_frame, ds_live_material_phase, submit_id,
+		    state.ps_input_info.stage.program->shader_hash, full_diff.valid,
+		    ds_live_material_full_before.width, ds_live_material_full_before.height,
+		    full_diff.changed, full_diff.colored_before, full_diff.colored_after,
+		    full_diff.min_x, full_diff.min_y, full_diff.max_x, full_diff.max_y));
 		const auto after = SnapshotDsGBufferGrid(m_context, ds_live_material_target);
 		if (after && ds_live_material_before) {
 			const auto frame = m_context.GetGpu().GetFrameNum();
@@ -3475,6 +3493,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"depth_zero_before", depth_zero_before},
 			    {"depth_zero_after", depth_zero_after},
 			    {"depth_changed", depth_changed},
+			    {"full_frame", {
+			        {"valid", full_diff.valid}, {"width", ds_live_material_full_before.width},
+			        {"height", ds_live_material_full_before.height},
+			        {"changed", full_diff.changed},
+			        {"colored_before", full_diff.colored_before},
+			        {"colored_after", full_diff.colored_after},
+			        {"bbox", {full_diff.min_x, full_diff.min_y, full_diff.max_x, full_diff.max_y}}
+			    }},
 			    {"depth_owner", ds_live_material_depth.desc.info.data.address},
 			    {"depth_load_clear", state.depth_info.depth_load_clear_enable},
 			    {"depth_attachment_clear", state.depth_info.depth_clear_enable},
