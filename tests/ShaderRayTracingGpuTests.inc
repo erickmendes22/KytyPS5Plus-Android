@@ -123,6 +123,29 @@ TestCase BvhIntersections(bool barycentrics, bool sorted, u32 grow = 0, bool wid
                      : std::array<float, 6>{1, 1, 1, -1, -1, -1};
     for (u32 i = 0; i < 6; ++i) data[NodeStart + 68 + child * 6 + i] = bits(bounds[i]);
   }
+  // PS5 type 6 is a single 64-byte node. Child 1 is empty but still takes
+  // four units (type 2), and a ray with extent 6 cannot reach child 3.
+  const auto pack = [&](u32 start, u32 count, u32 value) {
+    for (u32 bit = 0; bit < count; ++bit) {
+      const auto offset = start + bit;
+      data[NodeStart + 96 + offset / 32] |= ((value >> bit) & 1u) << (offset % 32);
+    }
+  };
+  pack(0, 29, 16);
+  pack(29, 3, 0);
+  pack(32, 3, 2);
+  pack(35, 3, 5);
+  pack(38, 3, 6);
+  pack(43, 2, 3);
+  pack(56, 8, 127);
+  pack(64, 8, 127);
+  pack(72, 8, 129);
+  for (u32 child = 0; child < 4; ++child) {
+    const auto start = 80 + child * 108;
+    const auto near = std::array<u32, 4>{5, 2, 3, 7}[child] << 14;
+    const std::array bounds{0x30000u, 0x30000u, near, 0x10000u, 0x10000u, near + 0x4000};
+    for (u32 k = 0; k < bounds.size(); ++k) pack(start + k * 18, 18, bounds[k]);
+  }
   // An FP32 node straddles two guest pages with a 64-byte gap in physical backing.
   std::copy_n(data.begin() + NodeStart + 32, 16, data.begin() + NodeStart + 255 * 16);
   std::copy_n(data.begin() + NodeStart + 48, 16, data.begin() + NodeStart + 257 * 16);
@@ -131,7 +154,7 @@ TestCase BvhIntersections(bool barycentrics, bool sorted, u32 grow = 0, bool wid
   for (u32 lane = 0; lane < LaneCount; ++lane) {
     const auto kind = lane % 8;
     const auto input = lane * 16;
-    data[input] = kind < 4 ? kind : kind == 4 ? 12 : kind == 5 ? 21 : kind == 6 ? 6 : 0x1000;
+    data[input] = kind < 4 ? kind : kind == 4 ? 12 : kind == 5 ? 21 : kind == 6 ? 7 : 0x1000;
     data[input + 1] = bits(6);
     data[input + 2] = bits(kind < 4 ? origins[kind][0] : 0);
     data[input + 3] = bits(kind < 4 ? origins[kind][1] : 0);
@@ -167,6 +190,11 @@ TestCase BvhIntersections(bool barycentrics, bool sorted, u32 grow = 0, bool wid
       // denominator by four; the distance and barycentrics remain unchanged.
       for (u32 i = 0; i < (barycentrics ? 4u : 2u); ++i)
         expected[lane][i] = bits(std::bit_cast<float>(expected[lane][i]) * 4);
+    } else if (lane == 14 || lane == 30) {
+      data[input] = (6 << 3) | 6;
+      constexpr u32 first = 16 << 3, third = (21 << 3) | 5;
+      expected[lane] = sorted ? std::array<u32, 4>{third, first, Invalid, Invalid}
+                              : std::array<u32, 4>{first, Invalid, third, Invalid};
     } else if (lane == 22) {
       data[input] = 37; // node 4, FP32
       data[input + 1] = bits(10);
@@ -204,7 +232,7 @@ TestCase BvhIntersections(bool barycentrics, bool sorted, u32 grow = 0, bool wid
     std::copy(expected[lane].begin(), expected[lane].end(),
               test.expected.begin() + OutputStart + lane * 4);
     auto bounded = expected[lane];
-    if (lane % 8 == 5) bounded = {Invalid, Invalid, Invalid, Invalid};
+    if (lane % 8 == 5 || lane == 14) bounded = {Invalid, Invalid, Invalid, Invalid};
     if (lane >= 20) bounded = {0x12345678, 0x12345679, 0x1234567a, 0x1234567b};
     std::copy(bounded.begin(), bounded.end(),
               test.expected.begin() + OutputStart + LaneCount * 4 + lane * 4);

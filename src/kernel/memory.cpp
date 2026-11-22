@@ -916,6 +916,9 @@ static void GtDiscardFreedPoolMappings(const std::vector<PooledMemory::Mapping>&
 
 
 static std::atomic<bool> g_address_fold_enabled {false};
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+static bool g_keep_fold_alias_free = false;
+#endif
 
 } // namespace Libs::LibKernel::Memory
 
@@ -945,6 +948,16 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 			if (candidate == 0) {
 				return uint64_t {0};
 			}
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+			// Saros allocates in the low user window before reserving its large UE5
+			// arena. Keep the host VA for the arena's folded top free from boot.
+			constexpr auto fold_alias_end = HOST_USER_MIN + Kernel::AddressFold::kAliasSize;
+			if (g_keep_fold_alias_free && candidate < fold_alias_end &&
+			    candidate + size > HOST_USER_MIN) {
+				current = fold_alias_end;
+				continue;
+			}
+#endif
 			VirtualRanges::Range overlap {};
 			if (!g_virtual_ranges->QueryOverlap(candidate, size, &overlap)) {
 				return candidate;
@@ -1375,6 +1388,11 @@ static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size);
 
 void Initialize() {
 	g_flexible_memory_size_frozen = true;
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+	std::string title;
+	g_keep_fold_alias_free =
+	    Loader::SystemContentParamSfoGetString("TITLE_ID", &title) && title == "PPSA07631";
+#endif
 	VirtualMemory::Init();
 	g_guest_address_space = std::make_unique<GuestAddressSpace>(PhysicalMemory::TotalSize());
 	g_physical_memory     = std::make_unique<PhysicalMemory>();
