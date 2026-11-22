@@ -1369,7 +1369,7 @@ void CaptureDsProbeSourceWrite(RenderContext& context, const PreparedBindings& b
 		         {"srt", resources.flattened_srt}, {"shader_data", bindings.shader_data}}});
 		ds_next_probe_snapshot = (ds_next_probe_snapshot + 1) % ds_probe_source_snapshots.size();
 		if (++count >= ds_probe_source_snapshots.size()) break;
-		indirect_buffer = {};
+		indirect_buffer = vk::Buffer{};
 	}
 }
 
