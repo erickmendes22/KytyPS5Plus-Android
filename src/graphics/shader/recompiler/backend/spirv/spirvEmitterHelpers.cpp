@@ -18,13 +18,9 @@ DppTargetLane EmitDppPermTargetLane(EmitterState& state, uint32_t subid, uint32_
 
 DppTargetLane EmitDppRowShiftTargetLane(EmitterState& state, uint32_t subid, uint32_t amount,
                                         bool left) {
-	const auto row          = state.builder.AllocateId();
 	const auto lane         = state.builder.AllocateId();
 	const auto lane_shifted = state.builder.AllocateId();
-	const auto target       = state.builder.AllocateId();
 	const auto valid        = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), row, subid,
-	                          ConstantU32(state, 0xfffffff0u));
 	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), lane, subid,
 	                          ConstantU32(state, 15));
 	if (left) {
@@ -38,7 +34,10 @@ DppTargetLane EmitDppRowShiftTargetLane(EmitterState& state, uint32_t subid, uin
 		state.builder.AddFunction(spv::OpUGreaterThanEqual, TypeBool(state), valid, lane,
 		                          ConstantU32(state, amount));
 	}
-	state.builder.AddFunction(spv::OpBitwiseOr, TypeU32(state), target, row, lane_shifted);
+	// Keep even an invalid shift's shuffle and ballot lookups inside the row.
+	// The validity predicate independently controls zero fill or write suppression.
+	const auto target = EmitNative<spv::OpBitFieldInsert, IR::Type::U32>(
+	    state, subid, lane_shifted, ConstantU32(state, 0), ConstantU32(state, 4));
 	return {target, valid};
 }
 

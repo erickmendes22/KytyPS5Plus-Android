@@ -46,8 +46,8 @@ const std::filesystem::path& Root() {
 // and observed G-buffer fragment shaders. The diagnostic ZIP exports these exact
 // SPIR-V binaries and Vulkan pipeline JSON without needing RenderDoc.
 bool DsLightingShader(uint64_t hash) {
-	static constexpr std::array<uint64_t, 10> watched {{
-	    0x2f493aadc660cf03ull,
+	static constexpr std::array<uint64_t, 11> watched {{
+	    0x2f493aadc660cf03ull, 0x567d21ad45386c8dull,
 	    0xc03afccb96a13c5dull, 0x3dfe402653925fbfull, 0x6cbfe18ea2005263ull,
 	    0x1ce1a858f62b5a11ull, 0xc2e01fbe98f5ebabull,
 	    0x23056085c1120461ull, 0xfabe0bcb275a3005ull,

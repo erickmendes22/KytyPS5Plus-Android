@@ -233,7 +233,7 @@ object Diagnostics {
         // Vulkan already records this 360-layer light-atlas storage writer, but
         // older Android exports silently excluded its SPIR-V and pipeline JSON.
         val atlasWriterShaders = setOf("c03afccb96a13c5d")
-        val coefficientWriterShaders = setOf("2f493aadc660cf03")
+        val coefficientWriterShaders = setOf("2f493aadc660cf03", "567d21ad45386c8d")
         val postShaders = setOf("3265b01ed00a5c01", "17defa333d9d1e22", "d1768d02fcf96a58",
             "844e5697cf62ecd7", "a5fc1658592e3cba", "41a57a218d07a778")
         val watched = queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
@@ -288,7 +288,9 @@ object Diagnostics {
                 "and slot 2 weight bits for the same probe IDs. DS_COEFFICIENT_PAIRED confirms a matching " +
                 "writer and atlas in the same frame. inputs_before.source_writer gives the upstream binding " +
                 "provenance. When available, source_dispatch and source_words_after_writer describe the " +
-                "dispatch producing the slot 3 values. guest-shaders contains their guest compute code. " +
+                "dispatch producing the slot 3 values. For 567d21ad45386c8d, probe_indices maps " +
+                "workgroup Z to the output record. radiance_file names the bound image in queue-state " +
+                "as tightly packed little-endian RGBA16F rows. guest-shaders contains their guest compute code. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass.\n"
             zip.putNextEntry(ZipEntry("ds-lighting-capture/README.txt"))
             zip.write(info.toByteArray(Charsets.UTF_8))

@@ -1269,12 +1269,15 @@ namespace {
 
 constexpr uint64_t DsCoefficientWriter = 0x2f493aadc660cf03ull;
 constexpr uint64_t DsCoefficientBytes = DemonsLightingMemoryPolicy::ProbeCoefficientBytes;
+constexpr uint64_t DsProbeProjector = 0x567d21ad45386c8dull;
+constexpr uint32_t DsRadianceExtent = 256;
 
 struct DsProbeSourceWrite {
 	uint64_t address;
 	uint64_t serial;
 	std::vector<uint32_t> words;
 	nlohmann::json dispatch;
+	std::vector<uint64_t> radiance;
 };
 
 struct DsCoefficientDispatch {
@@ -1315,6 +1318,47 @@ const DsBufferProducer* FindDsProbeSourceWriter(int32_t frame, uint64_t address,
 		                              : writer.address - address < bytes) return &writer;
 	}
 	return nullptr;
+}
+
+static std::vector<uint64_t> ReadDsProbeRadiance(RenderContext& context,
+                                                const PreparedBindings& bindings,
+                                                nlohmann::json& dispatch) {
+	if (bindings.images.size() != 1) return {};
+	const auto& binding = bindings.images.front();
+	if (!binding.image_id || binding.placeholder ||
+	    binding.desc.type != TextureCache::BindingType::Texture) return {};
+	auto& image = context.GetTextureCache().GetImage(binding.image_id);
+	const auto& backing = image.backing;
+	const auto view = std::ranges::find(image.views, binding.image_view, &CachedImageView::view);
+	if (view == image.views.end() || view->info.format != vk::Format::eR16G16B16A16Sfloat ||
+	    view->info.base_level != 0 || !backing.image || backing.samples != 1 ||
+	    backing.image_type != vk::ImageType::e2D ||
+	    backing.format != vk::Format::eR16G16B16A16Sfloat ||
+	    backing.extent.width != DsRadianceExtent || backing.extent.height != DsRadianceExtent ||
+	    !(backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) return {};
+	const auto& mapping = view->info.mapping;
+	dispatch["radiance_view"] = {{"width", DsRadianceExtent}, {"height", DsRadianceExtent},
+	    {"layer", view->info.base_layer}, {"owner", image.info.data.address},
+	    {"version", image.ContentVersion()}, {"swizzle", {static_cast<uint32_t>(mapping.r),
+	        static_cast<uint32_t>(mapping.g), static_cast<uint32_t>(mapping.b),
+	        static_cast<uint32_t>(mapping.a)}}};
+	constexpr size_t texels = size_t{DsRadianceExtent} * DsRadianceExtent;
+	constexpr size_t bytes = texels * sizeof(uint64_t);
+	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	auto [mapped, offset] = download.Map(bytes, 16u, true);
+	if (!mapped) return {};
+	download.Commit();
+	vk::BufferImageCopy copy {};
+	copy.bufferOffset = offset;
+	copy.imageSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0,
+	                                                   view->info.base_layer, 1};
+	copy.imageExtent = vk::Extent3D{DsRadianceExtent, DsRadianceExtent, 1};
+	image.Download(std::span{&copy, 1u}, download.Handle(), offset, bytes);
+	context.GetCommandScheduler().Finish();
+	download.Invalidate(offset, bytes);
+	std::vector<uint64_t> result(texels);
+	std::memcpy(result.data(), mapped, bytes);
+	return result;
 }
 
 void CaptureDsProbeSourceWrite(RenderContext& context, const PreparedBindings& bindings,
@@ -1362,11 +1406,23 @@ void CaptureDsProbeSourceWrite(RenderContext& context, const PreparedBindings& b
 			images.push_back({{"slot", i}, {"guest", binding.desc.info.data.address},
 			    {"placeholder", binding.placeholder}, {"descriptor", resources.images[i].dwords}});
 		}
+		nlohmann::json dispatch {{"groups", groups}, {"output_slot", slot}, {"bvh", program.info.bvh},
+		    {"buffers", std::move(descriptors)}, {"images", std::move(images)},
+		    {"srt", resources.flattened_srt}, {"shader_data", bindings.shader_data}};
+		std::vector<uint64_t> radiance;
+		if (program.shader_hash == DsProbeProjector && slot == 1) {
+			// This compute shader only reads the radiance image and probe indices.
+			// Copy them here with its output, before another dispatch can replace them.
+			dispatch["probe_indices"] = ReadDsBoundWords(context, bindings, 0, DsRadianceExtent);
+			radiance = ReadDsProbeRadiance(context, bindings, dispatch);
+			dispatch["radiance_bytes"] = radiance.size() * sizeof(uint64_t);
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_PROBE_RADIANCE] frame={} submit={} bytes={} indices={}\n",
+			    frame, submit, radiance.size() * sizeof(uint64_t), dispatch["probe_indices"].size()));
+		}
 		ds_probe_source_snapshots[ds_next_probe_snapshot] = std::make_shared<DsProbeSourceWrite>(
 		    DsProbeSourceWrite{output.address, writer->serial, std::move(words),
-		        {{"groups", groups}, {"output_slot", slot}, {"bvh", program.info.bvh},
-		         {"buffers", std::move(descriptors)}, {"images", std::move(images)},
-		         {"srt", resources.flattened_srt}, {"shader_data", bindings.shader_data}}});
+		                       std::move(dispatch), std::move(radiance)});
 		ds_next_probe_snapshot = (ds_next_probe_snapshot + 1) % ds_probe_source_snapshots.size();
 		if (++count >= ds_probe_source_snapshots.size()) break;
 		indirect_buffer = vk::Buffer{};
@@ -1479,7 +1535,8 @@ nlohmann::json CompareDsCoefficientDispatch(int32_t frame, uint64_t address, uin
                                             std::span<const uint32_t> indices,
                                             std::span<const uint32_t> index_valid,
                                             std::span<const uint32_t> valid_words,
-                                            std::span<const uint32_t> observed) {
+                                            std::span<const uint32_t> observed,
+                                            std::span<const uint64_t>& radiance) {
 	const auto* writer = FindDsBufferProducer(frame, address, bytes);
 	if (!writer) return {{"status", "no_bound_writer"}};
 	nlohmann::json result {{"writer_shader", fmt::format("{:016x}", writer->shader)},
@@ -1562,6 +1619,7 @@ nlohmann::json CompareDsCoefficientDispatch(int32_t frame, uint64_t address, uin
 	result["matched_source_coefficients"] = std::move(source);
 	if (capture->source_write) {
 		result["source_dispatch"] = capture->source_write->dispatch;
+		radiance = capture->source_write->radiance;
 		result["source_records_compared"] = source_records;
 		result["source_records_different_at_update"] = source_different;
 		result["source_words_after_writer"] = std::move(source_after_writer);
@@ -1731,9 +1789,10 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 		report("coefficients_unreadable");
 		return;
 	}
-	const auto writer = coefficient_adjustment == 0 ? CompareDsCoefficientDispatch(
+	std::span<const uint64_t> radiance;
+	auto writer = coefficient_adjustment == 0 ? CompareDsCoefficientDispatch(
 	    frame, bindings.buffer_sources[1].address, bindings.buffer_sources[1].size,
-	    index_values, index_valid, coefficient_valid_words, coefficient_values)
+	    index_values, index_valid, coefficient_valid_words, coefficient_values, radiance)
 	    : nlohmann::json{{"status", "unaligned_atlas_buffer"}};
 	const bool paired = writer.value("compared_records", size_t{0}) > 0;
 	if (!periodic && !paired) return;
@@ -1750,10 +1809,18 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 	std::error_code ec;
 	std::filesystem::create_directories(folder, ec);
 	static std::atomic<uint32_t> next_file {0};
-	const auto name = fmt::format("cs_c03afccb96a13c5d_atlas_inputs_{}.json",
-	                              next_file.fetch_add(1, std::memory_order_relaxed) % 4u);
+	const auto file_slot = next_file.fetch_add(1, std::memory_order_relaxed) % 4u;
+	const auto name = fmt::format("cs_c03afccb96a13c5d_atlas_inputs_{}.json", file_slot);
 	std::ofstream file(folder / name, std::ios::trunc);
 	if (file) {
+		if (!radiance.empty()) {
+			const auto radiance_name = fmt::format("cs_567d21ad45386c8d_radiance_{}.bin", file_slot);
+			std::ofstream image_file(folder / radiance_name, std::ios::binary | std::ios::trunc);
+			image_file.write(reinterpret_cast<const char*>(radiance.data()),
+			                 static_cast<std::streamsize>(radiance.size_bytes()));
+			image_file.close();
+			if (image_file.good()) writer["source_dispatch"]["radiance_file"] = radiance_name;
+		}
 		const nlohmann::json payload {
 		    {"frame", frame}, {"submit", submit}, {"workgroups", groups},
 		    {"srt_22_to_27", std::vector<uint32_t>(srt.begin() + 22, srt.begin() + 28)},

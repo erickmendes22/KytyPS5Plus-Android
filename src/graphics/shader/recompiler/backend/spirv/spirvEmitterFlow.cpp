@@ -977,7 +977,8 @@ uint32_t EmitDppMoveU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	}
 	const auto shuffled = ctx.Shuffle(inst, 0, target.lane);
 	if (flags.fetch_inactive) {
-		return shuffled;
+		return EmitNative<spv::OpSelect, IR::Type::U32>(state, target.valid, shuffled,
+		                                                ConstantU32(state, 0));
 	}
 	const auto ballot        = ctx.Ballot(inst.Arg(1));
 	const auto source_active = EmitBallotLaneActiveBool(state, ballot, target.lane);
