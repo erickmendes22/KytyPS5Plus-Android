@@ -298,10 +298,13 @@ object LaunchArgs {
 
 /** Explicit full-trace opt-in only; no automatic frame tracing. */
 object DemonsSoulsDiagnosticArgs {
-    fun append(base: Array<String>, fullPixelTrace: Boolean, perFaceBias: Boolean): Array<String> {
+    fun append(base: Array<String>, fullPixelTrace: Boolean, perFaceBias: Boolean,
+               depthAlways: Boolean = false): Array<String> {
         val bias = arrayOf("--env", if (perFaceBias) "KYTY_DS_PER_FACE_BIAS=1"
                                else "KYTY_DS_PER_FACE_BIAS=0")
-        return base + bias + (if (fullPixelTrace) {
+        val depthExperiment = if (depthAlways) arrayOf("--env", "KYTY_DS_GBUFFER_DEPTH_ALWAYS=1")
+                              else emptyArray()
+        return base + bias + depthExperiment + (if (fullPixelTrace) {
             arrayOf("--env", "KYTY_DS_FRAME_TRACE=1",
                     // The compositor reads the scene image and overlay. Capture
                     // both at composition time (incl. late gameplay), not random clears.

@@ -23,6 +23,9 @@ struct RenderDepthInfo {
 	TextureCache::ImageDesc     desc;
 	bool                        depth_clear_enable       = false;
 	bool                        depth_load_clear_enable  = false;
+	// PC upstream 57791645e: a loadOp clear belongs to a specific
+	// depth/stencil aspect. Do not conflate compressed stencil with depth.
+	vk::ImageAspectFlags        load_clear_aspects {};
 	float                       depth_clear_value        = 0.0f;
 	bool                        depth_test_enable        = false;
 	// Effective draw writes; discovery applies test, target-write and clear controls.

@@ -816,11 +816,17 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		const bool meta_clear =
 		    metadata.kind == ImageMetadataKind::Htile &&
 		    cache.IsMetaCleared(metadata.range.address, depth.desc.view_info.base_layer);
-		depth.depth_load_clear_enable = depth.depth_clear_enable || meta_clear;
-		// HTile also carries Hi-Stencil when that plane is compressed. A
-		// pending metadata clear must materialize BOTH aspects; otherwise stale
-		// stencil from the previous 3D pass survives the next draw (PC 5bf37f5).
-		depth.stencil_clear_enable |= meta_clear && metadata.stencil_compressed;
+		// PC upstream 57791645e: retain the per-aspect clear identity
+		// across HTile decompression, including compressed Hi-Stencil.
+		depth.load_clear_aspects = {};
+		if (depth.depth_clear_enable || meta_clear)
+			depth.load_clear_aspects |= vk::ImageAspectFlagBits::eDepth;
+		if (depth.stencil_clear_enable || (meta_clear && metadata.stencil_compressed))
+			depth.load_clear_aspects |= vk::ImageAspectFlagBits::eStencil;
+		// Preserve legacy depth-only readers; the actual Vulkan attachment
+		// and hazard policy below uses load_clear_aspects exclusively.
+		depth.depth_load_clear_enable =
+		    static_cast<bool>(depth.load_clear_aspects & vk::ImageAspectFlagBits::eDepth);
 		if (meta_clear &&
 		    !cache.TouchMeta(metadata.range.address, depth.desc.view_info.base_layer, false)) {
 			EXIT("failed to consume HTile clear state\n");
@@ -895,9 +901,11 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		attachment.clear_value[0] = std::bit_cast<uint32_t>(depth.depth_clear_value);
 		attachment.clear_value[1] = depth.stencil_clear_value;
 		attachment.has_depth      = static_cast<bool>(aspects & vk::ImageAspectFlagBits::eDepth);
-		attachment.depth_clear    = depth.depth_load_clear_enable;
+		attachment.depth_clear    =
+		    static_cast<bool>(depth.load_clear_aspects & vk::ImageAspectFlagBits::eDepth);
 		attachment.has_stencil    = static_cast<bool>(aspects & vk::ImageAspectFlagBits::eStencil);
-		attachment.stencil_clear  = depth.stencil_clear_enable;
+		attachment.stencil_clear  =
+		    static_cast<bool>(depth.load_clear_aspects & vk::ImageAspectFlagBits::eStencil);
 		attachment.format         = view.format;
 		state.depth_format        = attachment.has_depth ? view.format : vk::Format::eUndefined;
 		state.stencil_format      = attachment.has_stencil ? view.format : vk::Format::eUndefined;
@@ -2415,7 +2423,7 @@ bool RenderExecutor::CopyDepthToColor(CommandBuffer& buffer, const DrawCallInfo&
 	                     state.ps_input_info.ps_sample_mask_export_enable);
 	vk::ImageAspectFlags feedback;
 	const auto rendering = AcquireRenderTargets(buffer, &color, 1, depth, feedback);
-	if (depth.depth_load_clear_enable) {
+	if (depth.load_clear_aspects) {
 		m_context.GetCommandScheduler().BeginRendering(rendering);
 	}
 	auto& cache = m_context.GetTextureCache();
@@ -3181,6 +3189,44 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	auto& dynamic_state = m_context.GetCommandScheduler().GetDynamicState();
 	UpdateGraphicsDynamicState(buffer, dynamic_state, vertex_stages.back(), state.depth_info,
 	                           rendering);
+	// Opt-in comparison experiment only. The launcher exposes the switch
+	// solely for PPSA01341; the native gate independently verifies the
+	// loaded title and the three measured G-buffer material shaders.
+	// Disabled: no Vulkan state or rendering path is changed.
+	static const bool ds_gbuffer_depth_always_requested = [] {
+		const char* env = std::getenv("KYTY_DS_GBUFFER_DEPTH_ALWAYS");
+		if (!env || std::strcmp(env, "1") != 0) return false;
+		std::string title;
+		if (!Loader::SystemContentParamSfoGetString("TITLE_ID", &title) ||
+		    title != "PPSA01341") return false;
+		LOGF("[DS_GBUFFER_DEPTH_ALWAYS] opt-in enabled for PPSA01341 only\n");
+		return true;
+	}();
+	const bool ds_force_gbuffer_always = ds_gbuffer_depth_always_requested &&
+	    state.ps_active && state.ps_input_info.stage.program &&
+	    std::ranges::find(DemonsQueueProbe::GBufferShaders,
+	                      state.ps_input_info.stage.program->shader_hash) !=
+	        DemonsQueueProbe::GBufferShaders.end() &&
+	    state.depth_info.image_id && state.depth_info.depth_test_enable &&
+	    !state.depth_info.depth_write_enable &&
+	    state.depth_info.depth_compare_op == vk::CompareOp::eEqual &&
+	    std::ranges::any_of(std::span{state.color_info, state.color_count},
+	        [](const auto& color) {
+		        return color.image_id &&
+		               color.desc.info.data.address == DemonsQueueProbe::GBufferAddress;
+	        });
+	if (ds_force_gbuffer_always) {
+		// The guest EQUAL is retained in state.depth_info and in all
+		// diagnostics. The actual draw temporarily uses ALWAYS. The
+		// subsequent draw resets its own dynamic state normally.
+		dynamic_state.SetDepthCompareOp(vk::CompareOp::eAlways);
+		static std::atomic_uint32_t reported {0};
+		if (reported.fetch_add(1, std::memory_order_relaxed) < 16u)
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_GBUFFER_DEPTH_ALWAYS] frame={} shader=0x{:016x} guest=EQUAL native=ALWAYS\n",
+			    m_context.GetGpu().GetFrameNum(),
+			    state.ps_input_info.stage.program->shader_hash));
+	}
 	dynamic_state.SetAttachmentFeedbackLoopAspects(feedback_aspects);
 	dynamic_state.Commit(m_context.GetGraphics(), vk_buffer);
 
