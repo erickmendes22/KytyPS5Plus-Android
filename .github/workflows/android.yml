@@ -307,6 +307,7 @@ jobs:
             demons_stencil_alias_test
             demons_sampled_depth_metadata_test
             demons_htile_load_decision_test
+            demons_sample_htile_clear_test
             demons_zero_new_image_test
             demons_color_write_mask_test
             demons_guest_color_targets_test
@@ -336,8 +337,10 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           p = Path('src/cpu/patches/fex-addressfold.patch').read_text()
-          assert p.count('__builtin_ctzll(FEXCore::GuestAddressFold::GetShift())') == 3
-          assert 'std::countr_zero(FEXCore::GuestAddressFold::GetShift())' in p
+          assert p.count('Constant(FEXCore::GuestAddressFold::GetShift()))') == 3
+          assert "IREmit->_InlineConstant(FEXCore::GuestAddressFold::GetShift())" in p
+          assert '39u - __builtin_ctzll(FEXCore::GuestAddressFold::GetShift())' not in p
+          assert '39u - std::countr_zero(FEXCore::GuestAddressFold::GetShift())' not in p
           PY
           g++ -std=c++20 -O2 -Wall -Wextra -Werror -Isrc tests/AddressFoldTests.cpp -o /tmp/address-fold-saros
           /tmp/address-fold-saros

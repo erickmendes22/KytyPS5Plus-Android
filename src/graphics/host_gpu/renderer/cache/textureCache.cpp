@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/sampleHtileClearPolicy.h"
 #include "graphics/host_gpu/renderer/demonsRadianceTrace.h"
 #include "graphics/host_gpu/renderer/cache/stencilAssociationPolicy.h"
 #include "graphics/host_gpu/renderer/cache/gpuImagePublishPolicy.h"
@@ -2403,6 +2404,38 @@ vk::ImageView TextureCache::FindTexture(ImageId id, const ImageDesc& desc) {
 	}
 	if (!image.info.data.Empty()) {
 		RefreshImage(id);
+		// PC parity: a pending uniform HTile depth clear must be applied
+		// before the image is sampled (not only on a depth target bind).
+		// A stencil-only HTile fill never clears depth. Keep the stencil's
+		// pending metadata when the sampled depth has been materialized.
+		// Scope to DS where the missing sampled-depth path was observed.
+		static const bool ds_sample_htile = [] {
+			const char* value = std::getenv("KYTY_DS_HTILE_FILL_SEMANTICS");
+			return value != nullptr && value[0] == '1' && value[1] == '\0';
+		}();
+		if (ds_sample_htile && desc.type == BindingType::Texture && image.info.IsDepth() &&
+		    image.info.metadata.kind == ImageMetadataKind::Htile &&
+		    (desc.view_info.aspect & vk::ImageAspectFlagBits::eDepth) &&
+		    image.info.resources.levels == 1 && image.info.resources.layers == 1 &&
+		    desc.view_info.base_level == 0 && desc.view_info.base_layer == 0) {
+			const auto meta = image.info.metadata.range.address;
+			const auto it = m_surface_metas.find(meta);
+			if (it != m_surface_metas.end() && it->second.type == MetaDataInfo::Type::HTile &&
+			    it->second.depth_address == image.info.data.address &&
+			    it->second.clear_mask.test(0) && !it->second.sample_depth_done) {
+				auto& record = it->second;
+				const auto clear = DecideSampleHtile(true, record.fill_known, record.fill_value,
+				                                   image.info.metadata.stencil_compressed);
+				if (clear.clear_depth) {
+					vk::ClearValue value {};
+					value.depthStencil = vk::ClearDepthStencilValue {clear.clear_depth_value, 0};
+					ClearImage(m_scheduler.Current(), id, image.backing.format,
+					           {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}, value);
+					if (clear.keep_stencil_meta) record.sample_depth_done = true;
+					else record.clear_mask.reset(0);
+				}
+			}
+		}
 		const bool stencil_view = desc.view_info.aspect == vk::ImageAspectFlagBits::eStencil;
 		const bool uses_current_plane = image.info.HasStencil() &&
 		    desc.info.data.address >= image.info.stencil.address &&
@@ -2484,6 +2517,7 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 			// The same metadata address may be reused for a different depth
 			// surface. Never inherit the previous surface's clear state.
 			metadata->second.clear_mask.reset();
+			metadata->second.sample_depth_done = false;
 			metadata->second.fill_known = false;
 			metadata->second.fill_value = 0;
 			if (image.info.htile_initial_clear) metadata->second.clear_mask.set();
@@ -3284,6 +3318,7 @@ bool TextureCache::ClearMeta(uint64_t address) {
 		return false;
 	}
 	found->second.clear_mask.set();
+	found->second.sample_depth_done = false;
 	found->second.fill_known = false;
 	return true;
 }
@@ -3294,6 +3329,7 @@ bool TextureCache::ClearMeta(uint64_t address, uint32_t fill_value) {
 	const auto found = m_surface_metas.find(address);
 	if (found == m_surface_metas.end()) return false;
 	found->second.clear_mask.set();
+	found->second.sample_depth_done = false;
 	found->second.fill_value = fill_value;
 	found->second.fill_known = true;
 	return true;
@@ -3307,6 +3343,7 @@ bool TextureCache::TouchMeta(uint64_t address, uint32_t slice, bool is_clear) {
 		return false;
 	}
 	found->second.clear_mask.set(slice, is_clear);
+	if (slice == 0) found->second.sample_depth_done = false;
 	return true;
 }
 

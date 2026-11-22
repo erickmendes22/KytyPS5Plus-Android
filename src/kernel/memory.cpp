@@ -927,12 +927,14 @@ static constexpr uint64_t kSarosFoldAliasSize = 48ull << 30u;
 // headroom beyond the planned folded image; increasing the image itself merely
 // moves this game-derived allocation by the same amount.
 static constexpr uint64_t kSarosFoldHeadroom = 4ull << 30u;
-// The FEX JIT must use this same displacement for the upper guest bank.
-// 256 GiB mapped guest 0xcfc0000000 to impossible host 0x8fc0000000.
-// 32 GiB keeps that 32 MiB map at host 0x57c0000000, while the 192 MiB
-// 0x9cc0000000 mapping goes to 0x24c0000000, separate from both observed
-// low guest allocations at 0x1cc0000000 and 0x3c00000000.
-static constexpr uint64_t kSarosHighHostShift = 32ull << 30u;
+// Saros has fixed low mappings at 0x18c0000000 and 0x1cc0000000.
+// The 32 GiB host shift mapped guest 0x90c0000000 onto the first low
+// mapping (build d122b78), while the prior 16/8 GiB alternatives map
+// the other observed high pages onto the second. Use a *non-power-of-two*
+// 24 GiB relocation; both FEX's normal IR and REP memory ops must emit
+// (guest_high_bit >> 39) * HostShift(), not a ctz-based right shift.
+// The furthest observed guest 0xcfc0000000 maps below kHostUserEnd.
+static constexpr uint64_t kSarosHighHostShift = 24ull << 30u;
 #endif
 
 } // namespace Libs::LibKernel::Memory

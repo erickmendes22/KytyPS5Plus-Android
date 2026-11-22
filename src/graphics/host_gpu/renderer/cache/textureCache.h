@@ -132,6 +132,9 @@ private:
 		Type type;
 		// PS5 DB_DEPTH_VIEW encodes 13-bit base and last array-slice indices.
 		std::bitset<8192> clear_mask;
+		// A sampled depth clear can be materialized before a later stencil
+		// attachment load consumes the HTile record (PC sampled-depth path).
+		bool sample_depth_done = false;
 		uint32_t fill_value = 0;
 		bool fill_known = false;
 		// Last depth image to acquire this HTile address. Superseded depth

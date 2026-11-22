@@ -172,7 +172,7 @@ void TestSarosMappedGuestOwner() {
 void TestSarosRelocatedHighHostBank() {
 	constexpr uint64_t high_guest = 0x9cc0000000ull;
 	constexpr uint64_t low_guest  = 0x1cc0000000ull;
-	constexpr uint64_t shift = 32ull * kGiB;
+	constexpr uint64_t shift = 24ull * kGiB;
 	static_assert(Fold(high_guest) == low_guest, "constant evaluation keeps the baseline");
 	Check(HostShift() == 0, "other titles use zero host shift");
 	SetHostShift(shift);
@@ -181,7 +181,7 @@ void TestSarosRelocatedHighHostBank() {
 	Check(FoldSpan(high_guest, 192ull * 1024 * 1024, &high_host),
 	      "Saros 192 MiB map remains a contiguous high-bank host span");
 	Check(FoldSpan(low_guest, 0x10000, &low_host), "Saros 64 KiB low span remains valid");
-	Check(high_host == 0x24c0000000ull && low_host == low_guest && high_host != low_host,
+	Check(high_host == 0x22c0000000ull && low_host == low_guest && high_host != low_host,
 	      "the two observed Saros guest mappings must never share host addresses");
 	Check(high_host + 192ull * 1024 * 1024 <= kWindowEnd,
 	      "relocated guest range remains inside the 39-bit host user arena");
@@ -189,10 +189,28 @@ void TestSarosRelocatedHighHostBank() {
 	constexpr uint64_t far_guest = 0xcfc0000000ull;
 	constexpr uint64_t far_size = 32ull << 20u;
 	Check(FoldSpan(far_guest, far_size, &far_host) &&
-	      far_host == 0x57c0000000ull && far_host + far_size <= kWindowEnd,
+	      far_host == 0x55c0000000ull && far_host + far_size <= kWindowEnd,
 	      "regression #649: Saros far 32 MiB fixed map fits host VA");
-	Check(far_host != 0x3c00000000ull && high_host != low_guest,
-	      "both observed low guest maps remain distinct from the sparse high bank");
+	// Distinct fixed low guests and folded high guests from both successive
+	// Saros logs. The old 32 GiB policy clobbered 0x18c0000000 in #d122b78.
+	constexpr uint64_t new_collision_high = 0x90c0000000ull;
+	constexpr uint64_t earlier_high = 0x98c0000000ull;
+	uint64_t fixed_host = 0;
+	uint64_t earlier_host = 0;
+	Check(FoldSpan(new_collision_high, 192ull << 20u, &fixed_host) &&
+	      fixed_host == 0x16c0000000ull && fixed_host != 0x18c0000000ull,
+	      "Saros new 192 MiB upper mapping must not alias fixed low guest 0x18c");
+	Check(FoldSpan(earlier_high, 192ull << 20u, &earlier_host) &&
+	      earlier_host == 0x1ec0000000ull && earlier_host != 0x1cc0000000ull,
+	      "Saros previous upper mapping must not alias fixed low guest 0x1cc");
+	Check(far_host != 0x3c00000000ull && high_host != low_guest &&
+	      fixed_host != earlier_host && fixed_host != high_host,
+	      "observed low guest maps remain distinct from sparse high mappings");
+	// A ctz-only JIT fold silently turns non-power-of-two 24 GiB into 8 GiB.
+	constexpr uint64_t high_bank_bit = 0x8000000000ull;
+	Check((high_bank_bit >> 39) * HostShift() == shift &&
+	      (high_bank_bit >> 39) * HostShift() != 8ull * kGiB,
+	      "FEX JIT must multiply the high-bank bit by the whole 24 GiB shift");
 	Check((far_guest & kFoldMask) + 256ull * kGiB >= kWindowEnd,
 	      "old 256 GiB host offset was invalid for the far mapping");
 	Check(Fold(0x8000000000ull) == shift, "first upper-bank guest page is relocated");
