@@ -102,8 +102,10 @@ public:
 	// Whether [address, address + size) lies inside the DCC/CMask range of a color surface that
 	// MaterializeColorClear has inspected.
 	[[nodiscard]] bool IsColorMetadataRange(uint64_t address, uint64_t size);
-	[[nodiscard]] bool IsMetaCleared(uint64_t address, uint32_t slice);
+	[[nodiscard]] bool IsMetaCleared(uint64_t address, uint32_t slice,
+	                                 uint32_t* fill_value = nullptr, bool* fill_known = nullptr);
 	[[nodiscard]] bool ClearMeta(uint64_t address);
+	[[nodiscard]] bool ClearMeta(uint64_t address, uint32_t fill_value);
 	[[nodiscard]] bool TouchMeta(uint64_t address, uint32_t slice, bool is_clear);
 
 	void UnmapMemory(uint64_t address, uint64_t size);
@@ -130,6 +132,8 @@ private:
 		Type type;
 		// PS5 DB_DEPTH_VIEW encodes 13-bit base and last array-slice indices.
 		std::bitset<8192> clear_mask;
+		uint32_t fill_value = 0;
+		bool fill_known = false;
 		// Last depth image to acquire this HTile address. Superseded depth
 		// backings may be retired later without dropping its clear history.
 		ImageId owner {};

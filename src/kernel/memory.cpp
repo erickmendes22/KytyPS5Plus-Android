@@ -963,26 +963,9 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 			if (candidate == 0) {
 				return uint64_t {0};
 			}
-#if defined(__ANDROID__) && KYTY_HOST_ARM64
-			// Saros allocates in the low user window before reserving its large UE5
-			// arena. Keep the host VA for the arena's folded top free from boot.
-			const auto fold_alias_end = HOST_USER_MIN + kSarosFoldAliasSize + kSarosFoldHeadroom;
-			if (g_keep_fold_alias_free && candidate < fold_alias_end &&
-			    candidate + size > HOST_USER_MIN) {
-				current = fold_alias_end;
-				continue;
-			}
-			// The high Saros guest bank is relocated to a second physical host
-			// window. Exclude that physical window from low guest allocations too.
-			const auto shift = Kernel::AddressFold::HostShift();
-			const auto shifted_begin = HOST_USER_MIN + shift;
-			const auto shifted_end = fold_alias_end + shift;
-			if (g_keep_fold_alias_free && shift != 0 &&
-			    candidate < shifted_end && candidate + size > shifted_begin) {
-				current = shifted_end;
-				continue;
-			}
-#endif
+			// Saros uses sparse high-guest mappings. Blanket alias exclusions
+			// reject real low guest requests: let actual host mapping ownership
+			// checks in GuestAddressSpace decide collisions instead.
 			VirtualRanges::Range overlap {};
 			if (!g_virtual_ranges->QueryOverlap(candidate, size, &overlap)) {
 				return candidate;

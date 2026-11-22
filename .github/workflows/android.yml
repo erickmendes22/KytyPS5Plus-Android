@@ -306,6 +306,7 @@ jobs:
           tests=(
             demons_stencil_alias_test
             demons_sampled_depth_metadata_test
+            demons_htile_load_decision_test
             demons_zero_new_image_test
             demons_color_write_mask_test
             demons_guest_color_targets_test

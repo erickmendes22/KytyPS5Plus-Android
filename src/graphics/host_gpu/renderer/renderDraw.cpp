@@ -850,16 +850,33 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		    !cache.ClearMeta(metadata.range.address)) {
 			EXIT("failed to acquire HTile metadata for a depth clear\n");
 		}
+		uint32_t htile_fill = 0;
+		bool htile_fill_known = false;
 		const bool meta_clear =
 		    metadata.kind == ImageMetadataKind::Htile &&
-		    cache.IsMetaCleared(metadata.range.address, depth.desc.view_info.base_layer);
-		// PC upstream 57791645e: retain the per-aspect clear identity
-		// across HTile decompression, including compressed Hi-Stencil.
+		    cache.IsMetaCleared(metadata.range.address, depth.desc.view_info.base_layer,
+		                        &htile_fill, &htile_fill_known);
+		// PC-compatible HTile load: ZMask=0xf preserves depth.
+		// The previous Android path cleared D32 even on stencil-only fills.
+		static const bool ds_htile_semantics = [] {
+			const char* value = std::getenv("KYTY_DS_HTILE_FILL_SEMANTICS");
+			return value != nullptr && value[0] == '1' && value[1] == '\0';
+		}();
+		const auto decision = DecideHtileLoad(meta_clear, htile_fill, htile_fill_known,
+		                                      metadata.stencil_compressed);
 		depth.load_clear_aspects = {};
-		if (depth.depth_clear_enable || meta_clear)
-			depth.load_clear_aspects |= vk::ImageAspectFlagBits::eDepth;
-		if (depth.stencil_clear_enable || (meta_clear && metadata.stencil_compressed))
-			depth.load_clear_aspects |= vk::ImageAspectFlagBits::eStencil;
+		if (ds_htile_semantics) {
+			if (decision.depth_uniform) depth.depth_clear_value = decision.uniform_value;
+			if (depth.depth_clear_enable || decision.depth_meta_clear)
+				depth.load_clear_aspects |= vk::ImageAspectFlagBits::eDepth;
+			if (depth.stencil_clear_enable || decision.stencil_meta_clear)
+				depth.load_clear_aspects |= vk::ImageAspectFlagBits::eStencil;
+		} else {
+			if (depth.depth_clear_enable || meta_clear)
+				depth.load_clear_aspects |= vk::ImageAspectFlagBits::eDepth;
+			if (depth.stencil_clear_enable || (meta_clear && metadata.stencil_compressed))
+				depth.load_clear_aspects |= vk::ImageAspectFlagBits::eStencil;
+		}
 		// Preserve legacy depth-only readers; the actual Vulkan attachment
 		// and hazard policy below uses load_clear_aspects exclusively.
 		depth.depth_load_clear_enable =

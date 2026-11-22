@@ -2484,6 +2484,8 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 			// The same metadata address may be reused for a different depth
 			// surface. Never inherit the previous surface's clear state.
 			metadata->second.clear_mask.reset();
+			metadata->second.fill_known = false;
+			metadata->second.fill_value = 0;
 			if (image.info.htile_initial_clear) metadata->second.clear_mask.set();
 			metadata->second.depth_address = image.info.data.address;
 		}
@@ -3260,13 +3262,17 @@ bool TextureCache::IsMeta(uint64_t address) {
 	return found != m_surface_metas.end();
 }
 
-bool TextureCache::IsMetaCleared(uint64_t address, uint32_t slice) {
-	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
+bool TextureCache::IsMetaCleared(uint64_t address, uint32_t slice,
+                                 uint32_t* fill_value, bool* fill_known) {
+	address = Kernel::AddressFold::Fold(address);
 	std::scoped_lock lock {m_lock};
-	const auto       found = m_surface_metas.find(address);
+	const auto found = m_surface_metas.find(address);
 	if (found == m_surface_metas.end() || slice >= found->second.clear_mask.size()) {
+		if (fill_known != nullptr) *fill_known = false;
 		return false;
 	}
+	if (fill_value != nullptr) *fill_value = found->second.fill_value;
+	if (fill_known != nullptr) *fill_known = found->second.fill_known;
 	return found->second.clear_mask.test(slice);
 }
 
@@ -3278,6 +3284,18 @@ bool TextureCache::ClearMeta(uint64_t address) {
 		return false;
 	}
 	found->second.clear_mask.set();
+	found->second.fill_known = false;
+	return true;
+}
+
+bool TextureCache::ClearMeta(uint64_t address, uint32_t fill_value) {
+	address = Kernel::AddressFold::Fold(address);
+	std::scoped_lock lock {m_lock};
+	const auto found = m_surface_metas.find(address);
+	if (found == m_surface_metas.end()) return false;
+	found->second.clear_mask.set();
+	found->second.fill_value = fill_value;
+	found->second.fill_known = true;
 	return true;
 }
 

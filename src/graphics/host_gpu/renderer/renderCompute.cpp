@@ -325,12 +325,14 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 			return false;
 		command.GetContext().GetBufferCache().FillBuffer(descriptor.Base48(), size, packed_clear,
 		                                                 false);
+		(void)cache.ClearMeta(descriptor.Base48(), packed_clear);
 		if (DsTraceEnabled()) {
 			RememberDsBufferProducer({descriptor.Base48(), size, input.stage.program->shader_hash,
 			                         command.GetContext().GetGpu().GetFrameNum(), false, true});
 		}
 		return true;
 	}
+	(void)cache.ClearMeta(descriptor.Base48(), packed_clear);
 	static std::atomic<uint32_t> logged_clears {0};
 	if (logged_clears.fetch_add(1, std::memory_order_relaxed) < 32) {
 		LOGF("GraphicsRenderDispatchDirect: compute image clear shader=0x%016" PRIx64

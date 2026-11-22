@@ -704,6 +704,7 @@ class MainActivity : Activity() {
             // This is a geometry fix trial; lighting after the G-buffer is unchanged.
             args += arrayOf("--env",
                 "KYTY_DS_DEPTH_EQUAL_RELAX=" + perGame.demonsSoulsDepthEqualRelax.coerceIn(0, 3))
+            args += arrayOf("--env", "KYTY_DS_HTILE_FILL_SEMANTICS=1")
             if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsIdleBackoff) {
                 args += arrayOf("--env", "KYTY_DS_IDLE_BACKOFF=1")
             }
