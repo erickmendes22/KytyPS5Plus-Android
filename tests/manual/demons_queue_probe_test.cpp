@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
+#include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
 
 #include <cassert>
 #include <fstream>
@@ -17,6 +18,22 @@ static std::vector<uint32_t> ReadWords(const char* path) {
 }
 
 int main(int argc, char** argv) {
+	// The same transition must arm a capture irrespective of how long
+	// the introduction or loading screens took.
+	for (const int32_t boot_offset : {0, 367, 1982}) {
+		Libs::Graphics::DemonsAdaptiveCapture::Gate detector;
+		assert(detector.ShouldSample(boot_offset));
+		detector.Observe(boot_offset, 0.25, 14, 0x281a80000ull);
+		for (int i = 1; i <= 3; ++i) {
+			assert(detector.ShouldSample(boot_offset + i * 24));
+			const auto event = detector.Observe(
+			    boot_offset + i * 24, 0.001, 0, 0x281a80000ull);
+			assert(event.triggered == (i == 3));
+		}
+		assert(detector.CaptureDue(boot_offset + 73));
+		assert(detector.CaptureDue(boot_offset + 100));
+		assert(!detector.CaptureDue(boot_offset + 200));
+	}
 	static_assert(DefaultPixels(1600, 900)[4] == std::pair{1200u, 675u});
 	constexpr auto coverage = MaterialCoveragePixels(1600, 900, 0);
 	static_assert(coverage.size() == 96 && coverage.front() == std::pair{33u, 28u});

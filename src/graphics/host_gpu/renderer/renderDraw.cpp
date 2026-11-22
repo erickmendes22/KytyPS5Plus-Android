@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/renderDraw.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
+#include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
 #include "graphics/host_gpu/renderer/ufcPerf.h"
 
@@ -1300,6 +1301,79 @@ static void RecordDsMaterialPixels(DemonsQueueProbe::MaterialTrace& trace,
 	    changed, cleared, colored_after, trace.width, trace.height, trace.count));
 }
 
+// Probe the HDR scene *actually consumed* by the final compositor.  The image
+// is sampled at a bounded cadence, avoiding an assumed start-of-game frame.
+static void MonitorDsCompositeLight(RenderContext& context, const PreparedBindings& pixel,
+                                    int32_t frame) {
+	if (!DsTraceEnabled() || !DemonsAdaptiveCapture::Current().ShouldSample(frame)) return;
+	if (Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
+	const auto selected = std::ranges::find_if(pixel.images, [](const auto& binding) {
+		return binding.image_id && !binding.placeholder &&
+		       binding.desc.info.data.address == DemonsQueueProbe::SceneAddress;
+	});
+	if (selected == pixel.images.end()) return;
+	auto& image = context.GetTextureCache().GetImage(selected->image_id);
+	const auto& backing = image.backing;
+	const auto view = std::ranges::find(image.views, selected->image_view,
+	                                   &CachedImageView::view);
+	if (view == image.views.end() || !backing.image || backing.samples != 1 ||
+	    backing.image_type != vk::ImageType::e2D ||
+	    backing.format != vk::Format::eR16G16B16A16Sfloat ||
+	    !(backing.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+	    view->info.base_level >= backing.mip_levels ||
+	    view->info.base_layer >= backing.layers) return;
+	const auto w = std::max(backing.extent.width >> view->info.base_level, 1u);
+	const auto h = std::max(backing.extent.height >> view->info.base_level, 1u);
+	if (w < 16 || h < 16) return;
+	constexpr uint32_t count = 16;
+	constexpr uint32_t texel_bytes = 8;
+	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+	auto [mapped, offset] = download.Map(count * texel_bytes, 16u, true);
+	if (!mapped) return;
+	download.Commit();
+	std::array<vk::BufferImageCopy, count> regions {};
+	for (uint32_t i = 0; i < count; ++i) {
+		auto& r = regions[i];
+		r.bufferOffset = offset + uint64_t{i} * texel_bytes;
+		r.imageSubresource = {vk::ImageAspectFlagBits::eColor,
+		                      view->info.base_level, view->info.base_layer, 1};
+		r.imageOffset = {static_cast<int32_t>((i % 4u * 2u + 1u) * w / 8u),
+		                 static_cast<int32_t>((i / 4u * 2u + 1u) * h / 8u), 0};
+		r.imageExtent = {1, 1, 1};
+	}
+	image.Download(std::span{regions}, download.Handle(), offset, count * texel_bytes);
+	context.GetCommandScheduler().Finish();
+	download.Invalidate(offset, count * texel_bytes);
+	const auto half = [](uint16_t value) -> double {
+		if (value & 0x8000u || (value & 0x7c00u) == 0x7c00u) return 0.0;
+		const auto exponent = (value >> 10u) & 31u;
+		const auto fraction = value & 1023u;
+		return exponent == 0 ? std::ldexp(double(fraction), -24)
+		                     : std::ldexp(1.0 + double(fraction) / 1024.0,
+		                                  int(exponent) - 15);
+	};
+	double total = 0.0;
+	uint32_t visible = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		std::array<uint16_t, 4> rgba {};
+		std::memcpy(rgba.data(), mapped + i * texel_bytes, texel_bytes);
+		const auto lum = 0.2126 * half(rgba[0]) + 0.7152 * half(rgba[1]) +
+		                 0.0722 * half(rgba[2]);
+		total += std::min(lum, 4.0);
+		visible += lum >= 0.006;
+	}
+	const auto level = total / count;
+	const auto state = DemonsAdaptiveCapture::Current().Observe(
+	    frame, level, visible, selected->desc.info.data.address);
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "[DS_GAMEPLAY_LIGHT_MONITOR] frame={} scene=0x{:x} level={:.7f} "
+	    "lit_pixels={}/{} bright_reference={:.7f} low_streak={} "
+	    "triggered={} reason={} owner=0x{:x} version={}\n",
+	    frame, selected->desc.info.data.address, level, visible, count,
+	    state.bright_reference, state.low_streak, state.triggered, state.reason,
+	    image.info.data.address, image.ContentVersion()));
+}
+
 uint32_t PickDsColoredTilePixels(RenderContext& context, ImageId id,
                                 const ImageViewInfo& view, std::span<const uint32_t> tiles,
                                 uint32_t width, uint32_t height, DsProbePixels& pixels) {
@@ -2399,6 +2473,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const auto shader = state.ps_input_info.stage.program->shader_hash;
 		const bool composite = shader == 0x3265b01ed00a5c01ull;
 		const auto& inputs = bindings.pixel->images;
+		if (composite) MonitorDsCompositeLight(m_context, *bindings.pixel, frame);
 		const auto colors = std::span {state.color_info, state.color_count};
 		const auto hdr_target = std::ranges::find_if(colors, [](const auto& color) {
 			return color.image_id && color.desc.info.data.address == DemonsQueueProbe::HdrAddress;

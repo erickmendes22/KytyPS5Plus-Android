@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/computeBufferFillPolicy.h"
 #include "graphics/host_gpu/renderer/indirectDispatchPolicy.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
+#include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
 #include "graphics/host_gpu/renderer/demonsRadianceTrace.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/gpuPipelineItems.h"
@@ -1336,9 +1337,10 @@ bool DsCoefficientPairDue(int32_t frame) {
 }
 
 bool DsCoefficientCaptureDue(int32_t frame) {
-	// Capture the exact queue-comparison frames (241, 481, 721, ...)
-	// without moving the independent 240-frame coefficient cadence.
-	return DsCoefficientPairDue(frame) || (frame > 0 && frame % 240 == 1);
+	// Retain occasional baseline samples, but arm detailed recordings only
+	// after the compositor observes a real, sustained fall in HDR scene light.
+	// No fixed boot, cutscene or gameplay frame is assumed.
+	return DsCoefficientPairDue(frame) || DemonsAdaptiveCapture::Current().CaptureDue(frame);
 }
 
 void RetagDsRecordedComputeWrites(RenderContext& context, const PreparedBindings& bindings,
