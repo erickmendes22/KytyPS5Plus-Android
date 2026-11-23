@@ -75,6 +75,7 @@ struct GraphicContext {
     vk::DescriptorSetLayout bindless_layout = nullptr;
     vk::DescriptorSet bindless_set = nullptr;
 	bool                               compute_subgroup_size_control_enabled = false;
+	bool                               occlusion_query_precise_enabled    = false;
 	bool                               sample_rate_shading_enabled           = false;
 	bool                               sampler_anisotropy_enabled            = false;
 	bool                               shader_image_int64_atomics_enabled    = false;

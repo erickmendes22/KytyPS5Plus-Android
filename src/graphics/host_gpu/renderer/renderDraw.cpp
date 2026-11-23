@@ -3229,6 +3229,57 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    std::ranges::any_of(vertex_stages, [&](const auto& stage) {
 		    return stage_image_writes(stage.stage);
 	    }) || (state.ps_active && stage_image_writes(state.ps_input_info.stage));
+	// Capture the exact material draw with two temporary late-test pipelines.
+	// The first retains all rasterized fragments by replacing guest discard
+	// with a return; the second keeps the original discard. Both have zero
+	// color write masks. The real draw always uses its original pipeline.
+	constexpr uint32_t material_queries = 3;
+	std::array<vk::Pipeline, 2> material_pipelines {};
+	vk::QueryPool material_query_pool {};
+	const auto& graphics = m_context.GetGraphics();
+	const char* material_query_status = "not_requested";
+	if (ds_live_material_capture) {
+		const auto& depth = state.depth_info;
+		const auto& pixel = state.ps_input_info;
+		const bool independent_stencil = !depth.stencil_test_enable ||
+		    (depth.stencil_front.compareOp == vk::CompareOp::eAlways &&
+		     depth.stencil_back.compareOp == vk::CompareOp::eAlways);
+		if (!graphics.occlusion_query_precise_enabled) {
+			material_query_status = "precise_occlusion_unsupported";
+		} else if (mesh_active || indirect != nullptr || shader_write_stages || image_side_effects ||
+		           !depth.image_id || !depth.depth_test_enable || depth.depth_write_enable ||
+		           depth.depth_bounds_test_enable || !independent_stencil ||
+		           depth.desc.info.samples != 1 || pixel.ps_depth_export_enable ||
+		           pixel.ps_sample_mask_export_enable || buffer.GetRegisters().GetShaderRegisters().AlphaToMask()) {
+			material_query_status = "draw_has_unsupported_side_effects_or_coverage_state";
+		} else {
+			material_query_status = "replay_shader_unavailable";
+			auto replay_programs = state.programs;
+			for (size_t i = 0; i < material_pipelines.size(); ++i) {
+				const auto& replay = state.programs.pixel.material_coverage[i];
+				if (!replay.module) break;
+				replay_programs.pixel = {.id = replay.id, .module = replay.module};
+				const auto* replay_pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(
+				    std::span{state.color_info, state.color_count}, depth, vertex_stages, buffer,
+				    &pixel, topology, primitive_restart_enable, replay_programs, true);
+				if (!replay_pipeline) break;
+				material_pipelines[i] = replay_pipeline->pipeline;
+			}
+			if (material_pipelines[0] && material_pipelines[1]) {
+				vk::QueryPoolCreateInfo info {};
+				info.queryType = vk::QueryType::eOcclusion;
+				info.queryCount = material_queries;
+				if (graphics.device.createQueryPool(&info, nullptr, &material_query_pool) ==
+				    vk::Result::eSuccess) {
+					m_context.GetCommandScheduler().EndRendering(PassEnd::Buffer);
+					buffer.Handle().resetQueryPool(material_query_pool, 0, material_queries);
+					material_query_status = "recorded";
+				} else {
+					material_query_status = "query_pool_unavailable";
+				}
+			}
+		}
+	}
 	LogDrawPhase(draw.Name(), "BeginRendering");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
@@ -3280,6 +3331,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	                           state.depth_info, rendering);
 	dynamic_state.SetAttachmentFeedbackLoopAspects(feedback_aspects);
 	dynamic_state.Commit(m_context.GetGraphics(), vk_buffer);
+	const auto material_depth_compare = dynamic_state.depth_compare_op;
 
 	// DS shadow casters supply a separate PA_SU_POLY_OFFSET_* for front and
 	// back faces. When this title-scoped path is enabled the pipeline exposes
@@ -3373,6 +3425,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
 			}
 		};
+		if (material_query_pool) {
+			const auto measure = [&](uint32_t query, vk::Pipeline replay, vk::CompareOp compare) {
+				vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, replay);
+				vk_buffer.setDepthCompareOp(compare);
+				vk_buffer.beginQuery(material_query_pool, query, vk::QueryControlFlagBits::ePrecise);
+				issue_draw();
+				vk_buffer.endQuery(material_query_pool, query);
+			};
+			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFrontAndBack, 0);
+			measure(0, material_pipelines[0], vk::CompareOp::eAlways);
+			measure(1, material_pipelines[0], material_depth_compare);
+			measure(2, material_pipelines[1], material_depth_compare);
+			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFront,
+			                              dynamic_state.stencil_front_write_mask);
+			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eBack,
+			                              dynamic_state.stencil_back_write_mask);
+			vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
+		}
 		// With no face culling, a single VkPipeline cannot assign independent
 		// polygon offset to each face. Split only depth-only draws without
 		// stencil tests or shader buffer writes, so ordering-sensitive color
@@ -3540,6 +3610,33 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    ds_gbuffer_frame, ds_depth_prepass_phase));
 		}
 	}
+	std::optional<std::array<uint64_t, material_queries>> material_sample_counts;
+	if (ds_live_material_capture) {
+		if (material_query_pool) {
+			m_context.GetCommandScheduler().Finish();
+			std::array<uint64_t, material_queries> counts {};
+			const auto result = graphics.device.getQueryPoolResults(
+			    material_query_pool, 0, material_queries, sizeof(counts), counts.data(),
+			    sizeof(uint64_t), vk::QueryResultFlagBits::e64);
+			graphics.device.destroyQueryPool(material_query_pool, nullptr);
+			material_query_status = vk::Result::eSuccess == result ? "ok" : "query_read_failed";
+			if (result == vk::Result::eSuccess) {
+				material_sample_counts = counts;
+				if (counts[1] > counts[0] || counts[2] > counts[1]) {
+					material_query_status = "non_comparable_queries";
+				}
+			}
+		}
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_MATERIAL_FRAGMENT_STAGES] frame={} submit={} phase={} vs=0x{:016x} ps=0x{:016x} "
+		    "status={} depth_compare={} rasterized={} depth_pass={} shader_survivors={}\n",
+		    ds_gbuffer_frame, submit_id, ds_live_material_phase,
+		    label_vs ? label_vs->shader_hash : 0ull, label_ps ? label_ps->shader_hash : 0ull,
+		    material_query_status, static_cast<uint32_t>(material_depth_compare),
+		    material_sample_counts ? std::to_string((*material_sample_counts)[0]) : "unavailable",
+		    material_sample_counts ? std::to_string((*material_sample_counts)[1]) : "unavailable",
+		    material_sample_counts ? std::to_string((*material_sample_counts)[2]) : "unavailable"));
+	}
 	if (ds_live_material_capture) {
 		const auto material_depth_full_after = ds_material_depth_full_before.bits.empty()
 		    ? DsDepthFullSnapshot {} : SnapshotDsDepthFull(m_context, ds_live_material_depth);
@@ -3606,6 +3703,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"depth_zero_before", depth_zero_before},
 			    {"depth_zero_after", depth_zero_after},
 			    {"depth_changed", depth_changed},
+			    {"material_fragment_stages", {
+			        {"status", material_query_status},
+			        {"depth_compare", static_cast<uint32_t>(material_depth_compare)},
+			        {"vertex_shader", fmt::format("{:016x}", label_vs ? label_vs->shader_hash : 0ull)},
+			        {"rasterized", material_sample_counts ? nlohmann::json((*material_sample_counts)[0]) : nlohmann::json()},
+			        {"depth_pass", material_sample_counts ? nlohmann::json((*material_sample_counts)[1]) : nlohmann::json()},
+			        {"shader_survivors", material_sample_counts ? nlohmann::json((*material_sample_counts)[2]) : nlohmann::json()},
+			    }},
 			    {"material_depth_full", {
 			        {"valid", material_depth_diff.valid},
 			        {"filled_before", material_depth_diff.filled_before},

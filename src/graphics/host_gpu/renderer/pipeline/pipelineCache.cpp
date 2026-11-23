@@ -1,4 +1,6 @@
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
+#include "graphics/host_gpu/renderer/pipeline/demonsMaterialCoverage.h"
+#include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDiskCache.h"
 
@@ -369,6 +371,9 @@ struct PipelineCache::ProgramCache {
 			if (permutation && permutation->handle.module != nullptr) {
 				ShaderDump::ForgetModule(permutation->handle.module);
 				graphics->device.destroyShaderModule(permutation->handle.module, nullptr);
+				for (const auto& replay: permutation->handle.material_coverage) {
+					if (replay.module) graphics->device.destroyShaderModule(replay.module, nullptr);
+				}
 			}
 		}
 
@@ -534,6 +539,26 @@ struct PipelineCache::ProgramCache {
 			module = CompileSPV(result.spirv, graphics.device);
 		}
 		EXIT_IF(module == nullptr);
+		ShaderProgram handle {.module = module};
+		if (options.stage == ShaderType::Pixel && graphics.occlusion_query_precise_enabled &&
+		    trace && std::strcmp(trace, "1") == 0 &&
+		    std::ranges::find(DemonsQueueProbe::GBufferShaders, options.shader_hash) !=
+		        DemonsQueueProbe::GBufferShaders.end()) {
+			for (size_t i = 0; i < handle.material_coverage.size(); ++i) {
+				const auto replay = DemonsMaterialCoverage::ReplayShader(result.spirv, i == 1);
+				if (replay.empty() ||
+				    !ValidateShaderSpirv(options.dump_label, options.shader_hash, replay,
+				                         options.maintenance8_enabled, true)) continue;
+				vk::ShaderModuleCreateInfo info {};
+				info.codeSize = replay.size() * sizeof(uint32_t);
+				info.pCode = replay.data();
+				vk::ShaderModule replay_module {};
+				if (graphics.device.createShaderModule(&info, nullptr, &replay_module) ==
+				    vk::Result::eSuccess) {
+					handle.material_coverage[i].module = replay_module;
+				}
+			}
+		}
 		ShaderDump::RecordModule(module, stage_name, options.shader_hash, result.spirv);
 		if (options.dump_ir) {
 			LOGF("%s SPIR-V words=%" PRIu64 " wave_size=%u\n", options.dump_label,
@@ -543,7 +568,7 @@ struct PipelineCache::ProgramCache {
 		    .function_code  = {function_code.begin(), function_code.end()},
 		    .specialization = std::move(specialization),
 		    .program        = std::move(program),
-		    .handle         = {.id = 0, .module = module},
+		    .handle         = handle,
 		};
 	}
 
@@ -838,6 +863,9 @@ struct PipelineCache::ProgramCache {
 		// Installs a compiled permutation for this draw; the GPU thread owns the entry.
 		const auto install = [&](Permutation&& compiled) -> ShaderProgram {
 			compiled.handle.id = ++next_shader_id;
+			for (auto& replay: compiled.handle.material_coverage) {
+				if (replay.module) replay.id = ++next_shader_id;
+			}
 			entry->second.permutations.push_back(std::move(compiled));
 			const auto& permutation = entry->second.permutations.back();
 			input_info.stage = {.program = &permutation.program, .resources = &entry->second.resources};
@@ -1137,6 +1165,9 @@ struct PipelineCache::ProgramCache {
 			entry.pending.clear();
 			for (const auto& permutation: entry.permutations) {
 				graphics.device.destroyShaderModule(permutation.handle.module, nullptr);
+				for (const auto& replay: permutation.handle.material_coverage) {
+					if (replay.module) graphics.device.destroyShaderModule(replay.module, nullptr);
+				}
 			}
 		}
 	}
@@ -1316,7 +1347,7 @@ template <typename Key, typename Hash, typename MakeJob>
 PipelineCache::Pipeline* PipelineCache::PollPipeline(
     std::unordered_map<Key, std::unique_ptr<Pipeline>, Hash>&   installed,
     std::unordered_map<Key, std::shared_ptr<PipelineJob>, Hash>& pending, const Key& key,
-    MakeJob&& make_job, bool blocking, CommandScheduler* recovery_scheduler) {
+    MakeJob&& make_job, bool blocking, CommandScheduler* recovery_scheduler, bool optional_probe) {
 	if (const auto found = installed.find(key); found != installed.end()) {
 		found->second->last_used = ++m_pipeline_use_clock;
 		return found->second.get();
@@ -1339,6 +1370,8 @@ PipelineCache::Pipeline* PipelineCache::PollPipeline(
 		return nullptr;
 	}
 	pending.erase(pending_it);
+	if (optional_probe && (job->allocation_result != vk::Result::eSuccess || !job->result ||
+	                       !job->result->pipeline || !job->result->pipeline_layout)) return nullptr;
 	if (recovery_scheduler != nullptr) {
 		const auto initial = static_cast<int32_t>(job->allocation_result);
 		const auto result = RecoverPipelineAllocation(initial,
@@ -2085,7 +2118,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
     std::span<const RenderColorInfo> colors, const RenderDepthInfo& depth,
     std::span<const ShaderVertexInputInfo> vertex_info, CommandBuffer& command,
     const ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology,
-    bool primitive_restart_enable, const GraphicsPrograms& programs) {
+    bool primitive_restart_enable, const GraphicsPrograms& programs, bool coverage_replay) {
 	const auto& vs_input_info  = vertex_info.front();
 	const auto& vertex_program = programs.vertex[0];
 	const auto& pixel_program  = programs.pixel;
@@ -2149,6 +2182,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 		     colors[i].desc.info.guest_format == Prospero::BufferFormat::k2_10_10_10UNorm)) {
 			static_params.color_mask[slot] = guest_slot_mask != 0u ? 1u : 0u;
 		}
+		if (coverage_replay) static_params.color_mask[slot] = 0;
 		rendering.color_formats[slot] = colors[i].desc.view_info.format;
 		const auto& rt                        = ctx.GetRenderTarget(colors[i].target_slot);
 		const auto& bc                        = ctx.GetBlendControl(colors[i].target_slot);
@@ -2287,7 +2321,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 		LogPipelineTrace("CreatePipelineInternal begin", vs_id, ps_id);
 		auto job          = std::make_shared<PipelineJob>();
 		job->graphics     = &m_graphics;
-		job->driver_cache = m_driver_cache;
+		job->driver_cache = coverage_replay ? nullptr : m_driver_cache;
 		job->rendering    = key.rendering;
 		job->vertex_input = key.vertex_input;
 		EXIT_IF(vertex_info.size() > job->vertex_info.size());
@@ -2299,7 +2333,9 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 		job->programs      = programs;
 		job->static_params = key.static_params;
 		return job;
-	}, /*blocking=*/false, &command.GetContext().GetCommandScheduler());
+	}, /*blocking=*/coverage_replay,
+	   coverage_replay ? nullptr : &command.GetContext().GetCommandScheduler(),
+	   /*optional_probe=*/coverage_replay);
 }
 
 PipelineCache::Pipeline&

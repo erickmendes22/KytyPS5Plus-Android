@@ -41,20 +41,6 @@ constexpr uint64_t LowAllocatorSkipEnd(uint64_t proposed,uint64_t bytes,uint64_t
   }
   return end;
 }
-// Reservations can select an early candidate so FEX is enabled before UE
-// enters its arena. Revalidate that candidate against real host mappings
-// immediately before it acquires its first backing.
-template<class PhysicalFreeMargin>
-bool IsFreeForFirstMap(uint64_t shift, uint64_t guest, uint64_t size, PhysicalFreeMargin free) {
-    if (!shift || guest < FoldBoundary || guest >= 2 * FoldBoundary || !size ||
-        size > 2 * FoldBoundary - guest) return false;
-    const auto fits = [&](Span span) {
-        const auto host = (span.guest & FoldMask) + shift;
-        return host >= HostBegin && host < HostEnd && span.size <= HostEnd - host &&
-               free(host, span.size) != 0;
-    };
-    return fits({guest, size}) && std::ranges::all_of(ObservedHighSpans, fits);
-}
 template<class PhysicalFreeMargin>
 std::optional<Placement> Select(uint64_t guest,uint64_t size,PhysicalFreeMargin free) {
   if (guest<FoldBoundary || guest>=2*FoldBoundary || !size || size>2*FoldBoundary-guest) return {};

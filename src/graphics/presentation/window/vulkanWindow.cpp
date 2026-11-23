@@ -780,6 +780,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	    supported_features2.features.shaderStorageImageArrayDynamicIndexing;
 	device_features.shaderImageGatherExtended            = VK_TRUE;
 	device_features.independentBlend                     = VK_TRUE;
+	device_features.occlusionQueryPrecise = supported_features2.features.occlusionQueryPrecise;
+	graphics.occlusion_query_precise_enabled = device_features.occlusionQueryPrecise == VK_TRUE;
 	device_features.dualSrcBlend                         = VK_TRUE;
 	device_features.tessellationShader                   = VK_TRUE;
 	device_features.sampleRateShading                    = VK_TRUE;

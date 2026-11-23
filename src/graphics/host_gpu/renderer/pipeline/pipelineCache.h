@@ -102,6 +102,11 @@ struct PipelineVertexInputState {
 struct ShaderProgram {
 	uint64_t         id     = 0;
 	vk::ShaderModule module = nullptr;
+	struct Replay {
+		uint64_t id = 0;
+		vk::ShaderModule module = nullptr;
+	};
+	std::array<Replay, 2> material_coverage {};
 
 	explicit operator bool() const { return id != 0 && module != nullptr; }
 };
@@ -161,7 +166,7 @@ public:
 	                              std::span<const ShaderVertexInputInfo> vertex_info,
 	                              CommandBuffer& command, const ShaderPixelInputInfo* ps_input_info,
 	                              vk::PrimitiveTopology topology, bool primitive_restart_enable,
-	                              const GraphicsPrograms& programs);
+	                              const GraphicsPrograms& programs, bool coverage_replay = false);
 	// Compute dispatches always wait: their results feed the game.
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	                             const ShaderProgram&          compute_program);
@@ -238,7 +243,8 @@ private:
 	Pipeline* PollPipeline(std::unordered_map<Key, std::unique_ptr<Pipeline>, Hash>&   installed,
 	                       std::unordered_map<Key, std::shared_ptr<PipelineJob>, Hash>& pending,
 	                       const Key& key, MakeJob&& make_job, bool blocking,
-	                       CommandScheduler* recovery_scheduler = nullptr);
+	                       CommandScheduler* recovery_scheduler = nullptr,
+	                       bool optional_probe = false);
 	void InitializeDriverCache();
 	[[nodiscard]] bool WriteDriverCacheFile() const;
 	void CheckpointDriverCache();
