@@ -96,8 +96,11 @@ public:
 			// The original fade is not evidence of broken gameplay lighting.
 			// Arm one distinct, bounded post-transition capture only if the
 			// dark scene persists while new deferred geometry keeps executing.
-			const bool recent_geometry = m_last_geometry >= 0 && frame >= m_last_geometry &&
-			    int64_t{frame} - m_last_geometry <= 300;
+			// Fresh deferred-queue geometry AFTER the first dark latch is
+			// required. The original 300-frame freshness window could
+			// misclassify an idle black fade as active gameplay.
+			const bool recent_geometry = m_last_geometry >= m_last_trigger &&
+			    frame >= m_last_geometry && int64_t{frame} - m_last_geometry <= 24;
 			// The actual 762 capture stays near-black at frame 527
 			// (mean 0.0105114, 3/64 lit pixels), even though its tiny HUD
 			// contribution exceeded the old strict 2-pixel threshold.
@@ -148,8 +151,8 @@ public:
 	bool PostTransitionDarkDue(int32_t frame) const {
 		return m_dark_latched && m_late_dark_candidate && m_late_dark_sample >= 0 &&
 		       frame >= m_late_dark_sample && frame - m_late_dark_sample <= 24 &&
-		       m_last_geometry >= 0 && frame >= m_last_geometry &&
-		       int64_t{frame} - m_last_geometry <= 300;
+		       m_last_geometry >= m_last_trigger && frame >= m_last_geometry &&
+		       int64_t{frame} - m_last_geometry <= 24;
 	}
 
 	bool CaptureDue(int32_t frame) const {

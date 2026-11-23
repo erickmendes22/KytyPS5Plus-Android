@@ -79,6 +79,9 @@ int main(int argc, char** argv) {
 			black.Observe(f, 0.0001, 0, 0x281a80000ull);
 		assert(!black.PostTransitionDarkDue(508));
 		assert(!black.CaptureDue(508));
+		// Even if the early geometry remains in the 300-frame general
+		// gate, it must not count as new activity after the dark latch.
+		assert(!black.PostTransitionDarkDue(220));
 
 		Gate late;
 		late.MarkGeometry(100, 5);
