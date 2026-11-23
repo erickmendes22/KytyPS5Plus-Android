@@ -14,6 +14,7 @@
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 #include "kernel/addressFold.h"
 #include "kernel/sarosHostBankPolicy.h"
+#include "kernel/sarosLazyFoldPolicy.h"
 #include "kernel/lazyReservation.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -2742,6 +2743,12 @@ static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags
 		return KERNEL_ERROR_EINVAL;
 	}
 	if (len > g_flexible_memory->Available()) {
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+		if (g_keep_fold_alias_free)
+			LOGF("[SAROS_VM_FAILURE] api=MapFlexibleMemory bytes=0x%016" PRIx64
+			     " flexible_available=0x%016" PRIx64 " reason=flexible_budget\n",
+			     static_cast<uint64_t>(len), g_flexible_memory->Available());
+#endif
 		return KERNEL_ERROR_ENOMEM;
 	}
 
@@ -4160,6 +4167,28 @@ static uint64_t FindLazyReservation(uint64_t hint, uint64_t size, uint64_t align
 		                                                         : uint64_t {0};
 	});
 	if (start != 0) {
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+		// The old Saros exception skipped the PC-style folded reservation
+		// (which tried to reserve 52 GiB over legitimate low pages) but
+		// also skipped enabling the FEX high guest translation entirely.
+		// A lazy UE reservation crosses the high bank long before its
+		// first guest direct mapping. Activate the already-implemented
+		// sparse, occupancy-checked host bank at the reservation event.
+		if (Kernel::SarosLazyFoldPolicy::NeedActivation(
+		        g_keep_fold_alias_free, Kernel::AddressFold::IsEnabled(), start, size)) {
+			const auto high = Kernel::SarosHostBank::ObservedHighSpans.front();
+			if (!EnsureSarosHostBank(high.guest, high.size)) {
+				LOGF("[SAROS_LAZY_FOLD] reserve denied: no safe sparse host mapping\n");
+				return 0;
+			}
+			Kernel::AddressFold::SetEnabled();
+			Cpu::GuestCpu::EnableAddressFold(Kernel::AddressFold::kFoldMask);
+			LOGF("[SAROS_LAZY_FOLD] enabled start=0x%016" PRIx64
+			     " len=0x%016" PRIx64 " shift=0x%016" PRIx64
+			     " (no blanket host reservation)\n",
+			     start, size, Kernel::AddressFold::HostShift());
+		}
+#endif
 		const auto backed = Lazy::BackedBytes(window, start, size);
 		LOGF_COLOR(Log::Color::Yellow,
 		           "\t lazy reservation: 0x%016" PRIx64 "..0x%016" PRIx64
@@ -4220,6 +4249,15 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 	}
 
 	if (out_addr == 0) {
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+		if (g_keep_fold_alias_free)
+			LOGF("[SAROS_VM_FAILURE] api=ReserveVirtualRange hint=0x%016" PRIx64
+			     " bytes=0x%016" PRIx64 " flags=0x%x alignment=0x%016" PRIx64
+			     " shift=0x%016" PRIx64 " fold_enabled=%u\n",
+			     in_addr, static_cast<uint64_t>(len), static_cast<unsigned>(flags),
+			     static_cast<uint64_t>(alignment), Kernel::AddressFold::HostShift(),
+			     Kernel::AddressFold::IsEnabled() ? 1u : 0u);
+#endif
 		return KERNEL_ERROR_ENOMEM;
 	}
 

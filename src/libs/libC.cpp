@@ -219,7 +219,10 @@ static void WriteAndroidAbortContext(uint64_t rip, uint64_t rsp, uint64_t rbp,
 
 	const auto append_text = [&](std::string_view name, uint64_t address) {
 		if (address < 0x10000) return;
-		std::array<char, 256> bytes {};
+		// Old 256-byte cap truncated "Ran out of memory allocating"
+		// before its numerical byte count and alignment on Saros.
+		// This is bounded and only runs on explicit guest abort.
+		std::array<char, 2048> bytes {};
 		const auto size = ReadSelf(address, bytes.data(), bytes.size() - 1);
 		const auto end = std::find(bytes.cbegin(), bytes.cbegin() + size, '\0');
 		const auto printable = [](unsigned char c) {
