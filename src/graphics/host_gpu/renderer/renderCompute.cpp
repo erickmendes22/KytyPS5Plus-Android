@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
 #include "common/assert.h"
 #include "common/common.h"
@@ -2443,8 +2444,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
                                     uint64_t submit, std::array<uint32_t, 3> groups,
                                     bool groups_valid) {
 	const auto& program = *bindings.runtime->program;
-	if (program.shader_hash != 0x684e797dce67bb8eull ||
-	    !DsTraceEnabled() ||
+	if (!DemonsPcDppPolicy::CaptureProducer(DsTraceEnabled(), program.shader_hash) ||
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	const auto frame = context.GetGpu().GetFrameNum();
 	const auto& gate = DemonsAdaptiveCapture::Current();
@@ -2462,9 +2462,10 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 	capture_gate.ObserveFrame(frame);
 	static uint32_t reports = 0;
 	const bool followup = !late && capture_gate.FollowupDue(frame);
-	if (!capture_gate.Due(frame, onset, late) && !followup) return;
+	const bool due = capture_gate.Due(frame, onset, late) || followup;
+	if (!valid_dispatch || !DemonsPcDppPolicy::CaptureActive(ds_ray_producer_activity.valid, due)) return;
 	const auto note = [&](const char* status, uint32_t slot, uint64_t address) {
-		if (reports++ >= 8) return;
+		if (reports++ >= 32) return;
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_RAY_PRODUCER] frame={} submit={} status={} slot={} guest=0x{:x} "
 		    "groups_valid={} x={} y={} z={} bvh={} has_address_writes={}\n",
@@ -2544,8 +2545,9 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			note("create_directory_failed", slot, source.address);
 			return;
 		}
-		const auto name = fmt::format("ds_ray_producer_f{}_s{}.json", frame, submit);
-		const nlohmann::json output {{"frame", frame}, {"submit", submit},
+		const auto name = fmt::format("ds_ray_producer_f{}_s{}_t{}.json", frame, submit,
+		                             context.GetCommandScheduler().CurrentTick());
+		nlohmann::json output {{"frame", frame}, {"submit", submit},
 		    {"shader", "684e797dce67bb8e"},
 		    {"groups", groups}, {"bvh", program.info.bvh},
 		    {"has_address_writes", program.has_address_writes},
@@ -2553,11 +2555,21 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		    {"output_bytes", source.size},
 		    {"source_adjustment", adjustment},
 		    {"source_adjustment_known", adjustment_known},
-		    {"phase", late ? "post_transition" : followup ? "producer_followup" : "dark_onset"},
+		    {"phase", late ? "post_transition" : followup ? "producer_followup" : onset ? "dark_onset" : "active_producer"},
 		    {"selected_from_consumer_frame", ds_ray_producer_targets.consumer_frame},
 		    {"producer_tick", context.GetCommandScheduler().CurrentTick()},
 		    {"producer_dispatches_seen", ds_ray_producer_activity.valid},
 		    {"entries", std::move(entries)}};
+		// Save exact live shader inputs on each bounded active producer dispatch.
+		const auto& snapshot = *bindings.runtime->resources;
+		output["srt"] = snapshot.flattened_srt;
+		output["shader_data"] = bindings.shader_data;
+		output["buffer_descriptors"] = nlohmann::json::array();
+		for (const auto& desc : snapshot.buffers) output["buffer_descriptors"].push_back(desc.dwords);
+		output["image_descriptors"] = nlohmann::json::array();
+		for (const auto& desc : snapshot.images) output["image_descriptors"].push_back(desc.dwords);
+		output["sampler_descriptors"] = nlohmann::json::array();
+		for (const auto& desc : snapshot.samplers) output["sampler_descriptors"].push_back(desc.dwords);
 		std::ofstream file(folder / name, std::ios::trunc);
 		if (!file) {
 			note("open_failed", slot, source.address);
@@ -2572,7 +2584,8 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		if (followup) capture_gate.NoteFollowup(frame);
 		else capture_gate.NoteCaptured(frame, onset, late);
 		note(late ? "captured_post_transition" :
-		     followup ? "captured_producer_followup" : "captured_onset", slot, source.address);
+		     followup ? "captured_producer_followup" : onset ? "captured_onset" : "captured_active", slot, source.address);
+		Log::WriteToConsoleAndLog(fmt::format("[DS_RAY_PRODUCER_FILE] frame={} submit={} file={}\n", frame, submit, name));
 		return;
 	}
 	note("no_matching_written_ray_buffer", 0, 0);
@@ -3805,7 +3818,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	                               split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	CaptureDsProbeSourceWrite(m_context, bindings, submit_id, {args.x, args.y, args.z},
 	                         split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
-	{
+	if (DemonsPcDppPolicy::CaptureProducer(DsTraceEnabled(), program.shader_hash) &&
+	    Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps") {
 		std::array<uint32_t, 3> ray_groups {args.x, args.y, args.z};
 		const bool ray_valid = split_on_cpu ||
 		    ReadDsGpuWords(m_context, indirect_buffer, indirect_offset, ray_groups);

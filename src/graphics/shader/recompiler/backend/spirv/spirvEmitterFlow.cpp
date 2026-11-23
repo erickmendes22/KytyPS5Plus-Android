@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 #include "common/logging/log.h"
@@ -898,7 +899,8 @@ static std::optional<std::array<uint32_t, 4>> DppQuadSourceXors(const IR::DppMov
 // Whether DPP reads of this shader may use native quad operations (KYTY_QUAD_DPP).
 static bool QuadDppAvailable(const ValueEmitContext& ctx) {
 	const auto& state = ctx.state;
-	return state.device_features.subgroup_quad_dpp && ctx.other_half == nullptr &&
+	return !DemonsPcDppPolicy::Applies(DemonsPcDppPolicy::Enabled(), state.program.shader_hash) &&
+	       state.device_features.subgroup_quad_dpp && ctx.other_half == nullptr &&
 	       state.lane_half == 0 && !state.subgroup_isolated &&
 	       (state.program.stage == ShaderType::Pixel || state.program.stage == ShaderType::Compute);
 }
@@ -1013,7 +1015,8 @@ uint32_t EmitDppUpdateU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 		const auto* value = std::getenv("KYTY_DS_DPP_SKIP_INACTIVE");
 		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
-	if (ds_dpp_skip_inactive && state.program.stage == ShaderType::Compute &&
+	if (ds_dpp_skip_inactive && !DemonsPcDppPolicy::Applies(DemonsPcDppPolicy::Enabled(), state.program.shader_hash) &&
+	    state.program.stage == ShaderType::Compute &&
 	    !flags.bound_control && !flags.fetch_inactive && !flags.dpp8) {
 		const auto target = EmitDppTargetLane(state, flags);
 		const auto ballot = ctx.Ballot(inst.Arg(2));

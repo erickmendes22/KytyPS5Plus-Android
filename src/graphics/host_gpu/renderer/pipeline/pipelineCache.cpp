@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsMaterialCoverage.h"
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
@@ -1217,7 +1218,7 @@ struct PipelineCache::ProgramCache {
             fmt::format(" ssbo_chunk={} clock_ps={} loopguard={}/{} bindless_images={}", f.storage_buffer_chunk_bytes, f.device_clock_period_ps,
                         LoopGuard::Spec() != nullptr ? LoopGuard::Spec() : "",
                         LoopGuard::Limit(), options.bindless_images) +
-            fmt::format(" lodclamp_v2={}", f.shader_resource_min_lod);
+            fmt::format(" lodclamp_v2={} ds_pc_dpp={}", f.shader_resource_min_lod, DemonsPcDppPolicy::Enabled());
 		return XXH3_64bits(text.data(), text.size()) ^ (f.invariant_position ? 0xca029dfb62ec438aull : 0);
 	}
 
@@ -2084,7 +2085,7 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
 	// The dispatch's results feed the game: it waits for its program.
 	const auto program = m_program_cache->Get(params, input_info, push_data_cursor, false);
 	if (program && ShaderDump::DsLightingCapture()) {
-		if (params.hash == DemonsRadianceTrace::MaskWriter) {
+		if (params.hash == DemonsRadianceTrace::MaskWriter || params.hash == DemonsPcDppPolicy::RayProducer) {
 			ShaderDump::RecordDsProbeGuestCode(params.hash, params.code);
 			return program;
 		}

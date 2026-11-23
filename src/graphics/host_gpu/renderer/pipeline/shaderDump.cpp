@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
 
@@ -46,7 +47,8 @@ const std::filesystem::path& Root() {
 // and observed G-buffer fragment shaders. The diagnostic ZIP exports these exact
 // SPIR-V binaries and Vulkan pipeline JSON without needing RenderDoc.
 bool DsLightingShader(uint64_t hash) {
-	static constexpr std::array<uint64_t, 13> watched {{
+	static constexpr std::array<uint64_t, 14> watched {{
+	    DemonsPcDppPolicy::RayProducer,
 	    0xbcbcc6ba1e68c974ull, 0xacce347eef557bd2ull,
 	    0x2f493aadc660cf03ull, 0x567d21ad45386c8dull,
 	    0xc03afccb96a13c5dull, 0x3dfe402653925fbfull, 0x6cbfe18ea2005263ull,
