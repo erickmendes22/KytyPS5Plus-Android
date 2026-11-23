@@ -3401,6 +3401,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	struct DsGeometryFrame {
 		vk::QueryPool pool {};
 		int32_t frame = -1;
+		uint64_t last_tick = 0;
 		bool done = false;
 		nlohmann::json rows = nlohmann::json::array();
 	};
@@ -3409,7 +3410,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	uint32_t geometry_query = UINT32_MAX;
 	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
 	    graphics.occlusion_query_precise_enabled && !geometry.done) {
-		if (geometry.pool && geometry.frame != ds_gbuffer_frame && !geometry.rows.empty()) {
+		if (geometry.pool && geometry.frame != ds_gbuffer_frame && !geometry.rows.empty() &&
+		    geometry.last_tick != 0 && m_context.GetCommandScheduler().GetMasterSemaphore().IsFree(geometry.last_tick)) {
 			std::vector<uint64_t> result(geometry.rows.size() * 2);
 			const auto status = graphics.device.getQueryPoolResults(
 			    geometry.pool, 0, static_cast<uint32_t>(geometry.rows.size()),
@@ -3432,7 +3434,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				    "[DS_GEOMETRY_COVERAGE] frame={} draws={} file={} saved={}\n",
 				    geometry.frame, geometry.rows.size(), name, file.good()));
 				graphics.device.destroyQueryPool(geometry.pool, nullptr);
-				geometry.pool = {};
+				geometry.pool = nullptr;
 				geometry.done = true;
 			}
 		}
@@ -3453,7 +3455,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				geometry.frame = ds_gbuffer_frame;
 				m_context.GetCommandScheduler().EndRendering(PassEnd::Buffer);
 				buffer.Handle().resetQueryPool(geometry.pool, 0, geometry_capacity);
-			} else { geometry.pool = {}; geometry.done = true; }
+			} else { geometry.pool = nullptr; geometry.done = true; }
 		}
 		if (geometry.pool && geometry.frame == ds_gbuffer_frame && relevant &&
 		    geometry.rows.size() < geometry_capacity) {
@@ -3701,8 +3703,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		} else {
 			issue_draw();
 		}
-		if (geometry_query != UINT32_MAX)
+		if (geometry_query != UINT32_MAX) {
 			vk_buffer.endQuery(geometry.pool, geometry_query);
+			geometry.last_tick = m_context.GetCommandScheduler().CurrentTick();
+		}
 	}
 
 	if (draw_marks) {
