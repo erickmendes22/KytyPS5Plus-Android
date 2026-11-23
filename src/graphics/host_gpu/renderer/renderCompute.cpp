@@ -2375,6 +2375,120 @@ static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
 	return words;
 }
 
+// Demon's Souls ray-hit provenance: the 766 capture found that probes 902,
+// 6365 have 109-128 colored hit words and ~zero SH, while 31618 / 34946 have
+// 256 colored words and lit SH. Snapshot these exact 256-ray records directly
+// AFTER their GPU writer (0x684e...) for a one-to-one comparison against the
+// already-exported relight consumer's ray_hits_f*.bin. This can prove whether
+// zeros originate at the producer or appear through later buffer-cache aliasing.
+// Never mutate guest data; record at most one successful bounded 8-KiB readback.
+static void CaptureDsRayHitProducer(RenderContext& context,
+                                    const PreparedBindings& bindings,
+                                    uint64_t submit, std::array<uint32_t, 3> groups,
+                                    bool groups_valid) {
+	const auto& program = *bindings.runtime->program;
+	if (program.shader_hash != 0x684e797dce67bb8eull ||
+	    !DsTraceEnabled() ||
+	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
+	static bool completed = false;
+	static uint32_t reports = 0;
+	if (completed) return;
+	const auto note = [&](const char* status, uint32_t slot, uint64_t address) {
+		if (reports++ >= 3) return;
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_RAY_PRODUCER] frame={} submit={} status={} slot={} guest=0x{:x} "
+		    "groups_valid={} x={} y={} z={} bvh={} has_address_writes={}\n",
+		    context.GetGpu().GetFrameNum(), submit, status, slot, address,
+		    groups_valid, groups[0], groups[1], groups[2],
+		    program.info.bvh, program.has_address_writes));
+	};
+	if (!groups_valid || !groups[0] || !groups[1] || !groups[2]) {
+		note("inactive_dispatch", 0, 0);
+		return;
+	}
+	constexpr uint64_t expected_bytes = 188743680ull;
+	constexpr std::array<uint32_t, 4> probes {902u, 6365u, 31618u, 34946u};
+	constexpr uint64_t words_per_probe = 256ull * 2ull;
+	constexpr uint64_t bytes_per_probe = words_per_probe * sizeof(uint32_t);
+	for (const auto& resource: program.info.buffers) {
+		const auto slot = resource.descriptor_index;
+		if (!resource.written || slot >= bindings.buffer_sources.size() ||
+		    slot >= bindings.buffers.size()) continue;
+		const auto& source = bindings.buffer_sources[slot];
+		const auto& native = bindings.buffers[slot];
+		if (!source.address || source.size < expected_bytes ||
+		    !native.buffer || native.range == VK_WHOLE_SIZE) continue;
+		const uint64_t last_byte = (uint64_t{probes.back()} + 1ull) * bytes_per_probe;
+		if (last_byte > native.range || last_byte > source.size) {
+			note("out_of_range", slot, source.address);
+			continue;
+		}
+		std::vector<uint32_t> words(probes.size() * words_per_probe);
+		std::array<vk::BufferCopy, probes.size()> copies {};
+		for (size_t i = 0; i < probes.size(); ++i) {
+			copies[i] = {native.offset + uint64_t{probes[i]} * bytes_per_probe,
+			             i * bytes_per_probe, bytes_per_probe};
+		}
+		if (!ReadDsGpuWordRanges(context, native.buffer, copies, words)) {
+			note("readback_failed", slot, source.address);
+			return;
+		}
+		nlohmann::json entries = nlohmann::json::array();
+		for (size_t i = 0; i < probes.size(); ++i) {
+			const auto row = std::span{words}.subspan(i * words_per_probe, words_per_probe);
+			std::array<uint32_t, 2> colored_by_half {};
+			std::array<uint32_t, 2> valid_depth_by_half {};
+			uint64_t digest = 14695981039346656037ull;
+			for (uint32_t j = 0; j < 256; ++j) {
+				const auto color = row[j * 2u];
+				const auto data = row[j * 2u + 1u];
+				colored_by_half[j / 128u] += (color & 0x00ffffffu) != 0u;
+				const uint32_t depth = (data >> 16u) & 0x7fffu;
+				valid_depth_by_half[j / 128u] += depth != 0 && depth < 0x7c00u;
+				digest = (digest ^ ((uint64_t{data} << 32u) | color)) *
+				         1099511628211ull;
+			}
+			entries.push_back({{"probe", probes[i]},
+			    {"guest", source.address + uint64_t{probes[i]} * bytes_per_probe},
+			    {"colored_first_second_128", colored_by_half},
+			    {"finite_depth_first_second_128", valid_depth_by_half},
+			    {"digest", fmt::format("{:016x}", digest)},
+			    {"ray_words", std::vector<uint32_t>(row.begin(), row.end())}});
+		}
+		const auto folder = Config::GetShaderDumpFolder() / "queue-state";
+		std::error_code ec;
+		std::filesystem::create_directories(folder, ec);
+		if (ec) {
+			note("create_directory_failed", slot, source.address);
+			return;
+		}
+		const auto frame = context.GetGpu().GetFrameNum();
+		const auto name = fmt::format("ds_ray_producer_f{}_s{}.json", frame, submit);
+		const nlohmann::json output {{"frame", frame}, {"submit", submit},
+		    {"shader", "684e797dce67bb8e"},
+		    {"groups", groups}, {"bvh", program.info.bvh},
+		    {"has_address_writes", program.has_address_writes},
+		    {"output_slot", slot}, {"output_guest", source.address},
+		    {"output_bytes", source.size}, {"producer_tick", context.GetCommandScheduler().CurrentTick()},
+		    {"entries", std::move(entries)}};
+		std::ofstream file(folder / name, std::ios::trunc);
+		if (!file) {
+			note("open_failed", slot, source.address);
+			return;
+		}
+		file << output;
+		file.close();
+		if (!file.good()) {
+			note("write_failed", slot, source.address);
+			return;
+		}
+		completed = true;
+		note("captured", slot, source.address);
+		return;
+	}
+	note("no_matching_written_ray_buffer", 0, 0);
+}
+
 // Scene HDR and its deferred G-buffer sampled at precisely the SAME
 // normalized 8x8 coordinates, immediately after queue 33 executes.
 // Capture the early fade separately from the post-transition dark candidate.
@@ -3151,6 +3265,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	                               {thread_group_x, thread_group_y, thread_group_z});
 	CaptureDsProbeSourceWrite(m_context, bindings, submit_id,
 	                         {thread_group_x, thread_group_y, thread_group_z});
+	CaptureDsRayHitProducer(m_context, bindings, submit_id,
+	                        {thread_group_x, thread_group_y, thread_group_z}, true);
 	EndDsCoefficientDispatch(m_context, bindings, std::move(coefficient_trace),
 	                         {thread_group_x, thread_group_y, thread_group_z});
 	if (post) ProbeDsPostImages(bindings, *post, submit_id, program.shader_hash, true, false);
@@ -3600,6 +3716,12 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	                               split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	CaptureDsProbeSourceWrite(m_context, bindings, submit_id, {args.x, args.y, args.z},
 	                         split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
+	{
+		std::array<uint32_t, 3> ray_groups {args.x, args.y, args.z};
+		const bool ray_valid = split_on_cpu ||
+		    ReadDsGpuWords(m_context, indirect_buffer, indirect_offset, ray_groups);
+		CaptureDsRayHitProducer(m_context, bindings, submit_id, ray_groups, ray_valid);
+	}
 	EndDsCoefficientDispatch(m_context, bindings, std::move(coefficient_trace), {args.x, args.y, args.z},
 	                         split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	if (post) ProbeDsPostImages(bindings, *post, submit_id, program.shader_hash, true, false);

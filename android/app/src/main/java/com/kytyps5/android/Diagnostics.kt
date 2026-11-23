@@ -250,7 +250,8 @@ object Diagnostics {
                         file.isFile && file.length() > 0L &&
                             (subdir == "guest-shaders" ||
                                 (subdir == "queue-state" &&
-                                    (file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
+                                    (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark|post_transition)_f[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark|post_transition)_f[0-9]+_s[0-9]+(_ps[0-9a-f]{16})?\\.json")))) ||
                                 watched.any { hash -> file.name.contains("_${hash}_") }) &&
@@ -266,7 +267,8 @@ object Diagnostics {
                     .sortedWith(compareByDescending<File> { file ->
                         file.name.startsWith("ds_gbuffer_material_") ||
                             file.name.startsWith("ds_light_bridge_") ||
-                            file.name.startsWith("ds_scene_writer_f")
+                            file.name.startsWith("ds_scene_writer_f") ||
+                            file.name.startsWith("ds_ray_producer_f")
                     }.thenByDescending { file ->
                         coefficientWriterShaders.any { hash -> file.name.contains("_${hash}_") }
                     }.thenByDescending { file ->
@@ -279,7 +281,8 @@ object Diagnostics {
                     // files. Give the producer captures their own slots so
                     // the ZIP actually contains the data cited by the log.
                     val newest = files.sortedByDescending { it.lastModified() }
-                    val producer = newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
+                    val producer = newest.filter { it.name.startsWith("ds_ray_producer_f") }.take(4) +
+                        newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
                         .take(18) +
                         newest.filter { it.name.startsWith("cs_bcbcc6ba1e68c974_ray_hits_") }.take(18) +
                         newest.filter { it.name.startsWith("cs_567d21ad45386c8d_radiance_") }.take(16)
