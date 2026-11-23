@@ -3310,6 +3310,18 @@ bool TextureCache::IsMetaCleared(uint64_t address, uint32_t slice,
 	return found->second.clear_mask.test(slice);
 }
 
+bool TextureCache::InvalidateUnprovenHtileWrite(uint64_t address) {
+	address = Kernel::AddressFold::Fold(address);
+	std::scoped_lock lock {m_lock};
+	const auto found = m_surface_metas.find(address);
+	if (found == m_surface_metas.end() ||
+	    found->second.type != MetaDataInfo::Type::HTile) return false;
+	found->second.clear_mask.reset();
+	found->second.sample_depth_done = false;
+	found->second.fill_known = false;
+	return true;
+}
+
 bool TextureCache::ClearMeta(uint64_t address) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
 	std::scoped_lock lock {m_lock};

@@ -107,6 +107,9 @@ public:
 	[[nodiscard]] bool ClearMeta(uint64_t address);
 	[[nodiscard]] bool ClearMeta(uint64_t address, uint32_t fill_value);
 	[[nodiscard]] bool TouchMeta(uint64_t address, uint32_t slice, bool is_clear);
+	// Invalidates an HTile fast-clear claim after an unproven/partial compute
+	// metadata write; the real compute shader is never suppressed.
+	[[nodiscard]] bool InvalidateUnprovenHtileWrite(uint64_t address);
 
 	void UnmapMemory(uint64_t address, uint64_t size);
 	void RestoreMappedProtection(uint64_t address, uint64_t size);

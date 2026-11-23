@@ -19,6 +19,7 @@
 #include "graphics/host_gpu/renderer/indirectDispatchPolicy.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 #include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
+#include "graphics/host_gpu/renderer/htileMetaWritePolicy.h"
 #include "graphics/host_gpu/renderer/demonsRadianceTrace.h"
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/gpuPipelineItems.h"
@@ -188,22 +189,52 @@ void RenderExecutor::UpdateComputeMetaClears(const ShaderComputeInputInfo& input
 		EXIT("compute runtime buffer count does not match shader metadata\n");
 	}
 	auto& cache = buffer.GetContext().GetTextureCache();
+	// Write-only compute metadata updates are not equivalent to a complete
+	// HTile clear. The 48cc9dd D32 capture showed 1.44M populated pixels
+	// lost on an implicit loadOp CLEAR while the guest depth_clear flag
+	// was false. Execute the real shader; proven uniform fills are
+	// subsequently recorded by TryConsumeComputeImageClear.
+	static const bool ds_htile_safe = [] {
+		const char* v = std::getenv("KYTY_DS_HTILE_FILL_SEMANTICS");
+		return v && v[0] == '1' && v[1] == '\0';
+	}();
+	const auto invalidate_unproven = [&](uint64_t addr) {
+		if (!HtileMetaWritePolicy::MustInvalidatePendingClear(ds_htile_safe, true, false) ||
+		    !cache.InvalidateUnprovenHtileWrite(addr)) return false;
+		static std::atomic<uint32_t> noted {0};
+		const auto count = noted.fetch_add(1u, std::memory_order_relaxed);
+		if (count < 24u || count % 4096u == 0u)
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_HTILE_WRITE] frame={} shader=0x{:016x} meta=0x{:x} "
+			    "action=invalidate_unproven_clear dispatch_kept=1 count={}\n",
+			    buffer.GetContext().GetGpu().GetFrameNum(), program.shader_hash, addr, count));
+		return true;
+	};
 	for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
 		const auto& resource   = program.info.buffers[i];
 		const auto  descriptor = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
 		// Reads and transforms of metadata do not establish a clear state.
 		if ((!resource.written || resource.read) && cache.IsMeta(descriptor.Base48())) {
+			if (resource.written) (void)invalidate_unproven(descriptor.Base48());
 			return;
 		}
 	}
 
+	if (program.info.has_bitwise_xor && ds_htile_safe) {
+		for (uint32_t i = 0; i < program.info.buffers.size(); ++i) {
+			if (!program.info.buffers[i].written) continue;
+			const auto desc = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
+			(void)invalidate_unproven(desc.Base48());
+		}
+	}
 	if (!program.info.has_bitwise_xor) {
 		for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
 			const auto& resource = program.info.buffers[i];
 			if (resource.written) {
 				const auto descriptor =
 				    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
-				(void)cache.ClearMeta(descriptor.Base48());
+				if (!invalidate_unproven(descriptor.Base48()))
+					(void)cache.ClearMeta(descriptor.Base48());
 			}
 		}
 	}

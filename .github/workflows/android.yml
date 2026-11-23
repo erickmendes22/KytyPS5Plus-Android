@@ -308,6 +308,7 @@ jobs:
             saros_host_bank_placement_test
             demons_full_frame_diff_test
             demons_depth_full_coverage_test
+            demons_htile_meta_write_test
             demons_sampled_depth_metadata_test
             demons_htile_load_decision_test
             demons_sample_htile_clear_test
