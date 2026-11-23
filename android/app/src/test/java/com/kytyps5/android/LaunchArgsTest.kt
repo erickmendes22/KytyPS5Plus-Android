@@ -309,6 +309,11 @@ class LaunchArgsTest {
         assertEquals("KYTY_DS_COLOR_PROBE_TARGETED=0",
             normalEnv.last { it.startsWith("KYTY_DS_COLOR_PROBE_TARGETED=") })
         assertEquals("KYTY_DS_FRAME_TRACE=1", normalEnv.last { it.startsWith("KYTY_DS_FRAME_TRACE=") })
+        val pc = DemonsSoulsDiagnosticArgs.append(base, fullPixelTrace = false, perFaceBias = false, pcMrt = true)
+        val pcEnv = pc.indices.filter { pc[it] == "--env" }.map { pc[it + 1] }
+        assertEquals(1, normalEnv.count { it == "KYTY_DS_GUEST_COLOR_TARGETS=1" })
+        assertEquals(0, pcEnv.count { it == "KYTY_DS_GUEST_COLOR_TARGETS=1" })
+        assertEquals(1, pcEnv.count { it == "KYTY_DS_GUEST_COLOR_TARGETS=0" })
         val traced = DemonsSoulsDiagnosticArgs.append(base, fullPixelTrace = true, perFaceBias = true)
         val env = traced.indices.filter { traced[it] == "--env" }.map { traced[it + 1] }
         assertEquals("KYTY_DS_COLOR_PROBE=1", env.last { it.startsWith("KYTY_DS_COLOR_PROBE=") })

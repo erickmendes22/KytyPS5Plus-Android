@@ -101,6 +101,11 @@ class GameSettingsDialog(
         )).apply {
             setSelection(current.demonsSoulsDepthEqualRelax.coerceIn(0, 3))
         }
+        val dsPcMrt = Switch(activity).apply {
+            text = "Experimental: PC shader-selected color attachments"
+            textSize = 14f
+            isChecked = current.demonsSoulsPcMrt
+        }
         val dsPcDpp = Switch(activity).apply {
             text = "Experimental: PC-style lighting DPP (three compute shaders)"
             textSize = 14f
@@ -183,6 +188,8 @@ class GameSettingsDialog(
                 addView(label("Demon's Souls: depth prepass / material EQUAL compatibility (PC reference; experimental)", bold = true))
                 addView(label("Default 0 and mode 3 retain original EQUAL. Modes 1/2 are optional experiments; do not affect shadows.", secondary = true))
                 addView(dsDepthEqual)
+                addView(dsPcMrt)
+                addView(label("Off by default. Uses the PC renderer's actual shader export mask instead of binding every guest color target; tests whether the extra attachments clear or overwrite deferred materials.", secondary = true))
                 addView(dsPcDpp)
                 addView(label("Off by default. Replaces native quad DPP and the inactive-source override in the ray producer, relight and probe projector with the original PC-style path; no global shader changes.", secondary = true))
                 addView(dsPixelTrace)
@@ -243,6 +250,7 @@ class GameSettingsDialog(
                         demonsSoulsPixelTrace = titleId.equals("PPSA01341", ignoreCase = true) && dsPixelTrace.isChecked,
                         demonsSoulsPerFaceBias = titleId.equals("PPSA01341", ignoreCase = true) && dsFaceBias.isChecked,
                         demonsSoulsPcDpp = titleId.equals("PPSA01341", ignoreCase = true) && dsPcDpp.isChecked,
+                        demonsSoulsPcMrt = titleId.equals("PPSA01341", ignoreCase = true) && dsPcMrt.isChecked,
                         demonsSoulsDepthEqualRelax = if (titleId.equals("PPSA01341", ignoreCase = true)) dsDepthEqual.selectedItemPosition else 0,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },

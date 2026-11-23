@@ -39,7 +39,14 @@ static_assert(Libs::Graphics::DemonsPcDppPolicy::CaptureActive(17, true));
 #include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
 namespace {
 using namespace Libs::Graphics::DemonsRayCopyPolicy;
-constexpr uint32_t map_fixture[] = {4445, 4445, 12448, 4445, 0xffffffu, 4445};
+constexpr uint32_t map_fixture[] = {4445, 4445, 0x010030a0u, 0x0100115du, 0xffffffu, 0x0200115du};
+static_assert(Destination(4445u) == NoRow);
+static_assert(Destination(0xffffffu) == NoRow);
+static_assert(Destination(0x0100115du) == 4445u);
+static_assert(Destination(0x0200115du) == 4445u);
+static_assert(Destination(0x01000000u) == 0u);
+static_assert(Destination(0x01016800u) == NoRow);
+static_assert(Destination(0x01200000u) == 0u); // byte offset wraps at 2^32
 static_assert(ActiveRows(2, 11863, 11865, 186) == 11863);
 static_assert(ActiveRows(2, 10353, 10355, 162) == 10353);
 static_assert(ActiveRows(2, 100, 6, 1) == 4);

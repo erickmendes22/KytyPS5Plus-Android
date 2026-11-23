@@ -698,6 +698,7 @@ class MainActivity : Activity() {
             // helper rather than adding duplicate --env keys here.
             args = DemonsSoulsDiagnosticArgs.append(
                 args, perGame.demonsSoulsPixelTrace, perGame.demonsSoulsPerFaceBias,
+                perGame.demonsSoulsPcMrt,
             )
             args += arrayOf("--env",
                 "KYTY_DS_DEPTH_EQUAL_RELAX=" + perGame.demonsSoulsDepthEqualRelax.coerceIn(0, 3))

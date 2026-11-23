@@ -2512,12 +2512,29 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			    {"map_guest", bindings.buffer_sources[0].address}, {"payload_guest", bindings.buffer_sources[1].address},
 			    {"payload_bytes", bindings.buffer_sources[1].size}};
 			if (map.size() != mapping.NumRecords()) map.clear();
-			// Ensure at least two destinations actually written by this dispatch
-			// are sampled, even when none of the previous consumer probes is active.
-			for (uint32_t i = map_base; !map.empty() && i < uint64_t{map_base} + active_rows && probes.size() < 6; ++i) {
-				const auto id = map[i];
-				if (id < ProbeCount && std::find(probes.begin(), probes.end(), id) == probes.end())
-					probes.push_back(id);
+			// The captured SPIR-V (IDs 93/94, 104/149) explicitly tests
+			// 0xffffff < raw, then forms the wrapped 32-bit byte address.
+			// Retain the actual map to make later CPU replays auditable.
+			if (!map.empty()) {
+				uint32_t flagged = 0, destinations = 0;
+				const auto end = std::min<uint64_t>(map.size(), uint64_t{map_base} + active_rows);
+				for (uint32_t i = map_base; i < end; ++i) {
+					flagged += map[i] > 0xffffffu;
+					const auto id = Destination(map[i]);
+					if (id == NoRow) continue;
+					++destinations;
+					if (probes.size() < 6 && std::find(probes.begin(), probes.end(), id) == probes.end())
+						probes.push_back(id);
+				}
+				for (uint64_t i = end; i > map_base && probes.size() < 8;) {
+					const auto id = Destination(map[--i]);
+					if (id != NoRow && std::find(probes.begin(), probes.end(), id) == probes.end())
+						probes.push_back(id);
+				}
+				source_report["map_words"] = map;
+				source_report["flagged_rows"] = flagged;
+				source_report["valid_destination_rows"] = destinations;
+				source_report["decode"] = "raw_gt_ffffff_wrapped_u32_byte_offset";
 			}
 		}
 	}
@@ -2587,6 +2604,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 					    (bindings.shader_data[off_word] >> 8u) & 255u : 0u;
 					const uint64_t byte = uint64_t{match.row} * bytes_per_probe;
 					entry["source_row"] = match.row;
+					entry["raw_map_word"] = map[match.row];
 					entry["source_guest"] = input.address + byte;
 					if (view.buffer && view.range != VK_WHOLE_SIZE &&
 					    byte <= input.size && bytes_per_probe <= input.size - byte &&

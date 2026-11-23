@@ -37,6 +37,7 @@ data class GameSettings(
     val demonsSoulsPixelTrace: Boolean = false,
     val demonsSoulsPerFaceBias: Boolean = false,
     val demonsSoulsPcDpp: Boolean = false,
+    val demonsSoulsPcMrt: Boolean = false,
     val demonsSoulsDepthEqualRelax: Int = 0, // 0=guest, 1=LE (optional), 2=GE (optional), 3=guest
 ) {
     fun toJson(): String = JSONObject()
@@ -58,6 +59,7 @@ data class GameSettings(
         .put("demonsSoulsPixelTrace", demonsSoulsPixelTrace)
         .put("demonsSoulsPerFaceBias", demonsSoulsPerFaceBias)
         .put("demonsSoulsPcDpp", demonsSoulsPcDpp)
+        .put("demonsSoulsPcMrt", demonsSoulsPcMrt)
         .put("demonsSoulsDepthEqualRelax", demonsSoulsDepthEqualRelax.coerceIn(0, 3))
         .toString()
 
@@ -89,6 +91,7 @@ data class GameSettings(
                     demonsSoulsPixelTrace = obj.optBoolean("demonsSoulsPixelTrace", false),
                     demonsSoulsPerFaceBias = obj.optBoolean("demonsSoulsPerFaceBias", false),
                     demonsSoulsPcDpp = obj.optBoolean("demonsSoulsPcDpp", false),
+                    demonsSoulsPcMrt = obj.optBoolean("demonsSoulsPcMrt", false),
                     demonsSoulsDepthEqualRelax = obj.optInt("demonsSoulsDepthEqualRelax", 0).coerceIn(0, 3),
                 )
             } catch (e: JSONException) {

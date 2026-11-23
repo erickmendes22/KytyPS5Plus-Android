@@ -3394,6 +3394,96 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			}
 		}
 	}
+	// One post-transition frame: measure the REAL depth and material draws,
+	// rather than replaying the first draw of each of five chosen PS hashes.
+	// Each query brackets the original draw; one pool, no extra draw, no
+	// forced depth comparison, no per-draw GPU/CPU synchronization.
+	struct DsGeometryFrame {
+		vk::QueryPool pool {};
+		int32_t frame = -1;
+		bool done = false;
+		nlohmann::json rows = nlohmann::json::array();
+	};
+	static DsGeometryFrame geometry;
+	constexpr uint32_t geometry_capacity = 192;
+	uint32_t geometry_query = UINT32_MAX;
+	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
+	    graphics.occlusion_query_precise_enabled && !geometry.done) {
+		if (geometry.pool && geometry.frame != ds_gbuffer_frame && !geometry.rows.empty()) {
+			std::vector<uint64_t> result(geometry.rows.size() * 2);
+			const auto status = graphics.device.getQueryPoolResults(
+			    geometry.pool, 0, static_cast<uint32_t>(geometry.rows.size()),
+			    result.size() * sizeof(uint64_t), result.data(), 2 * sizeof(uint64_t),
+			    vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWithAvailability);
+			bool ready = status == vk::Result::eSuccess;
+			for (size_t i = 0; ready && i < geometry.rows.size(); ++i)
+				ready = result[2*i+1] != 0;
+			if (ready) {
+				for (size_t i = 0; i < geometry.rows.size(); ++i)
+					geometry.rows[i]["passed_samples"] = result[2*i];
+				const auto folder = Config::GetShaderDumpFolder() / "queue-state";
+				std::error_code ec;
+				std::filesystem::create_directories(folder, ec);
+				const auto name = fmt::format("ds_geometry_coverage_f{}.json", geometry.frame);
+				std::ofstream file(folder / name, std::ios::trunc);
+				if (file) file << nlohmann::json{{"frame", geometry.frame}, {"draws", geometry.rows}};
+				file.close();
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_GEOMETRY_COVERAGE] frame={} draws={} file={} saved={}\n",
+				    geometry.frame, geometry.rows.size(), name, file.good()));
+				graphics.device.destroyQueryPool(geometry.pool, nullptr);
+				geometry.pool = {};
+				geometry.done = true;
+			}
+		}
+		const bool relevant_depth = state.depth_info.image_id &&
+		    state.depth_info.desc.info.data.address == 0x282b60000ull;
+		const auto colors = std::span{state.color_info, state.color_count};
+		const auto gbuffer = std::ranges::find_if(colors, [](const auto& color) {
+			return color.image_id && color.desc.info.data.address == DemonsQueueProbe::GBufferAddress &&
+			       color.desc.view_info.base_layer == 0 && color.desc.view_info.base_level == 0;
+		});
+		const bool relevant = relevant_depth || gbuffer != colors.end();
+		if (!geometry.pool && !geometry.done && relevant &&
+		    DemonsAdaptiveCapture::Current().PostTransitionDarkDue(ds_gbuffer_frame)) {
+			vk::QueryPoolCreateInfo info {};
+			info.queryType = vk::QueryType::eOcclusion;
+			info.queryCount = geometry_capacity;
+			if (graphics.device.createQueryPool(&info, nullptr, &geometry.pool) == vk::Result::eSuccess) {
+				geometry.frame = ds_gbuffer_frame;
+				m_context.GetCommandScheduler().EndRendering(PassEnd::Buffer);
+				buffer.Handle().resetQueryPool(geometry.pool, 0, geometry_capacity);
+			} else { geometry.pool = {}; geometry.done = true; }
+		}
+		if (geometry.pool && geometry.frame == ds_gbuffer_frame && relevant &&
+		    geometry.rows.size() < geometry_capacity) {
+			geometry_query = static_cast<uint32_t>(geometry.rows.size());
+			const auto& hw = buffer.GetRegisters();
+			const auto shader_mask = hw.GetShaderRegisters().m_cbShaderMask;
+			const auto target_mask = hw.GetRenderTargetMask();
+			const auto* vs = state.vertex_info[0].stage.program;
+			const auto* ps = state.ps_active ? state.ps_input_info.stage.program : nullptr;
+			geometry.rows.push_back({
+			    {"submit", submit_id}, {"vs", fmt::format("{:016x}", vs ? vs->shader_hash : 0ull)},
+			    {"ps", fmt::format("{:016x}", ps ? ps->shader_hash : 0ull)},
+			    {"index_guest", index_source.address}, {"index_bytes", index_source.size},
+			    {"index_count_or_records", draw.index_count}, {"instances", draw.instance_count},
+			    {"vertex_offset", emit.vertex_offset}, {"first_vertex", emit.first_vertex},
+			    {"first_instance", emit.first_instance}, {"indirect", indirect != nullptr},
+			    {"indirect_guest", indirect ? indirect->args_addr : 0ull},
+			    {"mesh", mesh_active}, {"depth_target", relevant_depth},
+			    {"depth_test", state.depth_info.depth_test_enable}, {"depth_write", state.depth_info.depth_write_enable},
+			    {"depth_compare", static_cast<uint32_t>(state.depth_info.depth_compare_op)},
+			    {"depth_load_clear", state.depth_info.depth_load_clear_enable},
+			    {"stencil_test", state.depth_info.stencil_test_enable},
+			    {"gbuffer_layer0", gbuffer != colors.end()},
+			    {"gbuffer_write_mask", gbuffer != colors.end() ?
+			        GuestColorWriteMask(target_mask, shader_mask, gbuffer->target_slot) : 0u},
+			    {"gbuffer_load_clear", gbuffer != colors.end() ?
+			        rendering.color_attachments[gbuffer->target_slot].is_clear : false},
+			    {"target_mask", target_mask}, {"shader_mask", shader_mask}});
+		}
+	}
 	LogDrawPhase(draw.Name(), "BeginRendering");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
@@ -3574,6 +3664,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    state.depth_info.image_id && state.depth_info.depth_write_enable &&
 		    state.color_count == 0 && !state.depth_info.stencil_test_enable &&
 		    !mesh_active && !mesh_emulated && !shader_write_stages && !image_side_effects;
+		if (geometry_query != UINT32_MAX)
+			vk_buffer.beginQuery(geometry.pool, geometry_query, vk::QueryControlFlagBits::ePrecise);
 		if (split_bias) {
 			const auto draw_face = [&](bool front) {
 				const bool active = front ? face_mode.poly_offset_front_enable
@@ -3609,6 +3701,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		} else {
 			issue_draw();
 		}
+		if (geometry_query != UINT32_MAX)
+			vk_buffer.endQuery(geometry.pool, geometry_query);
 	}
 
 	if (draw_marks) {

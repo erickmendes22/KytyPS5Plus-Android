@@ -257,6 +257,8 @@ object Diagnostics {
                             (subdir == "guest-shaders" ||
                                 (subdir == "queue-state" &&
                                     (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+(_t[0-9]+)?\\.json")) ||
+                                     file.name.matches(Regex("ds_geometry_coverage_f[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_depth_prepass_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark|post_transition)_f[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark|post_transition)_f[0-9]+_s[0-9]+(_ps[0-9a-f]{16})?\\.json")))) ||
@@ -287,7 +289,9 @@ object Diagnostics {
                     // files. Give the producer captures their own slots so
                     // the ZIP actually contains the data cited by the log.
                     val newest = files.sortedByDescending { it.lastModified() }
-                    val producer = newest.filter { it.name.startsWith("ds_ray_producer_f") }.take(16) +
+                    val producer = newest.filter { it.name.startsWith("ds_geometry_coverage_f") }.take(1) +
+                        newest.filter { it.name.startsWith("ds_depth_prepass_f") }.take(4) +
+                        newest.filter { it.name.startsWith("ds_ray_producer_f") }.take(16) +
                         newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
                         .take(18) +
                         newest.filter { it.name.startsWith("cs_bcbcc6ba1e68c974_ray_hits_") }.take(18) +
