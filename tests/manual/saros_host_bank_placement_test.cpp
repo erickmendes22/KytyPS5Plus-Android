@@ -27,6 +27,16 @@ int main(){
     for(const auto l:low)assert(!Overlap(host,high.size,l.guest,l.size));
   }
   assert(!Select(0x90c0000000ull,192ull<<20,[](uint64_t,uint64_t)->uint64_t{return 0;}));
+  // Regression: first bank selected when the future low guest mapping is
+  // not yet present in m_free, then a nonfixed guest allocation arrives.
+  // The kernel VA finder must advance past the entire high host view.
+  const auto shift=28*GiB;
+  const auto high0=(ObservedHighSpans[0].guest&FoldMask)+shift;
+  assert(high0==0x17c0000000ull);
+  assert(LowAllocatorSkipEnd(high0,0x30000ull,shift)==high0+(192ull<<20));
+  assert(LowAllocatorSkipEnd(high0-0x4000ull,0x10000ull,shift)==high0+(192ull<<20));
+  assert(LowAllocatorSkipEnd(high0+(192ull<<20),0x10000ull,shift)==0);
+  assert(LowAllocatorSkipEnd(0x17c0000000ull,0x30000ull,0)==0);
   // Even if no currently allocated host page conflicts, the future
   // low-guest 0x1800000000 map MUST forbid a 29 GiB high-bank choice.
   const auto empty_host=[](uint64_t,uint64_t)->uint64_t{return 1;};

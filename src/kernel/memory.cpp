@@ -990,9 +990,29 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 			if (candidate == 0) {
 				return uint64_t {0};
 			}
-			// Saros uses sparse high-guest mappings. Blanket alias exclusions
-			// reject real low guest requests: let actual host mapping ownership
-			// checks in GuestAddressSpace decide collisions instead.
+			// A high guest bank is selected when UE reserves its huge VA
+			// range, before later *non-fixed* low direct/flexible allocations
+			// are placed. Skipping those low candidates proactively avoids
+			// folding the high fixed maps onto memory they will later own.
+			// A fixed low mapping is never relocated by this allocator.
+#if defined(__ANDROID__) && KYTY_HOST_ARM64
+			if (g_keep_fold_alias_free && Kernel::AddressFold::HostShift() != 0) {
+				const auto next = Kernel::SarosHostBank::LowAllocatorSkipEnd(
+				    candidate, size, Kernel::AddressFold::HostShift());
+				if (next != 0) {
+					if (next <= current || next >= end) return uint64_t {0};
+					static std::atomic<uint32_t> skips {0};
+					const auto seq = skips.fetch_add(1u, std::memory_order_relaxed);
+					if (seq < 24u || (seq % 256u) == 0u)
+						LOGF("[SAROS_LOW_VA_SKIP] proposed=0x%016" PRIx64
+						     " bytes=0x%016" PRIx64 " shift=0x%016" PRIx64
+						     " next=0x%016" PRIx64 " seq=%u\n",
+						     candidate, size, Kernel::AddressFold::HostShift(), next, seq);
+					current = next;
+					continue;
+				}
+			}
+#endif
 			VirtualRanges::Range overlap {};
 			if (!g_virtual_ranges->QueryOverlap(candidate, size, &overlap)) {
 				return candidate;

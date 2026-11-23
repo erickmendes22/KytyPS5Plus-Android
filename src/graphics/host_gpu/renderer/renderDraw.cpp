@@ -2717,6 +2717,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// bright/onset/dark phase; no absolute frame number is assumed.
 	std::optional<std::array<uint32_t, 64>> ds_depth_prepass_before {};
 	DsDepthFullSnapshot ds_depth_full_before {};
+	DsDepthFullSnapshot ds_material_depth_full_before {};
 	RenderDepthInfo ds_depth_prepass_target {};
 	int ds_depth_prepass_phase = -1;
 	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
@@ -2860,6 +2861,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 						if(ds_live_material_capture)
 							ds_live_material_full_before = SnapshotDsAlbedo(
 							    m_context, ds_live_material_target);
+						// The first low-coverage material pass needs one
+						// whole-D32 observation after the earlier HTile
+						// clear, not another 64-point grid.
+						ds_material_depth_full_before = SnapshotDsDepthFull(
+						    m_context, ds_live_material_depth);
 					}
 				}
 			}
@@ -3487,6 +3493,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"changed", changed}, {"depth_test", state.depth_info.depth_test_enable},
 			    {"depth_write", state.depth_info.depth_write_enable},
 			    {"depth_compare", static_cast<uint32_t>(state.depth_info.depth_compare_op)},
+			    {"vertex_shader", fmt::format("{:016x}",
+			         state.vertex_info[0].stage.program
+			         ? state.vertex_info[0].stage.program->shader_hash : 0ull)},
+			    {"pixel_shader", fmt::format("{:016x}", shader)},
+			    {"stencil_test", state.depth_info.stencil_test_enable},
+			    {"stencil_compare", static_cast<uint32_t>(state.depth_info.stencil_front.compareOp)},
 			    {"load_clear", state.depth_info.depth_load_clear_enable},
 			    {"guest_depth_clear", state.depth_info.depth_clear_enable},
 			    {"clear_depth_value", state.depth_info.depth_clear_value},
@@ -3510,7 +3522,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    "[DS_DEPTH_PREPASS] frame={} phase={} target=0x{:x} "
 			    "depth_samples={}/64 -> {}/64 changed={} depth_test={} depth_write={} "
 			    "load_clear={} guest_clear={} htile_pending={} fill_known={} fill=0x{:08x} "
-			    "meta_depth={} meta_stencil={} uniform={} clear_depth={} file={} saved={}\n",
+			    "meta_depth={} meta_stencil={} uniform={} clear_depth={} "
+			    "compare={} vs=0x{:016x} ps=0x{:016x} "
+			    "indices={} instances={} file={} saved={}\n",
 			    ds_gbuffer_frame, ds_depth_prepass_phase,
 			    ds_depth_prepass_target.desc.info.data.address,
 			    before_nonzero, after_nonzero, changed,
@@ -3520,6 +3534,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    state.depth_info.trace_meta_known, state.depth_info.trace_meta_fill,
 			    state.depth_info.trace_meta_depth_clear, state.depth_info.trace_meta_stencil_clear,
 			    state.depth_info.trace_meta_uniform, state.depth_info.depth_clear_value,
+			    static_cast<uint32_t>(state.depth_info.depth_compare_op),
+			    state.vertex_info[0].stage.program ? state.vertex_info[0].stage.program->shader_hash : 0ull,
+			    shader, draw.index_count, draw.instance_count,
 			    name, file.good()));
 		} else {
 			Log::WriteToConsoleAndLog(fmt::format(
@@ -3528,6 +3545,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 	}
 	if (ds_live_material_capture) {
+		const auto material_depth_full_after = ds_material_depth_full_before.bits.empty()
+		    ? DsDepthFullSnapshot {} : SnapshotDsDepthFull(m_context, ds_live_material_depth);
+		const auto material_depth_diff = CompareDepthFull(
+		    ds_material_depth_full_before.bits, material_depth_full_after.bits,
+		    ds_material_depth_full_before.width, ds_material_depth_full_before.height);
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[DS_MATERIAL_DEPTH_COVERAGE] frame={} phase={} before={} after={} "
+		    "changed={} valid={}\n", ds_gbuffer_frame, ds_live_material_phase,
+		    material_depth_diff.filled_before, material_depth_diff.filled_after,
+		    material_depth_diff.changed, material_depth_diff.valid));
 		const auto full_after = ds_live_material_full_before.words.empty()
 		    ? DsAlbedoSnapshot {} : SnapshotDsAlbedo(m_context, ds_live_material_target);
 		const auto full_diff = CompareMaterialFullFrame(
@@ -3583,6 +3610,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"depth_zero_before", depth_zero_before},
 			    {"depth_zero_after", depth_zero_after},
 			    {"depth_changed", depth_changed},
+			    {"material_depth_full", {
+			        {"valid", material_depth_diff.valid},
+			        {"filled_before", material_depth_diff.filled_before},
+			        {"filled_after", material_depth_diff.filled_after},
+			        {"changed", material_depth_diff.changed}
+			    }},
 			    {"full_frame", {
 			        {"valid", full_diff.valid}, {"width", ds_live_material_full_before.width},
 			        {"height", ds_live_material_full_before.height},

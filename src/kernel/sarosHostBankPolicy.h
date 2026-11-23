@@ -25,6 +25,22 @@ constexpr std::array<Span,4> ObservedLowSpans {{{
 constexpr bool Overlaps(uint64_t a,uint64_t n,uint64_t b,uint64_t m) {
     return n && m && a < b+m && b < a+n;
 }
+// Find the end of a future high-guest host bank that overlaps a
+// *non-fixed* low-guest allocation proposal. Returning this end allows the
+// guest VA allocator to move to the next free range, instead of using a
+// low guest address whose host backing would collide with a later high
+// direct mapping. Fixed guest mappings MUST NOT be silently moved.
+constexpr uint64_t LowAllocatorSkipEnd(uint64_t proposed,uint64_t bytes,uint64_t shift) {
+  if (!shift || !bytes || proposed >= FoldBoundary ||
+      proposed > UINT64_MAX-bytes || proposed+bytes > FoldBoundary) return 0;
+  uint64_t end = 0;
+  for(const auto high: ObservedHighSpans) {
+    const uint64_t host=(high.guest & FoldMask)+shift;
+    if (Overlaps(proposed,bytes,host,high.size))
+      end=std::max(end,host+high.size);
+  }
+  return end;
+}
 template<class PhysicalFreeMargin>
 std::optional<Placement> Select(uint64_t guest,uint64_t size,PhysicalFreeMargin free) {
   if (guest<FoldBoundary || guest>=2*FoldBoundary || !size || size>2*FoldBoundary-guest) return {};
