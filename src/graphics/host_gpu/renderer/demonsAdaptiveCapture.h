@@ -267,12 +267,16 @@ public:
 	// Capture the producer's LAST active update while it is still running,
 	// rather than waiting for an event during which the producer is idle.
 	bool FollowupDue(int32_t frame) const {
-		return m_onset_captured && !m_followup_captured &&
+		return m_onset_captured && m_followup_count < 3 &&
 		    m_onset_frame >= 0 && frame >= m_onset_frame + 24 &&
-		    int64_t{frame} - m_onset_frame <= 144;
+		    int64_t{frame} - m_onset_frame <= 144 &&
+		    (m_last_followup < 0 || frame - m_last_followup >= 12);
 	}
 	void NoteFollowup(int32_t frame) {
-		if (FollowupDue(frame)) m_followup_captured = true;
+		if (FollowupDue(frame)) {
+			++m_followup_count;
+			m_last_followup = frame;
+		}
 	}
 	void NoteCaptured(int32_t frame, bool onset, bool late) {
 		if (!Due(frame, onset, late)) return;
@@ -286,7 +290,8 @@ public:
 	}
 private:
 	bool m_onset_captured = false;
-	bool m_followup_captured = false;
+	uint32_t m_followup_count = 0;
+	int32_t m_last_followup = -1;
 	int32_t m_onset_frame = -1;
 	uint32_t m_dark_count = 0;
 	int32_t m_last_dark = -1;

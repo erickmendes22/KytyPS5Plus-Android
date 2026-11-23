@@ -120,7 +120,12 @@ int main(int argc, char** argv) {
 		assert(!producer.FollowupDue(330));
 		assert(producer.FollowupDue(335));
 		producer.NoteFollowup(335);
-		assert(!producer.FollowupDue(359));
+		assert(!producer.FollowupDue(340));
+		assert(producer.FollowupDue(359));
+		producer.NoteFollowup(359);
+		assert(producer.FollowupDue(383));
+		producer.NoteFollowup(383);
+		assert(!producer.FollowupDue(407));
 		for (const int frame : {499, 523, 547}) {
 			producer.ObserveFrame(frame);
 			assert(producer.Due(frame, false, true));
