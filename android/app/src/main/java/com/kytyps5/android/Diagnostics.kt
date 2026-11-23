@@ -250,8 +250,8 @@ object Diagnostics {
                             (subdir == "guest-shaders" ||
                                 (subdir == "queue-state" &&
                                     (file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
-                                     file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark)_f[0-9]+\\.json")) ||
-                                     file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark)_f[0-9]+_s[0-9]+(_ps[0-9a-f]{16})?\\.json")))) ||
+                                     file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark|post_transition)_f[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark|post_transition)_f[0-9]+_s[0-9]+(_ps[0-9a-f]{16})?\\.json")))) ||
                                 watched.any { hash -> file.name.contains("_${hash}_") }) &&
                             (when (subdir) {
                                 "spv" -> file.extension == "spv"
@@ -329,12 +329,12 @@ object Diagnostics {
                 "A DS_QUEUE_TILES record with radiance_paired=true shares its frame with an atlas or radiance capture. " +
                 "Join DS_POST_PASS, DS_POST_BINDING and DS_POST_TARGET by light_frame and pass. " +
                 "ds_gbuffer_material_* captures the same 8x8 fixed R32_UINT grid before and " +
-                "after a verified material draw in bright/onset/dark phases, with color masks, " +
+                "after a verified material draw in bright/onset/dark/post-transition candidate phases, with color masks, " +
                 "depth/stencil, exact D32 depth samples and load state; shader hashes are part of " +
                 "the filename so materials sharing a submit cannot overwrite one another. " +
                 "ds_light_bridge_* captures the same 8x8 normalized grid of R32_UINT " +
                 "G-buffer albedo and R16G16B16A16 HDR immediately after queue 33, " +
-                "in observed bright, onset and paired-dark phases. " +
+                "in observed bright, onset, paired-dark and post-transition candidate phases. " +
                 "ds_scene_writer_f*_p*.json captures the 0x17defa... scene writer at " +
                 "observed bright, first dark onset and paired dark phases, with fixed " +
                 "64-point pre/post grids and shader buffer bindings.\n"

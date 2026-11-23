@@ -2377,9 +2377,9 @@ static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
 
 // Scene HDR and its deferred G-buffer sampled at precisely the SAME
 // normalized 8x8 coordinates, immediately after queue 33 executes.
-// Only the first observed bright, dark-onset and paired-dark frames
-// qualify; unlike the former post-process sweep, this targets one
-// compute shader and two real image bindings, never a guessed frame.
+// Capture the early fade separately from the post-transition dark candidate.
+// Exactly one bridge per phase; it pairs G-buffer and HDR at the same
+// positions, and never changes a draw, dispatch, or shader.
 static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings& bindings,
                                  uint64_t submit, const std::array<uint32_t, 3>& groups,
                                  bool groups_valid) {
@@ -2389,14 +2389,18 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	const int32_t frame = context.GetGpu().GetFrameNum();
 	const auto& gate = DemonsAdaptiveCapture::Current();
-	const char* phase = gate.DarkOnsetDue(frame) ? "onset"
+	const char* phase = gate.PostTransitionDarkDue(frame) && gate.CapturedFrame(frame)
+	    ? "post_transition" : gate.DarkOnsetDue(frame) ? "onset"
 	    : gate.BrightSceneActive(frame) ? "bright"
 	    : gate.CapturedFrame(frame) ? "paired_dark" : nullptr;
 	if (!phase) return;
-	static bool captured_bright = false, captured_onset = false, captured_dark = false;
-	bool& captured = phase[0] == 'b' ? captured_bright
-	    : phase[0] == 'o' ? captured_onset : captured_dark;
-	if (captured) return;
+	static bool captured_bright = false, captured_onset = false;
+	static bool captured_dark = false, captured_post_transition = false;
+	bool* captured = phase[0] == 'b' ? &captured_bright
+	    : phase[0] == 'o' ? &captured_onset
+	    : phase[0] == 'p' && phase[1] == 'o' ? &captured_post_transition
+	    : &captured_dark;
+	if (*captured) return;
 
 	const auto find_image = [&bindings](uint64_t addr, TextureCache::BindingType kind) {
 		return std::ranges::find_if(bindings.images, [addr, kind](const auto& b) {
@@ -2505,7 +2509,7 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	file << output;
 	file.close();
 	if (!file.good()) return;
-	captured = true;
+	*captured = true;
 	Log::WriteToConsoleAndLog(fmt::format(
 	    "[DS_LIGHT_BRIDGE] phase={} frame={} submit={} gbuffer_colored={}/64 "
 	    "hdr_lit={}/64 hdr_mean={:.8f} workgroups={}/{}/{} file={}\n",
