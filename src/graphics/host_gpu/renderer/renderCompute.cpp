@@ -1370,6 +1370,23 @@ struct DsRelightMaskSample {
 };
 DsRelightMaskSample ds_relight_mask;
 
+// Producer activity is tracked independently of the bounded GPU snapshots.
+// A missing post-transition ray file then has an unambiguous explanation:
+// either the producer stopped submitting, or the capture gate did not fire.
+struct DsRayProducerActivity {
+	uint64_t observed = 0;
+	uint64_t valid = 0;
+	int32_t last_frame = -1;
+	uint64_t last_submit = 0;
+	uint64_t last_tick = 0;
+};
+DsRayProducerActivity ds_ray_producer_activity;
+struct DsRayProducerTargets {
+	std::array<uint32_t, 4> probes {902u, 6365u, 31618u, 34946u};
+	int32_t consumer_frame = -1;
+};
+DsRayProducerTargets ds_ray_producer_targets;
+
 bool DsCoefficientPairDue(int32_t frame) {
 	return frame >= 0 && (ds_last_coefficient_pair < 0 || frame < ds_last_coefficient_pair ||
 	                      int64_t{frame} - ds_last_coefficient_pair >= 240);
@@ -1549,6 +1566,15 @@ static nlohmann::json CaptureDsRelightInputs(RenderContext& context, const Prepa
 		slots.push_back(std::move(entry));
 	}
 	nlohmann::json report {{"slots", std::move(slots)}, {"probes", probes}, {"mask_words", masks}};
+	report["ray_producer_activity"] = {
+	    {"observed", ds_ray_producer_activity.observed},
+	    {"valid", ds_ray_producer_activity.valid},
+	    {"last_frame", ds_ray_producer_activity.last_frame},
+	    {"last_submit", ds_ray_producer_activity.last_submit},
+	    {"last_tick", ds_ray_producer_activity.last_tick},
+	    {"frames_since_last", ds_ray_producer_activity.last_frame < 0 ? -1 :
+	        frame - ds_ray_producer_activity.last_frame}
+	};
 	if (mask_slot < bindings.buffer_sources.size() && ds_relight_mask.frame == frame &&
 	    ds_relight_mask.address == bindings.buffer_sources[mask_slot].address && !masks.empty()) {
 		const auto* writer = FindDsBufferProducer(frame, ds_relight_mask.address,
@@ -1701,6 +1727,34 @@ static nlohmann::json CaptureDsRelightInputs(RenderContext& context, const Prepa
 		}
 		ray_summary.push_back(std::move(record));
 	}
+	// Pick two low-color and two fully colored CURRENT consumer probes.
+	// Static probe IDs from earlier sessions can refer to a different camera
+	// or room and made the frame-206 producer sample inconclusive.
+	std::array<uint32_t, 4> selected {};
+	size_t selected_count = 0;
+	const auto select = [&](int mode, size_t target_count) {
+		for (size_t z = 0; z < probes.size() && z < ray_summary.size() &&
+		     selected_count < target_count; ++z) {
+			if (!valid[z] || !ray_summary[z].is_object()) continue;
+			const auto color = ray_summary[z].value("albedo_nonzero", uint32_t{0});
+			if (mode == 0 && color > 160) continue;
+			if (mode == 1 && color < 240) continue;
+			if (std::find(selected.begin(), selected.begin() + selected_count, probes[z]) !=
+			    selected.begin() + selected_count) continue;
+			selected[selected_count++] = probes[z];
+		}
+	};
+	select(0, 2);
+	select(1, 4);
+	select(2, 4);
+	if (selected_count == selected.size()) {
+		ds_ray_producer_targets.probes = selected;
+		ds_ray_producer_targets.consumer_frame = frame;
+	}
+	report["next_ray_producer_targets"] = {
+	    {"probes", ds_ray_producer_targets.probes},
+	    {"selected_from_consumer_frame", ds_ray_producer_targets.consumer_frame}
+	};
 	report["ray_hits_by_z"] = std::move(ray_summary);
 	report["status"] = "captured";
 	return report;
@@ -2375,13 +2429,12 @@ static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
 	return words;
 }
 
-// Demon's Souls ray-hit provenance: the 766 capture found that probes 902,
-// 6365 have 109-128 colored hit words and ~zero SH, while 31618 / 34946 have
-// 256 colored words and lit SH. Snapshot these exact 256-ray records directly
-// AFTER their GPU writer (0x684e...) for a one-to-one comparison against the
-// already-exported relight consumer's ray_hits_f*.bin. This can prove whether
-// zeros originate at the producer or appear through later buffer-cache aliasing.
-// Never mutate guest data; record at most one successful bounded 8-KiB readback.
+// Demon's Souls ray-hit provenance: the 767 capture happened at frame 206,
+// BEFORE the gameplay lighting went dark. Track all producer dispatch activity
+// and capture only during the observed onset/post-transition phases. Pair with
+// the relight consumer's activity stamp and ray_hits_f*.bin to determine whether
+// a missing ray value was written by the producer or changed later. Bounded
+// readbacks only: at most one onset and three dark 8-KiB snapshots per session.
 static void CaptureDsRayHitProducer(RenderContext& context,
                                     const PreparedBindings& bindings,
                                     uint64_t submit, std::array<uint32_t, 3> groups,
@@ -2390,11 +2443,24 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 	if (program.shader_hash != 0x684e797dce67bb8eull ||
 	    !DsTraceEnabled() ||
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
-	static bool completed = false;
+	const auto frame = context.GetGpu().GetFrameNum();
+	const auto& gate = DemonsAdaptiveCapture::Current();
+	const bool onset = gate.DarkOnsetDue(frame);
+	const bool late = gate.PostTransitionDarkDue(frame);
+	const bool valid_dispatch = groups_valid && groups[0] && groups[1] && groups[2];
+	++ds_ray_producer_activity.observed;
+	if (valid_dispatch) {
+		++ds_ray_producer_activity.valid;
+		ds_ray_producer_activity.last_frame = frame;
+		ds_ray_producer_activity.last_submit = submit;
+		ds_ray_producer_activity.last_tick = context.GetCommandScheduler().CurrentTick();
+	}
+	static DemonsAdaptiveCapture::RayProducerCaptureGate capture_gate;
+	capture_gate.ObserveFrame(frame);
 	static uint32_t reports = 0;
-	if (completed) return;
+	if (!capture_gate.Due(frame, onset, late)) return;
 	const auto note = [&](const char* status, uint32_t slot, uint64_t address) {
-		if (reports++ >= 3) return;
+		if (reports++ >= 8) return;
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_RAY_PRODUCER] frame={} submit={} status={} slot={} guest=0x{:x} "
 		    "groups_valid={} x={} y={} z={} bvh={} has_address_writes={}\n",
@@ -2407,7 +2473,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		return;
 	}
 	constexpr uint64_t expected_bytes = 188743680ull;
-	constexpr std::array<uint32_t, 4> probes {902u, 6365u, 31618u, 34946u};
+	const auto probes = ds_ray_producer_targets.probes;
 	constexpr uint64_t words_per_probe = 256ull * 2ull;
 	constexpr uint64_t bytes_per_probe = words_per_probe * sizeof(uint32_t);
 	for (const auto& resource: program.info.buffers) {
@@ -2419,14 +2485,22 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		if (!source.address || source.size < expected_bytes ||
 		    !native.buffer || native.range == VK_WHOLE_SIZE) continue;
 		const uint64_t last_byte = (uint64_t{probes.back()} + 1ull) * bytes_per_probe;
-		if (last_byte > native.range || last_byte > source.size) {
+		const auto offset_word = program.bindings.memory_offset_dword + slot / 4u;
+		if (offset_word >= bindings.shader_data.size()) {
+			note("missing_buffer_adjustment", slot, source.address);
+			continue;
+		}
+		const uint64_t adjustment = (bindings.shader_data[offset_word] >>
+		    ((slot % 4u) * 8u)) & 255u;
+		if (adjustment > native.range || last_byte > native.range - adjustment ||
+		    last_byte > source.size) {
 			note("out_of_range", slot, source.address);
 			continue;
 		}
 		std::vector<uint32_t> words(probes.size() * words_per_probe);
 		std::array<vk::BufferCopy, probes.size()> copies {};
 		for (size_t i = 0; i < probes.size(); ++i) {
-			copies[i] = {native.offset + uint64_t{probes[i]} * bytes_per_probe,
+			copies[i] = {native.offset + adjustment + uint64_t{probes[i]} * bytes_per_probe,
 			             i * bytes_per_probe, bytes_per_probe};
 		}
 		if (!ReadDsGpuWordRanges(context, native.buffer, copies, words)) {
@@ -2462,14 +2536,18 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			note("create_directory_failed", slot, source.address);
 			return;
 		}
-		const auto frame = context.GetGpu().GetFrameNum();
 		const auto name = fmt::format("ds_ray_producer_f{}_s{}.json", frame, submit);
 		const nlohmann::json output {{"frame", frame}, {"submit", submit},
 		    {"shader", "684e797dce67bb8e"},
 		    {"groups", groups}, {"bvh", program.info.bvh},
 		    {"has_address_writes", program.has_address_writes},
 		    {"output_slot", slot}, {"output_guest", source.address},
-		    {"output_bytes", source.size}, {"producer_tick", context.GetCommandScheduler().CurrentTick()},
+		    {"output_bytes", source.size},
+		    {"source_adjustment", adjustment},
+		    {"phase", late ? "post_transition" : "dark_onset"},
+		    {"selected_from_consumer_frame", ds_ray_producer_targets.consumer_frame},
+		    {"producer_tick", context.GetCommandScheduler().CurrentTick()},
+		    {"producer_dispatches_seen", ds_ray_producer_activity.valid},
 		    {"entries", std::move(entries)}};
 		std::ofstream file(folder / name, std::ios::trunc);
 		if (!file) {
@@ -2482,8 +2560,8 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			note("write_failed", slot, source.address);
 			return;
 		}
-		completed = true;
-		note("captured", slot, source.address);
+		capture_gate.NoteCaptured(frame, onset, late);
+		note(late ? "captured_post_transition" : "captured_onset", slot, source.address);
 		return;
 	}
 	note("no_matching_written_ray_buffer", 0, 0);

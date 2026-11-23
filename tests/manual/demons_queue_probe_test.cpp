@@ -104,6 +104,31 @@ int main(int argc, char** argv) {
 		assert(!late.CaptureDue(550));
 		assert(!late.PostTransitionDarkDue(557)); // sample is stale
 	}
+	// 767 incorrectly exhausted its one-shot ray producer capture at frame
+	// 206, long before gameplay turned dark. The independent producer gate
+	// must never capture early, and must allow three distinct dark updates
+	// even after the onset was already sampled.
+	{
+		using Libs::Graphics::DemonsAdaptiveCapture::RayProducerCaptureGate;
+		RayProducerCaptureGate producer;
+		producer.ObserveFrame(206);
+		assert(!producer.Due(206, false, false));
+		producer.ObserveFrame(307);
+		assert(producer.Due(307, true, false));
+		producer.NoteCaptured(307, true, false);
+		assert(!producer.Due(308, true, false));
+		for (const int frame : {499, 523, 547}) {
+			producer.ObserveFrame(frame);
+			assert(producer.Due(frame, false, true));
+			producer.NoteCaptured(frame, false, true);
+			assert(!producer.Due(frame + 1, false, true));
+		}
+		assert(!producer.Due(600, false, true));
+		// Rebooting the guest within the same process re-arms a new session.
+		producer.ObserveFrame(1);
+		assert(producer.Due(2, true, false));
+		assert(producer.Due(3, false, true));
+	}
 	// Replay the full 762 real HDR observations. It ended at 553, so the
 	// original 192-frame / eight-sample gate could never fire. Verify
 	// the updated gate captures distinct material/atlas pairs BEFORE then,

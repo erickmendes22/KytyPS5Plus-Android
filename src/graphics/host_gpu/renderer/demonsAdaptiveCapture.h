@@ -249,6 +249,36 @@ private:
 	uint32_t m_late_capture_count = 0;
 };
 
+// Separate producer snapshots from the compositors' paired-capture budget.
+// A pre-gameplay producer dispatch must NEVER exhaust the dark-phase capture.
+class RayProducerCaptureGate {
+public:
+	void ObserveFrame(int32_t frame) {
+		if (m_last_frame >= 0 && frame < m_last_frame) *this = {};
+		m_last_frame = frame;
+	}
+	bool Due(int32_t frame, bool onset, bool late) const {
+		if (frame < 0) return false;
+		if (late) return m_dark_count < 3 &&
+		    (m_last_dark < 0 || (frame >= m_last_dark && frame - m_last_dark >= 24));
+		return onset && !m_onset_captured;
+	}
+	void NoteCaptured(int32_t frame, bool onset, bool late) {
+		if (!Due(frame, onset, late)) return;
+		if (late) {
+			++m_dark_count;
+			m_last_dark = frame;
+		} else {
+			m_onset_captured = true;
+		}
+	}
+private:
+	bool m_onset_captured = false;
+	uint32_t m_dark_count = 0;
+	int32_t m_last_dark = -1;
+	int32_t m_last_frame = -1;
+};
+
 inline Gate& Current() {
 	static Gate gate;
 	return gate;
