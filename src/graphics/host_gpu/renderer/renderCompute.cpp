@@ -2484,14 +2484,15 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		const auto& native = bindings.buffers[slot];
 		if (!source.address || source.size < expected_bytes ||
 		    !native.buffer || native.range == VK_WHOLE_SIZE) continue;
-		const uint64_t last_byte = (uint64_t{probes.back()} + 1ull) * bytes_per_probe;
+		const uint64_t last_byte = (uint64_t{*std::max_element(probes.begin(), probes.end())} +
+		    1ull) * bytes_per_probe;
 		const auto offset_word = program.bindings.memory_offset_dword + slot / 4u;
-		if (offset_word >= bindings.shader_data.size()) {
-			note("missing_buffer_adjustment", slot, source.address);
-			continue;
-		}
-		const uint64_t adjustment = (bindings.shader_data[offset_word] >>
-		    ((slot % 4u) * 8u)) & 255u;
+		const bool adjustment_known = offset_word < bindings.shader_data.size();
+		// Non-push-data shaders use zero offset. Do not reject a valid
+		// resource merely because there is no packed adjustment word.
+		const uint64_t adjustment = adjustment_known
+		    ? (bindings.shader_data[offset_word] >> ((slot % 4u) * 8u)) & 255u
+		    : 0ull;
 		if (adjustment > native.range || last_byte > native.range - adjustment ||
 		    last_byte > source.size) {
 			note("out_of_range", slot, source.address);
@@ -2544,6 +2545,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		    {"output_slot", slot}, {"output_guest", source.address},
 		    {"output_bytes", source.size},
 		    {"source_adjustment", adjustment},
+		    {"source_adjustment_known", adjustment_known},
 		    {"phase", late ? "post_transition" : "dark_onset"},
 		    {"selected_from_consumer_frame", ds_ray_producer_targets.consumer_frame},
 		    {"producer_tick", context.GetCommandScheduler().CurrentTick()},
