@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/renderDraw.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 #include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
+#include "graphics/host_gpu/renderer/demonsDepthEqualPolicy.h"
 #include "graphics/host_gpu/renderer/demonsMaterialFullFramePolicy.h"
 #include "graphics/host_gpu/renderer/demonsDepthFullCoveragePolicy.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
@@ -460,8 +461,11 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	dynamic_state.SetBlendConstants(blend_constants);
 	dynamic_state.SetDepthTestEnabled(depth.depth_test_enable);
 	dynamic_state.SetDepthWriteEnabled(depth.depth_write_enable);
-	// Automatic follows the guest comparison. Modes 1 and 2 are explicit
-	// compatibility overrides for the two observed material shaders.
+	// PC Kyty uses the guest EQUAL. Android's old AUTO did nothing and
+	// excluded two scene material programs which rasterized fragments but
+	// had zero EQUAL survivors. Limit the automatic workaround to their
+	// hashes, the known D32 target, read-only draws and always stencil.
+	// Launcher mode 3 restores the exact guest/PC comparison.
 	static const int ds_depth_equal_mode = [] {
 		const char* value = std::getenv("KYTY_DS_DEPTH_EQUAL_RELAX");
 		if (value == nullptr || value[1] != '\0' || value[0] < '0' || value[0] > '3')
@@ -469,21 +473,26 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 		return value[0] - '0';
 	}();
 	auto depth_compare = depth.depth_compare_op;
-	const bool ds_material_ps =
-	    pixel_shader_hash == 0xafd9334e8581cda2ull ||
-	    pixel_shader_hash == 0xe31a5473e9ee7503ull;
-	if ((ds_depth_equal_mode == 1 || ds_depth_equal_mode == 2) &&
-	    ds_material_ps && depth.depth_test_enable &&
-	    !depth.depth_write_enable && depth.desc.info.data.address == 0x282b60000ull &&
-	    depth_compare == vk::CompareOp::eEqual) {
-		depth_compare = ds_depth_equal_mode == 1 ? vk::CompareOp::eLessOrEqual
-		                                         : vk::CompareOp::eGreaterOrEqual;
-		static std::atomic_bool once {false};
-		if (!once.exchange(true))
+	const bool stencil_always = !depth.stencil_test_enable ||
+	    (depth.stencil_front.compareOp == vk::CompareOp::eAlways &&
+	     depth.stencil_back.compareOp == vk::CompareOp::eAlways);
+	const auto decision = DemonsDepthEqualPolicy::Select(
+	    ds_depth_equal_mode, pixel_shader_hash, depth.desc.info.data.address,
+	    depth.depth_test_enable, depth.depth_write_enable, stencil_always,
+	    static_cast<uint32_t>(depth_compare));
+	if (decision != DemonsDepthEqualPolicy::Decision::Guest) {
+		depth_compare = decision == DemonsDepthEqualPolicy::Decision::LessOrEqual
+		    ? vk::CompareOp::eLessOrEqual : vk::CompareOp::eGreaterOrEqual;
+		static std::atomic<uint32_t> logged {0};
+		const uint32_t bit = pixel_shader_hash == DemonsDepthEqualPolicy::SuspectScene0 ? 1u
+		    : pixel_shader_hash == DemonsDepthEqualPolicy::SuspectScene1 ? 2u : 4u;
+		if ((logged.fetch_or(bit) & bit) == 0u)
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "[DS_GBUFFER_DEPTH_EQUAL] material=0x{:x} original=EQUAL effective={} mode={}\\n",
-			    pixel_shader_hash, ds_depth_equal_mode == 1 ? "LESS_OR_EQUAL" : "GREATER_OR_EQUAL",
-			    ds_depth_equal_mode));
+			    "[DS_GBUFFER_DEPTH_EQUAL] material=0x{:016x} original=EQUAL effective={} mode={} "
+			    "scope=scenery_readonly depth=0x{:x}\n",
+			    pixel_shader_hash,
+			    decision == DemonsDepthEqualPolicy::Decision::LessOrEqual ? "LESS_OR_EQUAL" :
+			        "GREATER_OR_EQUAL", ds_depth_equal_mode, depth.desc.info.data.address));
 	}
 	dynamic_state.SetDepthCompareOp(depth_compare);
 	if (buffer.GetGraphics().optional_features.depth_bounds) {
@@ -3340,7 +3349,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// The first retains all rasterized fragments by replacing guest discard
 	// with a return; the second keeps the original discard. Both have zero
 	// color write masks. The real draw always uses its original pipeline.
-	constexpr uint32_t material_queries = 3;
+	constexpr uint32_t material_queries = 6;
 	std::array<vk::Pipeline, 2> material_pipelines {};
 	vk::QueryPool material_query_pool {};
 	const auto& graphics = m_context.GetGraphics();
@@ -3542,8 +3551,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			};
 			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFrontAndBack, 0);
 			measure(0, material_pipelines[0], vk::CompareOp::eAlways);
-			measure(1, material_pipelines[0], material_depth_compare);
-			measure(2, material_pipelines[1], material_depth_compare);
+			measure(1, material_pipelines[0], state.depth_info.depth_compare_op);
+			measure(2, material_pipelines[1], state.depth_info.depth_compare_op);
+			measure(3, material_pipelines[0], vk::CompareOp::eGreaterOrEqual);
+			measure(4, material_pipelines[0], vk::CompareOp::eLessOrEqual);
+			measure(5, material_pipelines[1], material_depth_compare);
 			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFront,
 			                              dynamic_state.stencil_front_write_mask);
 			vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eBack,
@@ -3729,20 +3741,27 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			material_query_status = vk::Result::eSuccess == result ? "ok" : "query_read_failed";
 			if (result == vk::Result::eSuccess) {
 				material_sample_counts = counts;
-				if (counts[1] > counts[0] || counts[2] > counts[1]) {
+				if (counts[1] > counts[0] || counts[2] > counts[1] ||
+				    counts[3] > counts[0] || counts[4] > counts[0] ||
+				    counts[5] > counts[0]) {
 					material_query_status = "non_comparable_queries";
 				}
 			}
 		}
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_MATERIAL_FRAGMENT_STAGES] frame={} submit={} phase={} vs=0x{:016x} ps=0x{:016x} "
-		    "status={} depth_compare={} rasterized={} depth_pass={} shader_survivors={}\n",
+		    "status={} guest_compare={} effective_compare={} rasterized={} guest_depth_pass={} "
+		    "guest_shader_survivors={} ge_depth_pass={} le_depth_pass={} effective_shader_survivors={}\n",
 		    ds_gbuffer_frame, submit_id, ds_live_material_phase,
 		    label_vs ? label_vs->shader_hash : 0ull, label_ps ? label_ps->shader_hash : 0ull,
-		    material_query_status, static_cast<uint32_t>(material_depth_compare),
+		    material_query_status, static_cast<uint32_t>(state.depth_info.depth_compare_op),
+		    static_cast<uint32_t>(material_depth_compare),
 		    material_sample_counts ? std::to_string((*material_sample_counts)[0]) : "unavailable",
 		    material_sample_counts ? std::to_string((*material_sample_counts)[1]) : "unavailable",
-		    material_sample_counts ? std::to_string((*material_sample_counts)[2]) : "unavailable"));
+		    material_sample_counts ? std::to_string((*material_sample_counts)[2]) : "unavailable",
+		    material_sample_counts ? std::to_string((*material_sample_counts)[3]) : "unavailable",
+		    material_sample_counts ? std::to_string((*material_sample_counts)[4]) : "unavailable",
+		    material_sample_counts ? std::to_string((*material_sample_counts)[5]) : "unavailable"));
 	}
 	if (ds_live_material_capture) {
 		const auto material_depth_full_after = ds_material_depth_full_before.bits.empty()
@@ -3813,11 +3832,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"depth_changed", depth_changed},
 			    {"material_fragment_stages", {
 			        {"status", material_query_status},
+			        {"guest_depth_compare", static_cast<uint32_t>(state.depth_info.depth_compare_op)},
 			        {"depth_compare", static_cast<uint32_t>(material_depth_compare)},
 			        {"vertex_shader", fmt::format("{:016x}", label_vs ? label_vs->shader_hash : 0ull)},
 			        {"rasterized", material_sample_counts ? nlohmann::json((*material_sample_counts)[0]) : nlohmann::json()},
 			        {"depth_pass", material_sample_counts ? nlohmann::json((*material_sample_counts)[1]) : nlohmann::json()},
 			        {"shader_survivors", material_sample_counts ? nlohmann::json((*material_sample_counts)[2]) : nlohmann::json()},
+			        {"greater_or_equal_pass", material_sample_counts ? nlohmann::json((*material_sample_counts)[3]) : nlohmann::json()},
+			        {"less_or_equal_pass", material_sample_counts ? nlohmann::json((*material_sample_counts)[4]) : nlohmann::json()},
+			        {"effective_shader_survivors", material_sample_counts ? nlohmann::json((*material_sample_counts)[5]) : nlohmann::json()},
 			    }},
 			    {"material_depth_full", {
 			        {"valid", material_depth_diff.valid},

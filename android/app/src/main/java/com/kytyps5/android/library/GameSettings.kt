@@ -36,7 +36,7 @@ data class GameSettings(
     val demonsSouls1080p: Boolean = true,
     val demonsSoulsPixelTrace: Boolean = false,
     val demonsSoulsPerFaceBias: Boolean = false,
-    val demonsSoulsDepthEqualRelax: Int = 0, // 0=game default, 1=LE, 2=GE, 3=original
+    val demonsSoulsDepthEqualRelax: Int = 0, // 0=scoped auto (two scene PS), 1=LE, 2=GE, 3=exact guest EQUAL
 ) {
     fun toJson(): String = JSONObject()
         .put("resolution", resolution?.storageValue ?: JSONObject.NULL)

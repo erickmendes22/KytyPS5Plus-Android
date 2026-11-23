@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
+#include "graphics/host_gpu/renderer/demonsDepthEqualPolicy.h"
 
 #include <cassert>
 #include <fstream>
@@ -7,6 +8,27 @@
 
 using namespace Libs::Graphics::DemonsQueueProbe;
 
+using namespace Libs::Graphics::DemonsDepthEqualPolicy;
+static_assert(Select(0, SuspectScene0, DepthAddress, true, false, true, 2u) ==
+              Decision::GreaterOrEqual);
+static_assert(Select(0, SuspectScene1, DepthAddress, true, false, true, 2u) ==
+              Decision::GreaterOrEqual);
+static_assert(Select(0, 0xafd9334e8581cda2ull, DepthAddress, true, false, true, 2u) ==
+              Decision::Guest);
+static_assert(Select(1, SuspectScene0, DepthAddress, true, false, true, 2u) ==
+              Decision::LessOrEqual);
+static_assert(Select(2, SuspectScene1, DepthAddress, true, false, true, 2u) ==
+              Decision::GreaterOrEqual);
+static_assert(Select(3, SuspectScene0, DepthAddress, true, false, true, 2u) ==
+              Decision::Guest);
+static_assert(Select(0, SuspectScene0, DepthAddress, true, true, true, 2u) ==
+              Decision::Guest);
+static_assert(Select(0, SuspectScene0, DepthAddress, true, false, false, 2u) ==
+              Decision::Guest);
+static_assert(Select(0, SuspectScene0, DepthAddress + 4, true, false, true, 2u) ==
+              Decision::Guest);
+static_assert(Select(0, SuspectScene0, DepthAddress, true, false, true, 6u) ==
+              Decision::Guest);
 static_assert(GBufferShaders.size() == 5);
 static_assert(GBufferShaders[3] == 0xcfc1d9193e7f9e53ull);
 static_assert(GBufferShaders[4] == 0xc92deb23fc611b10ull);
