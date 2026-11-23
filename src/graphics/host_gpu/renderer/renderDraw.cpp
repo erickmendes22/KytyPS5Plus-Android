@@ -115,6 +115,89 @@ static void TraceDsGraphicsOutcome(bool shader_ready, bool pipeline_ready,
         no_ps.load(std::memory_order_relaxed)));
 }
 
+// PPSA01341: in the dark gameplay capture, D32 covers the entire 1600x900
+// target yet the deferred R32_UINT material layer has <2% colored texels.
+// Count ALL actual prepared draws reaching that material attachment, including
+// the non-scouted shader hashes. This distinguishes missing draw submissions
+// from executed draws whose fragment output is lost; no rendering state changes.
+static void TraceDsMaterialDrawPopulation(const DrawCallInfo& draw,
+                                          const DrawRenderState& state, bool indirect,
+                                          int32_t frame) {
+	static const bool enabled = [] {
+		const auto* env = std::getenv("KYTY_DS_FRAME_TRACE");
+		return env && env[0] == '1' && env[1] == '\0';
+	}();
+	if (!enabled || Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
+	struct Counts {
+		uint32_t draws = 0, indirect = 0, equal = 0;
+		uint64_t indices = 0;
+	};
+	struct Frame {
+		int32_t frame = -1;
+		const char* phase = nullptr;
+		uint32_t depth_draws = 0, depth_only = 0, gbuffer_draws = 0;
+		std::unordered_map<uint64_t, Counts> material;
+	};
+	static Frame current;
+	static bool bright_done = false;
+	static uint32_t late_count = 0;
+	static int32_t last_late_frame = -1;
+	if (frame != current.frame) {
+		if (current.phase) {
+			std::vector<std::pair<uint64_t, Counts>> ranked(
+			    current.material.begin(), current.material.end());
+			std::sort(ranked.begin(), ranked.end(),
+			          [](const auto& a, const auto& b) {
+				          return a.second.indices > b.second.indices;
+			          });
+			std::string summary;
+			for (const auto& [hash, count]: ranked) {
+				if (summary.size() >= 3000) break;
+				summary += fmt::format(" {:016x}:draws={},indices={},indirect={},equal={};",
+				    hash, count.draws, count.indices, count.indirect, count.equal);
+			}
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_MATERIAL_DRAW_POPULATION] frame={} phase={} depth_draws={} depth_only={} "
+			    "gbuffer_draws={} unique_ps={} shader_rows={}\n",
+			    current.frame, current.phase, current.depth_draws, current.depth_only,
+			    current.gbuffer_draws, current.material.size(), summary));
+		}
+		current = Frame {};
+		current.frame = frame;
+		const auto& gate = DemonsAdaptiveCapture::Current();
+		if (!bright_done && gate.BrightSceneActive(frame)) {
+			current.phase = "bright";
+			bright_done = true;
+		} else if (gate.PostTransitionDarkDue(frame) && late_count < 3 &&
+		           (last_late_frame < 0 || frame - last_late_frame >= 24)) {
+			current.phase = "post_transition";
+			last_late_frame = frame;
+			++late_count;
+		}
+	}
+	if (!current.phase) return;
+	const bool depth = state.depth_info.image_id &&
+	    state.depth_info.desc.info.data.address == 0x282b60000ull;
+	const auto colors = std::span{state.color_info, state.color_count};
+	const bool gbuffer = std::ranges::any_of(colors, [](const auto& c) {
+		return c.image_id && c.desc.info.data.address == DemonsQueueProbe::GBufferAddress;
+	});
+	if (depth) {
+		++current.depth_draws;
+		if (!gbuffer) ++current.depth_only;
+	}
+	if (!gbuffer) return;
+	++current.gbuffer_draws;
+	const uint64_t shader = state.ps_active && state.ps_input_info.stage.program
+	    ? state.ps_input_info.stage.program->shader_hash : 0ull;
+	auto& row = current.material[shader];
+	++row.draws;
+	row.indices += draw.index_count;
+	row.indirect += indirect ? 1u : 0u;
+	row.equal += state.depth_info.depth_test_enable &&
+	    state.depth_info.depth_compare_op == vk::CompareOp::eEqual;
+}
+
 std::pair<int32_t, uint32_t> ResolveDrawOffsets(uint32_t index_offset,
 	                                           const ShaderVertexInputInfo& vs_input_info) {
 	auto     vertex_offset   = static_cast<int32_t>(index_offset);
@@ -2697,6 +2780,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	const RenderColorInfo* ds_gbuffer = nullptr;
 	uint64_t ds_gbuffer_shader = 0;
 	const int32_t ds_gbuffer_frame = m_context.GetGpu().GetFrameNum();
+	TraceDsMaterialDrawPopulation(draw, state, indirect != nullptr, ds_gbuffer_frame);
 	DemonsQueueProbe::MaterialTrace* ds_material_trace = nullptr;
 	DsAlbedoSnapshot ds_albedo_before;
 	DsAlbedoSnapshot ds_live_material_full_before {};

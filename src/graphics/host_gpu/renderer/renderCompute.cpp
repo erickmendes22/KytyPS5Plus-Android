@@ -2493,6 +2493,106 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	std::array<uint16_t, 256> hwords {};
 	std::memcpy(gwords.data(), gbytes.data(), gbytes.size());
 	std::memcpy(hwords.data(), hbytes.data(), hbytes.size());
+	// Read the other three material layers at the SAME 8x8 coordinates.
+	// The first-layer-only capture cannot distinguish missing geometry from
+	// incorrect R32_UINT layer/view selection. Keep these readbacks bounded
+	// by the existing three post-transition bridge captures.
+	std::array<std::array<uint32_t, 64>, 3> other_gbuffer_layers {};
+	std::array<uint32_t, 3> other_gbuffer_colored {};
+	bool other_gbuffer_valid = false;
+	const auto albedo_view = std::ranges::find(
+	    albedo_image.views, albedo->image_view, &CachedImageView::view);
+	if (albedo_view != albedo_image.views.end() &&
+	    albedo_image.backing.layers >= albedo_view->info.base_layer + 4u &&
+	    albedo_image.backing.samples == 1 &&
+	    (albedo_image.backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
+		const auto w = std::max(albedo_image.backing.extent.width >>
+		    albedo_view->info.base_level, 1u);
+		const auto h = std::max(albedo_image.backing.extent.height >>
+		    albedo_view->info.base_level, 1u);
+		auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+		auto [mapped, offset] = download.Map(3u * 64u * sizeof(uint32_t), 16u, true);
+		if (mapped) {
+			download.Commit();
+			std::array<vk::BufferImageCopy, 192> copies {};
+			for (uint32_t layer = 0; layer < 3; ++layer) {
+				for (uint32_t i = 0; i < 64; ++i) {
+					auto& copy = copies[layer * 64u + i];
+					copy.bufferOffset = offset + (layer * 64u + i) * sizeof(uint32_t);
+					copy.imageSubresource = {vk::ImageAspectFlagBits::eColor,
+					    albedo_view->info.base_level,
+					    albedo_view->info.base_layer + layer + 1u, 1};
+					copy.imageOffset = {
+					    static_cast<int32_t>(((i % 8u) * 2u + 1u) * w / 16u),
+					    static_cast<int32_t>(((i / 8u) * 2u + 1u) * h / 16u), 0};
+					copy.imageExtent = {1u, 1u, 1u};
+				}
+			}
+			albedo_image.Download(std::span{copies}, download.Handle(), offset,
+			                      3u * 64u * sizeof(uint32_t));
+			context.GetCommandScheduler().Finish();
+			download.Invalidate(offset, 3u * 64u * sizeof(uint32_t));
+			for (uint32_t layer = 0; layer < 3; ++layer) {
+				std::memcpy(other_gbuffer_layers[layer].data(),
+				            mapped + layer * 64u * sizeof(uint32_t),
+				            64u * sizeof(uint32_t));
+				for (const uint32_t word: other_gbuffer_layers[layer])
+					other_gbuffer_colored[layer] += (word & 0x00ffffffu) != 0u;
+			}
+			other_gbuffer_valid = true;
+		}
+	}
+
+	// Depth is copied from the queue's actual bound sampled surface, not from
+	// a separately captured material draw in a potentially different frame.
+	std::array<uint32_t, 64> depth_bits {};
+	bool depth_valid = false;
+	uint32_t depth_nonzero = 0;
+	const auto depth_binding = std::ranges::find_if(bindings.images, [](const auto& b) {
+		return b.image_id && !b.placeholder &&
+		       b.desc.info.data.address == 0x282b60000ull;
+	});
+	if (depth_binding != bindings.images.end()) {
+		auto& depth_image = textures.GetImage(depth_binding->image_id);
+		const auto depth_view = std::ranges::find(
+		    depth_image.views, depth_binding->image_view, &CachedImageView::view);
+		const auto format = depth_image.backing.format;
+		if (depth_view != depth_image.views.end() &&
+		    depth_image.backing.samples == 1 &&
+		    (format == vk::Format::eD32Sfloat ||
+		     format == vk::Format::eD32SfloatS8Uint) &&
+		    (depth_image.backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
+			const auto w = std::max(depth_image.backing.extent.width >>
+			    depth_view->info.base_level, 1u);
+			const auto h = std::max(depth_image.backing.extent.height >>
+			    depth_view->info.base_level, 1u);
+			if (w >= 16 && h >= 16) {
+				auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+				auto [mapped, offset] = download.Map(64u * sizeof(uint32_t), 16u, true);
+				if (mapped) {
+					download.Commit();
+					std::array<vk::BufferImageCopy, 64> copies {};
+					for (uint32_t i = 0; i < 64; ++i) {
+						auto& copy = copies[i];
+						copy.bufferOffset = offset + i * sizeof(uint32_t);
+						copy.imageSubresource = {vk::ImageAspectFlagBits::eDepth,
+						    depth_view->info.base_level, depth_view->info.base_layer, 1};
+						copy.imageOffset = {
+						    static_cast<int32_t>(((i % 8u) * 2u + 1u) * w / 16u),
+						    static_cast<int32_t>(((i / 8u) * 2u + 1u) * h / 16u), 0};
+						copy.imageExtent = {1u, 1u, 1u};
+					}
+					depth_image.Download(std::span{copies}, download.Handle(), offset,
+					                     64u * sizeof(uint32_t));
+					context.GetCommandScheduler().Finish();
+					download.Invalidate(offset, 64u * sizeof(uint32_t));
+					std::memcpy(depth_bits.data(), mapped, 64u * sizeof(uint32_t));
+					for (const auto bits: depth_bits) depth_nonzero += bits != 0u;
+					depth_valid = true;
+				}
+			}
+		}
+	}
 	const auto half = [](uint16_t value) -> double {
 		if ((value & 0x8000u) || (value & 0x7c00u) == 0x7c00u) return 0.0;
 		const auto exponent = (value >> 10u) & 31u;
@@ -2519,6 +2619,11 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	    {"gbuffer_version", albedo_image.ContentVersion()},
 	    {"gbuffer_extent", {albedo_image.backing.extent.width, albedo_image.backing.extent.height}},
 	    {"gbuffer_r32", gwords}, {"gbuffer_colored", colored},
+	    {"gbuffer_other_layers_valid", other_gbuffer_valid},
+	    {"gbuffer_other_layers_colored", other_gbuffer_colored},
+	    {"gbuffer_other_layers_r32", other_gbuffer_layers},
+	    {"depth_grid_valid", depth_valid}, {"depth_grid_nonzero", depth_nonzero},
+	    {"depth_grid_bits", depth_bits},
 	    {"hdr_guest", hdr->desc.info.data.address},
 	    {"hdr_owner", hdr_image.info.data.address},
 	    {"hdr_version", hdr_image.ContentVersion()},
@@ -2541,6 +2646,11 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	} else {
 		*captured = true;
 	}
+	Log::WriteToConsoleAndLog(fmt::format(
+	    "[DS_LIGHT_BRIDGE_LAYERS] frame={} phase={} layer0={} layer1={} layer2={} "
+	    "layer3={} layers_valid={} depth_nonzero={} depth_valid={}\n",
+	    frame, phase, colored, other_gbuffer_colored[0], other_gbuffer_colored[1],
+	    other_gbuffer_colored[2], other_gbuffer_valid, depth_nonzero, depth_valid));
 	Log::WriteToConsoleAndLog(fmt::format(
 	    "[DS_LIGHT_BRIDGE] phase={} frame={} submit={} gbuffer_colored={}/64 "
 	    "hdr_lit={}/64 hdr_mean={:.8f} workgroups={}/{}/{} file={}\n",
