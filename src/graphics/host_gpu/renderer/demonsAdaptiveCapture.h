@@ -93,14 +93,13 @@ public:
 		Observation result {false, m_bright_reference >= 0.02, m_low_streak,
 		                    m_bright_reference, "scouting"};
 		if (m_dark_latched) {
-			// The original fade is not evidence of broken gameplay lighting.
-			// Arm one distinct, bounded post-transition capture only if the
-			// dark scene persists while new deferred geometry keeps executing.
-			// Fresh deferred-queue geometry AFTER the first dark latch is
-			// required. The original 300-frame freshness window could
-			// misclassify an idle black fade as active gameplay.
-			const bool recent_geometry = m_last_geometry >= m_last_trigger &&
-			    frame >= m_last_geometry && int64_t{frame} - m_last_geometry <= 24;
+			// The HDR samples arrive every 24 frames, but verified colored
+			// pixels from queue 33 are captured every ~240 frames. Require a
+			// *post-fade* geometry observation without pretending a geometry
+			// readback happens at every HDR sample. The result remains a
+			// candidate, not proof of incorrectly dark gameplay.
+			const bool post_fade_geometry = m_last_geometry >= m_last_trigger &&
+			    frame >= m_last_geometry && int64_t{frame} - m_last_geometry <= 240;
 			// The actual 762 capture stays near-black at frame 527
 			// (mean 0.0105114, 3/64 lit pixels), even though its tiny HUD
 			// contribution exceeded the old strict 2-pixel threshold.
@@ -108,7 +107,10 @@ public:
 			// absolute dim ceiling; this arms a capture, NOT a rendering fix.
 			const bool still_dim = level < 0.015 && visible <= 4 &&
 			    (m_bright_reference < 0.02 || level < m_bright_reference * 0.25);
-			if (recent_geometry && still_dim) {
+			if (still_dim) {
+				// Track the continuous dark samples independently of the
+				// sparsely sampled GPU geometry; only ARM a recording after
+				// a new verified queue-33 geometry sample follows the fade.
 				++m_late_dark_streak;
 				m_late_dark_sample = frame;
 			} else {
@@ -117,7 +119,7 @@ public:
 			}
 			m_late_dark_candidate = m_last_trigger >= 0 &&
 			    int64_t{frame} - m_last_trigger >= 96 &&
-			    m_late_dark_streak >= 4 && recent_geometry && still_dim;
+			    m_late_dark_streak >= 4 && post_fade_geometry && still_dim;
 			result.reason = m_late_dark_candidate
 			    ? "post_transition_dark_candidate" : "sustained_dark";
 			return result;
@@ -152,7 +154,7 @@ public:
 		return m_dark_latched && m_late_dark_candidate && m_late_dark_sample >= 0 &&
 		       frame >= m_late_dark_sample && frame - m_late_dark_sample <= 24 &&
 		       m_last_geometry >= m_last_trigger && frame >= m_last_geometry &&
-		       int64_t{frame} - m_last_geometry <= 24;
+		       int64_t{frame} - m_last_geometry <= 240;
 	}
 
 	bool CaptureDue(int32_t frame) const {

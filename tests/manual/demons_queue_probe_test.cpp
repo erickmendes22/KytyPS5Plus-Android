@@ -75,8 +75,10 @@ int main(int argc, char** argv) {
 		Gate black;
 		black.MarkGeometry(100, 5);
 		black.Observe(100, 0.11, 64, 0x281a80000ull);
-		for (int f = 124; f <= 508; f += 24)
+		for (int f = 124; f <= 508; f += 24) {
 			black.Observe(f, 0.0001, 0, 0x281a80000ull);
+			if (f == 292) assert(!black.PostTransitionDarkDue(f));
+		}
 		assert(!black.PostTransitionDarkDue(508));
 		assert(!black.CaptureDue(508));
 		// Even if the early geometry remains in the 300-frame general
@@ -117,11 +119,17 @@ int main(int argc, char** argv) {
 			Sample{503, 0.0062383, 2}, Sample{527, 0.0105114, 3},
 			Sample{551, 0.0062383, 2}}) {
 			assert(run762.ShouldSample(sample.frame));
-			run762.MarkGeometry(sample.frame, 5);
+			// This reproduces the actual queue-33 readback cadence: the
+			// exported 762 log verified colored geometry at 241 and 481,
+			// NOT at every HDR sample.
+			if (sample.frame == 215) run762.MarkGeometry(215, 5);
+			if (sample.frame == 263) run762.MarkGeometry(241, 5);
+			if (sample.frame == 503) run762.MarkGeometry(481, 5);
 			const auto state = run762.Observe(sample.frame, sample.level,
 			                                sample.visible, scene);
 			if (sample.frame == 383) assert(state.triggered);
-			if (sample.frame == 479 || sample.frame == 503 || sample.frame == 527) {
+			if (sample.frame == 479) assert(!run762.PostTransitionDarkDue(480));
+			if (sample.frame == 503 || sample.frame == 527 || sample.frame == 551) {
 				assert(state.reason == std::string("post_transition_dark_candidate"));
 				assert(run762.PostTransitionDarkDue(sample.frame + 1));
 				assert(run762.CaptureDue(sample.frame + 1));
@@ -129,7 +137,7 @@ int main(int argc, char** argv) {
 				assert(run762.CapturedFrame(sample.frame + 1));
 			}
 		}
-		assert(!run762.CaptureDue(552)); // bounded at three paired frames
+		assert(!run762.CaptureDue(553)); // bounded at three paired frames
 	}
 	// Reproduce the *observed* 718 ordering: the G-buffer shows changing
 	// colored geometry before the lighting queue is sampled; the compositor
