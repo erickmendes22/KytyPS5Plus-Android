@@ -2389,7 +2389,10 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	const int32_t frame = context.GetGpu().GetFrameNum();
 	const auto& gate = DemonsAdaptiveCapture::Current();
-	const char* phase = gate.PostTransitionDarkDue(frame) && gate.CapturedFrame(frame)
+	// The HDR producer queue may run BEFORE the coefficient/atlas pair
+	// is marked captured in this guest frame. Sampling its output must
+	// not depend on NoteCaptured() having run first.
+	const char* phase = gate.PostTransitionDarkDue(frame)
 	    ? "post_transition" : gate.DarkOnsetDue(frame) ? "onset"
 	    : gate.BrightSceneActive(frame) ? "bright"
 	    : gate.CapturedFrame(frame) ? "paired_dark" : nullptr;
@@ -2406,7 +2409,9 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 		// Distinguish the first late event (often zero coefficient updates)
 		// from the subsequent paired update events; never capture more than
 		// three different late guest frames per process.
-		if (captured_post_transition >= 3 || last_post_transition_frame == frame) return;
+		if (captured_post_transition >= 3 ||
+		    (last_post_transition_frame >= 0 && frame >= last_post_transition_frame &&
+		     frame - last_post_transition_frame < 24)) return;
 	} else if (*captured) {
 		return;
 	}
@@ -2422,7 +2427,20 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 		       b.desc.info.data.address == GBufferAddress;
 	});
 	const auto hdr = find_image(HdrAddress, TextureCache::BindingType::Storage);
-	if (albedo == bindings.images.end() || hdr == bindings.images.end()) return;
+	if (albedo == bindings.images.end() || hdr == bindings.images.end()) {
+		if (is_post_transition) {
+			static uint32_t missing_binding_reports = 0;
+			if (missing_binding_reports++ < 4) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_LIGHT_BRIDGE_SKIP] frame={} phase={} reason=binding "
+				    "albedo_bound={} hdr_bound={} shader=0x{:016x} submit={}
+",
+				    frame, phase, albedo != bindings.images.end(),
+				    hdr != bindings.images.end(), Shaders[1], submit));
+			}
+		}
+		return;
+	}
 	auto& textures = context.GetTextureCache();
 	auto& albedo_image = textures.GetImage(albedo->image_id);
 	auto& hdr_image = textures.GetImage(hdr->image_id);

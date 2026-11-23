@@ -132,6 +132,9 @@ int main(int argc, char** argv) {
 			if (sample.frame == 503 || sample.frame == 527 || sample.frame == 551) {
 				assert(state.reason == std::string("post_transition_dark_candidate"));
 				assert(run762.PostTransitionDarkDue(sample.frame + 1));
+				// The scene and light queues can be captured before
+				// the coefficient/atlas pair completes in this frame.
+				assert(!run762.CapturedFrame(sample.frame + 1));
 				assert(run762.CaptureDue(sample.frame + 1));
 				run762.NoteCaptured(sample.frame + 1);
 				assert(run762.CapturedFrame(sample.frame + 1));

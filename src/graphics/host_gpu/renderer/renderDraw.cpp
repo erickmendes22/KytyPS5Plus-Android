@@ -2895,6 +2895,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		static int32_t bright_baseline_frame = -1;
 		static int32_t dark_onset_frame = -1;
 		static int32_t paired_dark_frame = -1;
+		static int32_t active_late_scene_frame = -1;
+		static int32_t last_late_scene_frame = -1;
+		static uint32_t late_scene_count = 0;
 		if (scene_frame != frame) { scene_frame = frame; scene_ordinal = 0; }
 		const auto& gate = DemonsAdaptiveCapture::Current();
 		const auto colors = std::span {state.color_info, state.color_count};
@@ -2910,9 +2913,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			if (paired_dark_frame < 0 && gate.CapturedFrame(frame) &&
 			    !gate.PostTransitionDarkDue(frame))
 				paired_dark_frame = frame;
+			// Scene writer draws may precede the coefficient/atlas
+			// capture in the same frame. Record up to three distinct
+			// post-transition scene frames without waiting for pairing.
+			if (gate.PostTransitionDarkDue(frame) &&
+			    active_late_scene_frame != frame && late_scene_count < 3 &&
+			    (last_late_scene_frame < 0 || frame - last_late_scene_frame >= 24)) {
+				active_late_scene_frame = frame;
+				last_late_scene_frame = frame;
+				++late_scene_count;
+			}
 		}
-		const bool late_paired_frame = gate.PostTransitionDarkDue(frame) &&
-		    gate.CapturedFrame(frame);
+		const bool late_paired_frame = frame == active_late_scene_frame;
 		const bool relevant_frame = frame == bright_baseline_frame ||
 		                            frame == dark_onset_frame ||
 		                            frame == paired_dark_frame ||
