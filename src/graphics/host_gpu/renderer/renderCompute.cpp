@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
 #include "common/assert.h"
@@ -2478,10 +2479,48 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		return;
 	}
 	constexpr uint64_t expected_bytes = 188743680ull;
-	auto probes = ds_ray_producer_targets.probes;
-	// Preserve the dark-pixel probe even when the current relight
-	// consumer has dynamically chosen four other nearby probe IDs.
+	std::vector<uint32_t> probes(ds_ray_producer_targets.probes.begin(),
+	                             ds_ray_producer_targets.probes.end());
 	probes[0] = 4445u;
+	// The captured guest/SPIR-V is a scatter copy, not a ray tracer.
+	// Read its actual source row index and payload, not an unrelated output
+	// probe that the current dispatch may never touch.
+	using namespace DemonsRayCopyPolicy;
+	const auto& snapshot = *bindings.runtime->resources;
+	std::vector<uint32_t> map;
+	uint32_t map_base = 0, active_rows = 0;
+	nlohmann::json source_report {{"status", "unexpected_copy_layout"}};
+	if (snapshot.buffers.size() == 3 && snapshot.flattened_srt.size() == 16 &&
+	    program.info.buffers.size() == 3 && bindings.buffer_sources.size() >= 3 &&
+	    bindings.buffers.size() >= 3 && groups[1] == 1 && groups[2] == 1 &&
+	    !bindings.shader_data.empty() && bindings.shader_data[0] == 0) {
+		const auto mapping = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[0]);
+		const auto payload = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[1]);
+		const auto target = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[2]);
+		if (mapping.Stride() == 4 && mapping.NumRecords() <= 65536 &&
+		    payload.Stride() == 8 && target.Stride() == 8 &&
+		    target.NumRecords() == ProbeCount * RaysPerProbe &&
+		    program.info.buffers[0].descriptor_index == 0 &&
+		    program.info.buffers[1].descriptor_index == 1 &&
+		    program.info.buffers[2].descriptor_index == 2 &&
+		    !program.info.buffers[0].written && !program.info.buffers[1].written) {
+			map_base = snapshot.flattened_srt[15];
+			active_rows = ActiveRows(map_base, snapshot.flattened_srt[14], mapping.NumRecords(), groups[0]);
+			map = ReadDsBoundWords(context, bindings, 0, mapping.NumRecords());
+			source_report = {{"status", map.size() == mapping.NumRecords() ? "mapped" : "map_read_failed"},
+			    {"base", map_base}, {"active_rows", active_rows}, {"map_records", map.size()},
+			    {"map_guest", bindings.buffer_sources[0].address}, {"payload_guest", bindings.buffer_sources[1].address},
+			    {"payload_bytes", bindings.buffer_sources[1].size}};
+			if (map.size() != mapping.NumRecords()) map.clear();
+			// Ensure at least two destinations actually written by this dispatch
+			// are sampled, even when none of the previous consumer probes is active.
+			for (uint32_t i = map_base; !map.empty() && i < uint64_t{map_base} + active_rows && probes.size() < 6; ++i) {
+				const auto id = map[i];
+				if (id < ProbeCount && std::find(probes.begin(), probes.end(), id) == probes.end())
+					probes.push_back(id);
+			}
+		}
+	}
 	constexpr uint64_t words_per_probe = 256ull * 2ull;
 	constexpr uint64_t bytes_per_probe = words_per_probe * sizeof(uint32_t);
 	for (const auto& resource: program.info.buffers) {
@@ -2507,7 +2546,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			continue;
 		}
 		std::vector<uint32_t> words(probes.size() * words_per_probe);
-		std::array<vk::BufferCopy, probes.size()> copies {};
+		std::vector<vk::BufferCopy> copies(probes.size());
 		for (size_t i = 0; i < probes.size(); ++i) {
 			copies[i] = {native.offset + adjustment + uint64_t{probes[i]} * bytes_per_probe,
 			             i * bytes_per_probe, bytes_per_probe};
@@ -2531,12 +2570,60 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 				digest = (digest ^ ((uint64_t{data} << 32u) | color)) *
 				         1099511628211ull;
 			}
-			entries.push_back({{"probe", probes[i]},
+			nlohmann::json entry {{"probe", probes[i]},
 			    {"guest", source.address + uint64_t{probes[i]} * bytes_per_probe},
 			    {"colored_first_second_128", colored_by_half},
 			    {"finite_depth_first_second_128", valid_depth_by_half},
 			    {"digest", fmt::format("{:016x}", digest)},
-			    {"ray_words", std::vector<uint32_t>(row.begin(), row.end())}});
+			    {"ray_words", std::vector<uint32_t>(row.begin(), row.end())}};
+			if (!map.empty()) {
+				const auto match = DemonsRayCopyPolicy::Find(map, map_base, active_rows, probes[i]);
+				entry["mapping_matches"] = match.matches;
+				if (match.matches == 1) {
+					const auto& input = bindings.buffer_sources[1];
+					const auto& view = bindings.buffers[1];
+					const auto off_word = program.bindings.memory_offset_dword;
+					const uint64_t off = off_word < bindings.shader_data.size() ?
+					    (bindings.shader_data[off_word] >> 8u) & 255u : 0u;
+					const uint64_t byte = uint64_t{match.row} * bytes_per_probe;
+					entry["source_row"] = match.row;
+					entry["source_guest"] = input.address + byte;
+					if (view.buffer && view.range != VK_WHOLE_SIZE &&
+					    byte <= input.size && bytes_per_probe <= input.size - byte &&
+					    off <= view.range && byte <= view.range - off &&
+					    bytes_per_probe <= view.range - off - byte) {
+						std::vector<uint32_t> input_words(words_per_probe);
+						if (ReadDsGpuWords(context, view.buffer, view.offset + off + byte, input_words)) {
+							uint32_t different = 0, colored = 0;
+							for (size_t j = 0; j < words_per_probe; j += 2) {
+								different += input_words[j] != row[j] || input_words[j+1] != row[j+1];
+								colored += (input_words[j] & 0xffffffu) != 0;
+							}
+							entry["source_different_pairs"] = different;
+							entry["source_colored"] = colored;
+							entry["source_words"] = std::move(input_words);
+						} else entry["source_status"] = "read_failed";
+					} else entry["source_status"] = "out_of_range";
+					const auto addr = input.address + byte;
+					const auto* writer = FindDsBufferProducer(frame, addr, bytes_per_probe, false);
+					if (writer) entry["source_overlapping_writer"] = {
+					    {"shader", fmt::format("{:016x}", writer->shader)}, {"frame", writer->frame},
+					    {"submit", writer->submit}, {"address", writer->address}, {"bytes", writer->size},
+					    {"fill", writer->fill}};
+					entry["source_gpu_dirty"] = context.GetBufferCache().HasGpuDirtyBytes(addr, bytes_per_probe);
+					std::array<uint32_t, words_per_probe> backing {};
+					if (LibKernel::Memory::TryReadBacking(addr, backing.data(), bytes_per_probe)) {
+						uint32_t different = 0, colored = 0;
+						for (size_t j = 0; j < words_per_probe; j += 2) {
+							different += backing[j] != row[j] || backing[j+1] != row[j+1];
+							colored += (backing[j] & 0xffffffu) != 0;
+						}
+						entry["backing_different_pairs"] = different;
+						entry["backing_colored"] = colored;
+					}
+				}
+			}
+			entries.push_back(std::move(entry));
 		}
 		const auto folder = Config::GetShaderDumpFolder() / "queue-state";
 		std::error_code ec;
@@ -2561,7 +2648,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		    {"producer_dispatches_seen", ds_ray_producer_activity.valid},
 		    {"entries", std::move(entries)}};
 		// Save exact live shader inputs on each bounded active producer dispatch.
-		const auto& snapshot = *bindings.runtime->resources;
+		output["copy_source"] = std::move(source_report);
 		output["srt"] = snapshot.flattened_srt;
 		output["shader_data"] = bindings.shader_data;
 		output["buffer_descriptors"] = nlohmann::json::array();

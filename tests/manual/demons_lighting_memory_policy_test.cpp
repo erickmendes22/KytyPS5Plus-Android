@@ -35,3 +35,18 @@ static_assert(Libs::Graphics::DemonsPcDppPolicy::CaptureProducer(true, Libs::Gra
 static_assert(Libs::Graphics::DemonsPcDppPolicy::CaptureActive(10, false));
 static_assert(!Libs::Graphics::DemonsPcDppPolicy::CaptureActive(17, false));
 static_assert(Libs::Graphics::DemonsPcDppPolicy::CaptureActive(17, true));
+
+#include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
+namespace {
+using namespace Libs::Graphics::DemonsRayCopyPolicy;
+constexpr uint32_t map_fixture[] = {4445, 4445, 12448, 4445, 0xffffffu, 4445};
+static_assert(ActiveRows(2, 11863, 11865, 186) == 11863);
+static_assert(ActiveRows(2, 10353, 10355, 162) == 10353);
+static_assert(ActiveRows(2, 100, 6, 1) == 4);
+static_assert(ActiveRows(7, 10, 6, 1) == 0);
+static_assert(Find(map_fixture, 2, 3, 4445).row == 3);
+static_assert(Find(map_fixture, 2, 3, 4445).matches == 1);
+static_assert(Find(map_fixture, 2, 4, 4445).matches == 2);
+static_assert(Find(map_fixture, 2, 3, 0xffffffu).matches == 0);
+static_assert(Find(map_fixture, 2, 3, 902).matches == 0);
+}

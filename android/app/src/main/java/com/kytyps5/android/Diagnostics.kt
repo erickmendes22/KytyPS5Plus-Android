@@ -244,13 +244,19 @@ object Diagnostics {
             "e75589aa0bb3ae52", "93b0be7f1a0293d1"
         )
         return try {
+            // Queue data belongs to one launch; cached shaders and pipelines
+            // can legitimately predate it. Do not silently mix old ray rows
+            // with the current session's identical frame numbers.
+            val launchTime = File(context.filesDir, "logs/last-launch.txt").lastModified()
             val candidates = listOf("queue-state", "guest-shaders", "spv", "pipelines", "buffers").flatMap { subdir ->
                 val files = File(dump, subdir).listFiles().orEmpty()
                     .filter { file ->
                         file.isFile && file.length() > 0L &&
+                            ((subdir != "queue-state" && subdir != "buffers") ||
+                                launchTime == 0L || file.lastModified() >= launchTime) &&
                             (subdir == "guest-shaders" ||
                                 (subdir == "queue-state" &&
-                                    (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+\\.json")) ||
+                                    (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+(_t[0-9]+)?\\.json")) ||
                                      file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark|post_transition)_f[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark|post_transition)_f[0-9]+_s[0-9]+(_ps[0-9a-f]{16})?\\.json")))) ||
@@ -281,7 +287,7 @@ object Diagnostics {
                     // files. Give the producer captures their own slots so
                     // the ZIP actually contains the data cited by the log.
                     val newest = files.sortedByDescending { it.lastModified() }
-                    val producer = newest.filter { it.name.startsWith("ds_ray_producer_f") }.take(4) +
+                    val producer = newest.filter { it.name.startsWith("ds_ray_producer_f") }.take(16) +
                         newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
                         .take(18) +
                         newest.filter { it.name.startsWith("cs_bcbcc6ba1e68c974_ray_hits_") }.take(18) +
