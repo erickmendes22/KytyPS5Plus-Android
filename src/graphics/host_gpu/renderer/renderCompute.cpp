@@ -2433,8 +2433,7 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 			if (missing_binding_reports++ < 4) {
 				Log::WriteToConsoleAndLog(fmt::format(
 				    "[DS_LIGHT_BRIDGE_SKIP] frame={} phase={} reason=binding "
-				    "albedo_bound={} hdr_bound={} shader=0x{:016x} submit={}
-",
+				    "albedo_bound={} hdr_bound={} shader=0x{:016x} submit={}\n",
 				    frame, phase, albedo != bindings.images.end(),
 				    hdr != bindings.images.end(), Shaders[1], submit));
 			}
