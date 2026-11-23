@@ -2720,10 +2720,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    state.depth_info.image_id && state.depth_info.depth_write_enable &&
 	    state.depth_info.desc.info.data.address == 0x282b60000ull) {
 		const auto& gate = DemonsAdaptiveCapture::Current();
-		const int phase = gate.DarkOnsetDue(ds_gbuffer_frame) ? 1
+		const int phase = gate.PostTransitionDarkDue(ds_gbuffer_frame) ? 3
+		    : gate.DarkOnsetDue(ds_gbuffer_frame) ? 1
 		    : gate.BrightBaselineDue(ds_gbuffer_frame) ? 0
 		    : gate.CaptureDue(ds_gbuffer_frame) ? 2 : -1;
-		static std::array<bool, 3> captured {};
+		static std::array<bool, 4> captured {};
 		if (phase >= 0 && !captured[phase]) {
 			captured[phase] = true;
 			ds_depth_prepass_phase = phase;
@@ -2835,9 +2836,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			});
 			if (target != colors.end()) {
 				const auto& gate = DemonsAdaptiveCapture::Current();
-				static std::array<int32_t, 3> phase_frame {-1, -1, -1};
-				static std::array<std::array<bool, 3>, 3> phase_shader_done {};
-				const int phase = gate.DarkOnsetDue(ds_gbuffer_frame) ? 1
+				static std::array<int32_t, 4> phase_frame {-1, -1, -1, -1};
+				static std::array<std::array<bool, 3>, 4> phase_shader_done {};
+				const int phase = gate.PostTransitionDarkDue(ds_gbuffer_frame) ? 3
+				    : gate.DarkOnsetDue(ds_gbuffer_frame) ? 1
 				    : gate.BrightBaselineDue(ds_gbuffer_frame) ? 0
 				    : gate.CaptureDue(ds_gbuffer_frame) ? 2 : -1;
 				if (phase >= 0) {
@@ -3690,7 +3692,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			const auto& target_image = m_context.GetTextureCache().GetImage(ds_live_material_target.image_id);
 			const nlohmann::json payload {
 			    {"frame", frame}, {"phase", ds_live_material_phase == 0 ? "bright" :
-			         ds_live_material_phase == 1 ? "onset" : "dark"},
+			         ds_live_material_phase == 1 ? "onset" :
+			         ds_live_material_phase == 3 ? "post_transition_dark_candidate" : "dark"},
 			    {"submit", submit_id}, {"shader", fmt::format("{:016x}", shader)},
 			    {"guest", ds_live_material_target.desc.info.data.address},
 			    {"image_owner", target_image.info.data.address},
@@ -3760,7 +3763,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			// as well: 723 overwrote the first writer in both dark phases.
 			const auto name = fmt::format("ds_gbuffer_material_{}_f{}_s{}_ps{:016x}.json",
 			    ds_live_material_phase == 0 ? "bright" :
-			    ds_live_material_phase == 1 ? "onset" : "dark", frame, submit_id, shader);
+			    ds_live_material_phase == 1 ? "onset" :
+			    ds_live_material_phase == 3 ? "post_transition" : "dark", frame, submit_id, shader);
 			std::ofstream file(folder / name, std::ios::trunc);
 			if (file) file << payload;
 			Log::WriteToConsoleAndLog(fmt::format(

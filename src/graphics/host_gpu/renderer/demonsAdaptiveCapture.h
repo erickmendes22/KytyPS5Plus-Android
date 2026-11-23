@@ -42,6 +42,11 @@ public:
 			m_dark_latched = false;
 			m_recovered_streak = 0;
 			m_last_bright_sample = -1;
+			m_late_dark_streak = 0;
+			m_late_dark_candidate = false;
+			m_late_dark_sample = -1;
+			m_late_capture_count = 0;
+			m_last_late_capture = -1;
 		}
 		m_scene_guest = guest;
 		if (m_last_geometry < 0 || frame - m_last_geometry > 300) {
@@ -66,6 +71,11 @@ public:
 				m_event_capture_count = 0;
 				m_bright_reference = level;
 				m_scene_samples = 1;
+				m_late_dark_streak = 0;
+				m_late_dark_candidate = false;
+				m_late_dark_sample = -1;
+				m_late_capture_count = 0;
+				m_last_late_capture = -1;
 			}
 			if (!m_dark_latched)
 				m_bright_reference = std::max(m_bright_reference * 0.98, level);
@@ -83,7 +93,24 @@ public:
 		Observation result {false, m_bright_reference >= 0.02, m_low_streak,
 		                    m_bright_reference, "scouting"};
 		if (m_dark_latched) {
-			result.reason = "sustained_dark";
+			// The original fade is not evidence of broken gameplay lighting.
+			// Arm one distinct, bounded post-transition capture only if the
+			// dark scene persists while new deferred geometry keeps executing.
+			const bool recent_geometry = m_last_geometry >= 0 && frame >= m_last_geometry &&
+			    int64_t{frame} - m_last_geometry <= 300;
+			const bool still_dim = level < 0.012 && visible <= 2;
+			if (recent_geometry && still_dim) {
+				++m_late_dark_streak;
+				m_late_dark_sample = frame;
+			} else {
+				m_late_dark_streak = 0;
+				m_late_dark_sample = -1;
+			}
+			m_late_dark_candidate = m_last_trigger >= 0 &&
+			    int64_t{frame} - m_last_trigger >= 192 &&
+			    m_late_dark_streak >= 8 && recent_geometry && still_dim;
+			result.reason = m_late_dark_candidate
+			    ? "post_transition_dark_candidate" : "sustained_dark";
 			return result;
 		}
 		if (m_last_trigger >= 0 && frame - m_last_trigger < 180) {
@@ -101,14 +128,31 @@ public:
 			m_last_event_capture = -1;
 			m_event_capture_count = 0;
 			m_low_streak = 0;
+			m_late_dark_streak = 0;
+			m_late_dark_candidate = false;
+			m_late_dark_sample = -1;
+			m_last_late_capture = -1;
+			m_late_capture_count = 0;
 			result.triggered = true;
 			result.reason = transition ? "bright_to_dark" : "dark_scene_entry";
 		}
 		return result;
 	}
 
+	bool PostTransitionDarkDue(int32_t frame) const {
+		return m_dark_latched && m_late_dark_candidate && m_late_dark_sample >= 0 &&
+		       frame >= m_late_dark_sample && frame - m_late_dark_sample <= 24 &&
+		       m_last_geometry >= 0 && frame >= m_last_geometry &&
+		       int64_t{frame} - m_last_geometry <= 300;
+	}
+
 	bool CaptureDue(int32_t frame) const {
 		if (m_last_trigger < 0 || frame <= m_last_trigger) return false;
+		if (PostTransitionDarkDue(frame)) {
+			if (frame == m_last_late_capture) return true;
+			return m_late_capture_count < 3 &&
+			       (m_last_late_capture < 0 || frame - m_last_late_capture >= 24);
+		}
 		// Allow all coefficient writers sharing one frame (the atlas can use
 		// several), but bound the heavy readbacks to three successful frames
 		// separated by at least 24 *observed* guest frames.
@@ -137,10 +181,18 @@ public:
 	bool CapturedFrame(int32_t frame) const {
 		// Align the compositor check with the actual coefficient/atlas pair
 		// recorded in this guest frame, not with an approximate timer.
-		return frame >= 0 && frame == m_last_event_capture;
+		return frame >= 0 &&
+		       (frame == m_last_event_capture || frame == m_last_late_capture);
 	}
 
 	void NoteCaptured(int32_t frame) {
+		if (PostTransitionDarkDue(frame)) {
+			if (frame != m_last_late_capture && CaptureDue(frame)) {
+				m_last_late_capture = frame;
+				++m_late_capture_count;
+			}
+			return;
+		}
 		if (frame != m_last_event_capture && CaptureDue(frame)) {
 			m_last_event_capture = frame;
 			++m_event_capture_count;
@@ -161,6 +213,11 @@ private:
 		m_recovered_streak = 0;
 		m_low_streak = 0;
 		m_last_bright_sample = -1;
+		m_late_dark_streak = 0;
+		m_late_dark_candidate = false;
+		m_late_dark_sample = -1;
+		m_late_capture_count = 0;
+		m_last_late_capture = -1;
 	}
 	int32_t m_last_sample = -1;
 	int32_t m_last_bright_sample = -1;
@@ -174,6 +231,11 @@ private:
 	bool m_dark_latched = false;
 	uint32_t m_recovered_streak = 0;
 	uint32_t m_low_streak = 0;
+	uint32_t m_late_dark_streak = 0;
+	bool m_late_dark_candidate = false;
+	int32_t m_late_dark_sample = -1;
+	int32_t m_last_late_capture = -1;
+	uint32_t m_late_capture_count = 0;
 };
 
 inline Gate& Current() {

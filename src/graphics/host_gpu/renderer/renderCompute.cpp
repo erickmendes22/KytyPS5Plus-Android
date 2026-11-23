@@ -2297,6 +2297,7 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 	// to 16 records. Nonpaired scout slots continue rotating as before.
 	static uint32_t saved_pairs = 0;
 	static bool bright_saved = false;
+	const bool late_pair = paired && DemonsAdaptiveCapture::Current().PostTransitionDarkDue(frame);
 	const bool event_pair = paired && DemonsAdaptiveCapture::Current().CaptureDue(frame);
 	const bool bright_pair = paired && !bright_saved &&
 	    DemonsAdaptiveCapture::Current().BrightSceneActive(frame);
@@ -2305,7 +2306,8 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 	                       : low_radiance ? 6u + next_dark.fetch_add(1, std::memory_order_relaxed) % 2u
 	                                      : next_pair.fetch_add(1, std::memory_order_relaxed) % 4u;
 	const auto suffix = preserve_pair
-	    ? fmt::format("{}_f{}_s{}_n{}", event_pair ? "event" : "bright", frame, submit, saved_pairs)
+	    ? fmt::format("{}_f{}_s{}_n{}", late_pair ? "post_transition" :
+	                  event_pair ? "event" : "bright", frame, submit, saved_pairs)
 	    : fmt::format("{}", file_slot);
 	const auto name = fmt::format("cs_c03afccb96a13c5d_atlas_inputs_{}.json", suffix);
 	std::ofstream file(folder / name, std::ios::trunc);

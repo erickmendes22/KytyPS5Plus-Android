@@ -67,6 +67,34 @@ int main(int argc, char** argv) {
 			assert(event.triggered == (i == 3));
 		}
 	}
+	// A natural fade to black cannot trigger a late capture without new
+	// deferred-geometry evidence. A sustained late candidate has its own
+	// three-capture budget independent of the first fade.
+	{
+		using Libs::Graphics::DemonsAdaptiveCapture::Gate;
+		Gate black;
+		black.MarkGeometry(100, 5);
+		black.Observe(100, 0.11, 64, 0x281a80000ull);
+		for (int f = 124; f <= 508; f += 24)
+			black.Observe(f, 0.0001, 0, 0x281a80000ull);
+		assert(!black.PostTransitionDarkDue(508));
+		assert(!black.CaptureDue(508));
+
+		Gate late;
+		late.MarkGeometry(100, 5);
+		late.Observe(100, 0.11, 64, 0x281a80000ull);
+		for (int f = 124; f <= 532; f += 24) {
+			late.MarkGeometry(f, 5);
+			auto observation = late.Observe(f, 0.0062383, 2, 0x281a80000ull);
+			if (f == 172) assert(observation.triggered);
+		}
+		assert(late.PostTransitionDarkDue(532));
+		assert(late.CaptureDue(533));
+		late.NoteCaptured(533);
+		assert(late.CapturedFrame(533));
+		assert(!late.CaptureDue(550));
+		assert(!late.PostTransitionDarkDue(557)); // sample is stale
+	}
 	// Reproduce the *observed* 718 ordering: the G-buffer shows changing
 	// colored geometry before the lighting queue is sampled; the compositor
 	// sees a bright scene, then three progressively dark observations.
