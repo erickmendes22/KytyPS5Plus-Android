@@ -461,11 +461,9 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	dynamic_state.SetBlendConstants(blend_constants);
 	dynamic_state.SetDepthTestEnabled(depth.depth_test_enable);
 	dynamic_state.SetDepthWriteEnabled(depth.depth_write_enable);
-	// PC Kyty uses the guest EQUAL. Android's old AUTO did nothing and
-	// excluded two scene material programs which rasterized fragments but
-	// had zero EQUAL survivors. Limit the automatic workaround to their
-	// hashes, the known D32 target, read-only draws and always stencil.
-	// Launcher mode 3 restores the exact guest/PC comparison.
+	// Preserve the guest depth comparison by default. The scoped automatic
+	// GREATER_OR_EQUAL experiment did not restore the scenery on device.
+	// Explicit launcher modes 1/2 remain opt-in for A/B comparison.
 	static const int ds_depth_equal_mode = [] {
 		const char* value = std::getenv("KYTY_DS_DEPTH_EQUAL_RELAX");
 		if (value == nullptr || value[1] != '\0' || value[0] < '0' || value[0] > '3')

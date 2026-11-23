@@ -10,9 +10,9 @@ using namespace Libs::Graphics::DemonsQueueProbe;
 
 using namespace Libs::Graphics::DemonsDepthEqualPolicy;
 static_assert(Select(0, SuspectScene0, DepthAddress, true, false, true, 2u) ==
-              Decision::GreaterOrEqual);
+              Decision::Guest);
 static_assert(Select(0, SuspectScene1, DepthAddress, true, false, true, 2u) ==
-              Decision::GreaterOrEqual);
+              Decision::Guest);
 static_assert(Select(0, 0xafd9334e8581cda2ull, DepthAddress, true, false, true, 2u) ==
               Decision::Guest);
 static_assert(Select(1, SuspectScene0, DepthAddress, true, false, true, 2u) ==

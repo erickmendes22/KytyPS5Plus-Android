@@ -73,7 +73,8 @@ constexpr uint32_t ImageSampleAddressComponents(uint32_t flags, ImageDimension d
 	if ((flags & ImageSampleFlagBias) != 0) {
 		components++;
 	}
-	if ((flags & ImageSampleFlagLod) != 0) {
+	// _cl has a trailing minimum-LOD address component, just like explicit LOD.
+	if ((flags & (ImageSampleFlagLod | ImageSampleFlagLodClamp)) != 0) {
 		components++;
 	}
 	if ((flags & ImageSampleFlagDerivative) != 0) {
@@ -81,6 +82,11 @@ constexpr uint32_t ImageSampleAddressComponents(uint32_t flags, ImageDimension d
 	}
 	return components;
 }
+
+static_assert(ImageSampleAddressComponents(ImageSampleFlagLodClamp, ImageDimension::Dim2D) == 3);
+static_assert(ImageSampleAddressComponents(ImageSampleFlagDerivative | ImageSampleFlagLodClamp, ImageDimension::Dim2D) == 7);
+static_assert(ImageSampleAddressComponents(ImageSampleFlagDerivative | ImageSampleFlagLodClamp, ImageDimension::Dim3D) == 10);
+static_assert(ImageSampleAddressComponents(ImageSampleFlagCompare | ImageSampleFlagBias | ImageSampleFlagOffset | ImageSampleFlagLodClamp, ImageDimension::Dim2D) == 6);
 
 constexpr MimgSampleInfo MIMG_SAMPLE_OPCODE_LIST[] = {
     {0x20u, "image_sample", 0},

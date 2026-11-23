@@ -21,7 +21,7 @@ constexpr bool Material(uint64_t ps) {
            ps == SuspectScene1;
 }
 
-// mode 0: AUTO (only the two directly observed zero-survivor scene shaders)
+// mode 0: guest comparison (the 769-derived AUTO relaxation did not help on device)
 // mode 1: explicit LESS_OR_EQUAL for all five material shaders
 // mode 2: explicit GREATER_OR_EQUAL for all five
 // mode 3: exact guest EQUAL, for A/B recovery in the launcher.
@@ -32,8 +32,6 @@ constexpr Decision Select(int mode, uint64_t ps, uint64_t depth_address,
         depth_write || !stencil_always || guest_compare != 2u) return Decision::Guest;
     if (mode == 1) return Decision::LessOrEqual;
     if (mode == 2) return Decision::GreaterOrEqual;
-    if (mode == 0 && (ps == SuspectScene0 || ps == SuspectScene1))
-        return Decision::GreaterOrEqual;
     return Decision::Guest;
 }
 

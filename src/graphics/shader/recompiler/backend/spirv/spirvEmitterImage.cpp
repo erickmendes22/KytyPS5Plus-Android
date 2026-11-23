@@ -1105,7 +1105,11 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				dref_value = AddressF32(ctx, mem, *address, layout.dref);
 			}
 		}
-		std::array<uint32_t, 4> operands {};
+		uint32_t min_lod = 0;
+		if (layout.clamp != NoImageComponent && mem.image_address_components > layout.clamp) {
+			min_lod = AddressF32(ctx, mem, *address, layout.clamp);
+		}
+		std::array<uint32_t, 5> operands {};
 		size_t operand_count = 0;
 		if (HasFlag(mem, Decoder::ImageSampleFlagDerivative)) {
 			operands[0] = spv::ImageOperandsGradMask;
@@ -1117,15 +1121,10 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			if (HasFlag(mem, Decoder::ImageSampleFlagLod) && layout.lod != NoImageComponent) {
 				lod = AddressF32(ctx, mem, *address, layout.lod);
 			}
-			// IMAGE_SAMPLE*_CL carries a *separate* minimum LOD component.
-			// Old Android code decoded it in the instruction flags but ignored
-			// the value. For explicit-LOD compute passes this must clamp the LOD
-			// before the image is sampled; otherwise textures/lights from
-			// streaming mip chains may be read from an invalid finer level.
-			if (layout.clamp != NoImageComponent &&
-			    mem.image_address_components > layout.clamp) {
-				lod = EmitGlsl<GLSLstd450FMax, IR::Type::F32>(
-				    state, lod, AddressF32(ctx, mem, *address, layout.clamp));
+			// Explicit LOD requires no optional Vulkan MinLod feature.
+			if (min_lod != 0) {
+				lod = EmitGlsl<GLSLstd450FMax, IR::Type::F32>(state, lod, min_lod);
+				min_lod = 0;
 			}
 			operands[0] = spv::ImageOperandsLodMask;
 			operands[1] = lod;
@@ -1149,6 +1148,15 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				sample_operand_count = std::max(size_t{1}, sample_operand_count);
 				sample_operands[sample_operand_count++] = PackedOffset(
 				    ctx, offset_value, candidate.dimension, sample_operands[0]);
+			}
+			// SPIR-V MinLod is legal for implicit LOD or Grad only when the
+			// logical device enabled shaderResourceMinLod. On other devices
+			// retain the prior implicit/gradient fallback, never emit an unsupported capability.
+			if (min_lod != 0 && state.device_features.shader_resource_min_lod) {
+				state.builder.RequireCapability(spv::CapabilityMinLod);
+				sample_operand_count = std::max(size_t{1}, sample_operand_count);
+				sample_operands[0] |= spv::ImageOperandsMinLodMask;
+				sample_operands[sample_operand_count++] = min_lod;
 			}
 			const auto coord =
 			    CoordF32(ctx, mem, *address, layout.coord,

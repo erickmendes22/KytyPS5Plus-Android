@@ -779,6 +779,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	device_features.shaderStorageImageArrayDynamicIndexing =
 	    supported_features2.features.shaderStorageImageArrayDynamicIndexing;
 	device_features.shaderImageGatherExtended            = VK_TRUE;
+	device_features.shaderResourceMinLod = supported_features2.features.shaderResourceMinLod;
+	optional.shader_resource_min_lod = device_features.shaderResourceMinLod == VK_TRUE;
 	device_features.independentBlend                     = VK_TRUE;
 	device_features.occlusionQueryPrecise = supported_features2.features.occlusionQueryPrecise;
 	graphics.occlusion_query_precise_enabled = device_features.occlusionQueryPrecise == VK_TRUE;

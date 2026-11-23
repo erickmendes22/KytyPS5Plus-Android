@@ -53,6 +53,7 @@ struct OptionalDeviceFeatures {
 	// --gpu-indirect: Vulkan 1.1 shaderDrawParameters plus core drawIndirectFirstInstance.
 	bool gpu_indirect_draws  = false;
 	bool multi_draw_indirect = false; // core multiDrawIndirect
+	bool shader_resource_min_lod = false; // core shaderResourceMinLod
 };
 
 struct GraphicContext {

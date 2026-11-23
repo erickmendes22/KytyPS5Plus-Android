@@ -730,6 +730,7 @@ struct PipelineCache::ProgramCache {
 		         .device_clock_period_ps = graphics.device_clock_period_ps,
 		         .storage_buffer_chunk_bytes = std::bit_floor(
 		             graphics.GetPhysicalDeviceProperties().limits.maxStorageBufferRange),
+		         .shader_resource_min_lod = graphics.optional_features.shader_resource_min_lod,
 		};
 		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
 			if ((input_info.bvh_live & 0x80u) != 0u) {
@@ -1215,7 +1216,8 @@ struct PipelineCache::ProgramCache {
             f.first_lane_value_sets, f.bvh_emulation) + fmt::format(" ftz32={} pslive={} rswz={} fud={}", f.ftz32_ops, f.pixel_live_election, f.relative_swizzle, f.fold_user_depth) +
             fmt::format(" ssbo_chunk={} clock_ps={} loopguard={}/{} bindless_images={}", f.storage_buffer_chunk_bytes, f.device_clock_period_ps,
                         LoopGuard::Spec() != nullptr ? LoopGuard::Spec() : "",
-                        LoopGuard::Limit(), options.bindless_images);
+                        LoopGuard::Limit(), options.bindless_images) +
+            fmt::format(" lodclamp_v2={}", f.shader_resource_min_lod);
 		return XXH3_64bits(text.data(), text.size()) ^ (f.invariant_position ? 0xca029dfb62ec438aull : 0);
 	}
 

@@ -5860,6 +5860,10 @@ void TestImageAddressOperands() {
   };
   constexpr std::array cases{
       Case{0x27, 1, false, false, 2, 2}, // xy, explicit level zero
+      Case{0x21, 1, false, false, 3, 3}, // xy, min LOD
+      Case{0x21, 1, true, false, 3, 2},  // packed xy, min LOD
+      Case{0x23, 1, false, false, 7, 7}, // gradients, xy, min LOD
+      Case{0x23, 2, true, false, 10, 6}, // packed 3D gradients, xyz, min LOD
       Case{0x22, 2, false, false, 9, 9}, // 3D gradients and xyz
       Case{0x20, 1, true, false, 2, 1},  // packed xy
       Case{0x3d, 1, true, false, 5, 4},  // offset, half bias, full dref, packed xy

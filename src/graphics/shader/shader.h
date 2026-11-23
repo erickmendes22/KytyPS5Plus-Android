@@ -461,6 +461,7 @@ struct ShaderDeviceFeatures {
 	// Enabled VK_KHR_shader_clock device-clock tick; zero retains the old fallback.
 	uint32_t device_clock_period_ps = 0;
 	uint32_t storage_buffer_chunk_bytes = 0;
+	bool shader_resource_min_lod = false; // core shaderResourceMinLod, enabled on logical device
 };
 
 // ShaderDeviceFeatures::bvh_emulation bits.

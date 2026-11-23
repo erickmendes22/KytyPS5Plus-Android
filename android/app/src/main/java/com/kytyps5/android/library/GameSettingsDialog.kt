@@ -94,7 +94,7 @@ class GameSettingsDialog(
             isChecked = current.demonsSouls1080p
         }
         val dsDepthEqual = spinner(listOf(
-            "AUTO: scene material EQUAL -> GREATER_OR_EQUAL (2 shaders)",
+            "AUTO: original game/PC depth comparison",
             "All 5 measured materials: EQUAL -> LESS_OR_EQUAL",
             "All 5 measured materials: EQUAL -> GREATER_OR_EQUAL",
             "OFF: original game/PC EQUAL (A/B comparison)",
