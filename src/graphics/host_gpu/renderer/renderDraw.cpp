@@ -2895,7 +2895,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		static int32_t bright_baseline_frame = -1;
 		static int32_t dark_onset_frame = -1;
 		static int32_t paired_dark_frame = -1;
-		static int32_t post_transition_frame = -1;
 		if (scene_frame != frame) { scene_frame = frame; scene_ordinal = 0; }
 		const auto& gate = DemonsAdaptiveCapture::Current();
 		const auto colors = std::span {state.color_info, state.color_count};
@@ -2908,17 +2907,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				bright_baseline_frame = frame;
 			if (dark_onset_frame < 0 && gate.DarkOnsetDue(frame))
 				dark_onset_frame = frame;
-			if (post_transition_frame < 0 && gate.PostTransitionDarkDue(frame) &&
-			    gate.CapturedFrame(frame))
-				post_transition_frame = frame;
-			else if (paired_dark_frame < 0 && gate.CapturedFrame(frame) &&
-			         !gate.PostTransitionDarkDue(frame))
+			if (paired_dark_frame < 0 && gate.CapturedFrame(frame) &&
+			    !gate.PostTransitionDarkDue(frame))
 				paired_dark_frame = frame;
 		}
+		const bool late_paired_frame = gate.PostTransitionDarkDue(frame) &&
+		    gate.CapturedFrame(frame);
 		const bool relevant_frame = frame == bright_baseline_frame ||
 		                            frame == dark_onset_frame ||
 		                            frame == paired_dark_frame ||
-		                            frame == post_transition_frame;
+		                            late_paired_frame;
 		if (scene != colors.end() && core_writer && relevant_frame &&
 		    Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps") {
 			const uint32_t ordinal = ++scene_ordinal;
@@ -2931,7 +2929,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			ds_scene_bright = frame == bright_baseline_frame;
 			ds_scene_onset = frame == dark_onset_frame;
 			ds_scene_paired = frame == paired_dark_frame;
-			ds_scene_post_transition = frame == post_transition_frame;
+			ds_scene_post_transition = late_paired_frame;
 			ds_scene_pass = scene_ordinal;
 			ds_scene_target = *scene;
 			ds_scene_before = SnapshotDsSceneGrid(

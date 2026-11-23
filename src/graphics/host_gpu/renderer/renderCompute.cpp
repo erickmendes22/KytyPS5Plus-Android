@@ -2395,12 +2395,21 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	    : gate.CapturedFrame(frame) ? "paired_dark" : nullptr;
 	if (!phase) return;
 	static bool captured_bright = false, captured_onset = false;
-	static bool captured_dark = false, captured_post_transition = false;
+	static bool captured_dark = false;
+	static uint32_t captured_post_transition = 0;
+	static int32_t last_post_transition_frame = -1;
+	const bool is_post_transition = phase[0] == 'p' && phase[1] == 'o';
 	bool* captured = phase[0] == 'b' ? &captured_bright
 	    : phase[0] == 'o' ? &captured_onset
-	    : phase[0] == 'p' && phase[1] == 'o' ? &captured_post_transition
-	    : &captured_dark;
-	if (*captured) return;
+	    : is_post_transition ? nullptr : &captured_dark;
+	if (is_post_transition) {
+		// Distinguish the first late event (often zero coefficient updates)
+		// from the subsequent paired update events; never capture more than
+		// three different late guest frames per process.
+		if (captured_post_transition >= 3 || last_post_transition_frame == frame) return;
+	} else if (*captured) {
+		return;
+	}
 
 	const auto find_image = [&bindings](uint64_t addr, TextureCache::BindingType kind) {
 		return std::ranges::find_if(bindings.images, [addr, kind](const auto& b) {
@@ -2509,7 +2518,12 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	file << output;
 	file.close();
 	if (!file.good()) return;
-	*captured = true;
+	if (is_post_transition) {
+		++captured_post_transition;
+		last_post_transition_frame = frame;
+	} else {
+		*captured = true;
+	}
 	Log::WriteToConsoleAndLog(fmt::format(
 	    "[DS_LIGHT_BRIDGE] phase={} frame={} submit={} gbuffer_colored={}/64 "
 	    "hdr_lit={}/64 hdr_mean={:.8f} workgroups={}/{}/{} file={}\n",
