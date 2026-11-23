@@ -866,6 +866,12 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		}();
 		const auto decision = DecideHtileLoad(meta_clear, htile_fill, htile_fill_known,
 		                                      metadata.stencil_compressed);
+		depth.trace_meta_pending = meta_clear;
+		depth.trace_meta_known = htile_fill_known;
+		depth.trace_meta_fill = htile_fill;
+		depth.trace_meta_depth_clear = decision.depth_meta_clear;
+		depth.trace_meta_stencil_clear = decision.stencil_meta_clear;
+		depth.trace_meta_uniform = decision.depth_uniform;
 		depth.load_clear_aspects = {};
 		if (ds_htile_semantics) {
 			if (decision.depth_uniform) depth.depth_clear_value = decision.uniform_value;
@@ -3482,6 +3488,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"depth_write", state.depth_info.depth_write_enable},
 			    {"depth_compare", static_cast<uint32_t>(state.depth_info.depth_compare_op)},
 			    {"load_clear", state.depth_info.depth_load_clear_enable},
+			    {"guest_depth_clear", state.depth_info.depth_clear_enable},
+			    {"clear_depth_value", state.depth_info.depth_clear_value},
+			    {"htile_metadata_pending", state.depth_info.trace_meta_pending},
+			    {"htile_fill_known", state.depth_info.trace_meta_known},
+			    {"htile_fill_word", state.depth_info.trace_meta_fill},
+			    {"htile_caused_depth_clear", state.depth_info.trace_meta_depth_clear},
+			    {"htile_caused_stencil_clear", state.depth_info.trace_meta_stencil_clear},
+			    {"htile_uniform_depth", state.depth_info.trace_meta_uniform},
+			    {"clear_aspects", static_cast<uint32_t>(state.depth_info.load_clear_aspects)},
 			    {"index_count", draw.index_count}, {"instances", draw.instance_count}
 			};
 			const auto folder = Config::GetShaderDumpFolder() / "queue-state";
@@ -3494,12 +3509,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_DEPTH_PREPASS] frame={} phase={} target=0x{:x} "
 			    "depth_samples={}/64 -> {}/64 changed={} depth_test={} depth_write={} "
-			    "load_clear={} file={} saved={}\n",
+			    "load_clear={} guest_clear={} htile_pending={} fill_known={} fill=0x{:08x} "
+			    "meta_depth={} meta_stencil={} uniform={} clear_depth={} file={} saved={}\n",
 			    ds_gbuffer_frame, ds_depth_prepass_phase,
 			    ds_depth_prepass_target.desc.info.data.address,
 			    before_nonzero, after_nonzero, changed,
 			    state.depth_info.depth_test_enable, state.depth_info.depth_write_enable,
-			    state.depth_info.depth_load_clear_enable, name, file.good()));
+			    state.depth_info.depth_load_clear_enable,
+			    state.depth_info.depth_clear_enable, state.depth_info.trace_meta_pending,
+			    state.depth_info.trace_meta_known, state.depth_info.trace_meta_fill,
+			    state.depth_info.trace_meta_depth_clear, state.depth_info.trace_meta_stencil_clear,
+			    state.depth_info.trace_meta_uniform, state.depth_info.depth_clear_value,
+			    name, file.good()));
 		} else {
 			Log::WriteToConsoleAndLog(fmt::format(
 			    "[DS_DEPTH_PREPASS] frame={} phase={} result=depth_snapshot_unavailable\n",

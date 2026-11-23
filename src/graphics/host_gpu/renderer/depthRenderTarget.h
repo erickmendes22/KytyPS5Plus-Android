@@ -24,6 +24,14 @@ struct RenderDepthInfo {
 	TextureCache::ImageDesc     desc;
 	bool                        depth_clear_enable       = false;
 	bool                        depth_load_clear_enable  = false;
+	// Exact provenance of the depth loadOp chosen by AcquireRenderTargets,
+	// captured only for a bounded DS prepass. Never changes render behavior.
+	bool                        trace_meta_pending = false;
+	bool                        trace_meta_known = false;
+	uint32_t                    trace_meta_fill = 0;
+	bool                        trace_meta_depth_clear = false;
+	bool                        trace_meta_stencil_clear = false;
+	bool                        trace_meta_uniform = false;
 	// PC upstream 57791645e: a loadOp clear belongs to a specific
 	// depth/stencil aspect. Do not conflate compressed stencil with depth.
 	vk::ImageAspectFlags        load_clear_aspects {};
