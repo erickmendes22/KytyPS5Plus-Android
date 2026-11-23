@@ -207,12 +207,10 @@ uint32_t EmitFPMad32(EmitterState& state, uint32_t a, uint32_t b, uint32_t c) {
 	// a = EmitFlushF32DenormToSignedZero(state, a);
 	// b = EmitFlushF32DenormToSignedZero(state, b);
 	// c = EmitFlushF32DenormToSignedZero(state, c);
-	const auto product = EmitFPMul32(state, a, b);
+	const auto product = Binary(state, spv::OpFMul, TypeF32(state), a, b);
 	state.builder.AddAnnotation(spv::OpDecorate, product, spv::DecorationNoContraction);
-	// const auto sum = EmitFPAdd32(state, EmitFlushF32DenormToSignedZero(state, product), c);
-	const auto sum = EmitFPAdd32(state, product, c);
+	const auto sum = Binary(state, spv::OpFAdd, TypeF32(state), product, c);
 	state.builder.AddAnnotation(spv::OpDecorate, sum, spv::DecorationNoContraction);
-	// return EmitFlushF32DenormToSignedZero(state, sum);
 	return sum;
 }
 

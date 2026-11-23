@@ -94,7 +94,7 @@ class GameSettingsDialog(
             isChecked = current.demonsSouls1080p
         }
         val dsDepthEqual = spinner(listOf(
-            "AUTO: G-buffer material GE compatibility (default)",
+            "AUTO: Use the game’s depth comparison",
             "Material EQUAL -> LESS_OR_EQUAL",
             "Material EQUAL -> GREATER_OR_EQUAL",
             "OFF: restore original EQUAL",

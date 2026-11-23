@@ -634,6 +634,10 @@ struct PipelineCache::ProgramCache {
 		}
 		ShaderRecompiler::CompileOptions options;
 		options.stage       = stage;
+		static const bool demons_invariant_position = PipelineCacheTitleId() == "PPSA01341";
+		const bool pre_raster = stage == ShaderType::Vertex || stage == ShaderType::Local ||
+		                        stage == ShaderType::TessellationControl ||
+		                        stage == ShaderType::TessellationEvaluation;
 		// KYTY_UBO_CONSTANTS=cs leaves the graphics stages on storage buffers.
 		const bool ubo_stage = !fast_paths.uniform_constants_compute_only || stage == ShaderType::Compute;
 		options.maintenance8_enabled = graphics.maintenance8_enabled;
@@ -647,6 +651,7 @@ struct PipelineCache::ProgramCache {
 		             graphics.optional_features.shader_signed_zero_inf_nan_preserve_f32,
 		         .ftz32_ops = fast_paths.ftz32_ops,
 		         .pixel_live_election = fast_paths.pixel_live_election,
+		         .invariant_position = demons_invariant_position && pre_raster,
 		         .subgroup_vertex       = graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eVertex),
 		         .subgroup_tessellation =
 		             graphics.SubgroupOpsSupported(vk::ShaderStageFlagBits::eTessellationControl) &&
@@ -1180,7 +1185,7 @@ struct PipelineCache::ProgramCache {
             fmt::format(" ssbo_chunk={} clock_ps={} loopguard={}/{} bindless_images={}", f.storage_buffer_chunk_bytes, f.device_clock_period_ps,
                         LoopGuard::Spec() != nullptr ? LoopGuard::Spec() : "",
                         LoopGuard::Limit(), options.bindless_images);
-		return XXH3_64bits(text.data(), text.size());
+		return XXH3_64bits(text.data(), text.size()) ^ (f.invariant_position ? 0xca029dfb62ec438aull : 0);
 	}
 
 	template <typename InputInfo>

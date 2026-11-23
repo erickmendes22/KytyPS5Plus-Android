@@ -309,6 +309,8 @@ struct ShaderDeviceFeatures {
 	// active in subgroup ballots, and their atomics have no effect, so an elected helper lane leaves
 	// its wave with an undefined base index (duplicate append-buffer slots).
 	bool pixel_live_election              = false;
+	// Use consistent pre-rasterization arithmetic across depth and material shaders.
+	bool invariant_position               = false;
 	// Graphics stages whose invocations may use subgroup ballot and shuffle
 	// (VkPhysicalDeviceVulkan11Properties::subgroupSupportedStages/Operations). In a stage
 	// without them each invocation is emitted as a one-lane wave instead.

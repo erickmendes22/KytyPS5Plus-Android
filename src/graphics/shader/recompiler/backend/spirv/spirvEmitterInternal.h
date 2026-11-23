@@ -250,6 +250,11 @@ uint32_t EmitNative(EmitterState& state, Args... args) {
 	if constexpr (type == IR::Type::F64 &&
 	              (opcode == spv::OpFMul || opcode == spv::OpFDiv || opcode == spv::OpExtInst)) {
 		state.builder.AddAnnotation(spv::OpDecorate, result, spv::DecorationNoContraction);
+	} else if constexpr (type == IR::Type::F32 &&
+	                     (opcode == spv::OpFAdd || opcode == spv::OpFSub || opcode == spv::OpFMul)) {
+		if (state.device_features.invariant_position) {
+			state.builder.AddAnnotation(spv::OpDecorate, result, spv::DecorationNoContraction);
+		}
 	}
 	return result;
 }

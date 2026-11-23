@@ -460,13 +460,8 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	dynamic_state.SetBlendConstants(blend_constants);
 	dynamic_state.SetDepthTestEnabled(depth.depth_test_enable);
 	dynamic_state.SetDepthWriteEnabled(depth.depth_write_enable);
-	// #648 proved the EQUAL comparison remained OFF in the user's actual game log.
-	// The D32 prepass uses GREATER_OR_EQUAL; after the cinematic the material
-	// shaders below have valid depth, stencil ALWAYS and enabled color writes,
-	// but leave the observed G-buffer at its clear value. Use the PC fork's
-	// depth-equality compatibility mechanism automatically on those shaders.
-	// Preserve guest EQUAL for all other materials and depth/shadow passes.
-	// Mode 3 is an explicit reversible OFF; mode 1 tests LESS_OR_EQUAL.
+	// Automatic follows the guest comparison. Modes 1 and 2 are explicit
+	// compatibility overrides for the two observed material shaders.
 	static const int ds_depth_equal_mode = [] {
 		const char* value = std::getenv("KYTY_DS_DEPTH_EQUAL_RELAX");
 		if (value == nullptr || value[1] != '\0' || value[0] < '0' || value[0] > '3')
@@ -477,7 +472,8 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	const bool ds_material_ps =
 	    pixel_shader_hash == 0xafd9334e8581cda2ull ||
 	    pixel_shader_hash == 0xe31a5473e9ee7503ull;
-	if (ds_depth_equal_mode != 3 && ds_material_ps && depth.depth_test_enable &&
+	if ((ds_depth_equal_mode == 1 || ds_depth_equal_mode == 2) &&
+	    ds_material_ps && depth.depth_test_enable &&
 	    !depth.depth_write_enable && depth.desc.info.data.address == 0x282b60000ull &&
 	    depth_compare == vk::CompareOp::eEqual) {
 		depth_compare = ds_depth_equal_mode == 1 ? vk::CompareOp::eLessOrEqual

@@ -961,6 +961,7 @@ public:
 			if (!replacing) {
 				EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Backing, guest_vaddr));
 			}
+			PinSarosHostBank(guest_vaddr);
 			return true;
 		}
 		if (!replacing) {
@@ -1100,6 +1101,7 @@ public:
 #else
 		if (VirtualMemory::Protect(vaddr, size, host_mode)) {
 			EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Private, guest_vaddr));
+			PinSarosHostBank(guest_vaddr);
 			return true;
 		}
 		AddFreeUnlocked(vaddr, size);
