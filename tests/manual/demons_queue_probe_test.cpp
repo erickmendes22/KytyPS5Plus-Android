@@ -7,6 +7,10 @@
 
 using namespace Libs::Graphics::DemonsQueueProbe;
 
+static_assert(GBufferShaders.size() == 5);
+static_assert(GBufferShaders[3] == 0xcfc1d9193e7f9e53ull);
+static_assert(GBufferShaders[4] == 0xc92deb23fc611b10ull);
+
 static std::vector<uint32_t> ReadWords(const char* path) {
 	std::ifstream file(path, std::ios::binary | std::ios::ate);
 	const auto size = file.tellg();

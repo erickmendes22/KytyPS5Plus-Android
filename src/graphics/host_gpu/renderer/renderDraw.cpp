@@ -2905,9 +2905,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			}
 		}
 	}
-	// The 722 comparison established loss of R32_UINT G-buffer content
-	// before the lighting queue. Inspect only three observed material
-	// shaders, at the first bright/onset/dark frame in which they draw.
+	// The 765 comparison established full D32 coverage with a mostly
+	// 0xFF000000 first material layer while other material layers remained
+	// populated. Probe the two unmeasured high-index PS hashes alongside
+	// the three known shaders in the observed post-transition phase.
+	// Do not assume every nonzero auxiliary layer implies a valid material.
 	if (state.ps_active && state.ps_input_info.stage.program &&
 	    Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps") {
 		const auto shader = state.ps_input_info.stage.program->shader_hash;
@@ -2922,12 +2924,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			if (target != colors.end()) {
 				const auto& gate = DemonsAdaptiveCapture::Current();
 				static std::array<int32_t, 4> phase_frame {-1, -1, -1, -1};
-				static std::array<std::array<bool, 3>, 4> phase_shader_done {};
+				static std::array<std::array<bool, DemonsQueueProbe::GBufferShaders.size()>, 4> phase_shader_done {};
 				const int phase = gate.PostTransitionDarkDue(ds_gbuffer_frame) ? 3
 				    : gate.DarkOnsetDue(ds_gbuffer_frame) ? 1
 				    : gate.BrightBaselineDue(ds_gbuffer_frame) ? 0
 				    : gate.CaptureDue(ds_gbuffer_frame) ? 2 : -1;
-				if (phase >= 0) {
+				if (phase >= 0 && (phase == 3 || static_cast<size_t>(match - watched.begin()) < 3)) {
 					if (phase_frame[phase] < 0) phase_frame[phase] = ds_gbuffer_frame;
 					const auto shader_index = static_cast<size_t>(match - watched.begin());
 					if (phase_frame[phase] == ds_gbuffer_frame &&
