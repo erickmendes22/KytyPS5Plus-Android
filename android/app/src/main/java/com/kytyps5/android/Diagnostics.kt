@@ -230,7 +230,7 @@ object Diagnostics {
         if (!dump.isDirectory) return 0
         val queueShaders = setOf("f0c482b0b355e9de", "e3daeb1e7426761b", "32c7da582db1795a")
         val producerShaders = setOf("afd9334e8581cda2", "e31a5473e9ee7503", "b631777eb4aee68c",
-            "cfc1d9193e7f9e53", "c92deb23fc611b10")
+            "cfc1d9193e7f9e53", "c92deb23fc611b10", "684e797dce67bb8e")
         // Vulkan already records this 360-layer light-atlas storage writer, but
         // older Android exports silently excluded its SPIR-V and pipeline JSON.
         val atlasWriterShaders = setOf("c03afccb96a13c5d")

@@ -1382,7 +1382,10 @@ struct DsRayProducerActivity {
 };
 DsRayProducerActivity ds_ray_producer_activity;
 struct DsRayProducerTargets {
-	std::array<uint32_t, 4> probes {902u, 6365u, 31618u, 34946u};
+	// Probe 4445 corresponds to the actually sampled dark tile at
+	// layer 17, texel (214,89). Unlike earlier arbitrary probe IDs, this
+	// ties the ray record to a confirmed dark pixel in queue 33.
+	std::array<uint32_t, 4> probes {4445u, 4444u, 4461u, 902u};
 	int32_t consumer_frame = -1;
 };
 DsRayProducerTargets ds_ray_producer_targets;
@@ -2458,7 +2461,8 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 	static DemonsAdaptiveCapture::RayProducerCaptureGate capture_gate;
 	capture_gate.ObserveFrame(frame);
 	static uint32_t reports = 0;
-	if (!capture_gate.Due(frame, onset, late)) return;
+	const bool followup = !late && capture_gate.FollowupDue(frame);
+	if (!capture_gate.Due(frame, onset, late) && !followup) return;
 	const auto note = [&](const char* status, uint32_t slot, uint64_t address) {
 		if (reports++ >= 8) return;
 		Log::WriteToConsoleAndLog(fmt::format(
@@ -2473,7 +2477,10 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		return;
 	}
 	constexpr uint64_t expected_bytes = 188743680ull;
-	const auto probes = ds_ray_producer_targets.probes;
+	auto probes = ds_ray_producer_targets.probes;
+	// Preserve the dark-pixel probe even when the current relight
+	// consumer has dynamically chosen four other nearby probe IDs.
+	probes[0] = 4445u;
 	constexpr uint64_t words_per_probe = 256ull * 2ull;
 	constexpr uint64_t bytes_per_probe = words_per_probe * sizeof(uint32_t);
 	for (const auto& resource: program.info.buffers) {
@@ -2546,7 +2553,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		    {"output_bytes", source.size},
 		    {"source_adjustment", adjustment},
 		    {"source_adjustment_known", adjustment_known},
-		    {"phase", late ? "post_transition" : "dark_onset"},
+		    {"phase", late ? "post_transition" : followup ? "producer_followup" : "dark_onset"},
 		    {"selected_from_consumer_frame", ds_ray_producer_targets.consumer_frame},
 		    {"producer_tick", context.GetCommandScheduler().CurrentTick()},
 		    {"producer_dispatches_seen", ds_ray_producer_activity.valid},
@@ -2562,8 +2569,10 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			note("write_failed", slot, source.address);
 			return;
 		}
-		capture_gate.NoteCaptured(frame, onset, late);
-		note(late ? "captured_post_transition" : "captured_onset", slot, source.address);
+		if (followup) capture_gate.NoteFollowup(frame);
+		else capture_gate.NoteCaptured(frame, onset, late);
+		note(late ? "captured_post_transition" :
+		     followup ? "captured_producer_followup" : "captured_onset", slot, source.address);
 		return;
 	}
 	note("no_matching_written_ray_buffer", 0, 0);

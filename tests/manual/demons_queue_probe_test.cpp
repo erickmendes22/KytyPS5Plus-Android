@@ -117,6 +117,10 @@ int main(int argc, char** argv) {
 		assert(producer.Due(307, true, false));
 		producer.NoteCaptured(307, true, false);
 		assert(!producer.Due(308, true, false));
+		assert(!producer.FollowupDue(330));
+		assert(producer.FollowupDue(335));
+		producer.NoteFollowup(335);
+		assert(!producer.FollowupDue(359));
 		for (const int frame : {499, 523, 547}) {
 			producer.ObserveFrame(frame);
 			assert(producer.Due(frame, false, true));

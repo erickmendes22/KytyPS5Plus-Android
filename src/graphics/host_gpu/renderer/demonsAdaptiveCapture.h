@@ -263,6 +263,17 @@ public:
 		    (m_last_dark < 0 || (frame >= m_last_dark && frame - m_last_dark >= 24));
 		return onset && !m_onset_captured;
 	}
+	// The 768 trace confirms no producer dispatch during late gameplay.
+	// Capture the producer's LAST active update while it is still running,
+	// rather than waiting for an event during which the producer is idle.
+	bool FollowupDue(int32_t frame) const {
+		return m_onset_captured && !m_followup_captured &&
+		    m_onset_frame >= 0 && frame >= m_onset_frame + 24 &&
+		    int64_t{frame} - m_onset_frame <= 144;
+	}
+	void NoteFollowup(int32_t frame) {
+		if (FollowupDue(frame)) m_followup_captured = true;
+	}
 	void NoteCaptured(int32_t frame, bool onset, bool late) {
 		if (!Due(frame, onset, late)) return;
 		if (late) {
@@ -270,10 +281,13 @@ public:
 			m_last_dark = frame;
 		} else {
 			m_onset_captured = true;
+			m_onset_frame = frame;
 		}
 	}
 private:
 	bool m_onset_captured = false;
+	bool m_followup_captured = false;
+	int32_t m_onset_frame = -1;
 	uint32_t m_dark_count = 0;
 	int32_t m_last_dark = -1;
 	int32_t m_last_frame = -1;
