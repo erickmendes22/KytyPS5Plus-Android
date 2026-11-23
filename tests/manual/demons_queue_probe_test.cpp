@@ -95,6 +95,39 @@ int main(int argc, char** argv) {
 		assert(!late.CaptureDue(550));
 		assert(!late.PostTransitionDarkDue(557)); // sample is stale
 	}
+	// Replay the full 762 real HDR observations. It ended at 553, so the
+	// original 192-frame / eight-sample gate could never fire. Verify
+	// the updated gate captures distinct material/atlas pairs BEFORE then,
+	// including the frame-527 HUD flicker (0.0105114 / 3 lit pixels).
+	{
+		using Libs::Graphics::DemonsAdaptiveCapture::Gate;
+		Gate run762;
+		constexpr uint64_t scene = 0x281a80000ull;
+		struct Sample { int32_t frame; double level; uint32_t visible; };
+		for (const Sample sample : {
+			Sample{215, 0.1007097, 64}, Sample{239, 0.1036064, 64},
+			Sample{263, 0.0369873, 64}, Sample{287, 0.1051085, 64},
+			Sample{311, 0.0512764, 64}, Sample{335, 0.0000000, 0},
+			Sample{359, 0.0062383, 2}, Sample{383, 0.0062383, 2},
+			Sample{407, 0.0062383, 2}, Sample{431, 0.0062383, 2},
+			Sample{455, 0.0062383, 2}, Sample{479, 0.0062383, 2},
+			Sample{503, 0.0062383, 2}, Sample{527, 0.0105114, 3},
+			Sample{551, 0.0062383, 2}}) {
+			assert(run762.ShouldSample(sample.frame));
+			run762.MarkGeometry(sample.frame, 5);
+			const auto state = run762.Observe(sample.frame, sample.level,
+			                                sample.visible, scene);
+			if (sample.frame == 383) assert(state.triggered);
+			if (sample.frame == 479 || sample.frame == 503 || sample.frame == 527) {
+				assert(state.reason == std::string("post_transition_dark_candidate"));
+				assert(run762.PostTransitionDarkDue(sample.frame + 1));
+				assert(run762.CaptureDue(sample.frame + 1));
+				run762.NoteCaptured(sample.frame + 1);
+				assert(run762.CapturedFrame(sample.frame + 1));
+			}
+		}
+		assert(!run762.CaptureDue(552)); // bounded at three paired frames
+	}
 	// Reproduce the *observed* 718 ordering: the G-buffer shows changing
 	// colored geometry before the lighting queue is sampled; the compositor
 	// sees a bright scene, then three progressively dark observations.

@@ -98,7 +98,13 @@ public:
 			// dark scene persists while new deferred geometry keeps executing.
 			const bool recent_geometry = m_last_geometry >= 0 && frame >= m_last_geometry &&
 			    int64_t{frame} - m_last_geometry <= 300;
-			const bool still_dim = level < 0.012 && visible <= 2;
+			// The actual 762 capture stays near-black at frame 527
+			// (mean 0.0105114, 3/64 lit pixels), even though its tiny HUD
+			// contribution exceeded the old strict 2-pixel threshold.
+			// Judge against the observed bright reference as well as an
+			// absolute dim ceiling; this arms a capture, NOT a rendering fix.
+			const bool still_dim = level < 0.015 && visible <= 4 &&
+			    (m_bright_reference < 0.02 || level < m_bright_reference * 0.25);
 			if (recent_geometry && still_dim) {
 				++m_late_dark_streak;
 				m_late_dark_sample = frame;
@@ -107,8 +113,8 @@ public:
 				m_late_dark_sample = -1;
 			}
 			m_late_dark_candidate = m_last_trigger >= 0 &&
-			    int64_t{frame} - m_last_trigger >= 192 &&
-			    m_late_dark_streak >= 8 && recent_geometry && still_dim;
+			    int64_t{frame} - m_last_trigger >= 96 &&
+			    m_late_dark_streak >= 4 && recent_geometry && still_dim;
 			result.reason = m_late_dark_candidate
 			    ? "post_transition_dark_candidate" : "sustained_dark";
 			return result;
