@@ -1435,7 +1435,7 @@ void CommandProcessor::DrawIndexOffset(uint32_t index_offset, uint32_t index_cou
 
 static void PatchIndirectDrawOffsets(CommandProcessor& cp, IndirectDrawRegisters registers,
                                      uint32_t vertex_offset, uint32_t instance_offset,
-                                     uint32_t first_index) {
+                                     uint32_t first_index, uint32_t draw_index) {
 	const auto write = [&](uint32_t location, uint32_t value) {
 		if (location == Pm4::SH_NOP) {
 			return;
@@ -1447,6 +1447,7 @@ static void PatchIndirectDrawOffsets(CommandProcessor& cp, IndirectDrawRegisters
 	write(registers.vertex_offset, vertex_offset);
 	write(registers.instance_offset, instance_offset);
 	write(registers.index_offset, first_index);
+	write(registers.draw_index, draw_index);
 }
 
 void CommandProcessor::DrawIndirect(uint32_t data_offset, IndirectDrawRegisters registers,
@@ -1496,6 +1497,13 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 
 	const auto args_size = indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs);
 	EXIT_NOT_IMPLEMENTED(stride_in_bytes < args_size);
+	if (registers.draw_index != Pm4::SH_NOP) {
+		static std::atomic_uint32_t count {0};
+		const auto n = count.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (n <= 8 || n % 512 == 0) LOGF(
+		    "[INDIRECT_SUBDRAW_SGPR] count=%u frame=%u reg=0x%x draws=%u indexed=%d\n",
+		    n, m_renderer.GetGpu().GetFrameNum(), registers.draw_index, draw_count, indexed);
+	}
 
 	uint64_t index_size = 0;
 	if (indexed) {
@@ -1514,7 +1522,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		if (!indexed) {
 			auto* args = reinterpret_cast<const DrawIndirectArgs*>(args_addr);
 			PatchIndirectDrawOffsets(*this, registers, args->start_vertex_location,
-			                         args->start_instance_location, 0);
+			                         args->start_instance_location, 0, i);
 			m_num_instances = args->instance_count;
 			empty &= args->vertex_count_per_instance == 0 || args->instance_count == 0;
 			DrawIndexAuto({.vertex_count   = args->vertex_count_per_instance,
@@ -1540,7 +1548,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 			}
 		}
 		PatchIndirectDrawOffsets(*this, registers, args->base_vertex_location,
-		                         args->start_instance_location, args->start_index_location);
+		                         args->start_instance_location, args->start_index_location, i);
 
 		auto* index_addr = reinterpret_cast<const void*>(
 		    m_index_base_addr + static_cast<uint64_t>(args->start_index_location) * index_size);

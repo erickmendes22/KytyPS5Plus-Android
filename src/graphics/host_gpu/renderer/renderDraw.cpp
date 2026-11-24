@@ -3342,7 +3342,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// to the pass's secondary buffer and nothing in between may end the pass.
 	IndirectDrawFixup::Records indirect_records;
 	if (indirect != nullptr && !mesh_active) {
-		indirect_records = m_indirect_fixup->Record(buffer, *indirect, indirect_sources);
+		const auto* vertex_program = state.vertex_info[0].stage.program;
+		indirect_records = m_indirect_fixup->Record(buffer, *indirect, indirect_sources,
+		    vertex_program ? vertex_program->shader_hash : 0);
 	}
 	if (indirect != nullptr && Common::PerfStats::Enabled()) {
 		LogIndirectDrawSample(state, *indirect);
@@ -3463,7 +3465,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	uint32_t geometry_query = UINT32_MAX;
 	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
 	    graphics.occlusion_query_precise_enabled && !geometry.done) {
-		if (geometry.pool && geometry.frame != ds_gbuffer_frame && !geometry.rows.empty() &&
+		if (geometry.pool && int64_t{ds_gbuffer_frame} > int64_t{geometry.frame} + 1 && !geometry.rows.empty() &&
 		    geometry.last_tick != 0 && m_context.GetCommandScheduler().GetMasterSemaphore().IsFree(geometry.last_tick)) {
 			std::vector<uint64_t> result(geometry.rows.size() * 2);
 			const auto status = graphics.device.getQueryPoolResults(
@@ -3510,7 +3512,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				buffer.Handle().resetQueryPool(geometry.pool, 0, geometry_capacity);
 			} else { geometry.pool = nullptr; geometry.done = true; }
 		}
-		if (geometry.pool && geometry.frame == ds_gbuffer_frame && relevant &&
+		// Guest flips can split depth prepass and G-buffer across adjacent host
+		// frame numbers (213553: depth=429, material=430). Keep both.
+		if (geometry.pool && int64_t{ds_gbuffer_frame} >= geometry.frame &&
+		    int64_t{ds_gbuffer_frame} <= int64_t{geometry.frame} + 1 && relevant &&
 		    geometry.rows.size() < geometry_capacity) {
 			geometry_query = static_cast<uint32_t>(geometry.rows.size());
 			const auto& hw = buffer.GetRegisters();
@@ -3519,7 +3524,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			const auto* vs = state.vertex_info[0].stage.program;
 			const auto* ps = state.ps_active ? state.ps_input_info.stage.program : nullptr;
 			geometry.rows.push_back({
-			    {"submit", submit_id}, {"vs", fmt::format("{:016x}", vs ? vs->shader_hash : 0ull)},
+			    {"frame", ds_gbuffer_frame}, {"submit", submit_id}, {"vs", fmt::format("{:016x}", vs ? vs->shader_hash : 0ull)},
 			    {"ps", fmt::format("{:016x}", ps ? ps->shader_hash : 0ull)},
 			    {"index_guest", index_source.address}, {"index_bytes", index_source.size},
 			    {"index_count_or_records", draw.index_count}, {"instances", draw.instance_count},

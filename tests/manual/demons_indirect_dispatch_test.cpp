@@ -1,3 +1,4 @@
+#include "graphics/guest_gpu/command_processor/indirectDrawPacketPolicy.h"
 #include "graphics/host_gpu/renderer/indirectDispatchPolicy.h"
 
 using Libs::Graphics::ChooseIndirectDispatchSource;
@@ -23,3 +24,11 @@ static_assert(ChooseIndirectDispatchSource(true, false, true) == IndirectDispatc
 static_assert(ChooseIndirectDispatchSource(true, false, false) == IndirectDispatchSource::Cpu);
 
 int main() { return 0; }
+
+namespace P = Libs::Graphics::IndirectDrawPacketPolicy;
+static_assert(P::SubdrawRegister(0x000002a5u) == P::NoRegister);
+static_assert(P::SubdrawRegister(0x800002a5u) == 0x2a5u);
+static_assert(P::SubdrawRegister(0xd00002a5u) == 0x2a5u);
+static_assert(!P::RequiresCpu(P::NoRegister,P::NoRegister));
+static_assert(P::RequiresCpu(0x2a0u,P::NoRegister));
+static_assert(P::RequiresCpu(P::NoRegister,0x2a5u));

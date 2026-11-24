@@ -68,7 +68,7 @@ public:
 	// Records the fix-up dispatch on the primary command buffer, ahead of the render pass the
 	// draw lands in (ending it first when passes are not deferred).
 	[[nodiscard]] Records Record(CommandBuffer& buffer, const IndirectDrawArgs& args,
-	                             const Sources& sources);
+	                             const Sources& sources, uint64_t vertex_hash = 0);
 	// The same for an emulated mesh draw (one indexed record).
 	[[nodiscard]] MeshRecords RecordMesh(CommandBuffer& buffer, const IndirectDrawArgs& args,
 	                                     const Sources& sources, const MeshShape& shape);

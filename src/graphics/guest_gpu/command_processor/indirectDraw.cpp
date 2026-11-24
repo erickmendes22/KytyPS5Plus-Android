@@ -63,9 +63,12 @@ bool CommandProcessor::TryDrawIndirectOnGpu(uint32_t data_offset, uint32_t max_c
 		LogUnsupportedPacket("unaligned records");
 		return false;
 	}
-	if (registers.index_offset != Pm4::SH_NOP) {
-		// No draw parameter carries the first index into an SGPR.
-		LogUnsupportedPacket("a first-index user SGPR");
+	static_assert(IndirectDrawPacketPolicy::NoRegister == Pm4::SH_NOP);
+	if (IndirectDrawPacketPolicy::RequiresCpu(registers.index_offset, registers.draw_index)) {
+		// Current GPU prologue handles vertex/instance bases, not an arbitrary
+		// first-index or subdraw-index user SGPR. Preserve guest semantics.
+		LogUnsupportedPacket(registers.draw_index != Pm4::SH_NOP ?
+		    "a subdraw-index user SGPR" : "a first-index user SGPR");
 		return false;
 	}
 	args.sgprs.enabled = true;

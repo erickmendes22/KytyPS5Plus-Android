@@ -1649,7 +1649,8 @@ KYTY_CP_OP_PARSER(CpOpDrawIndirectMulti) {
 	// Multi-draw moves the first-index enable to word 4; the destinations stay in 2/3.
 	const IndirectDrawRegisters registers {
 	    buffer[1] & 0xffffu, buffer[2] & 0xffffu,
-	    indexed && (buffer[3] & (1u << 28u)) != 0 ? buffer[1] >> 16u : Pm4::SH_NOP};
+	    indexed && (buffer[3] & (1u << 28u)) != 0 ? buffer[1] >> 16u : Pm4::SH_NOP,
+	    IndirectDrawPacketPolicy::SubdrawRegister(buffer[3])};
 
 	if (count_indirect == 0) {
 		count_addr = nullptr;

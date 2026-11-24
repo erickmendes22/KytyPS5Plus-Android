@@ -139,7 +139,13 @@ void main() {
     }
     const uint record_words = params.indexed != 0u ? 5u : 4u;
     HostWords destination = HostWords(params.destination + uint64_t(draw * record_words * 4u));
+    const bool geometry_feedback = params.feedback != 0ul && params.padding == 2u && draw == 0u;
     if (draw >= count) {
+        if (geometry_feedback) {
+            HostWords(params.feedback).words[1] = 0xffffffffu;
+            HostWords(params.feedback).words[2] = 0u;
+            HostWords(params.feedback).words[3] = 0u;
+        }
         // Records past the count may not be mapped; an empty draw needs none of them.
         for (uint i = 0u; i < record_words; i++) {
             destination.words[i] = 0u;
@@ -151,10 +157,15 @@ void main() {
     for (uint i = 0u; i < record_words; i++) {
         values[i] = source.words[i];
     }
+    if (geometry_feedback) {
+        HostWords(params.feedback).words[1] = values[0];
+        HostWords(params.feedback).words[2] = values[1];
+    }
     if (params.indexed != 0u) {
         // indexCount, instanceCount, firstIndex, vertexOffset, firstInstance
         values[0] = ClampedIndexCount(values[0], values[2]);
     }
+    if (geometry_feedback) HostWords(params.feedback).words[3] = values[0];
     if (params.feedback != 0ul && values[0] != 0u && values[1] != 0u) {
         atomicMax(FeedbackWord(params.feedback).word, 1u);
     }

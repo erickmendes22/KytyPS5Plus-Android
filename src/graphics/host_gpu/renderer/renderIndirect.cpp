@@ -212,7 +212,7 @@ IndirectDrawFixup::Output IndirectDrawFixup::Dispatch(CommandBuffer& buffer, uin
 
 IndirectDrawFixup::Records IndirectDrawFixup::Record(CommandBuffer& buffer,
                                                      const IndirectDrawArgs& args,
-                                                     const Sources& sources) {
+                                                     const Sources& sources, uint64_t vertex_hash) {
 	const auto  record_bytes = RecordBytes(args.indexed);
 	PollFeedback();
 	uint32_t    feedback_slot = 0;
@@ -224,10 +224,21 @@ IndirectDrawFixup::Records IndirectDrawFixup::Record(CommandBuffer& buffer,
 	params.max_count    = args.max_count;
 	params.index_limit  = args.index_buffer_size;
 	params.indexed      = args.indexed ? 1u : 0u;
+	// 213553 frame 429: three indirect depth draws use this VS and
+	// pass zero samples. Distinguish real guest culling from our clamp,
+	// with completed GPU feedback, not a new synchronous readback.
+	static const bool trace = [] {
+		const char* v = std::getenv("KYTY_DS_FRAME_TRACE");
+		return v && v[0] == '1' && v[1] == '\0';
+	}();
+	const bool capture = trace && args.indexed && args.max_count == 1 &&
+	    vertex_hash == 0x7b3be1892b062c73ull && params.feedback != 0;
+	params.padding = capture ? 2u : 0u;
 	const auto output   = Dispatch(buffer, uint64_t {record_bytes} * args.max_count, &params,
 	                               (args.max_count + FixupGroupSize - 1u) / FixupGroupSize);
 	if (params.feedback != 0) {
-		CommitFeedback(feedback_slot, args.args_addr, false, 0);
+		CommitFeedback(feedback_slot, args.args_addr, false, capture ? 2u : 0u, false,
+		               capture ? vertex_hash : 0ull);
 	}
 	return {.buffer = output.buffer,
 	        .offset = output.offset,
@@ -343,7 +354,8 @@ void IndirectDrawFixup::PollFeedback() {
 			continue;
 		}
 		const size_t offset = slot * FeedbackBytes;
-		const size_t bytes = feedback.dispatch && feedback.reserved == 1u
+		const bool geometry = !feedback.dispatch && !feedback.mesh && feedback.reserved == 2u;
+		const size_t bytes = ((feedback.dispatch && feedback.reserved == 1u) || geometry)
 		                         ? FeedbackBytes : sizeof(uint32_t);
 		std::array<uint32_t, 4> words {};
 		m_feedback_buffer->Invalidate(offset, bytes);
@@ -382,6 +394,25 @@ void IndirectDrawFixup::PollFeedback() {
 			}
 			feedback = {};
 			continue;
+		}
+		if (geometry) {
+			// Word 1: guest record indexCount (UINT32_MAX = count disabled it);
+			// word 2: guest instanceCount, word 3: final clamped indexCount.
+			static std::unordered_map<uint64_t, std::array<uint32_t, 3>> previous;
+			static std::atomic_uint32_t reports {0};
+			const std::array<uint32_t,3> values {words[1],words[2],words[3]};
+			const auto it = previous.find(feedback.site);
+			const bool changed = it == previous.end() || it->second != values;
+			if (changed) {
+				if (previous.size() >= 512) previous.clear();
+				previous[feedback.site] = values;
+				const auto n = reports.fetch_add(1, std::memory_order_relaxed);
+				if (n < 192) Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_GEOMETRY_INDIRECT_ARGS] frame={} vs=0x{:016x} site=0x{:x} "
+				    "count_disabled={} raw_indices={} raw_instances={} host_indices={} nonempty={}\n",
+				    feedback.frame, feedback.shader_hash, feedback.site, words[1] == UINT32_MAX,
+				    words[1],words[2],words[3],requested));
+			}
 		}
 		NoteCpuResult(feedback.site, requested == 0);
 		// vkCmdDrawIndexedIndirect can be accepted with indexCount=0.
