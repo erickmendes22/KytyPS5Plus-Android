@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
@@ -2434,6 +2435,89 @@ static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
 	return words;
 }
 
+// Read only the five real draw records at an overlapping compute writer,
+// not its entire allocation. Capture actual post-dispatch values in three
+// scene phases, with a strict session budget; the binding's write range is
+// only a candidate until the words and the consumer's feedback agree.
+static void CaptureDsGeometryWriter(RenderContext& context,
+                                    const PreparedBindings& bindings, uint64_t submit,
+                                    std::array<uint32_t,3> groups,
+                                    vk::Buffer indirect = {}, uint64_t indirect_offset = 0) {
+    namespace D = DemonsDominantGeometry;
+    if (!DsTraceEnabled() || Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
+    static uint32_t files = 0;
+    if (files >= 12) return;
+    const auto frame = context.GetGpu().GetFrameNum();
+    const auto& gate = DemonsAdaptiveCapture::Current();
+    const uint32_t phase = gate.PostTransitionDarkDue(frame) ? 3u :
+        gate.DarkOnsetDue(frame) ? 2u : gate.BrightSceneActive(frame) ? 1u : 0u;
+    const auto& program = *bindings.runtime->program;
+    const auto& snapshot = *bindings.runtime->resources;
+    static std::unordered_map<uint64_t,uint32_t> captured;
+    if ((captured[program.shader_hash] & (1u<<phase)) != 0) return;
+    nlohmann::json rows = nlohmann::json::array();
+    for (size_t i=0; i<program.info.buffers.size(); ++i) {
+        const auto& resource = program.info.buffers[i];
+        const auto slot = resource.descriptor_index;
+        if (!resource.written || slot >= bindings.buffer_sources.size() ||
+            slot >= bindings.buffers.size()) continue;
+        const auto& source = bindings.buffer_sources[slot];
+        if (!D::CountOverlap(source.address,source.size)) continue;
+        const auto& native = bindings.buffers[slot];
+        const auto offset_word = program.bindings.memory_offset_dword + slot/4u;
+        if (!native.buffer || native.range == VK_WHOLE_SIZE ||
+            offset_word >= bindings.shader_data.size()) continue;
+        const uint64_t adjustment =
+            (bindings.shader_data[offset_word] >> ((slot%4u)*8u)) & 255u;
+        for (auto site: D::IndirectRecords) {
+            if (site < source.address) continue;
+            const uint64_t offset = site-source.address;
+            constexpr uint64_t bytes = 5*sizeof(uint32_t);
+            if (offset > source.size || bytes > source.size-offset ||
+                adjustment > native.range || offset > native.range-adjustment ||
+                bytes > native.range-adjustment-offset) continue;
+            std::array<uint32_t,5> raw {}, backing {};
+            const bool backing_ok = LibKernel::Memory::TryReadBacking(site,backing.data(),bytes);
+            if (!ReadDsGpuWords(context,native.buffer,native.offset+adjustment+offset,raw)) continue;
+            rows.push_back({{"site",site},{"slot",slot},{"guest_base",source.address},
+                {"guest_size",source.size},{"record",raw},{"backing_ok",backing_ok},
+                {"backing",backing},{"instance_count",raw[1]},
+                {"static_write_begin",resource.written_begin},{"static_write_end",resource.written_end},
+                {"dynamic_write",resource.written_dynamic}});
+        }
+    }
+    if (rows.empty()) return;
+    if (indirect) (void)ReadDsGpuWords(context,indirect,indirect_offset,groups);
+    nlohmann::json descriptors = nlohmann::json::array();
+    for (size_t i=0; i<snapshot.buffers.size(); ++i)
+        descriptors.push_back({{"index",i},{"words",snapshot.buffers[i].dwords}});
+    nlohmann::json images = nlohmann::json::array();
+    for (const auto& desc: snapshot.images) images.push_back(desc.dwords);
+    nlohmann::json samplers = nlohmann::json::array();
+    for (const auto& desc: snapshot.samplers) samplers.push_back(desc.dwords);
+    const auto folder = Config::GetShaderDumpFolder() / "queue-state";
+    std::error_code ec;
+    std::filesystem::create_directories(folder,ec);
+    if (ec) return;
+    const auto name = fmt::format("ds_geometry_writer_{:016x}_f{}_s{}_p{}.json",
+        program.shader_hash,frame,submit,phase);
+    std::ofstream file(folder/name,std::ios::trunc);
+    if (!file) return;
+    file << nlohmann::json{{"frame",frame},{"submit",submit},{"phase",phase},
+        {"shader",fmt::format("{:016x}",program.shader_hash)},{"groups",groups},
+        {"indirect",bool(indirect)},{"user_data",snapshot.user_data},{"srt",snapshot.flattened_srt},
+        {"shader_data",bindings.shader_data},{"buffers",descriptors},{"images",images},
+        {"samplers",samplers},{"records",rows}};
+    file.close();
+    if (file.good()) {
+        ++files;
+        captured[program.shader_hash] |= 1u<<phase;
+        Log::WriteToConsoleAndLog(fmt::format(
+            "[DS_GEOMETRY_WRITER] frame={} shader=0x{:016x} records={} file={}\n",
+            frame,program.shader_hash,rows.size(),name));
+    }
+}
+
 // Demon's Souls ray-hit provenance: the 767 capture happened at frame 206,
 // BEFORE the gameplay lighting went dark. Track all producer dispatch activity
 // and capture only during the observed onset/post-transition phases. Pair with
@@ -3466,6 +3550,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// Record the shader barriers and diagnostics before the BDA settle submits the
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	CaptureDsGeometryWriter(m_context, bindings, submit_id,
+	                           {thread_group_x, thread_group_y, thread_group_z});
 	CaptureDsRelightMaskWriter(m_context, bindings, submit_id,
 	                           {thread_group_x, thread_group_y, thread_group_z});
 	CaptureDsRadianceComputeWriter(m_context, bindings, submit_id,
@@ -3917,6 +4003,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		                          vk::PipelineStageFlagBits::eHost, {}, 1, &host_read, 0, nullptr, 0, nullptr);
 		ReadDsLightMath(*queue_capture, submit_id, bindings);
 	}
+	CaptureDsGeometryWriter(m_context, bindings, submit_id, {args.x, args.y, args.z},
+	                           split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	CaptureDsRelightMaskWriter(m_context, bindings, submit_id, {args.x, args.y, args.z},
 	                           split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	CaptureDsRadianceComputeWriter(m_context, bindings, submit_id, {args.x, args.y, args.z},

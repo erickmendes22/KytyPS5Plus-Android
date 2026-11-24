@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/cache/bufferUploadPolicy.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cache/streamDefaults.h"
@@ -507,10 +508,22 @@ void BufferCache::WatchProbeRays(uint64_t address, uint64_t size) {
 
 void BufferCache::NoteProbeRayWrite(uint64_t address, uint64_t size, const char* path,
                                     uint64_t source, uint64_t shader) {
-	if (m_probe_ray_ranges.empty() || size == 0) return;
+	static const bool trace_geometry = [] {
+		const char* v = std::getenv("KYTY_DS_FRAME_TRACE");
+		return v && v[0] == '1' && v[1] == '\0';
+	}();
+	if ((!trace_geometry && m_probe_ray_ranges.empty()) || size == 0) return;
 	address = Kernel::AddressFold::Fold(address);
 	source = Kernel::AddressFold::Fold(source);
 	if (!GuestRange {address, size}.Valid()) return;
+	if (trace_geometry && DemonsDominantGeometry::CountOverlap(address,size)) {
+		for (size_t i=0; i<DemonsDominantGeometry::IndirectRecords.size(); ++i) {
+			if (!DemonsDominantGeometry::Overlaps(address,size,
+			        DemonsDominantGeometry::IndirectRecords[i]+4,4)) continue;
+			m_geometry_count_writes[i] = {
+			    path,m_scheduler.CurrentTick(),source,shader,address,address+size};
+		}
+	}
 	for (const auto& [first, last]: m_probe_ray_ranges) {
 		const auto begin = std::max(first, address);
 		const auto end = std::min(last, address + size);
@@ -528,6 +541,14 @@ BufferCache::ProbeRayWrite BufferCache::LastProbeRayWrite(uint64_t address, uint
 	if (it == m_probe_ray_writes.end() || it->second.begin >= page + size || it->second.end <= page)
 		return {};
 	return it->second;
+}
+
+BufferCache::ProbeRayWrite BufferCache::LastGeometryCountWrite(uint64_t record) const {
+	record = Kernel::AddressFold::Fold(record);
+	for (size_t i=0; i<DemonsDominantGeometry::IndirectRecords.size(); ++i) {
+		if (record == DemonsDominantGeometry::IndirectRecords[i]) return m_geometry_count_writes[i];
+	}
+	return {};
 }
 
 void BufferCache::StampPendingWritesSlow() {

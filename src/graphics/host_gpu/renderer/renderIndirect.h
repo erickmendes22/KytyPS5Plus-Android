@@ -116,6 +116,12 @@ private:
 		uint32_t reserved = 0; // mesh: reserved workgroup slots, 0 for draws
 		bool     mesh     = false;
 		bool     dispatch = false; // RecordDispatchClamp: the word is 1 if it clamped
+		const char* writer_path = nullptr;
+		uint64_t writer_shader = 0;
+		uint64_t writer_tick = 0;
+		uint64_t writer_source = 0;
+		uint64_t writer_begin = 0;
+		uint64_t writer_end = 0;
 	};
 	static constexpr uint32_t FeedbackSlots = 64;
 

@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/renderIndirect.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 
@@ -232,13 +233,23 @@ IndirectDrawFixup::Records IndirectDrawFixup::Record(CommandBuffer& buffer,
 		return v && v[0] == '1' && v[1] == '\0';
 	}();
 	const bool capture = trace && args.indexed && args.max_count == 1 &&
-	    vertex_hash == 0x7b3be1892b062c73ull && params.feedback != 0;
+	    DemonsDominantGeometry::WatchedIndirectVs(vertex_hash) && params.feedback != 0;
 	params.padding = capture ? 2u : 0u;
 	const auto output   = Dispatch(buffer, uint64_t {record_bytes} * args.max_count, &params,
 	                               (args.max_count + FixupGroupSize - 1u) / FixupGroupSize);
 	if (params.feedback != 0) {
 		CommitFeedback(feedback_slot, args.args_addr, false, capture ? 2u : 0u, false,
 		               capture ? vertex_hash : 0ull);
+		if (capture) {
+			const auto writer = m_context.GetBufferCache().LastGeometryCountWrite(args.args_addr);
+			auto& f = m_feedback[feedback_slot];
+			f.writer_path = writer.path;
+			f.writer_shader = writer.shader;
+			f.writer_tick = writer.tick;
+			f.writer_source = writer.source;
+			f.writer_begin = writer.begin;
+			f.writer_end = writer.end;
+		}
 	}
 	return {.buffer = output.buffer,
 	        .offset = output.offset,
@@ -409,9 +420,12 @@ void IndirectDrawFixup::PollFeedback() {
 				const auto n = reports.fetch_add(1, std::memory_order_relaxed);
 				if (n < 192) Log::WriteToConsoleAndLog(fmt::format(
 				    "[DS_GEOMETRY_INDIRECT_ARGS] frame={} vs=0x{:016x} site=0x{:x} "
-				    "count_disabled={} raw_indices={} raw_instances={} host_indices={} nonempty={}\n",
+				    "count_disabled={} raw_indices={} raw_instances={} host_indices={} nonempty={} "
+				    "writer_path={} writer_shader=0x{:016x} writer_tick={} source=0x{:x} range=0x{:x}..0x{:x}\n",
 				    feedback.frame, feedback.shader_hash, feedback.site, words[1] == UINT32_MAX,
-				    words[1],words[2],words[3],requested));
+				    words[1],words[2],words[3],requested,
+				    feedback.writer_path ? feedback.writer_path : "unknown", feedback.writer_shader,
+				    feedback.writer_tick, feedback.writer_source, feedback.writer_begin, feedback.writer_end));
 			}
 		}
 		NoteCpuResult(feedback.site, requested == 0);

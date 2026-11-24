@@ -609,8 +609,9 @@ struct PipelineCache::ProgramCache {
 		ShaderProgram handle {.module = module};
 		if (options.stage == ShaderType::Pixel && graphics.occlusion_query_precise_enabled &&
 		    trace && std::strcmp(trace, "1") == 0 &&
-		    std::ranges::find(DemonsQueueProbe::GBufferShaders, options.shader_hash) !=
-		        DemonsQueueProbe::GBufferShaders.end()) {
+		    (DemonsDominantGeometry::ProbeDepthPs(options.shader_hash) ||
+		     std::ranges::find(DemonsQueueProbe::GBufferShaders, options.shader_hash) !=
+		         DemonsQueueProbe::GBufferShaders.end())) {
 			for (size_t i = 0; i < handle.material_coverage.size(); ++i) {
 				const auto replay = DemonsMaterialCoverage::ReplayShader(result.spirv, i == 1);
 				if (replay.empty() ||
@@ -2174,6 +2175,7 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
 			const auto desc = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
 			const auto size = desc.GetSize();
 			if (size == DemonsLightingMemoryPolicy::ProbeCoefficientBytes ||
+			    DemonsDominantGeometry::CountOverlap(desc.Base48(),size) ||
 			    DemonsRadianceTrace::Data(desc.Base48(), size) ||
 			    DemonsRadianceTrace::Metadata(desc.Base48(), size)) {
 				ShaderDump::RecordDsProbeGuestCode(params.hash, params.code);

@@ -159,6 +159,7 @@ public:
 	void NoteProbeRayWrite(uint64_t address, uint64_t size, const char* path,
 	                       uint64_t source = 0, uint64_t shader = 0);
 	[[nodiscard]] ProbeRayWrite LastProbeRayWrite(uint64_t address, uint64_t size) const;
+	[[nodiscard]] ProbeRayWrite LastGeometryCountWrite(uint64_t record) const;
 	void               SynchronizeBda(const RangeSet& mapped);
 	void               QueueBdaSync(uint64_t vaddr, uint64_t size) {
 		m_memory_tracker.QueueBdaSync(Kernel::AddressFold::Fold(vaddr), size);
@@ -330,6 +331,7 @@ private:
 	std::map<uint64_t, WriteTick>              m_write_ticks;
 	std::vector<std::pair<uint64_t, uint64_t>> m_probe_ray_ranges;
 	std::unordered_map<uint64_t, ProbeRayWrite> m_probe_ray_writes;
+	std::array<ProbeRayWrite,5> m_geometry_count_writes {};
 	std::vector<std::pair<uint64_t, uint64_t>> m_pending_writes;
 	uint32_t                                   m_readback_reader = 0;
 };

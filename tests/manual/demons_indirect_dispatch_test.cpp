@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/guest_gpu/command_processor/indirectDrawPacketPolicy.h"
 #include "graphics/host_gpu/renderer/indirectDispatchPolicy.h"
 
@@ -32,3 +33,12 @@ static_assert(P::SubdrawRegister(0xd00002a5u) == 0x2a5u);
 static_assert(!P::RequiresCpu(P::NoRegister,P::NoRegister));
 static_assert(P::RequiresCpu(0x2a0u,P::NoRegister));
 static_assert(P::RequiresCpu(P::NoRegister,0x2a5u));
+
+namespace D = Libs::Graphics::DemonsDominantGeometry;
+static_assert(D::CountOverlap(0x20934d2a4ull,4));
+static_assert(D::CountOverlap(0x20934d2a0ull,20));
+static_assert(!D::CountOverlap(0x20934d2a0ull,4));
+static_assert(!D::CountOverlap(0x20934d2a8ull,4));
+static_assert(D::CountOverlap(0x20934d000ull,4096));
+static_assert(D::WatchedIndirectVs(0x6a9c615b413ad6bfull));
+static_assert(D::ProbeDepthPs(0x3dce2bd78d58db62ull));
