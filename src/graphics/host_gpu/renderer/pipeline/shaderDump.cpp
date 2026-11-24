@@ -57,7 +57,7 @@ bool DsLightingShader(uint64_t hash) {
 	    0x23056085c1120461ull, 0xfabe0bcb275a3005ull,
 	    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull
 	}};
-	return hash == DemonsQueueProbe::TileProducer ||
+	return hash == 0xf0c140ea8df8f532ull || hash == DemonsQueueProbe::TileProducer ||
 	       std::ranges::find(DemonsQueueProbe::Shaders, hash) != DemonsQueueProbe::Shaders.end() ||
 	       std::find(watched.begin(), watched.end(), hash) != watched.end();
 }

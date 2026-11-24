@@ -166,7 +166,8 @@ public:
 	                              std::span<const ShaderVertexInputInfo> vertex_info,
 	                              CommandBuffer& command, const ShaderPixelInputInfo* ps_input_info,
 	                              vk::PrimitiveTopology topology, bool primitive_restart_enable,
-	                              const GraphicsPrograms& programs, bool coverage_replay = false);
+	                              const GraphicsPrograms& programs, bool coverage_replay = false,
+	                              bool coverage_no_cull = false);
 	// Compute dispatches always wait: their results feed the game.
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	                             const ShaderProgram&          compute_program);

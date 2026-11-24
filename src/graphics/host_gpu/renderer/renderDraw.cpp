@@ -3465,7 +3465,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	constexpr uint32_t geometry_capacity = 192;
 	uint32_t geometry_query = UINT32_MAX;
 	uint32_t geometry_replay_first = UINT32_MAX;
-	std::array<vk::Pipeline,2> geometry_replay {};
+	std::array<vk::Pipeline,3> geometry_replay {};
 	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
 	    graphics.occlusion_query_precise_enabled && !geometry.done) {
 		if (geometry.pool && int64_t{ds_gbuffer_frame} > int64_t{geometry.frame} + 1 && !geometry.rows.empty() &&
@@ -3546,6 +3546,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			        rendering.color_attachments[gbuffer->target_slot].is_clear : false},
 			    {"target_mask", target_mask}, {"shader_mask", shader_mask}});
 			geometry.rows[geometry_query]["kind"] = "original";
+			const auto& capture_face = hw.GetModeControl();
+			geometry.rows[geometry_query]["guest_cull_front"] = bool(capture_face.cull_front);
+			geometry.rows[geometry_query]["guest_cull_back"] = bool(capture_face.cull_back);
+			geometry.rows[geometry_query]["guest_face"] = uint32_t(capture_face.face);
 			// Isolate geometry/rasterization from fragment discard and
 			// depth/stencil for only the two measured zero-coverage PS.
 			const auto& depth = state.depth_info;
@@ -3557,30 +3561,31 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    !depth.depth_bounds_test_enable && depth.desc.info.samples == 1 &&
 			    !pixel.ps_depth_export_enable && !pixel.ps_sample_mask_export_enable &&
 			    !hw.GetShaderRegisters().AlphaToMask() &&
-			    geometry.rows.size()+2 <= geometry_capacity) {
+			    geometry.rows.size()+3 <= geometry_capacity) {
 				const uint32_t k = ps->shader_hash == 0x3dce2bd78d58db62ull ? 0u : 1u;
 				if (!geometry.replay_seen[k]) {
 					auto replay_programs = state.programs;
 					for (size_t i=0; i<geometry_replay.size(); ++i) {
-						const auto& replay = state.programs.pixel.material_coverage[i];
+						const auto& replay = state.programs.pixel.material_coverage[i == 2 ? 0 : i];
 						if (!replay.module) break;
 						replay_programs.pixel = {.id = replay.id,.module = replay.module};
 						const auto* rp = m_context.GetPipelineCache().GetGraphicsPipeline(
 						    colors,depth,vertex_stages,buffer,&pixel,topology,
-						    primitive_restart_enable,replay_programs,true);
+						    primitive_restart_enable,replay_programs,true,i == 2);
 						if (!rp) break;
 						geometry_replay[i] = rp->pipeline;
 					}
-					if (geometry_replay[0] && geometry_replay[1]) {
+					if (geometry_replay[0] && geometry_replay[1] && geometry_replay[2]) {
 						geometry.replay_seen[k] = true;
 						geometry_replay_first = static_cast<uint32_t>(geometry.rows.size());
-						for (const auto* kind: {"raster_no_discard","survive_discard"}) {
+						for (const auto* kind: {"raster_no_discard","survive_discard","raster_no_discard_no_cull"}) {
 							auto row = geometry.rows[geometry_query];
 							row["kind"] = kind;
 							row["original_query"] = geometry_query;
 							row["depth_test"] = false;
 							row["depth_write"] = false;
 							row["stencil_test"] = false;
+							row["cull_disabled"] = geometry.rows.size() == geometry_replay_first + 2;
 							geometry.rows.push_back(std::move(row));
 						}
 					}
@@ -3654,10 +3659,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	const bool rect_face = Prospero::IsRectList(ucfg.GetPrimType());
 	const bool front_bias = face_mode.poly_offset_front_enable && !face_mode.cull_front;
 	const bool back_bias  = face_mode.poly_offset_back_enable && !face_mode.cull_back;
+	vk::CullModeFlags base_cull {};
+	if (!rect_face && face_mode.cull_front) base_cull |= vk::CullModeFlagBits::eFront;
+	if (!rect_face && face_mode.cull_back) base_cull |= vk::CullModeFlagBits::eBack;
 	if (ds_per_face_bias) {
-		vk::CullModeFlags base_cull {};
-		if (!rect_face && face_mode.cull_front) base_cull |= vk::CullModeFlagBits::eFront;
-		if (!rect_face && face_mode.cull_back) base_cull |= vk::CullModeFlagBits::eBack;
 		vk_buffer.setCullMode(base_cull);
 		vk_buffer.setDepthBiasEnable(front_bias || back_bias);
 		if (front_bias || back_bias) {
@@ -3739,10 +3744,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			vk_buffer.setStencilTestEnable(false);
 			for (uint32_t i=0; i<geometry_replay.size(); ++i) {
 				vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics,geometry_replay[i]);
+				if (ds_per_face_bias) vk_buffer.setCullMode(i == 2 ? vk::CullModeFlags {} : base_cull);
 				vk_buffer.beginQuery(geometry.pool,geometry_replay_first+i,vk::QueryControlFlagBits::ePrecise);
 				issue_draw();
 				vk_buffer.endQuery(geometry.pool,geometry_replay_first+i);
 			}
+			if (ds_per_face_bias) vk_buffer.setCullMode(base_cull);
 			vk_buffer.setDepthWriteEnable(state.depth_info.depth_write_enable);
 			vk_buffer.setDepthTestEnable(state.depth_info.depth_test_enable);
 			vk_buffer.setStencilTestEnable(state.depth_info.stencil_test_enable);

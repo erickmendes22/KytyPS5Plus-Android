@@ -2488,6 +2488,52 @@ static void CaptureDsGeometryWriter(RenderContext& context,
     }
     if (rows.empty()) return;
     if (indirect) (void)ReadDsGpuWords(context,indirect,indirect_offset,groups);
+    // Capture real, disjoint input/output descriptor views; do not infer counts.
+    nlohmann::json count_source = {{"status","not_draw_builder"}};
+    if (program.shader_hash == 0xf0c140ea8df8f532ull) {
+        count_source["status"] = "unexpected_layout";
+        if (snapshot.buffers.size()==4 && bindings.buffer_sources.size()>=4 &&
+            bindings.buffers.size()>=4 && snapshot.flattened_srt.size()==19 &&
+            groups[0]==1 && groups[1]==1 && groups[2]==1) {
+            const auto& src = bindings.buffer_sources[1];
+            const auto& dst = bindings.buffer_sources[3];
+            const auto sdesc = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[1]);
+            const auto ddesc = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[3]);
+            bool source_read_only = false;
+            bool alias = false;
+            for (const auto& res : program.info.buffers) {
+                if (res.descriptor_index == 1) source_read_only = !res.written;
+                if (res.written && res.descriptor_index < bindings.buffer_sources.size()) {
+                    const auto& w = bindings.buffer_sources[res.descriptor_index];
+                    alias |= D::Overlaps(src.address, src.size, w.address, w.size);
+                }
+            }
+            if (source_read_only && !alias && sdesc.Stride()==32 && ddesc.Stride()==4 &&
+                src.size && src.size<=16384 && dst.size && dst.size<=131072 &&
+                dst.address==D::IndirectRecords[0]) {
+                const auto input = ReadDsBoundWords(context,bindings,1,src.size/4);
+                const auto output = ReadDsBoundWords(context,bindings,3,dst.size/4);
+                count_source = {{"status",input.size()==src.size/4 && output.size()==dst.size/4 ?
+                    "captured" : "incomplete_gpu_read"},
+                    {"guest",src.address},{"bytes",src.size},{"output_guest",dst.address},
+                    {"output_bytes",dst.size},{"active_threads",snapshot.flattened_srt[18]},
+                    {"gpu_words",input},{"output_words",output},
+                    {"gpu_dirty",context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size)}};
+                std::vector<uint32_t> backing(src.size/4);
+                const bool backing_ok = LibKernel::Memory::TryReadBacking(src.address,backing.data(),src.size);
+                count_source["backing_ok"] = backing_ok;
+                if (backing_ok) count_source["backing_words"] = backing;
+                auto candidates = nlohmann::json::array();
+                for (uint64_t offset=0; offset+4<=src.size; offset+=4) {
+                    if (const auto* w=FindDsBufferProducer(frame,src.address+offset,4,false))
+                        candidates.push_back({{"offset",offset},{"shader",fmt::format("{:016x}",w->shader)},
+                            {"frame",w->frame},{"submit",w->submit},{"address",w->address},
+                            {"bytes",w->size},{"fill",w->fill}});
+                }
+                count_source["overlapping_write_candidates"] = std::move(candidates);
+            } else count_source["status"] = "source_not_proven_read_only_or_layout_mismatch";
+        }
+    }
     nlohmann::json descriptors = nlohmann::json::array();
     for (size_t i=0; i<snapshot.buffers.size(); ++i)
         descriptors.push_back({{"index",i},{"words",snapshot.buffers[i].dwords}});
@@ -2507,7 +2553,7 @@ static void CaptureDsGeometryWriter(RenderContext& context,
         {"shader",fmt::format("{:016x}",program.shader_hash)},{"groups",groups},
         {"indirect",bool(indirect)},{"user_data",snapshot.user_data},{"srt",snapshot.flattened_srt},
         {"shader_data",bindings.shader_data},{"buffers",descriptors},{"images",images},
-        {"samplers",samplers},{"records",rows}};
+        {"samplers",samplers},{"records",rows},{"count_source",count_source}};
     file.close();
     if (file.good()) {
         ++files;
