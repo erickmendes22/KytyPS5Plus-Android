@@ -2511,6 +2511,11 @@ static void CaptureDsCountFirstGate(RenderContext& context,const PreparedBinding
                 const auto flags=objects[flag_word].get<uint32_t>();
                 row["flags"]=flags;
                 row["expected_pass_flag_gate"]=(flags&8u)==0;
+                if (before[2].contains("backing_words") && flag_word<before[2]["backing_words"].size()) {
+                    const auto backing_flags=before[2]["backing_words"][flag_word].get<uint32_t>();
+                    row["backing_flags"]=backing_flags;
+                    row["flags_match_backing"]=flags==backing_flags;
+                }
             }
             if (const auto* w=FindDsBufferProducer(report["frame"].get<int32_t>(),addr,4,false))
                 row["list_writer_candidate"]={{"shader",fmt::format("{:016x}",w->shader)},
@@ -2554,7 +2559,9 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
     auto& state=seen[upstream_count ? program.shader_hash^watch_address : program.shader_hash];
     // Reserve a separate budget for dark onset and post-transition;
     // early scene sampling cannot consume the late capture.
-    const uint32_t budget=upstream_count ? (phase==0?8u:4u) : (phase==0?4u:2u);
+    const uint32_t budget=upstream_count ? (phase==0?8u:phase==3?12u:4u) :
+        (phase==3 && (program.shader_hash==0x3b7e54e11ee65120ull ||
+                      program.shader_hash==0xfb18d110fab8234eull) ? 8u : phase==0?4u:2u);
     if (state.count[phase]>=budget) return {};
     if (state.last[phase]==frame) {
         // cb3b can populate the same dispatch record twice in one frame
@@ -2567,15 +2574,21 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
     }
     ++state.same_frame[phase];
     ++state.count[phase];
+    static uint32_t capture_serial=0;
+    const auto seq=++capture_serial;
     const auto& snap=*bindings.runtime->resources;
     nlohmann::json report={{"frame",frame},{"submit",submit},{"phase",phase},
         {"shader",fmt::format("{:016x}",program.shader_hash)},{"srt",snap.flattened_srt},
-        {"watch_address",watch_address},{"capture_seq",state.count[phase]},
+        {"watch_address",watch_address},{"capture_seq",seq},
         {"user_data",snap.user_data},{"shader_data",bindings.shader_data}};
     auto buffers=nlohmann::json::array();
     for (uint32_t slot=0;slot<bindings.buffer_sources.size() && slot<bindings.buffers.size();++slot) {
         const auto& src=bindings.buffer_sources[slot];
         nlohmann::json entry={{"slot",slot},{"guest",src.address},{"bytes",src.size}};
+        if (src.address && src.size && (slot==0 || slot==1 || slot==2 || slot==7)) {
+            entry["gpu_dirty"]=context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size);
+            entry["cpu_modified"]=context.GetBufferCache().IsRegionCpuModified(src.address,src.size);
+        }
         if (slot<snap.buffers.size()) entry["descriptor"]=snap.buffers[slot].dwords;
         // Small model tables, per-object lists, flags and reservation counters
         // are captured in full. Large vertex payloads are not needed for the
@@ -2584,7 +2597,8 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
             auto words=ReadDsBoundWords(context,bindings,slot,src.size/4);
             entry["status"]=words.size()==src.size/4?"captured":"incomplete_gpu_read";
             entry["gpu_words"]=std::move(words);
-            if (slot==0 || slot==7 || (upstream_count && D::Overlaps(src.address,src.size,watch_address,20))) {
+            if (slot==0 || slot==7 || (!upstream_count && slot==2) ||
+                (upstream_count && D::Overlaps(src.address,src.size,watch_address,20))) {
                 std::vector<uint32_t> backing(src.size/4);
                 if (LibKernel::Memory::TryReadBacking(src.address,backing.data(),src.size))
                     entry["backing_words"]=std::move(backing);
