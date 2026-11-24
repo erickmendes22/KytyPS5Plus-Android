@@ -2,6 +2,7 @@
 #include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
+#include "graphics/host_gpu/renderer/pipeline/demonsCountExecProbe.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -417,10 +418,31 @@ void RenderExecutor::RememberDsAtlasWriter(ImageId id, const ImageInfo& info,
 	          frame, view.base_layer, view.layer_count, view.base_level, path};
 }
 
+void RenderExecutor::BindDsCountExec(PreparedBindings& bindings,bool capture) {
+    namespace D=DemonsCountExecProbe;
+    const auto& p=*bindings.runtime->program;
+    if(p.shader_hash!=D::Shader || p.ds_light_math_variant!=D::Fingerprint)return;
+    auto& storage=m_ds_count_exec_buffers[capture];
+    const bool initialize=!storage;
+    constexpr auto bytes=D::WordCount*sizeof(uint32_t);
+    if(initialize)storage=std::make_unique<Buffer>(m_context.GetGraphics(),m_context.GetCommandScheduler(),
+        MemoryUsage::Download,0,vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc,bytes);
+    if(initialize||capture){
+        std::vector<uint32_t> data(D::WordCount);
+        data[0]=capture?1u:0u;
+        std::memcpy(storage->Mapped().data(),data.data(),bytes);
+        storage->Flush(0,bytes);
+    }
+    bindings.shared_memory=vk::DescriptorBufferInfo{storage->Handle(),0,bytes};
+}
+
 void RenderExecutor::BindDsLightMath(PreparedBindings& bindings,
                                     const DemonsQueueProbe::Capture* capture) {
 	using namespace DemonsLightMathProbe;
 	if (!bindings.runtime->program->ds_light_math_variant) return;
+    if(bindings.runtime->program->shader_hash==DemonsCountExecProbe::Shader){
+        BindDsCountExec(bindings,false);return;
+    }
 	if (bindings.images.size() > 7) {
 		const auto& binding = bindings.images[7];
 		if (binding.image_id && !binding.placeholder) {
@@ -2630,6 +2652,51 @@ static void EndDsCountProducer(RenderContext& context,const PreparedBindings& bi
     std::optional<nlohmann::json> report,std::array<uint32_t,3> groups,
     vk::Buffer indirect={},uint64_t indirect_offset=0) {
     if (!report) return;
+    namespace P=DemonsCountExecProbe;
+    if(bindings.runtime->program->shader_hash==P::Shader &&
+       bindings.runtime->program->ds_light_math_variant==P::Fingerprint){
+        std::vector<uint32_t> words(P::WordCount);
+        const auto& native=bindings.shared_memory;
+        // The shader writes only the dedicated debug descriptor. Readback
+        // is from the exact sampled dispatch, before any later producer.
+        if(native.buffer && native.range==words.size()*4ull &&
+           ReadDsGpuWords(context,native.buffer,native.offset,words)){
+            const auto word=[&](uint32_t lane,uint32_t site)->std::optional<uint64_t>{
+                const auto it=std::lower_bound(P::Sites.begin(),P::Sites.end(),site);
+                if(it==P::Sites.end()||*it!=site)return {};
+                const auto offset=1+(lane*P::Sites.size()+size_t(it-P::Sites.begin()))*P::WordsPerSite;
+                if(!words[offset])return {};
+                return uint64_t{words[offset+1]}|(uint64_t{words[offset+2]}<<32);
+            };
+            auto bda=nlohmann::json::array();
+            // The first two raw loads at native PC 0x190 are generated
+            // from these address, resolved-pointer and load triplets.
+            constexpr std::array<std::array<uint32_t,3>,6> sites{{
+                {931,932,938},{945,946,951},{971,972,977},{984,985,990},
+                {6490,6491,6496},{6503,6504,6509}}};
+            for(uint32_t lane=0;lane<P::Lanes;++lane){
+                if(word(lane,250).value_or(0)!=1)continue;
+                for(auto site:sites){
+                    const auto address=word(lane,site[0]),resolved=word(lane,site[1]),loaded=word(lane,site[2]);
+                    if(!address||!resolved)continue;
+                    nlohmann::json row={{"lane",lane},{"address_site",site[0]},
+                        {"guest",*address},{"resolved_nonzero",*resolved!=0},{"load_executed",loaded.has_value()}};
+                    if(loaded)row["loaded"]=*loaded;
+                    uint32_t backing=0;
+                    if(*address && LibKernel::Memory::TryReadBacking(*address,&backing,4)){
+                        row["backing"]=backing;
+                        row["gpu_dirty"]=context.GetBufferCache().HasGpuDirtyBytes(*address,4);
+                        row["cpu_modified"]=context.GetBufferCache().IsRegionCpuModified(*address,4);
+                    }
+                    bda.push_back(std::move(row));
+                }
+            }
+            (*report)["bda_reads"]=std::move(bda);
+            (*report)["exec_trace"]={{"fingerprint",fmt::format("{:016x}",P::Fingerprint)},
+                {"site_ids",P::Sites},{"lanes",P::Lanes},{"words_per_site",P::WordsPerSite},
+                {"words",std::move(words)}};
+        }else (*report)["exec_trace_status"]="readback_failed";
+    }
     (*report)["groups_valid"]=!indirect || ReadDsGpuWords(context,indirect,indirect_offset,groups);
     (*report)["groups"]=groups;
     auto after=nlohmann::json::array();
@@ -3759,6 +3826,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	const bool material_probe = ProbeDsMaterialLight(bindings, submit_id, true);
 	auto coefficient_trace = BeginDsCoefficientDispatch(m_context, bindings, submit_id);
 	auto count_producer_trace = BeginDsCountProducer(m_context, bindings, submit_id);
+	if (count_producer_trace) BindDsCountExec(bindings,true);
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
@@ -4226,7 +4294,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			break;
 		}
 	}
-	const bool light_math_sample = queue_capture && program.ds_light_math_variant &&
+	const bool light_math_sample = queue_capture && program.shader_hash==DemonsLightMathProbe::Shader &&
+	    program.ds_light_math_variant &&
 	    m_ds_light_tiles[captured_queue_index].valid;
 	BindDsLightMath(bindings, light_math_sample ? queue_capture : nullptr);
 	auto* post = BeginDsPostCompute(bindings, submit_id);
@@ -4261,6 +4330,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	auto coefficient_trace = BeginDsCoefficientDispatch(m_context, bindings, submit_id);
 	auto count_producer_trace = BeginDsCountProducer(m_context, bindings, submit_id);
+	if (count_producer_trace) BindDsCountExec(bindings,true);
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
 	const auto vk_buffer = buffer.Handle();

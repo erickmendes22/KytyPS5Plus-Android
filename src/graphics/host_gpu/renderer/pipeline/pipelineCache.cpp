@@ -3,6 +3,7 @@
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
+#include "graphics/host_gpu/renderer/pipeline/demonsCountExecProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsMaterialCoverage.h"
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
@@ -578,7 +579,8 @@ struct PipelineCache::ProgramCache {
 		}
 		auto program = std::move(result.program).TakeCompiledInfo();
 		const auto* trace = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
-		if (options.shader_hash == DemonsLightMathProbe::Shader && trace && trace[0] == '1' &&
+		if ((options.shader_hash == DemonsLightMathProbe::Shader ||
+		     options.shader_hash == DemonsCountExecProbe::Shader) && trace && trace[0] == '1' &&
 		    trace[1] == '\0') {
 			constexpr auto kind = ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
 			constexpr auto slot = static_cast<size_t>(kind);
@@ -586,7 +588,9 @@ struct PipelineCache::ProgramCache {
 			auto copy = result.spirv;
 			const auto binding = ShaderRecompiler::IR::NativeBinding(program.stage, kind);
 			if (!program.bindings.descriptor_counts[slot] &&
-			    DemonsLightMathProbe::Instrument(copy, fingerprint, binding) &&
+			    (options.shader_hash == DemonsCountExecProbe::Shader ?
+			     DemonsCountExecProbe::Instrument(copy, fingerprint, binding) :
+			     DemonsLightMathProbe::Instrument(copy, fingerprint, binding)) &&
 			    ValidateShaderSpirv(options.dump_label, options.shader_hash, copy,
 			                        options.maintenance8_enabled, true)) {
 				result.spirv = std::move(copy);
