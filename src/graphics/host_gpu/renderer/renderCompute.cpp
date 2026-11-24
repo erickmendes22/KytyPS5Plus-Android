@@ -2435,6 +2435,105 @@ static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
 	return words;
 }
 
+// The guest binaries for these two writers contain a typed count load at
+// 0x28, per-object flag checks, then buffer_atomic_add into the count table.
+// Capture real inputs BEFORE execution and output AFTER the same dispatch.
+// Never overwrite shader values or force an active lane.
+static bool DsCountProducer(uint64_t hash) {
+    return hash == 0x3b7e54e11ee65120ull || hash == 0xfb18d110fab8234eull ||
+           hash == 0x2454ae3e3a6cbdabull || hash == 0xb16650e4c9acfdddull ||
+           hash == 0xd45e1b87d6741f63ull;
+}
+
+static std::optional<nlohmann::json> BeginDsCountProducer(
+    RenderContext& context, const PreparedBindings& bindings, uint64_t submit) {
+    namespace D=DemonsDominantGeometry;
+    if (!DsTraceEnabled() || Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return {};
+    const auto& program=*bindings.runtime->program;
+    if (!DsCountProducer(program.shader_hash) || bindings.buffer_sources.size()<11 ||
+        bindings.buffers.size()<11) return {};
+    const auto& count=bindings.buffer_sources[7];
+    if (count.address!=D::CountInputAddress || count.size!=D::CountInputWords*4u) return {};
+    const auto frame=context.GetGpu().GetFrameNum();
+    const auto& gate=DemonsAdaptiveCapture::Current();
+    const uint32_t phase=gate.PostTransitionDarkDue(frame)?3u:gate.DarkOnsetDue(frame)?2u:
+        gate.BrightSceneActive(frame)?1u:0u;
+    struct Gate { std::array<int32_t,4> last{-1,-1,-1,-1}; std::array<uint32_t,4> count{}; };
+    static std::unordered_map<uint64_t,Gate> seen;
+    auto& state=seen[program.shader_hash];
+    // Reserve a separate budget for dark onset and post-transition;
+    // early scene sampling cannot consume the late capture.
+    const uint32_t budget=phase==0?4u:2u;
+    if (state.count[phase]>=budget ||
+        (state.last[phase]>=0 && frame-state.last[phase]<24)) return {};
+    state.last[phase]=frame;
+    ++state.count[phase];
+    const auto& snap=*bindings.runtime->resources;
+    nlohmann::json report={{"frame",frame},{"submit",submit},{"phase",phase},
+        {"shader",fmt::format("{:016x}",program.shader_hash)},{"srt",snap.flattened_srt},
+        {"user_data",snap.user_data},{"shader_data",bindings.shader_data}};
+    auto buffers=nlohmann::json::array();
+    for (uint32_t slot=0;slot<bindings.buffer_sources.size() && slot<bindings.buffers.size();++slot) {
+        const auto& src=bindings.buffer_sources[slot];
+        nlohmann::json entry={{"slot",slot},{"guest",src.address},{"bytes",src.size}};
+        if (slot<snap.buffers.size()) entry["descriptor"]=snap.buffers[slot].dwords;
+        // Small model tables, per-object lists, flags and reservation counters
+        // are captured in full. Large vertex payloads are not needed for the
+        // first gate; report explicitly that they were not read.
+        if (src.size && src.size<=131072 && src.size%4==0) {
+            auto words=ReadDsBoundWords(context,bindings,slot,src.size/4);
+            entry["status"]=words.size()==src.size/4?"captured":"incomplete_gpu_read";
+            entry["gpu_words"]=std::move(words);
+            if (slot==0 || slot==7) {
+                std::vector<uint32_t> backing(src.size/4);
+                if (LibKernel::Memory::TryReadBacking(src.address,backing.data(),src.size))
+                    entry["backing_words"]=std::move(backing);
+            }
+        } else entry["status"]="not_captured_large_or_invalid";
+        if (const auto* w=FindDsBufferProducer(frame,src.address,src.size,false))
+            entry["overlapping_compute_candidate"]={{"shader",fmt::format("{:016x}",w->shader)},
+                {"frame",w->frame},{"submit",w->submit},{"address",w->address},{"bytes",w->size},{"fill",w->fill}};
+        buffers.push_back(std::move(entry));
+    }
+    report["before"]=std::move(buffers);
+    report["images"]=nlohmann::json::array();
+    for (const auto& desc:snap.images) report["images"].push_back(desc.dwords);
+    report["samplers"]=nlohmann::json::array();
+    for (const auto& desc:snap.samplers) report["samplers"].push_back(desc.dwords);
+    return report;
+}
+
+static void EndDsCountProducer(RenderContext& context,const PreparedBindings& bindings,
+    std::optional<nlohmann::json> report,std::array<uint32_t,3> groups,
+    vk::Buffer indirect={},uint64_t indirect_offset=0) {
+    if (!report) return;
+    (*report)["groups_valid"]=!indirect || ReadDsGpuWords(context,indirect,indirect_offset,groups);
+    (*report)["groups"]=groups;
+    auto after=nlohmann::json::array();
+    for (const auto& res:bindings.runtime->program->info.buffers) {
+        const auto slot=res.descriptor_index;
+        if (!res.written || slot>=bindings.buffer_sources.size()) continue;
+        const auto& src=bindings.buffer_sources[slot];
+        if (!src.size || src.size>131072 || src.size%4) continue;
+        auto words=ReadDsBoundWords(context,bindings,slot,src.size/4);
+        after.push_back({{"slot",slot},{"guest",src.address},
+            {"status",words.size()==src.size/4?"captured":"incomplete_gpu_read"},
+            {"gpu_words",std::move(words)}});
+    }
+    (*report)["after"]=std::move(after);
+    const auto folder=Config::GetShaderDumpFolder()/"queue-state";
+    std::error_code ec;
+    std::filesystem::create_directories(folder,ec);
+    if (ec) return;
+    const auto name=fmt::format("ds_count_producer_{}_f{}_s{}_p{}.json",
+        (*report)["shader"].get<std::string>(),(*report)["frame"].get<int32_t>(),
+        (*report)["submit"].get<uint64_t>(),(*report)["phase"].get<uint32_t>());
+    std::ofstream file(folder/name,std::ios::trunc);
+    if (file) file << *report;
+    file.close();
+    Log::WriteToConsoleAndLog(fmt::format("[DS_COUNT_PRODUCER] file={} saved={}\n",name,file.good()));
+}
+
 // Read only the five real draw records at an overlapping compute writer,
 // not its entire allocation. Capture actual post-dispatch values in three
 // scene phases, with a strict session budget; the binding's write range is
@@ -3528,6 +3627,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	auto* post = BeginDsPostCompute(bindings, submit_id);
 	const bool material_probe = ProbeDsMaterialLight(bindings, submit_id, true);
 	auto coefficient_trace = BeginDsCoefficientDispatch(m_context, bindings, submit_id);
+	auto count_producer_trace = BeginDsCountProducer(m_context, bindings, submit_id);
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
@@ -3630,6 +3730,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// Record the shader barriers and diagnostics before the BDA settle submits the
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	EndDsCountProducer(m_context,bindings,std::move(count_producer_trace),
+	                   {thread_group_x,thread_group_y,thread_group_z});
 	CaptureDsGeometryWriter(m_context, bindings, submit_id,
 	                           {thread_group_x, thread_group_y, thread_group_z});
 	CaptureDsRelightMaskWriter(m_context, bindings, submit_id,
@@ -4027,6 +4129,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		indirect_offset = clamped.offset;
 	}
 	auto coefficient_trace = BeginDsCoefficientDispatch(m_context, bindings, submit_id);
+	auto count_producer_trace = BeginDsCountProducer(m_context, bindings, submit_id);
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
 	const auto vk_buffer = buffer.Handle();
@@ -4083,6 +4186,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		                          vk::PipelineStageFlagBits::eHost, {}, 1, &host_read, 0, nullptr, 0, nullptr);
 		ReadDsLightMath(*queue_capture, submit_id, bindings);
 	}
+	EndDsCountProducer(m_context,bindings,std::move(count_producer_trace),{args.x,args.y,args.z},
+	                   split_on_cpu ? vk::Buffer {} : indirect_buffer,indirect_offset);
 	CaptureDsGeometryWriter(m_context, bindings, submit_id, {args.x, args.y, args.z},
 	                           split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	CaptureDsRelightMaskWriter(m_context, bindings, submit_id, {args.x, args.y, args.z},
