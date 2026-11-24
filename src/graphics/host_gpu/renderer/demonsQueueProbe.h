@@ -14,9 +14,9 @@ constexpr uint64_t GBufferAddress = 0x287ae0000ull;
 // material draws in the 765 dark-world frame (35,964 and 17,760 indices).
 // Capture only their first post-transition draw to test whether they survive
 // depth/stencil and write the scenery's deferred material; no draw is altered.
-constexpr std::array<uint64_t, 5> GBufferShaders {
+constexpr std::array<uint64_t, 6> GBufferShaders {
     0xafd9334e8581cda2ull, 0xe31a5473e9ee7503ull, 0xb631777eb4aee68cull,
-    0xcfc1d9193e7f9e53ull, 0xc92deb23fc611b10ull
+    0xcfc1d9193e7f9e53ull, 0xc92deb23fc611b10ull, 0x552d823dcfcf2deeull
 };
 
 struct BlockAxis {

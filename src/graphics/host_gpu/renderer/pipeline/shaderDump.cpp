@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
@@ -137,12 +138,12 @@ bool DsLightingCapture() {
 	return Root().filename() == "ds-lighting-dumps";
 }
 
-void RecordDsProbeGuestCode(uint64_t hash, std::span<const uint32_t> code) {
+void RecordDsProbeGuestCode(uint64_t hash, std::span<const uint32_t> code, const char* stage_name) {
 	if (code.empty() || code.size_bytes() > 1024u * 1024u) return;
 	auto& state = GetState();
 	std::scoped_lock lock(state.mutex);
 	if (state.ds_probe_guest_code.size() >= 96 || state.ds_probe_guest_code.contains(hash)) return;
-	const auto file = Root() / "guest-shaders" / fmt::format("cs_{:016x}_probe.bin", hash);
+	const auto file = Root() / "guest-shaders" / fmt::format("{}_{:016x}_probe.bin", stage_name, hash);
 	if (WriteFile(file, code.data(), code.size_bytes())) state.ds_probe_guest_code.insert(hash);
 	else ReportFailure(state, fmt::format("cannot write {}", file.filename().string()));
 }
@@ -151,6 +152,7 @@ void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t gues
                   std::span<const uint32_t> spirv) {
 	if (!Enabled() || module == nullptr ||
 	    (DsLightingCapture() && !DsLightingShader(guest_hash) &&
+	     !DemonsDominantGeometry::Watched(guest_hash) &&
 	     std::ranges::find(DemonsQueueProbe::PostShaders, guest_hash) ==
 	         DemonsQueueProbe::PostShaders.end() &&
 	     std::ranges::find(DemonsQueueProbe::GBufferShaders, guest_hash) ==
@@ -208,7 +210,8 @@ std::string RecordGraphicsPipeline(const GraphicContext& graphics,
 	// necessarily a compute dispatch. Include only its pipelines so we can
 	// verify the executable stage, descriptor set and guest hash.
 	if (!Enabled() || (DsLightingCapture() &&
-	    std::ranges::find(guest_hashes, 0xc03afccb96a13c5dull) == guest_hashes.end())) {
+	    std::ranges::find(guest_hashes, 0xc03afccb96a13c5dull) == guest_hashes.end() &&
+	    !std::ranges::any_of(guest_hashes, DemonsDominantGeometry::Watched))) {
 		return {};
 	}
 	auto&            state = GetState();

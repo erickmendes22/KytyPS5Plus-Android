@@ -1,0 +1,25 @@
+#pragma once
+#include <cstdint>
+
+namespace Libs::Graphics::DemonsDominantGeometry {
+constexpr uint64_t DepthAddress = 0x282b60000ull;
+constexpr uint64_t OccluderVs = 0x2337192397a30339ull;
+constexpr uint64_t DepthPs = 0x651f53f5932d8794ull;
+constexpr uint64_t DominantDepthVs = 0xaff9c7ef505c6253ull;
+constexpr uint64_t MaterialVs = 0xc96f3fcde8141266ull;
+constexpr uint64_t MaterialPs = 0x552d823dcfcf2deeull;
+constexpr bool Watched(uint64_t hash) {
+    return hash == OccluderVs || hash == DepthPs || hash == DominantDepthVs ||
+           hash == MaterialVs || hash == MaterialPs;
+}
+// Optional isolation: frame 497 measured two unmatched depth writers,
+// not proof that either is invalid. Preserve clear, stencil and comparison.
+constexpr bool SuppressDepthWrite(bool enabled, uint64_t vs, uint64_t ps,
+                                  uint64_t depth, bool gbuffer, bool direct,
+                                  bool writes_depth, uint32_t indices, uint32_t instances,
+                                  uint32_t compare) {
+    return enabled && vs == OccluderVs && ps == DepthPs && depth == DepthAddress &&
+           !gbuffer && direct && writes_depth && instances == 1 && compare == 6 &&
+           (indices == 7296 || indices == 192);
+}
+} // namespace Libs::Graphics::DemonsDominantGeometry

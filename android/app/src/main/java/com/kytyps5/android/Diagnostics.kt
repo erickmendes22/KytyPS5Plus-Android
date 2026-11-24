@@ -238,7 +238,9 @@ object Diagnostics {
             "bcbcc6ba1e68c974", "acce347eef557bd2")
         val postShaders = setOf("3265b01ed00a5c01", "17defa333d9d1e22", "d1768d02fcf96a58",
             "844e5697cf62ecd7", "a5fc1658592e3cba", "41a57a218d07a778")
-        val watched = queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
+        val dominantShaders = setOf("2337192397a30339", "651f53f5932d8794", "aff9c7ef505c6253",
+            "c96f3fcde8141266", "552d823dcfcf2dee")
+        val watched = dominantShaders + queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
             "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
             "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",
             "e75589aa0bb3ae52", "93b0be7f1a0293d1"
@@ -258,6 +260,7 @@ object Diagnostics {
                                 (subdir == "queue-state" &&
                                     (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+(_t[0-9]+)?\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_coverage_f[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_dominant_material_f[0-9]+_s[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_depth_prepass_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark|post_transition)_f[0-9]+\\.json")) ||
@@ -268,11 +271,13 @@ object Diagnostics {
                                 "pipelines" -> file.extension == "json"
                                 "buffers" -> file.extension == "bin"
                                 "queue-state" -> file.extension == "json" || file.extension == "bin"
-                                "guest-shaders" -> file.name.matches(Regex("cs_[0-9a-f]{16}_probe\\.bin"))
+                                "guest-shaders" -> file.name.matches(Regex("(cs|vs|ps|ms|ls|hs|ds)_[0-9a-f]{16}_probe\\.bin"))
                                 else -> false
                             })
                     }
                     .sortedWith(compareByDescending<File> { file ->
+                        dominantShaders.any { hash -> file.name.contains("_${hash}_") } || file.name.startsWith("ds_dominant_material_f")
+                    }.thenByDescending { file ->
                         file.name.startsWith("ds_gbuffer_material_") ||
                             file.name.startsWith("ds_light_bridge_") ||
                             file.name.startsWith("ds_scene_writer_f") ||
@@ -289,7 +294,8 @@ object Diagnostics {
                     // files. Give the producer captures their own slots so
                     // the ZIP actually contains the data cited by the log.
                     val newest = files.sortedByDescending { it.lastModified() }
-                    val producer = newest.filter { it.name.startsWith("ds_geometry_coverage_f") }.take(1) +
+                    val producer = newest.filter { it.name.startsWith("ds_dominant_material_f") }.take(2) +
+                        newest.filter { it.name.startsWith("ds_geometry_coverage_f") }.take(1) +
                         newest.filter { it.name.startsWith("ds_depth_prepass_f") }.take(4) +
                         newest.filter { it.name.startsWith("ds_ray_producer_f") }.take(16) +
                         newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }

@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsMaterialCoverage.h"
@@ -860,6 +861,8 @@ struct PipelineCache::ProgramCache {
 		}
 
 		const auto [label, stage_name] = StageLabels(stage);
+		if (ShaderDump::DsLightingCapture() && DemonsDominantGeometry::Watched(params.hash))
+			ShaderDump::RecordDsProbeGuestCode(params.hash, params.code, stage_name);
 		auto options = MakeOptions(stage, params.hash, user_data, params.back_code, input_info, label);
 
 		// Installs a compiled permutation for this draw; the GPU thread owns the entry.

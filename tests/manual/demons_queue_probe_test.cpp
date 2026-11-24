@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
 #include "graphics/host_gpu/renderer/demonsDepthEqualPolicy.h"
@@ -29,7 +30,7 @@ static_assert(Select(0, SuspectScene0, DepthAddress + 4, true, false, true, 2u) 
               Decision::Guest);
 static_assert(Select(0, SuspectScene0, DepthAddress, true, false, true, 6u) ==
               Decision::Guest);
-static_assert(GBufferShaders.size() == 5);
+static_assert(GBufferShaders.size() == 6);
 static_assert(GBufferShaders[3] == 0xcfc1d9193e7f9e53ull);
 static_assert(GBufferShaders[4] == 0xc92deb23fc611b10ull);
 
@@ -295,4 +296,16 @@ int main(int argc, char** argv) {
 	assert(!SelectTiles(prefix, std::span(tiles).first(45199), 33).valid);
 	assert(!SelectTiles(prefix, tiles, UINT32_MAX).valid);
 	assert(!SelectTiles(prefix, tiles, 2).valid);
+}
+
+namespace {
+namespace D = Libs::Graphics::DemonsDominantGeometry;
+static_assert(D::Watched(D::MaterialPs));
+static_assert(D::SuppressDepthWrite(true,D::OccluderVs,D::DepthPs,D::DepthAddress,false,true,true,7296,1,6));
+static_assert(D::SuppressDepthWrite(true,D::OccluderVs,D::DepthPs,D::DepthAddress,false,true,true,192,1,6));
+static_assert(!D::SuppressDepthWrite(false,D::OccluderVs,D::DepthPs,D::DepthAddress,false,true,true,7296,1,6));
+static_assert(!D::SuppressDepthWrite(true,D::DominantDepthVs,D::DepthPs,D::DepthAddress,false,true,true,7296,1,6));
+static_assert(!D::SuppressDepthWrite(true,D::OccluderVs,D::DepthPs,D::DepthAddress,true,true,true,7296,1,6));
+static_assert(!D::SuppressDepthWrite(true,D::OccluderVs,D::DepthPs,D::DepthAddress,false,false,true,7296,1,6));
+static_assert(!D::SuppressDepthWrite(true,D::OccluderVs,D::DepthPs,D::DepthAddress,false,true,true,33,1,6));
 }

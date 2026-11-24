@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/renderDraw.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 #include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
@@ -2307,6 +2308,28 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		LogDrawPhase(draw.Name(), "ResolveRenderDepthTarget");
 	}
 	ResolveRenderDepthTarget(buffer, state.depth_info);
+	static const bool isolate = [] {
+		const char* value = std::getenv("KYTY_DS_ISOLATE_DEPTH_OCCLUDERS");
+		return value && value[0] == '1' && value[1] == '\0';
+	}();
+	if (isolate && state.depth_info.image_id && state.ps_active &&
+	    state.ps_input_info.stage.program && state.vertex_info[0].stage.program) {
+		const auto vs = state.vertex_info[0].stage.program->shader_hash;
+		const auto ps = state.ps_input_info.stage.program->shader_hash;
+		const bool gbuffer = std::ranges::any_of(std::span{state.color_info, state.color_count},
+		    [](const auto& color) { return color.image_id && color.desc.info.data.address == DemonsQueueProbe::GBufferAddress; });
+		if (DemonsDominantGeometry::SuppressDepthWrite(isolate, vs, ps,
+		    state.depth_info.desc.info.data.address, gbuffer, draw.IsIndexed() && !state.indirect.enabled,
+		    state.depth_info.depth_write_enable, draw.index_count, draw.instance_count,
+		    static_cast<uint32_t>(state.depth_info.depth_compare_op))) {
+			state.depth_info.depth_write_enable = false;
+			static std::atomic_uint32_t hits {0};
+			const auto n = hits.fetch_add(1, std::memory_order_relaxed);
+			if (n < 8 || n % 256 == 0) Log::WriteToConsoleAndLog(fmt::format(
+			    "[DS_OCCLUDER_ISOLATE] vs=0x{:016x} ps=0x{:016x} indices={} count={}\n",
+			    vs, ps, draw.index_count, n + 1));
+		}
+	}
 	// TODO(PPSA09243): Vulkan passes take one sample count. Where PS5 attachments mix counts,
 	// keep those matching the raster count instead of resolving multisampled shadows.
 	const auto colors       = std::span {state.color_info, state.color_count};
@@ -2945,6 +2968,36 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 						ds_live_material_target = *target;
 						ds_live_material_depth = state.depth_info;
 						ds_live_material_phase = phase;
+						if (shader == DemonsDominantGeometry::MaterialPs) {
+							const auto encode = [](const auto& stage) {
+								nlohmann::json out = nlohmann::json::object();
+								if (!stage.program || !stage.resources) return out;
+								const auto& data = *stage.resources;
+								out["hash"] = fmt::format("{:016x}", stage.program->shader_hash);
+								out["user_data"] = data.user_data;
+								out["srt"] = data.flattened_srt;
+								out["buffers"] = nlohmann::json::array();
+								for (const auto& desc: data.buffers) out["buffers"].push_back(desc.dwords);
+								out["images"] = nlohmann::json::array();
+								for (const auto& desc: data.images) out["images"].push_back(desc.dwords);
+								out["samplers"] = nlohmann::json::array();
+								for (const auto& desc: data.samplers) out["samplers"].push_back(desc.dwords);
+								return out;
+							};
+							const auto folder = Config::GetShaderDumpFolder() / "queue-state";
+							std::error_code ec;
+							std::filesystem::create_directories(folder, ec);
+							const auto name = fmt::format("ds_dominant_material_f{}_s{}.json", ds_gbuffer_frame, submit_id);
+							std::ofstream file(folder / name, std::ios::trunc);
+							if (file) file << nlohmann::json{
+							    {"frame", ds_gbuffer_frame}, {"submit", submit_id},
+							    {"vertex", encode(state.vertex_info[0].stage)},
+							    {"pixel", encode(state.ps_input_info.stage)},
+							    {"output_mode", state.ps_input_info.target_output_mode},
+							    {"target_uint_mask", state.ps_input_info.target_uint_mask},
+							    {"target_sint_mask", state.ps_input_info.target_sint_mask},
+							    {"target_shader_mask", state.ps_input_info.target_shader_mask}};
+						}
 						ds_live_material_before = SnapshotDsGBufferGrid(
 						    m_context, ds_live_material_target);
 						ds_live_depth_before = SnapshotDsMaterialDepthGrid(

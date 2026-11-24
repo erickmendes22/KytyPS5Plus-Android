@@ -101,6 +101,11 @@ class GameSettingsDialog(
         )).apply {
             setSelection(current.demonsSoulsDepthEqualRelax.coerceIn(0, 3))
         }
+        val dsIsolateOccluders = Switch(activity).apply {
+            text = "Experimental: isolate two unmatched depth draws"
+            textSize = 14f
+            isChecked = current.demonsSoulsIsolateDepthOccluders
+        }
         val dsPcMrt = Switch(activity).apply {
             text = "Experimental: PC shader-selected color attachments"
             textSize = 14f
@@ -188,6 +193,8 @@ class GameSettingsDialog(
                 addView(label("Demon's Souls: depth prepass / material EQUAL compatibility (PC reference; experimental)", bold = true))
                 addView(label("Default 0 and mode 3 retain original EQUAL. Modes 1/2 are optional experiments; do not affect shadows.", secondary = true))
                 addView(dsDepthEqual)
+                addView(dsIsolateOccluders)
+                addView(label("Off by default. Disable only depth writes for the two exact unmatched draws measured in frame 497. Reversible occlusion experiment, not a confirmed rendering fix.", secondary = true))
                 addView(dsPcMrt)
                 addView(label("Off by default. Uses the PC renderer's actual shader export mask instead of binding every guest color target; tests whether the extra attachments clear or overwrite deferred materials.", secondary = true))
                 addView(dsPcDpp)
@@ -251,6 +258,7 @@ class GameSettingsDialog(
                         demonsSoulsPerFaceBias = titleId.equals("PPSA01341", ignoreCase = true) && dsFaceBias.isChecked,
                         demonsSoulsPcDpp = titleId.equals("PPSA01341", ignoreCase = true) && dsPcDpp.isChecked,
                         demonsSoulsPcMrt = titleId.equals("PPSA01341", ignoreCase = true) && dsPcMrt.isChecked,
+                        demonsSoulsIsolateDepthOccluders = titleId.equals("PPSA01341", ignoreCase = true) && dsIsolateOccluders.isChecked,
                         demonsSoulsDepthEqualRelax = if (titleId.equals("PPSA01341", ignoreCase = true)) dsDepthEqual.selectedItemPosition else 0,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
