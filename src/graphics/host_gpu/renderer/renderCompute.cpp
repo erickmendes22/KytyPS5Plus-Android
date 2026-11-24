@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsGeometryExecPolicy.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
@@ -2488,6 +2489,59 @@ static void CaptureDsGeometryWriter(RenderContext& context,
     }
     if (rows.empty()) return;
     if (indirect) (void)ReadDsGpuWords(context,indirect,indirect_offset,groups);
+    // Native 0x1ec, 0x268, ... copy raw slot1 DWORDs at indices
+    // 22*thread + draw to slot3 indices 168*thread + 8*draw + 1.
+    // The previous trace retained only the destination. Read both exact
+    // descriptor views, retain the producer candidate for each source word,
+    // and compare only active, in-range threads of this known layout.
+    nlohmann::json count_pairs = nlohmann::json::array();
+    nlohmann::json count_source = nlohmann::json::object();
+    if (program.shader_hash == DemonsGeometryExecPolicy::DrawBuilder &&
+        snapshot.buffers.size()==4 && snapshot.flattened_srt.size()==19 &&
+        bindings.buffer_sources.size()>=4 && bindings.buffers.size()>=4) {
+        const auto src_desc=DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[1]);
+        const auto dst_desc=DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[3]);
+        const auto& src=bindings.buffer_sources[1];
+        const auto& dst=bindings.buffer_sources[3];
+        const uint32_t active=std::min<uint32_t>(snapshot.flattened_srt[18],64u);
+        if (src_desc.Stride()==32 && dst_desc.Stride()==4 &&
+            groups[0]==1 && groups[1]==1 && groups[2]==1 &&
+            src.size<=16384 && dst.size<=131072 && dst.address==D::IndirectRecords[0]) {
+            const auto before_writer=FindDsBufferProducer(frame,src.address,src.size,false);
+            if (before_writer) count_source["overlapping_compute_writer"]={
+                {"shader",fmt::format("{:016x}",before_writer->shader)},{"frame",before_writer->frame},
+                {"submit",before_writer->submit},{"address",before_writer->address},{"bytes",before_writer->size}};
+            count_source["guest"]=src.address;
+            count_source["bytes"]=src.size;
+            count_source["active_threads"]=active;
+            count_source["gpu_dirty"]=context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size);
+            count_source["cpu_modified"]=context.GetBufferCache().IsRegionCpuModified(src.address,src.size);
+            std::vector<uint32_t> backing(src.size/4);
+            const bool backing_ok=LibKernel::Memory::TryReadBacking(src.address,backing.data(),src.size);
+            const auto inputs=ReadDsBoundWords(context,bindings,1,src.size/4);
+            const auto outputs=ReadDsBoundWords(context,bindings,3,std::min<size_t>(dst.size/4,168u*active));
+            count_source["gpu_words"]=inputs;
+            count_source["backing_ok"]=backing_ok;
+            if (backing_ok) count_source["backing_words"]=backing;
+            for (uint32_t lane=0;lane<active;++lane) for (uint32_t draw=0;draw<21;++draw) {
+                const auto si=DemonsGeometryExecPolicy::SourceIndex(lane,draw)*8u;
+                const auto di=DemonsGeometryExecPolicy::DestIndex(lane,draw);
+                // Raw guest loads return zero out of bounds; do not attribute
+                // an inactive or unbound row to a real culling decision.
+                if (si>=inputs.size() || di>=outputs.size()) continue;
+                const auto addr=src.address+uint64_t{si}*4;
+                nlohmann::json row{{"lane",lane},{"draw",draw},{"input_address",addr},
+                    {"output_address",dst.address+uint64_t{di}*4},
+                    {"source",inputs[si]},{"output",outputs[di]},
+                    {"equal",inputs[si]==outputs[di]}};
+                if (backing_ok) row["backing"]=backing[si];
+                if (const auto* writer=FindDsBufferProducer(frame,addr,4,false))
+                    row["writer"]={{"shader",fmt::format("{:016x}",writer->shader)},
+                        {"frame",writer->frame},{"submit",writer->submit},{"bytes",writer->size}};
+                count_pairs.push_back(std::move(row));
+            }
+        }
+    }
     nlohmann::json descriptors = nlohmann::json::array();
     for (size_t i=0; i<snapshot.buffers.size(); ++i)
         descriptors.push_back({{"index",i},{"words",snapshot.buffers[i].dwords}});
@@ -2507,7 +2561,7 @@ static void CaptureDsGeometryWriter(RenderContext& context,
         {"shader",fmt::format("{:016x}",program.shader_hash)},{"groups",groups},
         {"indirect",bool(indirect)},{"user_data",snapshot.user_data},{"srt",snapshot.flattened_srt},
         {"shader_data",bindings.shader_data},{"buffers",descriptors},{"images",images},
-        {"samplers",samplers},{"records",rows}};
+        {"samplers",samplers},{"records",rows},{"count_source",count_source},{"count_pairs",count_pairs}};
     file.close();
     if (file.good()) {
         ++files;

@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsGeometryExecPolicy.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
@@ -57,7 +58,8 @@ bool DsLightingShader(uint64_t hash) {
 	    0x23056085c1120461ull, 0xfabe0bcb275a3005ull,
 	    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull
 	}};
-	return hash == DemonsQueueProbe::TileProducer ||
+	return hash == DemonsGeometryExecPolicy::DrawBuilder ||
+	       hash == DemonsQueueProbe::TileProducer ||
 	       std::ranges::find(DemonsQueueProbe::Shaders, hash) != DemonsQueueProbe::Shaders.end() ||
 	       std::find(watched.begin(), watched.end(), hash) != watched.end();
 }

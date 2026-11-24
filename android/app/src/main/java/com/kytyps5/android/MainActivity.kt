@@ -703,6 +703,7 @@ class MainActivity : Activity() {
             args += arrayOf("--env",
                 "KYTY_DS_DEPTH_EQUAL_RELAX=" + perGame.demonsSoulsDepthEqualRelax.coerceIn(0, 3))
             args += arrayOf("--env", "KYTY_DS_PC_DPP=" + if (perGame.demonsSoulsPcDpp) "1" else "0")
+            args += arrayOf("--env", "KYTY_DS_NGG_LIVE_EXEC=" + if (perGame.demonsSoulsNggLiveExec) "1" else "0")
             args += arrayOf("--env", "KYTY_DS_ISOLATE_DEPTH_OCCLUDERS=" + if (perGame.demonsSoulsIsolateDepthOccluders) "1" else "0")
             args += arrayOf("--env", "KYTY_DS_HTILE_FILL_SEMANTICS=1")
             if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsIdleBackoff) {

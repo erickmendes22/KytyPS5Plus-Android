@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsGeometryExecPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsMaterialScalarPolicy.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
@@ -1290,7 +1291,7 @@ struct PipelineCache::ProgramCache {
             fmt::format(" ssbo_chunk={} clock_ps={} loopguard={}/{} bindless_images={}", f.storage_buffer_chunk_bytes, f.device_clock_period_ps,
                         LoopGuard::Spec() != nullptr ? LoopGuard::Spec() : "",
                         LoopGuard::Limit(), options.bindless_images) +
-            fmt::format(" lodclamp_v2={} ds_pc_dpp={}", f.shader_resource_min_lod, DemonsPcDppPolicy::Enabled());
+            fmt::format(" lodclamp_v2={} ds_pc_dpp={} ds_ngg_live={}", f.shader_resource_min_lod, DemonsPcDppPolicy::Enabled(),DemonsGeometryExecPolicy::Enabled());
 		return XXH3_64bits(text.data(), text.size()) ^ (f.invariant_position ? 0xca029dfb62ec438aull : 0);
 	}
 

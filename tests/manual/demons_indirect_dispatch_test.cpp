@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsGeometryExecPolicy.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/guest_gpu/command_processor/indirectDrawPacketPolicy.h"
 #include "graphics/host_gpu/renderer/indirectDispatchPolicy.h"
@@ -42,3 +43,11 @@ static_assert(!D::CountOverlap(0x20934d2a8ull,4));
 static_assert(D::CountOverlap(0x20934d000ull,4096));
 static_assert(D::WatchedIndirectVs(0x6a9c615b413ad6bfull));
 static_assert(D::ProbeDepthPs(0x3dce2bd78d58db62ull));
+
+namespace G = Libs::Graphics::DemonsGeometryExecPolicy;
+static_assert(G::Applies(true,0x34c51585c926a664ull,64,G::Prefix));
+static_assert(!G::Applies(false,0x34c51585c926a664ull,64,G::Prefix));
+static_assert(!G::Applies(true,0x34c51585c926a664ull,32,G::Prefix));
+static_assert(!G::Applies(true,0,64,G::Prefix));
+static_assert(G::SourceIndex(4,20)==108);
+static_assert(G::DestIndex(4,20)==833);

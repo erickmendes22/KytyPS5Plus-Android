@@ -20,6 +20,15 @@ public:
 	void TranslateInstruction(const Decoder::Instruction& inst);
 	// Every running invocation is in EXEC (FindLiveVertexExecPc); the EXEC dwords stay as written.
 	void MarkExecLive() { ir.SetExec(IR::U1(IR::Value(true))); }
+	// At the exact ES entry, hardware has one live lane per input vertex.
+	// A Vulkan subgroup can contain holes, so count-based prefix masks
+	// cannot be used as the actual host-lane predicate.
+	void RestoreLiveVertexExec() {
+		const auto mask=BallotMask(IR::U1(IR::Value(true)));
+		ir.SetExecLo(mask[0]);
+		ir.SetExecHi(mask[1]);
+		ir.SetExec(IR::U1(IR::Value(true)));
+	}
 	void TranslateEmbeddedFetch(const Decoder::Instruction& inst, uint32_t attribute,
 	                            uint32_t component_count, const ShaderBufferResource& resource);
 	void AddBranchCondition(const CFG::Graph& graph, const CFG::BasicBlock& source,

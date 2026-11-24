@@ -101,6 +101,11 @@ class GameSettingsDialog(
         )).apply {
             setSelection(current.demonsSoulsDepthEqualRelax.coerceIn(0, 3))
         }
+        val dsNggLive = Switch(activity).apply {
+            text = "Experimental: NGG live vertex mask"
+            textSize = 14f
+            isChecked = current.demonsSoulsNggLiveExec
+        }
         val dsIsolateOccluders = Switch(activity).apply {
             text = "Experimental: isolate two unmatched depth draws"
             textSize = 14f
@@ -193,6 +198,8 @@ class GameSettingsDialog(
                 addView(label("Demon's Souls: depth prepass / material EQUAL compatibility (PC reference; experimental)", bold = true))
                 addView(label("Default 0 and mode 3 retain original EQUAL. Modes 1/2 are optional experiments; do not affect shadows.", secondary = true))
                 addView(dsDepthEqual)
+                addView(dsNggLive)
+                addView(label("Off by default. Restore actual Vulkan live lanes for four exact NGG depth/material vertex shaders. Tests sparse subgroup masks; no forced depth or color.", secondary = true))
                 addView(dsIsolateOccluders)
                 addView(label("Off by default. Disable only depth writes for the two exact unmatched draws measured in frame 497. Reversible occlusion experiment, not a confirmed rendering fix.", secondary = true))
                 addView(dsPcMrt)
@@ -259,6 +266,7 @@ class GameSettingsDialog(
                         demonsSoulsPcDpp = titleId.equals("PPSA01341", ignoreCase = true) && dsPcDpp.isChecked,
                         demonsSoulsPcMrt = titleId.equals("PPSA01341", ignoreCase = true) && dsPcMrt.isChecked,
                         demonsSoulsIsolateDepthOccluders = titleId.equals("PPSA01341", ignoreCase = true) && dsIsolateOccluders.isChecked,
+                        demonsSoulsNggLiveExec = titleId.equals("PPSA01341", ignoreCase = true) && dsNggLive.isChecked,
                         demonsSoulsDepthEqualRelax = if (titleId.equals("PPSA01341", ignoreCase = true)) dsDepthEqual.selectedItemPosition else 0,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },

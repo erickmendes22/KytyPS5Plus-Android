@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsGeometryExecPolicy.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/frontend/translate/LiveVertexExec.h"
@@ -1710,6 +1711,10 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 	}
 	const bool flush_f32_inputs = options.stage == ShaderType::Compute &&
 	                              (options.input_info.compute->float_mode & 0x10u) == 0;
+	const bool ds_merged_exec = options.stage == ShaderType::Vertex &&
+	    DemonsGeometryExecPolicy::Applies(DemonsGeometryExecPolicy::Enabled(),options.shader_hash,
+	                                     options.wave_size,decoded.code);
+	if (ds_merged_exec) LOGF("[DS_NGG_LIVE_EXEC] shader=0x%016" PRIx64 " ES mask restored at pc=0x3c\n",options.shader_hash);
 	const auto live_exec_pc = options.live_vertex_exec && options.stage == ShaderType::Vertex
 	                              ? FindLiveVertexExecPc(decoded, cfg, options.wave_size)
 	                              : std::nullopt;
@@ -1745,7 +1750,9 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			translator.HalfRateBefore(instruction);
 			translator.TranslateInstruction(instruction);
 			translator.HalfRateAfter(instruction);
-			if (live_exec_pc == instruction.pc) {
+			if (ds_merged_exec && instruction.pc == 0x3cu) {
+				translator.RestoreLiveVertexExec();
+			} else if (live_exec_pc == instruction.pc) {
 				translator.MarkExecLive();
 			}
 		}

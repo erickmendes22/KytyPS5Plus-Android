@@ -39,6 +39,7 @@ data class GameSettings(
     val demonsSoulsPcDpp: Boolean = false,
     val demonsSoulsPcMrt: Boolean = false,
     val demonsSoulsIsolateDepthOccluders: Boolean = false,
+    val demonsSoulsNggLiveExec: Boolean = false,
     val demonsSoulsDepthEqualRelax: Int = 0, // 0=guest, 1=LE (optional), 2=GE (optional), 3=guest
 ) {
     fun toJson(): String = JSONObject()
@@ -62,6 +63,7 @@ data class GameSettings(
         .put("demonsSoulsPcDpp", demonsSoulsPcDpp)
         .put("demonsSoulsPcMrt", demonsSoulsPcMrt)
         .put("demonsSoulsIsolateDepthOccluders", demonsSoulsIsolateDepthOccluders)
+        .put("demonsSoulsNggLiveExec", demonsSoulsNggLiveExec)
         .put("demonsSoulsDepthEqualRelax", demonsSoulsDepthEqualRelax.coerceIn(0, 3))
         .toString()
 
@@ -95,6 +97,7 @@ data class GameSettings(
                     demonsSoulsPcDpp = obj.optBoolean("demonsSoulsPcDpp", false),
                     demonsSoulsPcMrt = obj.optBoolean("demonsSoulsPcMrt", false),
                     demonsSoulsIsolateDepthOccluders = obj.optBoolean("demonsSoulsIsolateDepthOccluders", false),
+                    demonsSoulsNggLiveExec = obj.optBoolean("demonsSoulsNggLiveExec", false),
                     demonsSoulsDepthEqualRelax = obj.optInt("demonsSoulsDepthEqualRelax", 0).coerceIn(0, 3),
                 )
             } catch (e: JSONException) {
