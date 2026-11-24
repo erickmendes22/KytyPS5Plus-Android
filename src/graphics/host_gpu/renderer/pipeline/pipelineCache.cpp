@@ -2157,7 +2157,9 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
 	// The dispatch's results feed the game: it waits for its program.
 	const auto program = m_program_cache->Get(params, input_info, push_data_cursor, false);
 	if (program && ShaderDump::DsLightingCapture()) {
-		if (params.hash == DemonsRadianceTrace::MaskWriter || params.hash == DemonsPcDppPolicy::RayProducer) {
+		if (params.hash == 0xcb3b9c1ea64fe876ull || params.hash == 0xc387ee3c610ed66bull ||
+		    params.hash == 0xb89a7139ba15ee52ull || params.hash == DemonsRadianceTrace::MaskWriter ||
+		    params.hash == DemonsPcDppPolicy::RayProducer) {
 			ShaderDump::RecordDsProbeGuestCode(params.hash, params.code);
 			return program;
 		}

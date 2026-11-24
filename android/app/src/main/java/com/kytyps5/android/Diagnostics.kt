@@ -238,7 +238,7 @@ object Diagnostics {
             "bcbcc6ba1e68c974", "acce347eef557bd2")
         val postShaders = setOf("3265b01ed00a5c01", "17defa333d9d1e22", "d1768d02fcf96a58",
             "844e5697cf62ecd7", "a5fc1658592e3cba", "41a57a218d07a778")
-        val countProducers = setOf("3b7e54e11ee65120", "fb18d110fab8234e", "2454ae3e3a6cbdab",
+        val countProducers = setOf("cb3b9c1ea64fe876", "c387ee3c610ed66b", "b89a7139ba15ee52", "3b7e54e11ee65120", "fb18d110fab8234e", "2454ae3e3a6cbdab",
             "b16650e4c9acfddd", "d45e1b87d6741f63")
         val dominantShaders = countProducers + setOf("f0c140ea8df8f532", "2337192397a30339", "651f53f5932d8794", "aff9c7ef505c6253",
             "c96f3fcde8141266", "552d823dcfcf2dee",
@@ -303,7 +303,9 @@ object Diagnostics {
                     val newest = files.sortedByDescending { it.lastModified() }
                     val geometry = newest.filter { it.name.startsWith("ds_geometry_writer_") }
                     val countTraces = newest.filter { it.name.startsWith("ds_count_producer_") }
-                    val producer = countTraces.sortedByDescending { it.name.endsWith("_p3.json") }.take(40) +
+                    val upstreamCounts = countTraces.filter { it.name.contains("cb3b9c1ea64fe876") }.take(20)
+                    val producer = countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
+                        .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
                         geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +
                         geometry.filterNot { it.name.contains("f0c140ea8df8f532") }.take(20) +
                         newest.filter { it.name.startsWith("ds_dominant_material_f") }.take(2) +

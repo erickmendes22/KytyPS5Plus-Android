@@ -2445,32 +2445,132 @@ static bool DsCountProducer(uint64_t hash) {
            hash == 0xd45e1b87d6741f63ull;
 }
 
+// Read a checked slice of the actual native descriptor, including its push
+// data alignment adjustment. A 5.4 MB list needs at most 64 records here.
+static std::vector<uint32_t> ReadDsCountSlice(RenderContext& context,
+    const PreparedBindings& bindings,uint32_t slot,uint64_t first_word,size_t count) {
+    if (slot>=bindings.buffers.size() || slot>=bindings.buffer_sources.size() || !count) return {};
+    const auto& native=bindings.buffers[slot];
+    const auto& source=bindings.buffer_sources[slot];
+    const auto& program=*bindings.runtime->program;
+    const auto offset_word=program.bindings.memory_offset_dword+slot/4u;
+    if (offset_word>=bindings.shader_data.size() || !native.buffer || native.range==VK_WHOLE_SIZE ||
+        first_word>source.size/4 || count>source.size/4-first_word) return {};
+    const uint64_t adjust=(bindings.shader_data[offset_word]>>((slot%4u)*8u))&255u;
+    const uint64_t offset=first_word*4;
+    if (adjust>native.range || offset>native.range-adjust ||
+        count>(native.range-adjust-offset)/4) return {};
+    std::vector<uint32_t> words(count);
+    if (!ReadDsGpuWords(context,native.buffer,native.offset+adjust+offset,words)) words.clear();
+    return words;
+}
+
+// 195657: native PC 0x64 of fb18 reads DWORD zero of a 12-byte list
+// record at flat SRT[64]+lane; PC 0x70 reads flags at object+208.
+// The translated module addresses binding 0 slots 1 and 2 in the same way.
+// These are expected guest gate inputs, not an assertion that the GPU took it.
+static void CaptureDsCountFirstGate(RenderContext& context,const PreparedBindings& bindings,
+                                   nlohmann::json& report) {
+    const auto& snap=*bindings.runtime->resources;
+    if (bindings.runtime->program->shader_hash!=0xfb18d110fab8234eull ||
+        snap.flattened_srt.size()<=64 || snap.buffers.size()<3) return;
+    const auto& before=report["before"];
+    if (before.size()<3 || !before[0].contains("gpu_words") ||
+        before[0]["gpu_words"].size()<4 || !before[2].contains("gpu_words")) return;
+    const auto count=before[0]["gpu_words"][3].get<uint32_t>();
+    const auto base=snap.flattened_srt[64];
+    const auto list_desc=DecodeNativeDescriptor<ShaderBufferResource>(snap.buffers[1]);
+    const auto obj_desc=DecodeNativeDescriptor<ShaderBufferResource>(snap.buffers[2]);
+    nlohmann::json gate={{"count",count},{"list_base_index",base},
+        {"list_stride",list_desc.Stride()},{"object_stride",obj_desc.Stride()},
+        {"status","layout_mismatch"}};
+    if (list_desc.Stride()!=12 || obj_desc.Stride()!=220 || count>64) {
+        report["first_gate"]=std::move(gate); return;
+    }
+    if (!count) { gate["status"]="zero_count"; report["first_gate"]=std::move(gate); return; }
+    const auto first_word=uint64_t{base}*3;
+    const auto list=ReadDsCountSlice(context,bindings,1,first_word,size_t{count}*3);
+    const auto& source=bindings.buffer_sources[1];
+    gate["list_address"]=source.address+first_word*4;
+    gate["list_words"]=list;
+    gate["status"]=list.size()==size_t{count}*3?"captured":"list_read_failed_or_out_of_range";
+    if (list.size()==size_t{count}*3) {
+        std::vector<uint32_t> backing(list.size());
+        if (LibKernel::Memory::TryReadBacking(source.address+first_word*4,backing.data(),backing.size()*4))
+            gate["list_backing_words"]=backing;
+        const auto& objects=before[2]["gpu_words"];
+        auto rows=nlohmann::json::array();
+        for (uint32_t lane=0;lane<count;++lane) {
+            const uint32_t id=list[3u*lane];
+            const uint64_t flag_word=uint64_t{id}*55u+52u;
+            const auto addr=source.address+(first_word+3ull*lane)*4;
+            nlohmann::json row={{"lane",lane},{"list_index",uint64_t{base}+lane},
+                {"object_id",id},{"list_word_address",addr},{"flag_word",flag_word},
+                {"flag_in_bounds",flag_word<objects.size()}};
+            if (flag_word<objects.size()) {
+                const auto flags=objects[flag_word].get<uint32_t>();
+                row["flags"]=flags;
+                row["expected_pass_flag_gate"]=(flags&8u)==0;
+            }
+            if (const auto* w=FindDsBufferProducer(report["frame"].get<int32_t>(),addr,4,false))
+                row["list_writer_candidate"]={{"shader",fmt::format("{:016x}",w->shader)},
+                    {"frame",w->frame},{"submit",w->submit},{"address",w->address},{"bytes",w->size}};
+            rows.push_back(std::move(row));
+        }
+        gate["lanes"]=std::move(rows);
+    }
+    report["first_gate"]=std::move(gate);
+}
+
 static std::optional<nlohmann::json> BeginDsCountProducer(
     RenderContext& context, const PreparedBindings& bindings, uint64_t submit) {
     namespace D=DemonsDominantGeometry;
     if (!DsTraceEnabled() || Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return {};
     const auto& program=*bindings.runtime->program;
-    if (!DsCountProducer(program.shader_hash) || bindings.buffer_sources.size()<11 ||
-        bindings.buffers.size()<11) return {};
-    const auto& count=bindings.buffer_sources[7];
-    if (count.address!=D::CountInputAddress || count.size!=D::CountInputWords*4u) return {};
+    const bool upstream_count=program.shader_hash==0xcb3b9c1ea64fe876ull;
+    uint64_t watch_address=0;
+    if (upstream_count) {
+        // The exact 20-byte dispatch-count records from all 21 195657 samples.
+        constexpr std::array<uint64_t,3> watched {0x20817f7c0ull,0x20817dfc0ull,0x20817daa0ull};
+        for (const auto& res:program.info.buffers) {
+            if (!res.written || res.descriptor_index>=bindings.buffer_sources.size()) continue;
+            const auto& src=bindings.buffer_sources[res.descriptor_index];
+            for (auto address:watched)
+                if (D::Overlaps(src.address,src.size,address,20)) watch_address=address;
+        }
+        if (!watch_address) return {};
+    } else {
+        if (!DsCountProducer(program.shader_hash) || bindings.buffer_sources.size()<11 ||
+            bindings.buffers.size()<11) return {};
+        const auto& count=bindings.buffer_sources[7];
+        if (count.address!=D::CountInputAddress || count.size!=D::CountInputWords*4u) return {};
+    }
     const auto frame=context.GetGpu().GetFrameNum();
     const auto& gate=DemonsAdaptiveCapture::Current();
     const uint32_t phase=gate.PostTransitionDarkDue(frame)?3u:gate.DarkOnsetDue(frame)?2u:
         gate.BrightSceneActive(frame)?1u:0u;
-    struct Gate { std::array<int32_t,4> last{-1,-1,-1,-1}; std::array<uint32_t,4> count{}; };
+    struct Gate { std::array<int32_t,4> last{-1,-1,-1,-1}; std::array<uint32_t,4> count{}; std::array<uint32_t,4> same_frame{}; };
     static std::unordered_map<uint64_t,Gate> seen;
-    auto& state=seen[program.shader_hash];
+    auto& state=seen[upstream_count ? program.shader_hash^watch_address : program.shader_hash];
     // Reserve a separate budget for dark onset and post-transition;
     // early scene sampling cannot consume the late capture.
-    const uint32_t budget=phase==0?4u:2u;
-    if (state.count[phase]>=budget ||
-        (state.last[phase]>=0 && frame-state.last[phase]<24)) return {};
-    state.last[phase]=frame;
+    const uint32_t budget=upstream_count ? (phase==0?8u:4u) : (phase==0?4u:2u);
+    if (state.count[phase]>=budget) return {};
+    if (state.last[phase]==frame) {
+        // cb3b can populate the same dispatch record twice in one frame
+        // (zero for the first consumer, nonzero for the second).
+        if (!upstream_count || state.same_frame[phase]>=4) return {};
+    } else {
+        if (state.last[phase]>=0 && frame-state.last[phase]<24) return {};
+        state.last[phase]=frame;
+        state.same_frame[phase]=0;
+    }
+    ++state.same_frame[phase];
     ++state.count[phase];
     const auto& snap=*bindings.runtime->resources;
     nlohmann::json report={{"frame",frame},{"submit",submit},{"phase",phase},
         {"shader",fmt::format("{:016x}",program.shader_hash)},{"srt",snap.flattened_srt},
+        {"watch_address",watch_address},{"capture_seq",state.count[phase]},
         {"user_data",snap.user_data},{"shader_data",bindings.shader_data}};
     auto buffers=nlohmann::json::array();
     for (uint32_t slot=0;slot<bindings.buffer_sources.size() && slot<bindings.buffers.size();++slot) {
@@ -2484,18 +2584,27 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
             auto words=ReadDsBoundWords(context,bindings,slot,src.size/4);
             entry["status"]=words.size()==src.size/4?"captured":"incomplete_gpu_read";
             entry["gpu_words"]=std::move(words);
-            if (slot==0 || slot==7) {
+            if (slot==0 || slot==7 || (upstream_count && D::Overlaps(src.address,src.size,watch_address,20))) {
                 std::vector<uint32_t> backing(src.size/4);
                 if (LibKernel::Memory::TryReadBacking(src.address,backing.data(),src.size))
                     entry["backing_words"]=std::move(backing);
             }
-        } else entry["status"]="not_captured_large_or_invalid";
+        } else {
+            entry["status"]="not_captured_large_or_invalid";
+            if (upstream_count && watch_address>=src.address &&
+                watch_address-src.address<=src.size && 20<=src.size-(watch_address-src.address) &&
+                (watch_address-src.address)%4==0) {
+                entry["watched_words"]=ReadDsCountSlice(context,bindings,slot,(watch_address-src.address)/4,5);
+                entry["watched_address"]=watch_address;
+            }
+        }
         if (const auto* w=FindDsBufferProducer(frame,src.address,src.size,false))
             entry["overlapping_compute_candidate"]={{"shader",fmt::format("{:016x}",w->shader)},
                 {"frame",w->frame},{"submit",w->submit},{"address",w->address},{"bytes",w->size},{"fill",w->fill}};
         buffers.push_back(std::move(entry));
     }
     report["before"]=std::move(buffers);
+    CaptureDsCountFirstGate(context,bindings,report);
     report["images"]=nlohmann::json::array();
     for (const auto& desc:snap.images) report["images"].push_back(desc.dwords);
     report["samplers"]=nlohmann::json::array();
@@ -2514,7 +2623,15 @@ static void EndDsCountProducer(RenderContext& context,const PreparedBindings& bi
         const auto slot=res.descriptor_index;
         if (!res.written || slot>=bindings.buffer_sources.size()) continue;
         const auto& src=bindings.buffer_sources[slot];
-        if (!src.size || src.size>131072 || src.size%4) continue;
+        if (!src.size || src.size%4) continue;
+        if (src.size>131072) {
+            const auto watch=(*report)["watch_address"].get<uint64_t>();
+            if (watch && watch>=src.address && watch-src.address<=src.size &&
+                20<=src.size-(watch-src.address) && (watch-src.address)%4==0)
+                after.push_back({{"slot",slot},{"guest",src.address},{"watched_address",watch},
+                    {"watched_words",ReadDsCountSlice(context,bindings,slot,(watch-src.address)/4,5)}});
+            continue;
+        }
         auto words=ReadDsBoundWords(context,bindings,slot,src.size/4);
         after.push_back({{"slot",slot},{"guest",src.address},
             {"status",words.size()==src.size/4?"captured":"incomplete_gpu_read"},
@@ -2525,9 +2642,9 @@ static void EndDsCountProducer(RenderContext& context,const PreparedBindings& bi
     std::error_code ec;
     std::filesystem::create_directories(folder,ec);
     if (ec) return;
-    const auto name=fmt::format("ds_count_producer_{}_f{}_s{}_p{}.json",
+    const auto name=fmt::format("ds_count_producer_{}_f{}_s{}_n{}_p{}.json",
         (*report)["shader"].get<std::string>(),(*report)["frame"].get<int32_t>(),
-        (*report)["submit"].get<uint64_t>(),(*report)["phase"].get<uint32_t>());
+        (*report)["submit"].get<uint64_t>(),(*report)["capture_seq"].get<uint32_t>(),(*report)["phase"].get<uint32_t>());
     std::ofstream file(folder/name,std::ios::trunc);
     if (file) file << *report;
     file.close();

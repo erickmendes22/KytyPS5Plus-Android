@@ -57,7 +57,8 @@ bool DsLightingShader(uint64_t hash) {
 	    0x23056085c1120461ull, 0xfabe0bcb275a3005ull,
 	    0xe75589aa0bb3ae52ull, 0x93b0be7f1a0293d1ull
 	}};
-	return hash == 0xf0c140ea8df8f532ull || hash == 0x3b7e54e11ee65120ull ||
+	return hash == 0xcb3b9c1ea64fe876ull || hash == 0xc387ee3c610ed66bull ||
+	       hash == 0xb89a7139ba15ee52ull || hash == 0xf0c140ea8df8f532ull || hash == 0x3b7e54e11ee65120ull ||
 	       hash == 0xfb18d110fab8234eull || hash == 0x2454ae3e3a6cbdabull ||
 	       hash == 0xb16650e4c9acfdddull || hash == 0xd45e1b87d6741f63ull ||
 	       hash == DemonsQueueProbe::TileProducer ||
