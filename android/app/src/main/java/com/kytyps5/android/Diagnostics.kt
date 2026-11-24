@@ -297,7 +297,9 @@ object Diagnostics {
                     // files. Give the producer captures their own slots so
                     // the ZIP actually contains the data cited by the log.
                     val newest = files.sortedByDescending { it.lastModified() }
-                    val producer = newest.filter { it.name.startsWith("ds_geometry_writer_") }.take(12) +
+                    val geometry = newest.filter { it.name.startsWith("ds_geometry_writer_") }
+                    val producer = geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +
+                        geometry.filterNot { it.name.contains("f0c140ea8df8f532") }.take(20) +
                         newest.filter { it.name.startsWith("ds_dominant_material_f") }.take(2) +
                         newest.filter { it.name.startsWith("ds_geometry_coverage_f") }.take(1) +
                         newest.filter { it.name.startsWith("ds_depth_prepass_f") }.take(4) +
@@ -306,7 +308,7 @@ object Diagnostics {
                         .take(18) +
                         newest.filter { it.name.startsWith("cs_bcbcc6ba1e68c974_ray_hits_") }.take(18) +
                         newest.filter { it.name.startsWith("cs_567d21ad45386c8d_radiance_") }.take(16)
-                    producer + (files - producer.toSet()).take(96 - producer.size)
+                    producer + (files - producer.toSet()).take((96 - producer.size).coerceAtLeast(0))
                 } else {
                     files.take(when (subdir) {
                         "guest-shaders" -> 96

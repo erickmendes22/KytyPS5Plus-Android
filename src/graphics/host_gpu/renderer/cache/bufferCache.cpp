@@ -524,6 +524,14 @@ void BufferCache::NoteProbeRayWrite(uint64_t address, uint64_t size, const char*
 			    path,m_scheduler.CurrentTick(),source,shader,address,address+size};
 		}
 	}
+	if (trace_geometry && DemonsDominantGeometry::CountInputOverlap(address,size)) {
+		const auto base = DemonsDominantGeometry::CountInputAddress;
+		const auto begin = std::max(base,address);
+		const auto end = std::min(base+uint64_t{DemonsDominantGeometry::CountInputWords}*4,address+size);
+		const ProbeRayWrite write {path,m_scheduler.CurrentTick(),source,shader,address,address+size};
+		for (auto word=(begin-base)/4; word<((end-base)+3)/4; ++word)
+			m_geometry_input_writes[word] = write;
+	}
 	for (const auto& [first, last]: m_probe_ray_ranges) {
 		const auto begin = std::max(first, address);
 		const auto end = std::min(last, address + size);
@@ -549,6 +557,13 @@ BufferCache::ProbeRayWrite BufferCache::LastGeometryCountWrite(uint64_t record) 
 		if (record == DemonsDominantGeometry::IndirectRecords[i]) return m_geometry_count_writes[i];
 	}
 	return {};
+}
+
+BufferCache::ProbeRayWrite BufferCache::LastGeometryInputWrite(uint64_t address) const {
+	address = Kernel::AddressFold::Fold(address);
+	if (!DemonsDominantGeometry::CountInputOverlap(address,4) ||
+	    address < DemonsDominantGeometry::CountInputAddress || address%4) return {};
+	return m_geometry_input_writes[(address-DemonsDominantGeometry::CountInputAddress)/4];
 }
 
 void BufferCache::StampPendingWritesSlow() {

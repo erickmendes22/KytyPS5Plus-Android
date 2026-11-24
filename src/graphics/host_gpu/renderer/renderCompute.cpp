@@ -2445,8 +2445,8 @@ static void CaptureDsGeometryWriter(RenderContext& context,
                                     vk::Buffer indirect = {}, uint64_t indirect_offset = 0) {
     namespace D = DemonsDominantGeometry;
     if (!DsTraceEnabled() || Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
-    static uint32_t files = 0;
-    if (files >= 12) return;
+    static uint32_t files = 0, upstream_files = 0;
+    if (files >= 12 && upstream_files >= 12) return;
     const auto frame = context.GetGpu().GetFrameNum();
     const auto& gate = DemonsAdaptiveCapture::Current();
     const uint32_t phase = gate.PostTransitionDarkDue(frame) ? 3u :
@@ -2456,19 +2456,38 @@ static void CaptureDsGeometryWriter(RenderContext& context,
     static std::unordered_map<uint64_t,uint32_t> captured;
     if ((captured[program.shader_hash] & (1u<<phase)) != 0) return;
     nlohmann::json rows = nlohmann::json::array();
+    nlohmann::json upstream = nlohmann::json::array();
     for (size_t i=0; i<program.info.buffers.size(); ++i) {
         const auto& resource = program.info.buffers[i];
         const auto slot = resource.descriptor_index;
         if (!resource.written || slot >= bindings.buffer_sources.size() ||
             slot >= bindings.buffers.size()) continue;
         const auto& source = bindings.buffer_sources[slot];
-        if (!D::CountOverlap(source.address,source.size)) continue;
+        const bool output_overlap = D::CountOverlap(source.address,source.size);
+        const bool input_overlap = D::CountInputOverlap(source.address,source.size);
+        if (!output_overlap && !input_overlap) continue;
         const auto& native = bindings.buffers[slot];
         const auto offset_word = program.bindings.memory_offset_dword + slot/4u;
         if (!native.buffer || native.range == VK_WHOLE_SIZE ||
             offset_word >= bindings.shader_data.size()) continue;
         const uint64_t adjustment =
             (bindings.shader_data[offset_word] >> ((slot%4u)*8u)) & 255u;
+        if (input_overlap && upstream_files<12) {
+            const auto begin=std::max(source.address,D::CountInputAddress);
+            const auto end=std::min(source.address+source.size,D::CountInputAddress+uint64_t{D::CountInputWords}*4u);
+            const auto offset=begin-source.address;
+            if (begin%4==0 && end>begin && (end-begin)%4==0 &&
+                adjustment<=native.range && offset<=native.range-adjustment &&
+                end-begin<=native.range-adjustment-offset) {
+                std::vector<uint32_t> words((end-begin)/4);
+                if (ReadDsGpuWords(context,native.buffer,native.offset+adjustment+offset,words))
+                    upstream.push_back({{"slot",slot},{"guest_base",source.address},
+                        {"guest_size",source.size},{"begin",begin},{"words",words},
+                        {"dynamic_write",resource.written_dynamic},
+                        {"static_write_begin",resource.written_begin},{"static_write_end",resource.written_end}});
+            }
+        }
+        if (!output_overlap || files>=12) continue;
         for (auto site: D::IndirectRecords) {
             if (site < source.address) continue;
             const uint64_t offset = site-source.address;
@@ -2486,7 +2505,7 @@ static void CaptureDsGeometryWriter(RenderContext& context,
                 {"dynamic_write",resource.written_dynamic}});
         }
     }
-    if (rows.empty()) return;
+    if (rows.empty() && upstream.empty()) return;
     if (indirect) (void)ReadDsGpuWords(context,indirect,indirect_offset,groups);
     // Capture real, disjoint input/output descriptor views; do not infer counts.
     nlohmann::json count_source = {{"status","not_draw_builder"}};
@@ -2495,42 +2514,56 @@ static void CaptureDsGeometryWriter(RenderContext& context,
         if (snapshot.buffers.size()==4 && bindings.buffer_sources.size()>=4 &&
             bindings.buffers.size()>=4 && snapshot.flattened_srt.size()==19 &&
             groups[0]==1 && groups[1]==1 && groups[2]==1) {
-            const auto& src = bindings.buffer_sources[1];
+            const auto& src = bindings.buffer_sources[D::CountInputSlot];
             const auto& dst = bindings.buffer_sources[3];
-            const auto sdesc = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[1]);
+            const auto sdesc = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[D::CountInputSlot]);
             const auto ddesc = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[3]);
             bool source_read_only = false;
             bool alias = false;
             for (const auto& res : program.info.buffers) {
-                if (res.descriptor_index == 1) source_read_only = !res.written;
+                if (res.descriptor_index == D::CountInputSlot) source_read_only = !res.written;
                 if (res.written && res.descriptor_index < bindings.buffer_sources.size()) {
                     const auto& w = bindings.buffer_sources[res.descriptor_index];
                     alias |= D::Overlaps(src.address, src.size, w.address, w.size);
                 }
             }
-            if (source_read_only && !alias && sdesc.Stride()==32 && ddesc.Stride()==4 &&
-                src.size && src.size<=16384 && dst.size && dst.size<=131072 &&
+            if (source_read_only && !alias && sdesc.Stride()==4 && ddesc.Stride()==4 &&
+                src.address==D::CountInputAddress && src.size==D::CountInputWords*4u && dst.size && dst.size<=131072 &&
                 dst.address==D::IndirectRecords[0]) {
-                const auto input = ReadDsBoundWords(context,bindings,1,src.size/4);
+                const auto input = ReadDsBoundWords(context,bindings,D::CountInputSlot,src.size/4);
                 const auto output = ReadDsBoundWords(context,bindings,3,dst.size/4);
                 count_source = {{"status",input.size()==src.size/4 && output.size()==dst.size/4 ?
                     "captured" : "incomplete_gpu_read"},
                     {"guest",src.address},{"bytes",src.size},{"output_guest",dst.address},
                     {"output_bytes",dst.size},{"active_threads",snapshot.flattened_srt[18]},
+                    {"source_slot",D::CountInputSlot},{"output_slot",D::CountOutputSlot},
                     {"gpu_words",input},{"output_words",output},
                     {"gpu_dirty",context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size)}};
                 std::vector<uint32_t> backing(src.size/4);
                 const bool backing_ok = LibKernel::Memory::TryReadBacking(src.address,backing.data(),src.size);
                 count_source["backing_ok"] = backing_ok;
                 if (backing_ok) count_source["backing_words"] = backing;
-                auto candidates = nlohmann::json::array();
-                for (uint64_t offset=0; offset+4<=src.size; offset+=4) {
-                    if (const auto* w=FindDsBufferProducer(frame,src.address+offset,4,false))
-                        candidates.push_back({{"offset",offset},{"shader",fmt::format("{:016x}",w->shader)},
+                auto pairs = nlohmann::json::array();
+                const auto active = std::min<uint32_t>(snapshot.flattened_srt[18],64u);
+                for (uint32_t lane=0; lane<active; ++lane) for (uint32_t draw=0; draw<21; ++draw) {
+                    const auto si=D::CountSourceIndex(lane,draw), di=D::CountDestIndex(lane,draw);
+                    if (si>=input.size() || di>=output.size()) continue;
+                    const auto address=src.address+4ull*si;
+                    const auto stamp=context.GetBufferCache().LastGeometryInputWrite(address);
+                    nlohmann::json row={{"lane",lane},{"draw",draw},{"input_index",si},
+                        {"output_index",di},{"source",input[si]},{"output",output[di]},
+                        {"equal",input[si]==output[di]},{"source_address",address}};
+                    if (stamp.path) row["last_write"]={{"path",stamp.path},{"tick",stamp.tick},
+                        {"source",stamp.source},{"shader",fmt::format("{:016x}",stamp.shader)},
+                        {"begin",stamp.begin},{"end",stamp.end}};
+                    if (const auto* w=FindDsBufferProducer(frame,address,4,false))
+                        row["compute_candidate"]={{"shader",fmt::format("{:016x}",w->shader)},
                             {"frame",w->frame},{"submit",w->submit},{"address",w->address},
-                            {"bytes",w->size},{"fill",w->fill}});
+                            {"bytes",w->size},{"fill",w->fill}};
+                    if (backing_ok) row["backing"]=backing[si];
+                    pairs.push_back(std::move(row));
                 }
-                count_source["overlapping_write_candidates"] = std::move(candidates);
+                count_source["pairs"]=std::move(pairs);
             } else count_source["status"] = "source_not_proven_read_only_or_layout_mismatch";
         }
     }
@@ -2553,10 +2586,11 @@ static void CaptureDsGeometryWriter(RenderContext& context,
         {"shader",fmt::format("{:016x}",program.shader_hash)},{"groups",groups},
         {"indirect",bool(indirect)},{"user_data",snapshot.user_data},{"srt",snapshot.flattened_srt},
         {"shader_data",bindings.shader_data},{"buffers",descriptors},{"images",images},
-        {"samplers",samplers},{"records",rows},{"count_source",count_source}};
+        {"samplers",samplers},{"records",rows},{"count_source",count_source},{"source_writes",upstream}};
     file.close();
     if (file.good()) {
-        ++files;
+        if (!rows.empty()) ++files;
+        if (!upstream.empty()) ++upstream_files;
         captured[program.shader_hash] |= 1u<<phase;
         Log::WriteToConsoleAndLog(fmt::format(
             "[DS_GEOMETRY_WRITER] frame={} shader=0x{:016x} records={} file={}\n",

@@ -21,6 +21,19 @@ constexpr bool CountOverlap(uint64_t address, uint64_t bytes) {
     for (auto site: IndirectRecords) if (Overlaps(address,bytes,site+4,4)) return true;
     return false;
 }
+// Verified from the native f0c140ea8df8f532 load at 0x7c and
+// SPIR-V binding 0 array element 2 (frame 417/473/474/665).
+constexpr uint64_t CountInputAddress = 0x2093634c0ull;
+constexpr uint32_t CountInputWords = 2816;
+constexpr uint32_t CountInputSlot = 2;
+constexpr uint32_t CountOutputSlot = 3;
+constexpr uint32_t CountSourceIndex(uint32_t lane, uint32_t draw) { return 22u*lane+draw; }
+constexpr uint32_t CountDestIndex(uint32_t lane, uint32_t draw) { return 168u*lane+8u*draw+1u; }
+constexpr bool CountInputOverlap(uint64_t address, uint64_t bytes) {
+    return Overlaps(address,bytes,CountInputAddress,CountInputWords*4u);
+}
+static_assert(CountSourceIndex(2,0)==44 && CountDestIndex(2,0)==337);
+static_assert(CountSourceIndex(63,20)<CountInputWords);
 constexpr bool ProbeDepthPs(uint64_t hash) {
     return hash == 0x3dce2bd78d58db62ull || hash == 0x895c9fe037e704f5ull;
 }

@@ -2176,6 +2176,7 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
 			const auto size = desc.GetSize();
 			if (size == DemonsLightingMemoryPolicy::ProbeCoefficientBytes ||
 			    DemonsDominantGeometry::CountOverlap(desc.Base48(),size) ||
+			    DemonsDominantGeometry::CountInputOverlap(desc.Base48(),size) ||
 			    DemonsRadianceTrace::Data(desc.Base48(), size) ||
 			    DemonsRadianceTrace::Metadata(desc.Base48(), size)) {
 				ShaderDump::RecordDsProbeGuestCode(params.hash, params.code);
