@@ -1,3 +1,5 @@
+#include "graphics/host_gpu/renderer/pipeline/demonsMaterialScalarPolicy.h"
+#include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
@@ -225,6 +227,69 @@ bool ReadShaderGuestMemoryNoSync(void*, uint64_t address, std::span<uint32_t> va
 	}
 	return Libs::LibKernel::Memory::TryReadCleanBufferBacking(
 	    address, values.data(), values.size_bytes());
+}
+
+// Verify the actual uniform material input, not the color resulting from
+// its gamma encoding. The GFX10 program uses three raw RGB scalars and a
+// fourth flag, not texture samples. Do not replace intentional guest zeros.
+// Only the exact captured layout, descriptor-free shader and coherent live
+// pointer chain authorize changing a flat word.
+void ReconcileDsMaterialScalars(const ShaderRecompiler::IR::ResourcePlan& plan,
+                                 ShaderRecompiler::IR::ResourceSnapshot& snapshot) {
+    namespace P = DemonsMaterialScalarPolicy;
+    namespace IR = ShaderRecompiler::IR;
+    if (plan.shader_hash != P::Shader || !GuestGpu::IsGpuThread() ||
+        !DsCoherentSrtEnabled() || snapshot.user_data.size() != 2 ||
+        snapshot.flattened_srt.size() != 10 || !snapshot.buffers.empty() ||
+        !snapshot.images.empty() || !snapshot.samplers.empty()) return;
+    auto& flat = snapshot.flattened_srt;
+    std::array<uint32_t,4> fields {P::NoSlot,P::NoSlot,P::NoSlot,P::NoSlot};
+    for (const auto& read: plan.srt_reads) {
+        if (read.flat_offset < 6 || read.flat_offset >= 10) continue;
+        const auto* inst = read.value.ResolveInstruction();
+        if (!inst || inst->GetOpcode() != IR::ValueOpcode::LoadAddressU32) continue;
+        const auto index = inst->Flags<IR::SrtReadFlags>().index;
+        if (index >= plan.memory_info.size()) continue;
+        const auto offset = inst->Arg(1).Resolve();
+        if (!offset.IsImmediate()) continue;
+        const auto& mem = plan.memory_info[index];
+        const uint32_t effective = (mem.offset & ~3u) + (offset.U32() & ~3u);
+        fields[read.flat_offset-6] = P::Field(effective);
+    }
+    static std::atomic_uint32_t checks {0};
+    const auto n = checks.fetch_add(1, std::memory_order_relaxed) + 1u;
+    const bool report = n <= 8 || n % 128 == 0;
+    const auto root = P::Pointer(snapshot.user_data[0], snapshot.user_data[1]);
+    std::array<uint32_t,2> first {}, second {}, screen {};
+    const auto coherent = [](uint64_t address, auto& words) {
+        return Libs::LibKernel::Memory::IsMappedRange(address, sizeof(words)) &&
+            Libs::LibKernel::Memory::TryReadShaderResourceBacking(address, words.data(), sizeof(words), true);
+    };
+    const bool roots = root && coherent(root+8, first) && coherent(root+0x18, second);
+    const auto first_ptr = P::Pointer(first[0], first[1]);
+    const auto second_ptr = P::Pointer(second[0], second[1]);
+    const bool screen_ok = roots && first_ptr && coherent(first_ptr+0x2a8, screen);
+    const bool layout = screen_ok && P::Layout(flat,first,second,screen) && P::Fields(fields);
+    std::array<uint32_t,5> raw {}, backing {};
+    const bool backing_ok = roots && second_ptr &&
+        Libs::LibKernel::Memory::TryReadBacking(second_ptr+0x10, backing.data(), sizeof(backing));
+    const bool source_ok = roots && second_ptr && coherent(second_ptr+0x10,raw);
+    std::array<uint32_t,4> previous {flat[6],flat[7],flat[8],flat[9]};
+    uint32_t changed = 0;
+    if (layout && source_ok) {
+        for (size_t i=0; i<fields.size(); ++i) {
+            const auto word = raw[fields[i]];
+            changed += flat[i+6] != word;
+            flat[i+6] = word;
+        }
+    }
+    if (report || changed) PipelineCacheLog(
+        "[DS_MATERIAL_SCALAR] n={} root=0x{:x} source=0x{:x} roots={} screen={} layout={} "
+        "source_ok={} backing_ok={} fields={},{},{},{} old={:08x},{:08x},{:08x},{:08x} "
+        "raw={:08x},{:08x},{:08x},{:08x},{:08x} backing={:08x},{:08x},{:08x},{:08x},{:08x} changed={}",
+        n,root,second_ptr+0x10,roots,screen_ok,layout,source_ok,backing_ok,
+        fields[0],fields[1],fields[2],fields[3],previous[0],previous[1],previous[2],previous[3],
+        raw[0],raw[1],raw[2],raw[3],raw[4],backing[0],backing[1],backing[2],backing[3],backing[4],changed);
 }
 
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
@@ -854,6 +919,7 @@ struct PipelineCache::ProgramCache {
 				if (auto* list = WalkFan::t_prewalk; list != nullptr) list->NoteWalked(&cached);
 			}
 			if (permutation != nullptr) {
+				ReconcileDsMaterialScalars(entry->second.resource_plan, entry->second.resources);
 				input_info.stage = {.program = &permutation->program, .resources = &entry->second.resources};
 				permutation->program.bindings.AdvancePushData(push_data_cursor);
 				return permutation->handle;
@@ -873,6 +939,7 @@ struct PipelineCache::ProgramCache {
 			}
 			entry->second.permutations.push_back(std::move(compiled));
 			const auto& permutation = entry->second.permutations.back();
+			ReconcileDsMaterialScalars(entry->second.resource_plan, entry->second.resources);
 			input_info.stage = {.program = &permutation.program, .resources = &entry->second.resources};
 			permutation.program.bindings.AdvancePushData(push_data_cursor);
 			LogShaderCounts();
@@ -980,6 +1047,7 @@ struct PipelineCache::ProgramCache {
 				entry->second.resource_plan = ShaderRecompiler::IR::ExtractResourcePlan(translated.program);
 			}
 			if (const auto* permutation = entry->second.FindPermutation<true>(runtime, push_data_cursor)) {
+				ReconcileDsMaterialScalars(entry->second.resource_plan, entry->second.resources);
 				input_info.stage = {.program = &permutation->program, .resources = &entry->second.resources};
 				permutation->program.bindings.AdvancePushData(push_data_cursor);
 				return permutation->handle;

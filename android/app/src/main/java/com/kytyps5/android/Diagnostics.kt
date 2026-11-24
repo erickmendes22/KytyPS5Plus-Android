@@ -239,7 +239,9 @@ object Diagnostics {
         val postShaders = setOf("3265b01ed00a5c01", "17defa333d9d1e22", "d1768d02fcf96a58",
             "844e5697cf62ecd7", "a5fc1658592e3cba", "41a57a218d07a778")
         val dominantShaders = setOf("2337192397a30339", "651f53f5932d8794", "aff9c7ef505c6253",
-            "c96f3fcde8141266", "552d823dcfcf2dee")
+            "c96f3fcde8141266", "552d823dcfcf2dee",
+            "34c51585c926a664", "a7208481a1f2b760", "3dce2bd78d58db62", "895c9fe037e704f5",
+            "f825a988127faeb4", "74b55dea9562eda1", "cfc1d9193e7f9e53", "c92deb23fc611b10")
         val watched = dominantShaders + queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
             "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
             "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",

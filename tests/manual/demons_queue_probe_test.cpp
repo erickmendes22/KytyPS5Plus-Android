@@ -309,3 +309,16 @@ static_assert(!D::SuppressDepthWrite(true,D::OccluderVs,D::DepthPs,D::DepthAddre
 static_assert(!D::SuppressDepthWrite(true,D::OccluderVs,D::DepthPs,D::DepthAddress,false,false,true,7296,1,6));
 static_assert(!D::SuppressDepthWrite(true,D::OccluderVs,D::DepthPs,D::DepthAddress,false,true,true,33,1,6));
 }
+
+#include "graphics/host_gpu/renderer/pipeline/demonsMaterialScalarPolicy.h"
+namespace {
+namespace S = Libs::Graphics::DemonsMaterialScalarPolicy;
+constexpr std::array<uint32_t,10> captured = {143130640,2,129187760,2,975427338,982622900,0,0,0,0};
+static_assert(S::Pointer(129187760,2) == 0x207b33fb0ull);
+static_assert(S::Layout(captured,{143130640,2},{129187760,2},{975427338,982622900}));
+static_assert(!S::Layout(captured,{143130640,2},{129187764,2},{975427338,982622900}));
+static_assert(S::Fields({S::Field(0x10),S::Field(0x14),S::Field(0x18),S::Field(0x20)}));
+static_assert(S::Fields({2,1,0,4}));
+static_assert(!S::Fields({0,1,2,2}));
+static_assert(!S::Fields({0,1,2,S::Field(0x1c)}));
+}

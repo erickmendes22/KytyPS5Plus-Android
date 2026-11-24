@@ -10,7 +10,12 @@ constexpr uint64_t MaterialVs = 0xc96f3fcde8141266ull;
 constexpr uint64_t MaterialPs = 0x552d823dcfcf2deeull;
 constexpr bool Watched(uint64_t hash) {
     return hash == OccluderVs || hash == DepthPs || hash == DominantDepthVs ||
-           hash == MaterialVs || hash == MaterialPs;
+           hash == MaterialVs || hash == MaterialPs ||
+           // Actual zero-coverage depth/material geometry from the 213553 capture.
+           hash == 0x34c51585c926a664ull || hash == 0xa7208481a1f2b760ull ||
+           hash == 0x3dce2bd78d58db62ull || hash == 0x895c9fe037e704f5ull ||
+           hash == 0xf825a988127faeb4ull || hash == 0x74b55dea9562eda1ull ||
+           hash == 0xcfc1d9193e7f9e53ull || hash == 0xc92deb23fc611b10ull;
 }
 // Optional isolation: frame 497 measured two unmatched depth writers,
 // not proof that either is invalid. Preserve clear, stencil and comparison.
