@@ -12,7 +12,7 @@ static void E(std::vector<uint32_t>& v,spv::Op o,std::initializer_list<uint32_t>
 static std::vector<uint32_t> Fixture(const Map& m){
     std::vector<uint32_t> v{0x07230203,0x00010500,0,4000,0};
     constexpr uint32_t f=20,u=1,uv2=1000,fv2=1001,fv3=1002,fv4=1003,
-        uv4=1004,img=1005,samp=1006,ip=1007,dp=1008,dimg=1009,dsamp=1010,
+        pair=1031,uv4=1004,img=1005,samp=1006,ip=1007,dp=1008,dimg=1009,dsamp=1010,
         fetchimg=1011,fetchptr=1012,outimg=1013,outptr=1014,
         ci=1015,cd=1016,cf=1017,co=1018,c0=1019,fc0=1020,
         coord=1021,grad=1022,ic=1023,exportv=1024,ft=1025;
@@ -29,7 +29,7 @@ static std::vector<uint32_t> Fixture(const Map& m){
     }
     E(v,spv::OpTypeInt,{u,32,0});E(v,spv::OpTypeFloat,{f,32});
     E(v,spv::OpTypeVector,{2,u,3});E(v,spv::OpTypeVector,{uv2,u,2});
-    E(v,spv::OpTypeVector,{uv4,u,4});E(v,spv::OpTypeVector,{fv2,f,2});
+    E(v,spv::OpTypeStruct,{pair,u,u});E(v,spv::OpTypeVector,{uv4,u,4});E(v,spv::OpTypeVector,{fv2,f,2});
     E(v,spv::OpTypeVector,{fv3,f,3});E(v,spv::OpTypeVector,{fv4,f,4});
     E(v,spv::OpTypeBool,{m.boolean});E(v,spv::OpTypeVoid,{177});
     E(v,spv::OpTypePointer,{3,spv::StorageClassInput,2});
@@ -46,7 +46,7 @@ static std::vector<uint32_t> Fixture(const Map& m){
     E(v,spv::OpTypePointer,{outptr,spv::StorageClassUniformConstant,outimg});
     E(v,spv::OpTypeFunction,{ft,177});
     E(v,spv::OpConstant,{u,c0,0});E(v,spv::OpConstant,{f,fc0,0});
-    E(v,spv::OpConstantComposite,{uv2,m.ray,c0,c0});
+    E(v,spv::OpConstantComposite,{pair,1032,c0,c0});
     E(v,spv::OpConstantComposite,{fv3,coord,fc0,fc0,fc0});
     E(v,spv::OpConstantComposite,{fv2,grad,fc0,fc0});
     E(v,spv::OpConstantComposite,{2,ic,c0,c0,c0});
@@ -56,6 +56,9 @@ static std::vector<uint32_t> Fixture(const Map& m){
     E(v,spv::OpVariable,{ip,ci,spv::StorageClassUniformConstant});E(v,spv::OpVariable,{dp,cd,spv::StorageClassUniformConstant});
     E(v,spv::OpVariable,{fetchptr,cf,spv::StorageClassUniformConstant});E(v,spv::OpVariable,{outptr,co,spv::StorageClassUniformConstant});
     E(v,spv::OpFunction,{177,56,0,ft});E(v,spv::OpLabel,{1100});
+    E(v,spv::OpBranch,{1099});E(v,spv::OpLabel,{1099});
+    E(v,spv::OpPhi,{pair,m.ray,1032,1100});
+    E(v,spv::OpCompositeExtract,{u,1098,m.ray,0});
     E(v,spv::OpCompositeExtract,{u,1101,m.ray,1});
     E(v,spv::OpLoad,{samp,1102,ci});E(v,spv::OpLoad,{dsamp,1103,cd});
     E(v,spv::OpLoad,{fetchimg,1104,cf});E(v,spv::OpLoad,{outimg,1105,co});
@@ -94,5 +97,8 @@ int main(int argc,char** argv){
         Save(std::string(argv[1])+std::to_string(k)+"-original.spv",original);
         Save(std::string(argv[1])+std::to_string(k)+"-instrumented.spv",v);
     }
-    std::cout<<"Relight trace: 17 sites, four maps, image sampling and output contract OK\n";
+    auto fifth=Fixture(Maps[0]);
+    assert(Instrument(fifth,0x4690ec9f28ed697cull,55));
+    Save(std::string(argv[1])+"fifth-instrumented.spv",fifth);
+    std::cout<<"Relight trace: struct/phi ray pair, 17 sites, four maps and guarded fifth OK\n";
 }

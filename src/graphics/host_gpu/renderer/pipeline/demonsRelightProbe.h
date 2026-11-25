@@ -24,9 +24,13 @@ constexpr std::array<Map,4> Maps{{
 // sampled value (or exported value), and LOD/gradient/Dref operands.
 // No guest data, EXEC, sampling operation or arithmetic is changed.
 inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fp,uint32_t binding) {
+    Map discovered{fp,0,0,0};
     const Map* m=nullptr;
     for(const auto& a:Maps)if(a.fp==fp)m=&a;
-    if(!m||spirv.size()<5||spirv[3]>100000)return false;
+    // This fifth fingerprint was seen on-device, but its dump was evicted.
+    // Accept it only after a unique structural match below.
+    if(!m && fp!=0x4690ec9f28ed697cull)return false;
+    if(spirv.size()<5||spirv[3]>100000)return false;
     const auto bound=spirv[3];
     constexpr uint32_t u=1,f=20,vec3=2,voidt=177,mainid=56;
     struct Type{uint32_t component=0,count=0;};
@@ -34,6 +38,9 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fp,uint32_t binding
     std::vector<uint32_t> value_types(bound);
     size_t first_type=0;
     bool local=false;
+    uint32_t bool_count=0, ptr_count=0;
+    std::vector<bool> pair_struct(bound), pair_phi(bound);
+    uint32_t previous_pair=0, candidate_count=0;
     for(size_t i=5;i<spirv.size();){
         const auto n=spirv[i]>>16;
         if(!n||n>spirv.size()-i)return false;
@@ -44,6 +51,17 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fp,uint32_t binding
         if(o==spv::OpTypeVector&&n==4&&spirv[i+1]<bound&&spirv[i+2]<bound&&spirv[i+3]<=4&&types[spirv[i+2]].count==1)
             types[spirv[i+1]]={spirv[i+2],spirv[i+3]};
         if(o==spv::OpExecutionMode&&n==6&&spirv[i+1]==mainid&&spirv[i+2]==17&&spirv[i+3]==8&&spirv[i+4]==8&&spirv[i+5]==1)local=true;
+        if(o==spv::OpTypeBool&&n==2){discovered.boolean=spirv[i+1];++bool_count;}
+        if(o==spv::OpTypePointer&&n==4&&spirv[i+2]==spv::StorageClassStorageBuffer&&spirv[i+3]==u){discovered.ptr=spirv[i+1];++ptr_count;}
+        // AMD buffer loads lower to a struct {uint,uint}, not a vector.
+        if(o==spv::OpTypeStruct&&n==4&&spirv[i+1]<bound&&spirv[i+2]==u&&spirv[i+3]==u){
+            types[spirv[i+1]]={u,2};pair_struct[spirv[i+1]]=true;
+        }
+        if(o==spv::OpPhi&&n>=5&&spirv[i+1]<bound&&spirv[i+2]<bound&&pair_struct[spirv[i+1]])pair_phi[spirv[i+2]]=true;
+        if(o==spv::OpCompositeExtract&&n==5&&spirv[i+1]==u&&spirv[i+3]<bound&&pair_phi[spirv[i+3]]){
+            if(spirv[i+4]==1&&previous_pair==spirv[i+3]){discovered.ray=previous_pair;++candidate_count;}
+            previous_pair=spirv[i+4]==0?spirv[i+3]:0;
+        }else previous_pair=0;
         // Values needed here are constants, loads, phis, arithmetic and
         // composites. Exclude non-result instructions (stores/branches).
         const auto code=uint32_t(o);
@@ -53,6 +71,11 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fp,uint32_t binding
         i+=n;
     }
     if(!first_type||!local||types[u].count!=1||types[f].count!=1)return false;
+    if(!m){
+        if(bool_count!=1||ptr_count!=1||candidate_count!=1)return false;
+        m=&discovered;
+    }
+    if(m->ray>=bound||m->boolean>=bound||m->ptr>=bound)return false;
     uint32_t next=bound;
     const auto id=[&]{return next++;};
     const auto emit=[](std::vector<uint32_t>& v,spv::Op o,std::initializer_list<uint32_t> a){
