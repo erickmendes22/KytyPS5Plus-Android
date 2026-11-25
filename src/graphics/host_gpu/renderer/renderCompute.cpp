@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
@@ -3282,7 +3283,10 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
         if (!DsCountProducer(program.shader_hash) || bindings.buffer_sources.size()<11 ||
             bindings.buffers.size()<11) return {};
         const auto& count=bindings.buffer_sources[7];
-        if (count.address!=D::CountInputAddress || count.size!=D::CountInputWords*4u) return {};
+        if (count.address!=D::CountInputAddress || count.size!=D::CountInputWords*4u) {
+            if (!DemonsCausalMatrix::Evidence() || program.shader_hash!=0xfb18d110fab8234eull ||
+                !count.address || !count.size || count.size>131072 || count.size%4) return {};
+        }
     }
     const auto frame=context.GetGpu().GetFrameNum();
     const auto& gate=DemonsAdaptiveCapture::Current();
@@ -3314,7 +3318,9 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
     nlohmann::json report={{"frame",frame},{"submit",submit},{"phase",phase},
         {"shader",fmt::format("{:016x}",program.shader_hash)},{"srt",snap.flattened_srt},
         {"watch_address",watch_address},{"capture_seq",seq},
-        {"user_data",snap.user_data},{"shader_data",bindings.shader_data}};
+        {"user_data",snap.user_data},{"shader_data",bindings.shader_data},
+        {"matrix_mode",static_cast<unsigned>(DemonsCausalMatrix::Mode())},
+        {"execution_probe_variant",bindings.runtime->program->ds_light_math_variant}};
     auto buffers=nlohmann::json::array();
     for (uint32_t slot=0;slot<bindings.buffer_sources.size() && slot<bindings.buffers.size();++slot) {
         const auto& src=bindings.buffer_sources[slot];
@@ -3431,6 +3437,33 @@ static void EndDsCountProducer(RenderContext& context,const PreparedBindings& bi
             {"gpu_words",std::move(words)}});
     }
     (*report)["after"]=std::move(after);
+    // Independent unsigned arithmetic oracle, read-only on captured data.
+    if(DemonsCausalMatrix::Evidence() && bindings.runtime->program->shader_hash==0xcb3b9c1ea64fe876ull) {
+        auto result=nlohmann::json{{"status","unavailable"}};
+        const auto& s=(*report)["srt"];
+        if(s.size()==18) {
+            const auto u=[&](size_t i){return s[i].get<uint32_t>();};
+            const auto address=[&](size_t i){return uint64_t{u(i)}|(uint64_t{u(i+1)&0xffffu}<<32u);};
+            const auto words=[&](const char* side,uint64_t addr)->const nlohmann::json* {
+                const nlohmann::json* found=nullptr;
+                for(const auto& x:(*report)[side]) if(x.value("guest",uint64_t{0})==addr && x.contains("gpu_words")) {
+                    if(found)return nullptr;
+                    found=&x["gpu_words"];
+                }
+                return found;
+            };
+            const auto* primary=words("before",address(6));
+            const auto* secondary=words("before",address(2));
+            const auto* output=words("after",address(10));
+            if(primary && u(16)<primary->size() && (!u(15)||(secondary&&u(14)<secondary->size())) && output && output->size()>=5) {
+                const auto expected=DemonsCausalMatrix::CountExpected((*primary)[u(16)].get<uint32_t>(),
+                    u(15)?(*secondary)[u(14)].get<uint32_t>():0,u(17),u(15));
+                std::array<uint32_t,5> actual{};for(size_t i=0;i<5;++i)actual[i]=(*output)[i].get<uint32_t>();
+                result={{"status",expected==actual?"match":"divergence"},{"expected",expected},{"actual",actual}};
+            }
+        }
+        (*report)["independent_replay"]=std::move(result);
+    }
     const auto folder=Config::GetShaderDumpFolder()/"queue-state";
     std::error_code ec;
     std::filesystem::create_directories(folder,ec);
@@ -4545,6 +4578,12 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	auto& pipeline =
 	    m_context.GetPipelineCache().GetComputePipeline(input_info, compute_program);
 	auto& bindings = m_compute_bindings;
+	if (DemonsCausalMatrix::Mode()==DemonsCausalMatrix::PassOrder &&
+        DemonsCausalMatrix::OrderedShader(input_info.stage.program->shader_hash)) {
+        m_context.GetCommandScheduler().Finish();
+        static uint32_t logged=0;
+        if(logged++<64) Log::WriteToConsoleAndLog(fmt::format("[DS_MATRIX_ORDER] mode=D2 shader={:016x} submit={}\n",input_info.stage.program->shader_hash,submit_id));
+    }
 	const uint64_t ds_preparation_tick = m_context.GetCommandScheduler().CurrentTick();
 	PrepareBindings(input_info.stage, bindings);
 	if (program.bindings.dispatch_thread_dword != ShaderRecompiler::IR::PushData::NoStart) {
@@ -4863,6 +4902,12 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(input_info, compute_program);
 	auto& bindings = m_compute_bindings;
+	if (DemonsCausalMatrix::Mode()==DemonsCausalMatrix::PassOrder &&
+        DemonsCausalMatrix::OrderedShader(input_info.stage.program->shader_hash)) {
+        m_context.GetCommandScheduler().Finish();
+        static uint32_t logged=0;
+        if(logged++<64) Log::WriteToConsoleAndLog(fmt::format("[DS_MATRIX_ORDER] mode=D2 shader={:016x} submit={}\n",input_info.stage.program->shader_hash,submit_id));
+    }
 	const uint64_t ds_preparation_tick = m_context.GetCommandScheduler().CurrentTick();
 	PrepareBindings(input_info.stage, bindings);
 	PreparedBindings* descriptor_stage = &bindings;

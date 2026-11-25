@@ -30,6 +30,7 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceMemo.h"
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
+#include "graphics/guest_gpu/command_processor/demonsMatrixCpRead.h"
 #include "kernel/threadPlacement.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/submitStats.h"
@@ -1475,7 +1476,8 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 
 	uint32_t draw_count = max_count_or_count;
 	if (count_addr != nullptr) {
-		draw_count = *count_addr;
+		draw_count = DemonsCausalMatrix::Mode()==DemonsCausalMatrix::CpCoherent ?
+		    DemonsMatrixCpRead::Read<uint32_t>(m_renderer,reinterpret_cast<uint64_t>(count_addr)) : *count_addr;
 		if (draw_count > max_count_or_count) {
 			draw_count = max_count_or_count;
 		}
@@ -1520,7 +1522,11 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		                       static_cast<uint64_t>(i) * stride_in_bytes;
 
 		if (!indexed) {
+			DrawIndirectArgs coherent{};
 			auto* args = reinterpret_cast<const DrawIndirectArgs*>(args_addr);
+			if (DemonsCausalMatrix::Mode()==DemonsCausalMatrix::CpCoherent) {
+			    coherent=DemonsMatrixCpRead::Read<DrawIndirectArgs>(m_renderer,args_addr); args=&coherent;
+			}
 			PatchIndirectDrawOffsets(*this, registers, args->start_vertex_location,
 			                         args->start_instance_location, 0, i);
 			m_num_instances = args->instance_count;
@@ -1533,7 +1539,11 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 			continue;
 		}
 
+		DrawIndexedIndirectArgs coherent{};
 		auto* args = reinterpret_cast<const DrawIndexedIndirectArgs*>(args_addr);
+		if (DemonsCausalMatrix::Mode()==DemonsCausalMatrix::CpCoherent) {
+		    coherent=DemonsMatrixCpRead::Read<DrawIndexedIndirectArgs>(m_renderer,args_addr); args=&coherent;
+		}
 		{
 			static std::atomic<uint32_t> log_count {0};
 			const auto n = log_count.fetch_add(1, std::memory_order_relaxed);

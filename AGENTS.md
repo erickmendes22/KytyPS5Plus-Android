@@ -33,3 +33,25 @@ de acesso/ferramentas da sessão, descreva-o de maneira verificável e sem alega
 que o APK foi entregue. Não invente conclusão, resultado de build ou link; retome
 assim que a execução estiver disponível. Esta ressalva de transparência não é
 uma autorização para abandonar voluntariamente a investigação.
+
+## Matriz causal obrigatória — Demon's Souls PPSA01341
+Meta: isolar a primeira divergência em poucas builds. M1 visibilidade, M2
+emissão de geometria, M3 memória/streaming/coerência, M4 primeira perda de
+albedo (prioridade máxima); M5 radiância, M6 ordenação, M7 semântica do
+recompilador (alta). Atualizar docs/android/DEMONS_CAUSAL_MATRIX.md. Não
+reabrir hipóteses descartadas sem nova evidência. Comparar o mesmo recurso,
+objeto, operação, versão e dados de entrada, não cenas diferentes ou meras
+contagens globais. Registrar produtor, bytes, tick, consumidor, saída
+esperada e observada. Não tratar zero válido ou dados ausentes como erro.
+PC U59 dd9f990 e Chenxiao07 66cdb39 são referências de código, não capturas
+de gameplay comprovadamente idênticas.
+
+A controle, B1/B2 culling original alternativo separado, C1/C2 coerência,
+D1/D2 ordenação, E reprodução independente de operações selecionadas,
+F rastreamento causal. Um APK, modos independentes; manter mesmo save,
+câmera, resolução e driver. B/C/D são experimentos de isolamento, não fixes
+definitivos. E não implica replay integral quando faltam dados. Nenhuma
+alteração artificial de luz, depth ou contagens. Cada divergência precisa
+de prova causal e teste de regressão antes de virar correção de produção.
+Build de isolamento, build de correção fundamentada, consolidação se
+necessária. Entregar cada APK conforme regra de continuidade acima.

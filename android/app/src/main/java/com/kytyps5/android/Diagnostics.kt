@@ -320,7 +320,8 @@ object Diagnostics {
                     val coverage = newest.filter { it.name.startsWith("ds_geometry_coverage_f") }
                     val depthOwners = newest.filter { it.name.startsWith("ds_depth_prepass_f") }
                     val positions = newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24)
-                    val producer = coverage + depthOwners + positions + edges + bridge + relightTraces + prioritizedRays +
+                    val visibility = countTraces.filter { it.name.contains("fb18d110fab8234e") }
+                    val producer = (coverage + bridge + visibility + upstreamCounts + depthOwners + positions + edges + relightTraces + prioritizedRays +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
                         geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +
@@ -330,14 +331,16 @@ object Diagnostics {
                         newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
                         .take(18) +
                         newest.filter { it.name.startsWith("cs_bcbcc6ba1e68c974_ray_hits_") }.take(18) +
-                        newest.filter { it.name.startsWith("cs_567d21ad45386c8d_radiance_") }.take(16)
+                        newest.filter { it.name.startsWith("cs_567d21ad45386c8d_radiance_") }.take(16)).distinct()
                     producer + (files - producer.toSet()).take((96 - producer.size).coerceAtLeast(0))
                 } else {
                     val relightModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { it.name.contains("_bcbcc6ba1e68c974_") } else emptyList()
                     val sceneModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { f -> listOf("34c51585c926a664", "a7208481a1f2b760", "f825a988127faeb4", "74b55dea9562eda1").any { f.name.contains("_${it}_") } } else emptyList()
-                    (sceneModules + relightModules + files).distinct().take(when (subdir) {
+                    val causalModules = if (subdir == "spv" || subdir == "pipelines")
+                        files.filter { it.name.contains("_fb18d110fab8234e_") || it.name.contains("_cb3b9c1ea64fe876_") } else emptyList()
+                    (causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
                         "guest-shaders" -> 96
                         "spv" -> 48
                         else -> 24

@@ -16,7 +16,9 @@ object DemonsSoulsGeometryFlow {
     const val BEGIN = "// >>> kytyps5-android-demons-geometry >>>"
     const val END = "// <<< kytyps5-android-demons-geometry <<<"
     private val names = listOf("doIndexBufferCulling", "doSunShadowIndexBufferCulling")
-    private val block = "\n" + BEGIN + "\n" + names.joinToString("\n") { "+$it=0" } + "\n" + END + "\n"
+    private fun blockFor(keys: List<String>) = "\n" + BEGIN + "\n" + keys.joinToString("\n") { "+$it=0" } + "\n" + END + "\n"
+    private val block = blockFor(names)
+    private val knownBlocks = listOf(block, blockFor(listOf(names[0])), blockFor(listOf(names[1])))
     data class Result(val ok: Boolean, val changed: Boolean = false, val message: String = "")
 
     // Bound memory use even for large SELF files; names may straddle a read boundary.
@@ -38,7 +40,7 @@ object DemonsSoulsGeometryFlow {
         }
     }
 
-    fun configure(gameDir: File, titleId: String?, enabled: Boolean = true): Result {
+    fun configure(gameDir: File, titleId: String?, enabled: Boolean = true, matrixMode: Int = 0): Result {
         if (!titleId.equals("PPSA01341", ignoreCase = true)) return Result(true)
         return try {
             if (!gameDir.isDirectory) return Result(false, message = "Game directory not found")
@@ -48,14 +50,18 @@ object DemonsSoulsGeometryFlow {
             val before = if (file.exists()) file.readText(Charsets.UTF_8) else ""
             val start = before.indexOf(BEGIN)
             val end = before.indexOf(END)
+            val existing = knownBlocks.singleOrNull { before.contains(it) }
             if ((start >= 0) != (end >= 0) || (start >= 0 &&
-                (before.indexOf(BEGIN, start + 1) >= 0 || !before.contains(block))))
+                (before.indexOf(BEGIN, start + 1) >= 0 || existing == null)))
                 return Result(false, message = "Managed geometry block was modified; game arguments unchanged")
             if (enabled && listOf("decrypted/eboot.bin", "eboot.bin", "DemonsSoul_PROSPERO_Release.elf")
                     .none { supports(File(gameDir, it)) })
                 return Result(false, message = "Demon's Souls executable does not expose the verified geometry options")
-            val original = if (start >= 0) before.replace(block, "") else before
-            val after = original + if (enabled) block else ""
+            val original = if (existing != null) before.replace(existing, "") else before
+            val selected = when (matrixMode) { 1 -> listOf(names[0]); 2 -> listOf(names[1]); else -> names }
+            if (enabled && selected.any { key -> Regex("(?im)^\\s*\\+?"+Regex.escape(key)+"\\s*=").containsMatchIn(original) })
+                return Result(false, message = "Remove conflicting custom culling setting before matrix test")
+            val after = original + if (enabled) blockFor(selected) else ""
             if (after == before) return Result(true)
             val temp = File.createTempFile(".ds-geometry-", ".tmp", gameDir)
             try {

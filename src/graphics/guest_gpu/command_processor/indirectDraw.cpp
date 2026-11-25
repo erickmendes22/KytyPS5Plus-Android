@@ -8,6 +8,7 @@
 #include "common/logging/log.h"
 #include "common/perfWaits.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
+#include "graphics/guest_gpu/command_processor/demonsMatrixCpRead.h"
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -111,13 +112,16 @@ uint32_t CommandProcessor::NumInstances() {
 		m_pending_instances = {};
 		uint32_t count      = pending.max_count;
 		if (pending.count_addr != nullptr) {
-			count = std::min(static_cast<uint32_t>(*pending.count_addr), pending.max_count);
+			count = std::min(DemonsCausalMatrix::Mode()==DemonsCausalMatrix::CpCoherent ?
+                DemonsMatrixCpRead::Read<uint32_t>(m_renderer,reinterpret_cast<uint64_t>(pending.count_addr)) :
+                static_cast<uint32_t>(*pending.count_addr), pending.max_count);
 		}
 		if (count != 0) {
 			// instanceCount is the second word of both record layouts.
 			const auto* last = reinterpret_cast<const volatile uint32_t*>(
 			    pending.records + uint64_t {count - 1u} * pending.stride);
-			m_num_instances = last[1]; // As the CPU path leaves it.
+			m_num_instances = DemonsCausalMatrix::Mode()==DemonsCausalMatrix::CpCoherent ?
+                DemonsMatrixCpRead::Read<uint32_t>(m_renderer,reinterpret_cast<uint64_t>(last+1)) : last[1]; // As the CPU path leaves it.
 			static std::atomic<uint32_t> log_count {0};
 			if (log_count.fetch_add(1, std::memory_order_relaxed) < 8) {
 				LOGF("GPU indirect draw: a later draw reads NUM_INSTANCES (%u) back\n",

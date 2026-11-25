@@ -585,7 +585,7 @@ struct PipelineCache::ProgramCache {
 		}
 		auto program = std::move(result.program).TakeCompiledInfo();
 		const auto* trace = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
-		if (options.shader_hash == DemonsLightMathProbe::Shader && trace && trace[0] == '1' &&
+		if ((options.shader_hash == DemonsLightMathProbe::Shader || options.shader_hash == DemonsCountExecProbe::Shader) && trace && trace[0] == '1' &&
 		    trace[1] == '\0') {
 			constexpr auto kind = ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
 			constexpr auto slot = static_cast<size_t>(kind);
@@ -601,6 +601,10 @@ struct PipelineCache::ProgramCache {
 			    ValidateShaderSpirv(options.dump_label, options.shader_hash, copy,
 			                        options.maintenance8_enabled, true);
 			if (options.shader_hash == DemonsCountExecProbe::Shader) {
+                const auto path=Config::GetShaderDumpFolder()/"spv"/fmt::format("cs_{:016x}_{:016x}_causal.spv",options.shader_hash,fingerprint);
+                Common::File::CreateDirectories(path.parent_path());
+                Common::File native(path);
+                if(!native.IsInvalid()) native.Write(result.spirv.data(),result.spirv.size()*sizeof(uint32_t));
 				Log::WriteToConsoleAndLog(fmt::format(
 				    "[DS_COUNT_EXEC_STATUS] binary=0x{:016x} version=0x{:08x} free_slot={} assembled={} validated={}\n",
 				    fingerprint, result.spirv[1], free_slot, assembled, validated));

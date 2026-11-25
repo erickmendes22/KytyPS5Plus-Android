@@ -57,7 +57,9 @@ class GameActivity : SDLActivity() {
                 ?: LaunchArgs.gamePath(launchArgs))?.contains("PPSA24156", ignoreCase = true) == true
         val gamePath = intent?.getStringExtra(LaunchArgs.EXTRA_GAME_PATH)
             ?: LaunchArgs.gamePath(launchArgs)
-        val captureDemonsLighting = gamePath?.contains("PPSA01341", ignoreCase = true) == true
+        val matrixArg = launchArgs.lastOrNull { it.startsWith("KYTY_DS_MATRIX=") }
+        val captureDemonsLighting = matrixArg == "KYTY_DS_MATRIX=7" || matrixArg == "KYTY_DS_MATRIX=8" ||
+            (matrixArg == null && gamePath?.contains("PPSA01341", ignoreCase = true) == true)
         val diagnosticArgs = when {
             captureGranTurismo ->
                 arrayOf("--dump-shaders", java.io.File(filesDir, "gt-pipeline-dumps").absolutePath)

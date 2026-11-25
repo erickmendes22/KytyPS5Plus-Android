@@ -644,7 +644,8 @@ class MainActivity : Activity() {
             // Restore the game's real GPU index-culling path, as in Chen's
             // running PPSA01341 renderer. Remove only the managed experimental
             // +doIndexBufferCulling=0 / +doSunShadowIndexBufferCulling=0 block.
-            val geometry = DemonsSoulsGeometryFlow.configure(File(game.path), game.titleId, false)
+            val matrix = perGame.demonsSoulsMatrix.coerceIn(0, 8)
+            val geometry = DemonsSoulsGeometryFlow.configure(File(game.path), game.titleId, matrix == 1 || matrix == 2, matrix)
             if (!geometry.ok) {
                 showMessage(geometry.message)
                 return
@@ -666,8 +667,7 @@ class MainActivity : Activity() {
             } else {
                 Log.i("KytyDSDisplay", display.message)
             }
-            Log.i("KytyDSGeometry", "Executable-verified BPE geometry path: " +
-                "doIndexBufferCulling=0 doSunShadowIndexBufferCulling=0")
+            Log.i("KytyDSMatrix", "mode=$matrix, managed geometry switch=" + (matrix == 1 || matrix == 2))
             if (flow.changed || nexus.changed) {
                 Log.i("KytyDSBoot", if (perGame.demonsSoulsNexusRoute)
                     "PC Nexus route active: FullGame + force skip-tutorial option"
@@ -696,19 +696,15 @@ class MainActivity : Activity() {
             // A false full-probe toggle must not cancel LaunchArgs' bounded
             // compositor pixel samples. Keep override behavior in the tested
             // helper rather than adding duplicate --env keys here.
-            args = DemonsSoulsDiagnosticArgs.append(
-                args, perGame.demonsSoulsPixelTrace, perGame.demonsSoulsPerFaceBias,
-                perGame.demonsSoulsPcMrt,
-            )
-            args += arrayOf("--env",
-                "KYTY_DS_DEPTH_EQUAL_RELAX=" + perGame.demonsSoulsDepthEqualRelax.coerceIn(0, 3))
-            args += arrayOf("--env", "KYTY_DS_PC_DPP=" + if (perGame.demonsSoulsPcDpp) "1" else "0")
-            args += arrayOf("--env", "KYTY_DS_ISOLATE_DEPTH_OCCLUDERS=" + if (perGame.demonsSoulsIsolateDepthOccluders) "1" else "0")
-            args += arrayOf("--env", "KYTY_DS_HTILE_FILL_SEMANTICS=1")
+            val matrix = perGame.demonsSoulsMatrix.coerceIn(0, 8)
+            args = DemonsSoulsDiagnosticArgs.append(args, matrix >= 7, false, false)
+            args += arrayOf("--env", "KYTY_DS_MATRIX=$matrix", "--env", "KYTY_DS_DEPTH_EQUAL_RELAX=0",
+                "--env", "KYTY_DS_PC_DPP=0", "--env", "KYTY_DS_ISOLATE_DEPTH_OCCLUDERS=0",
+                "--env", "KYTY_DS_HTILE_FILL_SEMANTICS=1")
             if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsIdleBackoff) {
                 args += arrayOf("--env", "KYTY_DS_IDLE_BACKOFF=1")
             }
-            if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsPcFrameSync) {
+            if (matrix == 5) {
                 // Match the tested PC fork's synchronous guest-frame boundary:
                 // drain all queues before the boundary, without the Android
                 // ahead-of-GPU semaphore (which can wait forever on an unretired

@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
+#include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include "graphics/host_gpu/renderer/renderIndirect.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 
@@ -186,7 +187,8 @@ IndirectDrawFixup::Output IndirectDrawFixup::Dispatch(CommandBuffer& buffer, uin
 		const char* value = std::getenv("KYTY_DS_GPU_ZERO_INDIRECT");
 		return value && value[0] == '1' && value[1] == '\0';
 	}();
-	if (ds_gpu_indirect && fixup.mode == ModeDispatchClamp) {
+	if ((ds_gpu_indirect && fixup.mode == ModeDispatchClamp) ||
+        DemonsCausalMatrix::Mode()==DemonsCausalMatrix::GpuBarrier) {
 		before.srcAccessMask |= vk::AccessFlagBits::eColorAttachmentWrite |
 		                        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
 	}

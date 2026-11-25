@@ -93,6 +93,17 @@ class GameSettingsDialog(
             textSize = 14f
             isChecked = current.demonsSouls1080p
         }
+        val dsMatrix = spinner(listOf(
+            "A — Referência (sem captura pesada)",
+            "B1 — Culling de índices: caminho original sem culling",
+            "B2 — Culling de índices de sombra: desligado",
+            "C1 — Coerência: leituras CP de argumentos",
+            "C2 — Coerência: barreira de argumentos GPU",
+            "D1 — Ordenação estrita entre frames",
+            "D2 — Ordenação de passes compute selecionados",
+            "E — Reprodução de operações capturadas",
+            "F — Rastreamento causal disponível",
+        )).apply { setSelection(current.demonsSoulsMatrix.coerceIn(0, 8)) }
         val dsDepthEqual = spinner(listOf(
             "AUTO: original game/PC depth comparison",
             "All 5 measured materials: EQUAL -> LESS_OR_EQUAL",
@@ -184,22 +195,18 @@ class GameSettingsDialog(
                 addView(label("Additional code patch skips profile language, brightness and character creation. Requires decrypted eboot.bin signature match; never edits it.", secondary = true))
                 addView(firstBoot)
                 addView(label("Tests cross-queue CPU/GPU synchronization. Automatically logs guest flips and blocked GPU waits every 5 seconds.", secondary = true))
-                addView(pcFrameSync)
                 addView(label("Bluepoint worker fix: preserves the original empty-job poll and sleeps only when no work is available. Reversible; ARM64 FEX HLE host trap.", secondary = true))
                 addView(idleBackoff)
                 addView(ds1080p)
                 addView(label("Controls the game\u0027s own PS5 renderconfig files, not just the window. Originals are preserved alongside each file. Does not fix black geometry by itself.", secondary = true))
-                addView(dsFaceBias)
+                addView(label("Matriz causal — uma variável por execução", bold = true))
+                addView(dsMatrix)
+                addView(label("A primeiro; mesmo save/câmera; um ZIP por modo. E/F ativam capturas GPU. Os experimentos antigos depth/MRT/DPP/sync não são combinados com a matriz.", secondary = true))
                 addView(label("Demon's Souls: depth prepass / material EQUAL compatibility (PC reference; experimental)", bold = true))
                 addView(label("Default 0 and mode 3 retain original EQUAL. Modes 1/2 are optional experiments; do not affect shadows.", secondary = true))
-                addView(dsDepthEqual)
-                addView(dsIsolateOccluders)
                 addView(label("Off by default. Disable only depth writes for the two exact unmatched draws measured in frame 497. Reversible occlusion experiment, not a confirmed rendering fix.", secondary = true))
-                addView(dsPcMrt)
                 addView(label("Off by default. Uses the PC renderer's actual shader export mask instead of binding every guest color target; tests whether the extra attachments clear or overwrite deferred materials.", secondary = true))
-                addView(dsPcDpp)
                 addView(label("Off by default. Replaces native quad DPP and the inactive-source override in the ray producer, relight and probe projector with the original PC-style path; no global shader changes.", secondary = true))
-                addView(dsPixelTrace)
                 addView(label("Off by default: synchronous GPU pixel readbacks previously interrupted rendering and added GPU/CPU overhead.", secondary = true))
             }
             if (presetSwitches.isNotEmpty()) {
@@ -259,6 +266,7 @@ class GameSettingsDialog(
                         demonsSoulsPcDpp = titleId.equals("PPSA01341", ignoreCase = true) && dsPcDpp.isChecked,
                         demonsSoulsPcMrt = titleId.equals("PPSA01341", ignoreCase = true) && dsPcMrt.isChecked,
                         demonsSoulsIsolateDepthOccluders = titleId.equals("PPSA01341", ignoreCase = true) && dsIsolateOccluders.isChecked,
+                        demonsSoulsMatrix = if (titleId.equals("PPSA01341", ignoreCase = true)) dsMatrix.selectedItemPosition else 0,
                         demonsSoulsDepthEqualRelax = if (titleId.equals("PPSA01341", ignoreCase = true)) dsDepthEqual.selectedItemPosition else 0,
                         renderScale = renderScale.selectedItemPosition.takeIf { it > 0 }?.let { RenderScale.entries[it - 1] },
                         shadowScale = shadowScale.selectedItemPosition.takeIf { it > 0 }?.let { ShadowScale.entries[it - 1] },
