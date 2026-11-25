@@ -1800,10 +1800,9 @@ static nlohmann::json ReadDsRelightAtlasFootprints(RenderContext& context,
     namespace P=DemonsRelightProbe;
     namespace IR=ShaderRecompiler::IR;
     const auto& program=*bindings.runtime->program;
-    // The fifth observed module uses binding 3, element 0 (2D), not the
-    // 360-layer atlas at binding 4, element 2. Do not misattribute its samples.
-    if(program.ds_light_math_variant==0x4690ec9f28ed697cull)
-        return {{"status","different_site12_resource"},{"binding",3},{"element",0}};
+    // Resolve the actual compiled image instruction; fingerprint alone is not a resource identity.
+    if(program.ds_relight_site12_binding!=4||program.ds_relight_site12_element!=2)
+        return {{"status","different_or_unresolved_site12_resource"},{"binding",program.ds_relight_site12_binding},{"element",program.ds_relight_site12_element}};
     const auto& resources=program.info.images;
     size_t slot=resources.size();
     for(size_t i=0;i<resources.size();++i){
@@ -1943,12 +1942,15 @@ static void SaveDsRelightTrace(RenderContext& context,const PreparedBindings& bi
         {"native_slots",{{"ray",ray_slot},{"position",position_slot},{"mask",mask_slot},{"light",light_slot}}},
         {"srt",snap.flattened_srt},{"shader_data",bindings.shader_data},
         {"buffers",desc},{"images",images},{"samplers",samplers}};
-    uint32_t raw=0,exported=0;
+    uint32_t raw=0,exported=0,terms=0;
     for(uint32_t row=0;row<P::Probes*P::Rays;++row){
         const auto base=P::Header+row*P::Sites*P::SiteWords;
-        raw+=words[base]!=0;exported+=words[base+(P::Sites-1)*P::SiteWords]!=0;
+        raw+=words[base]!=0;exported+=words[base+P::ExportSite*P::SiteWords]!=0;
+        terms+=words[base+P::TermsSite*P::SiteWords]!=0;
     }
     report["raw_rays_seen"]=raw;report["exports_seen"]=exported;
+    report["export_site"]=P::ExportSite;report["terms_site"]=P::TermsSite;
+    report["terms_seen"]=terms;report["terms_layout"]="A.rgb,B.rgb,C.rgb,D.rgb; export=(A+B)+(C+D)";
     report["ray_source_history"]=nlohmann::json::array();
     for(size_t i=0;i<probes.size();++i){
         const auto row=rays.is_array()&&i<rays.size()?rays[i]:nlohmann::json{};

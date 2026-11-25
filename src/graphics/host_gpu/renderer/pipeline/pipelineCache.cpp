@@ -620,8 +620,9 @@ struct PipelineCache::ProgramCache {
             constexpr auto slot=static_cast<size_t>(kind);
             const auto fp=XXH3_64bits(result.spirv.data(),result.spirv.size()*sizeof(uint32_t));
             auto copy=result.spirv;
+            DemonsRelightProbe::Site12Resource site12;
             const bool assembled=!program.bindings.descriptor_counts[slot] &&
-                DemonsRelightProbe::Instrument(copy,fp,ShaderRecompiler::IR::NativeBinding(program.stage,kind));
+                DemonsRelightProbe::Instrument(copy,fp,ShaderRecompiler::IR::NativeBinding(program.stage,kind),&site12);
             const bool valid=assembled && ValidateShaderSpirv(options.dump_label,options.shader_hash,copy,options.maintenance8_enabled,true);
             Log::WriteToConsoleAndLog(fmt::format("[DS_RELIGHT_TRACE_STATUS] binary={:016x} assembled={} validated={}\n",fp,assembled,valid));
             if(valid){
@@ -629,6 +630,8 @@ struct PipelineCache::ProgramCache {
                 program.bindings.descriptor_counts[slot]=1;
                 program.bindings.descriptor_mask|=uint64_t{1}<<slot;
                 program.ds_light_math_variant=fp;
+                program.ds_relight_site12_binding=site12.binding;
+                program.ds_relight_site12_element=site12.element;
             }
         }
 		// The earlier vertex experiment is retained for reproducing its

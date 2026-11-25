@@ -68,7 +68,9 @@ static std::vector<uint32_t> Fixture(const Map& m){
         else if(i==9||i==10)E(v,spv::OpImageFetch,{uv4,1200+i,1104,ic,2,c0});
         else E(v,spv::OpImageSampleExplicitLod,{fv4,1200+i,1102,coord,2,fc0});
     }
-    E(v,spv::OpImageWrite,{1105,1030,exportv});E(v,spv::OpReturn,{});E(v,spv::OpFunctionEnd,{});
+    E(v,spv::OpFAdd,{f,1300,fc0,fc0});E(v,spv::OpFAdd,{f,1301,fc0,fc0});
+    E(v,spv::OpFAdd,{f,1302,1300,1301});E(v,spv::OpCompositeConstruct,{fv4,1303,1302,1302,1302,fc0});
+    E(v,spv::OpImageWrite,{1105,1030,1303});E(v,spv::OpReturn,{});E(v,spv::OpFunctionEnd,{});
     return v;
 }
 static void Save(const std::string& path,const std::vector<uint32_t>& v){
@@ -100,5 +102,5 @@ int main(int argc,char** argv){
     auto fifth=Fixture(Maps[4]);
     assert(Instrument(fifth,0x4690ec9f28ed697cull,55));
     Save(std::string(argv[1])+"fifth-instrumented.spv",fifth);
-    std::cout<<"Relight trace: struct/phi ray pair, 17 sites, five captured maps and guarded layout OK\n";
+    std::cout<<"Relight trace: struct/phi ray pair, 18 sites, 18 captured maps and guarded layout OK\n";
 }

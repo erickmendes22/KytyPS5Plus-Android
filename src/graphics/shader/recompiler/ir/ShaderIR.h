@@ -832,6 +832,8 @@ struct CompiledShaderInfo {
 	uint32_t                      param_export_mask   = 0;
 	bool                          has_address_writes  = false;
 	uint64_t                      ds_light_math_variant = 0;
+    uint32_t                      ds_relight_site12_binding = UINT32_MAX;
+    uint32_t                      ds_relight_site12_element = UINT32_MAX;
 	ShaderInfo                    info;
 	Bindings                      bindings;
 };
