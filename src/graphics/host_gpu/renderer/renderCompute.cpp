@@ -1,6 +1,8 @@
 #include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
+#include "graphics/host_gpu/renderer/demonsRaySourceHistory.h"
+#include "kernel/demonsFileReadHistory.h"
 #include "graphics/host_gpu/renderer/demonsAtlasTileHistory.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
@@ -1431,6 +1433,141 @@ struct DsRayProducerActivity {
 	uint64_t last_tick = 0;
 };
 DsRayProducerActivity ds_ray_producer_activity;
+static DemonsRaySourceHistory::History ds_ray_source_history;
+struct DsRaySourceDispatch {
+    uint32_t id=0;
+    std::vector<LibKernel::DemonsFileReadHistory::Event> file_reads;
+};
+static std::array<DsRaySourceDispatch,128> ds_ray_source_dispatches;
+
+// The consumer often selects a probe long after its scatter upload. Record
+// every uniquely mapped row of every observed producer, independent of the
+// consumer's current selection. This is diagnostic-only, bounded to 128
+// dispatches and 8 MiB per GPU readback. A failed/unknown update invalidates
+// history, rather than reporting an older producer as the latest one.
+static void RememberDsRaySourceRows(RenderContext& context,const PreparedBindings& bindings,
+    uint64_t submit,std::span<const uint32_t> map,uint32_t base,uint32_t count) {
+    namespace H=DemonsRaySourceHistory;
+    auto& history=ds_ray_source_history;
+    const uint32_t dispatch=static_cast<uint32_t>(ds_ray_producer_activity.valid);
+    if(!dispatch||dispatch>128||map.empty()||base>=map.size()||count>map.size()-base||
+        bindings.buffers.size()<3||bindings.buffer_sources.size()<3){history.Invalidate();return;}
+    const auto& input=bindings.buffer_sources[1];const auto& output=bindings.buffer_sources[2];
+    const auto& in=bindings.buffers[1];const auto& out=bindings.buffers[2];
+    const auto off=bindings.runtime->program->bindings.memory_offset_dword;
+    if(off>=bindings.shader_data.size()||!input.address||!output.address||
+        !in.buffer||!out.buffer||in.range==VK_WHOLE_SIZE||out.range==VK_WHOLE_SIZE||
+        input.address>UINT64_MAX-input.size||output.address>UINT64_MAX-output.size||
+        (input.address<output.address+output.size&&output.address<input.address+input.size)){
+        history.Invalidate();return;
+    }
+    const auto adjust_in=(bindings.shader_data[off]>>8u)&255u;
+    const auto adjust_out=(bindings.shader_data[off]>>16u)&255u;
+    if(adjust_in%4u||adjust_out%4u||adjust_in>in.range||adjust_out>out.range){
+        history.Invalidate();return;
+    }
+    const uint64_t begin=uint64_t{base}*H::BytesPerProbe,end=uint64_t{base+count}*H::BytesPerProbe;
+    if(end>input.size||end>in.range-adjust_in){history.Invalidate();return;}
+    auto& provenance=ds_ray_source_dispatches[dispatch-1];
+    provenance.id=dispatch;
+    provenance.file_reads=LibKernel::DemonsFileReadHistory::Overlap(input.address+begin,end-begin);
+    history.Begin(output.address);
+    std::vector<uint32_t> occurrence(H::ProbeCount);
+    for(uint32_t row=base;row<base+count;++row){
+        const auto probe=H::Destination(map[row]);
+        if(probe!=H::NoRow)++occurrence[probe];
+    }
+    const auto frame=context.GetGpu().GetFrameNum();
+    const auto tick=context.GetCommandScheduler().CurrentTick();
+    uint32_t captured=0,different=0,backing_known=0,backing_diff=0,ambiguous=0;
+    constexpr uint32_t batch=4096;
+    for(uint32_t row=base;row<base+count;){
+        const auto n=std::min(batch,base+count-row);
+        const uint64_t byte=uint64_t{row}*H::BytesPerProbe;
+        std::vector<uint32_t> source(size_t{n}*H::RowWords),target(source.size()),backing(source.size());
+        if(!ReadDsGpuWords(context,in.buffer,in.offset+adjust_in+byte,source)){
+            history.Invalidate();return;
+        }
+        std::vector<vk::BufferCopy> copies;
+        for(uint32_t i=0;i<n;++i){
+            const auto probe=H::Destination(map[row+i]);
+            if(probe==H::NoRow)continue;
+            const auto dst=uint64_t{probe}*H::BytesPerProbe;
+            if(occurrence[probe]!=1){
+                H::Record invalid;invalid.frame=frame;invalid.dispatch=dispatch;
+                history.Put(probe,invalid);++ambiguous;continue;
+            }
+            if(dst>output.size||H::BytesPerProbe>output.size-dst||
+                dst>out.range-adjust_out||H::BytesPerProbe>out.range-adjust_out-dst){
+                history.Invalidate();return;
+            }
+            copies.emplace_back(out.offset+adjust_out+dst,uint64_t{i}*H::BytesPerProbe,H::BytesPerProbe);
+        }
+        if(!copies.empty()&&!ReadDsGpuWordRanges(context,out.buffer,copies,target)){
+            history.Invalidate();return;
+        }
+        const bool have_backing=LibKernel::Memory::TryReadBacking(input.address+byte,backing.data(),
+            backing.size()*sizeof(uint32_t));
+        for(uint32_t i=0;i<n;++i){
+            const auto probe=H::Destination(map[row+i]);
+            if(probe==H::NoRow||occurrence[probe]!=1)continue;
+            const auto src=std::span{source}.subspan(size_t{i}*H::RowWords,H::RowWords);
+            const auto dst=std::span{target}.subspan(size_t{i}*H::RowWords,H::RowWords);
+            H::Record record;record.frame=frame;record.submit=submit;record.tick=tick;
+            record.source_guest=input.address+uint64_t{row+i}*H::BytesPerProbe;
+            record.source_row=row+i;record.map_word=map[row+i];record.dispatch=dispatch;
+            record.input=H::Summarize(src);record.output=H::Summarize(dst);
+            record.input_output_diff=H::DifferentPairs(src,dst);
+            if(have_backing){
+                const auto b=std::span{backing}.subspan(size_t{i}*H::RowWords,H::RowWords);
+                record.backing=H::Summarize(b);record.input_backing_diff=H::DifferentPairs(src,b);
+                ++backing_known;backing_diff+=record.input_backing_diff!=0;
+            }
+            record.valid=true;history.Put(probe,record);++captured;different+=record.input_output_diff!=0;
+        }
+        row+=n;
+    }
+    LOGF("[DS_RAY_SOURCE_HISTORY] frame=%d submit=%" PRIu64 " dispatch=%u captured=%u different=%u backing_known=%u backing_different=%u ambiguous=%u\\n",
+        frame,submit,dispatch,captured,different,backing_known,backing_diff,ambiguous);
+}
+
+static nlohmann::json DsRaySourceAtConsumer(uint64_t owner,uint32_t probe,const nlohmann::json& ray_words){
+    namespace H=DemonsRaySourceHistory;
+    const auto* row=ds_ray_source_history.Find(owner,probe);
+    if(!row)return {{"status","no_certified_producer"}};
+    const auto summary=[](const H::Summary& s){return nlohmann::json{
+        {"digest",fmt::format("{:016x}",s.digest)},{"colored_by_half",s.colored},
+        {"high_nibble_by_half",s.high_nibble},{"finite_depth_by_half",s.finite_depth}};};
+    nlohmann::json result={{"status","captured_producer"},{"frame",row->frame},{"submit",row->submit},
+        {"tick",row->tick},{"source_guest",row->source_guest},{"source_row",row->source_row},
+        {"map_word",row->map_word},{"input",summary(row->input)},{"output",summary(row->output)},
+        {"input_output_different_pairs",row->input_output_diff}};
+    if(row->input_backing_diff!=UINT32_MAX){
+        result["backing_at_capture"]=summary(row->backing);
+        result["input_backing_different_pairs"]=row->input_backing_diff;
+    }
+    if(ray_words.is_array()&&ray_words.size()==H::RowWords){
+        const auto current=ray_words.get<std::vector<uint32_t>>();
+        const auto s=H::Summarize(current);
+        result["consumer_digest"]=fmt::format("{:016x}",s.digest);
+        result["consumer_matches_producer_digest"]=s.digest==row->output.digest;
+    }
+    auto reads=nlohmann::json::array();
+    if(row->dispatch&&row->dispatch<=ds_ray_source_dispatches.size()){
+        const auto& p=ds_ray_source_dispatches[row->dispatch-1];
+        if(p.id==row->dispatch)for(const auto& e:p.file_reads){
+            if(e.begin<row->source_guest+H::BytesPerProbe&&e.end>row->source_guest)
+                reads.push_back({{"event",e.id},{"path",e.path},{"begin",e.begin},{"end",e.end},
+                    {"file_offset",e.file_offset},{"covers_row",e.begin<=row->source_guest&&e.end>=row->source_guest+H::BytesPerProbe}});
+        }
+    }
+    // An overlapping file read is only a candidate; it may have been followed
+    // by a guest memcpy/decompression or another write before GPU upload.
+    result["file_read_candidates"]=std::move(reads);
+    return result;
+}
+
+
 struct DsRayProducerTargets {
 	// Probe 4445 corresponds to the actually sampled dark tile at
 	// layer 17, texel (214,89). Unlike earlier arbitrary probe IDs, this
@@ -1812,6 +1949,11 @@ static void SaveDsRelightTrace(RenderContext& context,const PreparedBindings& bi
         raw+=words[base]!=0;exported+=words[base+(P::Sites-1)*P::SiteWords]!=0;
     }
     report["raw_rays_seen"]=raw;report["exports_seen"]=exported;
+    report["ray_source_history"]=nlohmann::json::array();
+    for(size_t i=0;i<probes.size();++i){
+        const auto row=rays.is_array()&&i<rays.size()?rays[i]:nlohmann::json{};
+        report["ray_source_history"].push_back(DsRaySourceAtConsumer(bindings.buffer_sources[ray_slot].address,probes[i],row));
+    }
     report["site12_atlas_footprints"]=ReadDsRelightAtlasFootprints(context,bindings,words);
     std::ofstream json(folder/(stem+".json"),std::ios::trunc);json<<report;json.close();
     Log::WriteToConsoleAndLog(fmt::format("[DS_RELIGHT_TRACE] frame={} submit={} raw={} exported={} file={} saved={}\n",
@@ -3263,8 +3405,8 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 	// Scan bounded active maps even after the initial generic capture budget.
 	static uint32_t targeted_reports = 0;
 	const bool ordinary = DemonsPcDppPolicy::CaptureActive(ds_ray_producer_activity.valid, due);
-	if (!valid_dispatch || (!ordinary &&
-	    (ds_ray_producer_activity.valid > 128 || targeted_reports >= 20))) return;
+	if (!valid_dispatch) return;
+	if(ds_ray_producer_activity.valid>128){ds_ray_source_history.Invalidate();return;}
 	const auto note = [&](const char* status, uint32_t slot, uint64_t address) {
 		if (reports++ >= 32) return;
 		Log::WriteToConsoleAndLog(fmt::format(
@@ -3347,7 +3489,8 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			}
 		}
 	}
-	if (!ordinary && !targeted) return;
+	if(LibKernel::DemonsFileReadHistory::Enabled()) RememberDsRaySourceRows(context,bindings,submit,map,map_base,active_rows);
+	if (!ordinary && (!targeted || targeted_reports>=20)) return;
 	constexpr uint64_t words_per_probe = 256ull * 2ull;
 	constexpr uint64_t bytes_per_probe = words_per_probe * sizeof(uint32_t);
 	for (const auto& resource: program.info.buffers) {
