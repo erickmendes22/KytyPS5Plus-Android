@@ -2901,8 +2901,31 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    : gate.BrightBaselineDue(ds_gbuffer_frame) ? 0
 		    : gate.CaptureDue(ds_gbuffer_frame) ? 2 : -1;
 		static std::array<bool, 4> captured {};
-		if (phase >= 0 && !captured[phase]) {
+		// The first draw after HTile consumption often writes no samples.
+		// Capture the actual subsequent depth owners in the same phase as well.
+		// Onset/post-transition: two large occluder draws, the full-screen
+		// depth/material pair and the two rejected scenery depth draws.
+		static std::array<std::array<bool, 5>, 4> owner_captured {};
+		const auto* depth_vs = state.vertex_info[0].stage.program;
+		const auto* depth_ps = state.ps_active ? state.ps_input_info.stage.program : nullptr;
+		int owner = -1;
+		if (depth_vs && draw.IsIndexed() && !indirect) {
+			if (depth_vs->shader_hash == 0x2337192397a30339ull) {
+				if (draw.index_count == 7296) owner = 0;
+				else if (draw.index_count == 192) owner = 1;
+			} else if (depth_vs->shader_hash == 0xaff9c7ef505c6253ull) {
+				owner = 2;
+			} else if (depth_ps && depth_ps->shader_hash == 0x3dce2bd78d58db62ull) {
+				owner = 3;
+			} else if (depth_ps && depth_ps->shader_hash == 0x895c9fe037e704f5ull) {
+				owner = 4;
+			}
+		}
+		const bool owner_due = (phase == 1 || phase == 3) && owner >= 0 &&
+		    !owner_captured[phase][owner];
+		if (phase >= 0 && (!captured[phase] || owner_due)) {
 			captured[phase] = true;
+			if (owner_due) owner_captured[phase][owner] = true;
 			ds_depth_prepass_phase = phase;
 			ds_depth_prepass_target = state.depth_info;
 			ds_depth_prepass_before = SnapshotDsMaterialDepthGrid(m_context, ds_depth_prepass_target);
@@ -4215,6 +4238,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    depth_full.far_before, depth_full.far_after,
 		    depth_full.min_x, depth_full.min_y, depth_full.max_x, depth_full.max_y));
 		const auto after = SnapshotDsMaterialDepthGrid(m_context, ds_depth_prepass_target);
+		// Reverse-Z: larger values are nearer. Count which direction the
+		// actual depth owner changes the attachment, independently of the
+		// occlusion query and of the final material's color.
+		uint64_t nearer = 0, farther = 0, nonfinite = 0;
+		if (depth_full.valid) {
+			for (size_t p = 0; p < depth_full_after.bits.size(); ++p) {
+				const float prior = std::bit_cast<float>(ds_depth_full_before.bits[p]);
+				const float next = std::bit_cast<float>(depth_full_after.bits[p]);
+				if (!std::isfinite(prior) || !std::isfinite(next)) { ++nonfinite; continue; }
+				nearer += next > prior;
+				farther += next < prior;
+			}
+		}
 		if (ds_depth_prepass_before && after) {
 			uint32_t before_nonzero = 0, after_nonzero = 0, changed = 0;
 			for (size_t i = 0; i < after->size(); ++i) {
@@ -4240,6 +4276,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			        {"bbox", {depth_full.min_x, depth_full.min_y, depth_full.max_x, depth_full.max_y}}
 			    }},
 			    {"before_bits", *ds_depth_prepass_before}, {"after_bits", *after},
+			    {"depth_increased_pixels", nearer}, {"depth_decreased_pixels", farther},
+			    {"nonfinite_pixels", nonfinite},
+			    {"stencil_compare_back", static_cast<uint32_t>(state.depth_info.stencil_back.compareOp)},
+			    {"stencil_reference_front", state.depth_info.stencil_front.reference},
+			    {"stencil_reference_back", state.depth_info.stencil_back.reference},
+			    {"stencil_write_mask_front", state.depth_info.stencil_front.writeMask},
+			    {"stencil_write_mask_back", state.depth_info.stencil_back.writeMask},
 			    {"nonzero_before", before_nonzero}, {"nonzero_after", after_nonzero},
 			    {"changed", changed}, {"depth_test", state.depth_info.depth_test_enable},
 			    {"depth_write", state.depth_info.depth_write_enable},
@@ -4265,8 +4308,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			const auto folder = Config::GetShaderDumpFolder() / "queue-state";
 			std::error_code ec;
 			std::filesystem::create_directories(folder, ec);
-			const auto name = fmt::format("ds_depth_prepass_f{}_s{}_p{}.json",
-			                              ds_gbuffer_frame, submit_id, ds_depth_prepass_phase);
+			static uint32_t depth_capture_serial = 0;
+			const auto name = fmt::format("ds_depth_prepass_f{}_s{}_p{}_d{}.json",
+			                              ds_gbuffer_frame, submit_id, ds_depth_prepass_phase,
+			                              ++depth_capture_serial);
 			std::ofstream file(folder / name, std::ios::trunc);
 			if (file) file << evidence;
 			Log::WriteToConsoleAndLog(fmt::format(
