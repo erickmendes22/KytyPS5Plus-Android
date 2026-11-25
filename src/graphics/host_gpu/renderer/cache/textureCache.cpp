@@ -3147,6 +3147,39 @@ bool TextureCache::DownloadImageMemoryChunk(ImageId id, uint64_t capacity) {
 	return true;
 }
 
+bool TextureCache::PublishGpuImagesForBufferAccess(uint64_t address,uint64_t size) {
+    address=Kernel::AddressFold::Fold(address);
+    if(!GuestRange{address,size}.Valid())return false;
+    std::scoped_lock lock{m_lock};
+    std::vector<ImageId> candidates;
+    for(const auto id:FindImagesInRegion(address,size,true)){
+        const auto* image=m_slot_images.try_get(id);
+        if(!image||!image->registered||!image->IsGpuModified()||!image->Overlaps(address,size)||
+            image->depth_id||!image->stencil_ids.empty()||!image->SafeToDownload()||
+            image->info.data.size>(uint64_t{256}<<20u)||!CanDownload(*image))continue;
+        // A whole-image publication must not overwrite a different GPU owner
+        // anywhere in its full range. Unlike the old containment-only helper,
+        // this also permits independent images covered by one wider SSBO/DMA.
+        bool conflict=false;
+        const auto& range=image->info.data;
+        for(const auto other_id:FindImagesInRegion(range.address,range.size,true)){
+            if(other_id==id)continue;
+            const auto* other=m_slot_images.try_get(other_id);
+            if(other&&other->registered&&other->IsGpuModified()&&other->Overlaps(range.address,range.size)){
+                conflict=true;break;
+            }
+        }
+        if(!conflict)candidates.push_back(id);
+    }
+    bool published=false;
+    for(const auto id:candidates){
+        auto* image=m_slot_images.try_get(id);
+        if(image&&image->registered&&image->IsGpuModified()&&image->SafeToDownload())
+            published|=BcAlias::Publish(*this,*image);
+    }
+    return published;
+}
+
 void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
                                            RefreshCause::Source source) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
@@ -3156,7 +3189,9 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
 	std::scoped_lock lock {m_lock};
 	for (const auto id: FindImagesInRegion(address, size, true)) {
 		auto& image = m_slot_images[id];
-		if (image.info.data.address != address) {
+		if (image.info.data.address != address &&
+		    (!DemonsPcRenderParity::Enabled() || !image.Overlaps(address,size) || image.IsGpuModified())) {
+			// Unresolved competing GPU owners cannot be discarded without a byte-ownership proof.
 			continue;
 		}
 		if (image.IsGpuModified()) {

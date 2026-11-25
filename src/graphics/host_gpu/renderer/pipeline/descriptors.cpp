@@ -1215,7 +1215,8 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			    descriptor.NumRecords() != UINT32_MAX &&
 			    size <= (uint64_t {256} << 20u) &&
 			    m_context.GetTextureCache().IsRegionGpuModified(address, size) &&
-			    m_context.GetTextureCache().PublishGpuImageForIndirectArgs(address, size)) {
+			    ((DemonsPcRenderParity::Enabled() && m_context.GetTextureCache().PublishGpuImagesForBufferAccess(address,size)) ||
+			     m_context.GetTextureCache().PublishGpuImageForIndirectArgs(address, size))) {
 				static std::atomic_uint32_t published {0};
 				const auto n = published.fetch_add(1u, std::memory_order_relaxed);
 				if (n < 16u || (n & 4095u) == 4095u) {

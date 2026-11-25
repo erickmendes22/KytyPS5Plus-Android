@@ -1570,8 +1570,10 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 		EXIT("BufferCache: invalid fill memory address\n");
 	}
 	NoteProbeRayWrite(vaddr, size, "dma_fill", value);
-	if(DemonsPcRenderParity::Enabled()) (void)m_texture_cache.ClearMetaRange(vaddr,size,value,true);
-	else (void)m_texture_cache.ClearMeta(vaddr);
+	if(DemonsPcRenderParity::Enabled()) {
+		(void)m_texture_cache.ClearMetaRange(vaddr,size,value,true);
+		(void)m_texture_cache.PublishGpuImagesForBufferAccess(vaddr,size);
+	} else (void)m_texture_cache.ClearMeta(vaddr);
 	if (!IsRegionGpuModified(vaddr, size)) {
 		// Access the guest mapping so write faults invalidate cached buffers and images.
 		auto* destination = reinterpret_cast<uint32_t*>(vaddr);
@@ -1587,7 +1589,6 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 		return;
 	}
 
-	if(DemonsPcRenderParity::Enabled()) (void)m_texture_cache.PublishGpuImageForIndirectArgs(vaddr,size);
 	m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
 	auto [dst, dst_offset] = ObtainBuffer(vaddr, size, true, true);
 	dst->Fill(dst_offset, size, value);
@@ -1607,6 +1608,10 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 		     src_vaddr, dst_vaddr, size, static_cast<int>(src_gds), static_cast<int>(dst_gds));
 	}
 	if (dst_memory) NoteProbeRayWrite(dst_vaddr, size, src_memory ? "dma_copy" : "gds_copy", src_vaddr);
+	if(DemonsPcRenderParity::Enabled()) {
+		if(src_memory)(void)m_texture_cache.PublishGpuImagesForBufferAccess(src_vaddr,size);
+		if(dst_memory)(void)m_texture_cache.PublishGpuImagesForBufferAccess(dst_vaddr,size);
+	}
 	if (src_memory && dst_memory && !IsRegionGpuModified(dst_vaddr, size) &&
 	    !IsRegionGpuModified(src_vaddr, size) && !m_texture_cache.FindImageFromRange(src_vaddr, size)) {
 		{
@@ -1620,7 +1625,6 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 
 	auto& command = m_scheduler.Current();
 	if (dst_memory) {
-		if(DemonsPcRenderParity::Enabled()) (void)m_texture_cache.PublishGpuImageForIndirectArgs(dst_vaddr,size);
 		m_texture_cache.InvalidateMemoryFromGPU(dst_vaddr, size);
 	}
 	const auto src_id      = src_memory ? FindBuffer(src_vaddr, size) : BufferId {};

@@ -98,6 +98,8 @@ public:
 	[[nodiscard]] bool PublishGpuImageForIndirectArgs(
 	    uint64_t address, uint64_t size, GpuImagePublication* details = nullptr);
 
+	// Publish complete, unambiguous GPU image owners before raw buffer reads/writes.
+	bool PublishGpuImagesForBufferAccess(uint64_t address,uint64_t size);
 	[[nodiscard]] bool IsMeta(uint64_t address);
 	// Whether [address, address + size) lies inside the DCC/CMask range of a color surface that
 	// MaterializeColorClear has inspected.
