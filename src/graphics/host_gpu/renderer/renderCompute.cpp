@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
+#include "graphics/host_gpu/renderer/demonsAtlasTileHistory.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsCountExecProbe.h"
@@ -1564,6 +1565,90 @@ static nlohmann::json ReadDsMaskProbeRecords(RenderContext& context,
 	return records;
 }
 
+static DemonsAtlasTileHistory::History ds_atlas_tile_history;
+
+// Capture the complete atlas update map, not a periodic subsample. The
+// consuming relight shader often reads tiles last updated many frames ago.
+static void RememberDsAtlasTileInputs(RenderContext& context,const PreparedBindings& bindings,
+    uint64_t submit,DispatchGroups groups) {
+    namespace H=DemonsAtlasTileHistory;
+    auto& history=ds_atlas_tile_history;
+    const auto& program=*bindings.runtime->program;
+    const auto& srt=bindings.runtime->resources->flattened_srt;
+    if(!groups[0]||!groups[1]||!groups[2])return;
+    if(groups[0]!=2||groups[1]!=2||groups[2]>16384||program.info.group_pack>1||
+        srt.size()<28||program.info.buffers.size()<2){history.Invalidate();return;}
+    const auto map_slot=program.info.buffers[0].descriptor_index;
+    const auto coeff_slot=program.info.buffers[1].descriptor_index;
+    const auto& info=program.info.images;
+    uint64_t owner=0,version=0;
+    for(size_t i=0;i<info.size()&&i<bindings.images.size();++i){
+        const auto& b=bindings.images[i];
+        if(!info[i].written||!b.image_id||b.placeholder)continue;
+        const auto& image=context.GetTextureCache().GetImage(b.image_id);
+        const auto v=std::ranges::find(image.views,b.image_view,&CachedImageView::view);
+        if(v==image.views.end()||image.backing.format!=vk::Format::eR16G16B16A16Sfloat||
+            image.backing.extent.width!=H::Width||image.backing.extent.height!=H::Height||
+            image.backing.layers!=H::Layers||v->info.base_level||v->info.base_layer||
+            v->info.layer_count!=H::Layers)continue;
+        if(owner){history.Invalidate();return;}
+        owner=image.info.data.address;version=image.ContentVersion();
+    }
+    if(!owner||uint64_t{srt[27]}+groups[2]>92160){history.Invalidate();return;}
+    const auto map=ReadDsBoundWords(context,bindings,map_slot,size_t{srt[27]}+groups[2]);
+    if(map.size()!=size_t{srt[27]}+groups[2]||coeff_slot>=bindings.buffers.size()||
+        coeff_slot>=bindings.buffer_sources.size()){history.Invalidate();return;}
+    const auto& b=bindings.buffers[coeff_slot];
+    const auto& source=bindings.buffer_sources[coeff_slot];
+    const auto offword=program.bindings.memory_offset_dword+coeff_slot/4u;
+    if(!b.buffer||b.range==VK_WHOLE_SIZE||offword>=bindings.shader_data.size()){
+        history.Invalidate();return;
+    }
+    const uint64_t adjustment=(bindings.shader_data[offword]>>(8u*(coeff_slot%4u)))&255u;
+    if(adjustment%4u){history.Invalidate();return;}
+    std::array<uint32_t,6> layout{};
+    std::copy_n(srt.begin()+22,6,layout.begin());
+    std::vector<uint32_t> values(size_t{groups[2]}*14);
+    std::vector<uint32_t> keys(groups[2],H::Invalid);
+    std::vector<vk::BufferCopy> copies;
+    for(uint32_t z=0;z<groups[2];++z){
+        const auto raw=map[srt[27]+z];
+        const auto key=H::IndexKey(raw,layout);
+        const uint64_t off=uint64_t{raw&0xffffffu}*64u;
+        if(key==H::Invalid||off>source.size||56u>source.size-off||
+            adjustment>b.range||off>b.range-adjustment||56u>b.range-adjustment-off){
+            // A dispatch with an unknown candidate cannot certify old tiles.
+            history.Invalidate();return;
+        }
+        keys[z]=key;
+        copies.emplace_back(b.offset+adjustment+off,uint64_t{z}*56u,56u);
+    }
+    if(!ReadDsGpuWordRanges(context,b.buffer,copies,values)){history.Invalidate();return;}
+    history.Begin(owner,version);
+    for(uint32_t z=0;z<groups[2];++z){
+        H::Record record;
+        record.frame=context.GetGpu().GetFrameNum();record.submit=submit;record.version=version;
+        record.group_z=z;record.packed_index=map[srt[27]+z];
+        std::copy_n(values.begin()+size_t{z}*14,14,record.coefficients.begin());
+        history.Put(keys[z],record);
+    }
+}
+
+static nlohmann::json DsAtlasFootprintProducers(uint64_t owner,uint64_t version,
+    uint32_t x,uint32_t y,uint32_t layer){
+    namespace H=DemonsAtlasTileHistory;
+    auto result=nlohmann::json::array();
+    for(uint32_t dy=0;dy<2;++dy)for(uint32_t dx=0;dx<2;++dx){
+        const auto key=H::Key(x+dx,y+dy,layer);
+        const auto* r=ds_atlas_tile_history.Find(owner,version,key);
+        if(!r){result.push_back(nullptr);continue;}
+        result.push_back({{"tile",key},{"frame",r->frame},{"submit",r->submit},
+            {"version",r->version},{"z",r->group_z},{"packed_index",r->packed_index},
+            {"ambiguous",r->ambiguous},{"coefficient_words",r->coefficients}});
+    }
+    return result;
+}
+
 // Site 12 in all four captured relight modules is a float 2D-array
 // image sample (native binding 4, array element 2, explicit LOD 0).
 // Read the four native texels of the very same sample. This separates
@@ -1661,7 +1746,8 @@ static nlohmann::json ReadDsRelightAtlasFootprints(RenderContext& context,
         std::memcpy(texels.data(),mapped+i*stride,stride);
         data.push_back({{"probe_slot",sample.probe},{"lane",sample.lane},{"event",sample.event},
             {"xy",{sample.x,sample.y}},{"layer",sample.layer},{"uv",{sample.u,sample.v}},
-            {"sample_rgba32_bits",sample.rgba},{"native_rgba16_bits",texels}});
+            {"sample_rgba32_bits",sample.rgba},{"native_rgba16_bits",texels},
+            {"atlas_writer_candidates",DsAtlasFootprintProducers(image.info.data.address,image.ContentVersion(),sample.x,sample.y,sample.layer)}});
     }
     report["status"]="captured";report["samples"]=std::move(data);
     return report;
@@ -2503,15 +2589,19 @@ static void ProbeDsAtlasInputs(RenderContext& context, const PreparedBindings& b
 	const bool paired_candidate = DsCoefficientCaptureDue(frame) && ds_coefficient_dispatch &&
 	    !ds_coefficient_dispatch->after.empty() && ds_coefficient_dispatch->frame == frame;
 	const bool periodic = gate.Due(frame, 240);
-	if (!periodic && !paired_candidate) return;
+	static const bool track_tiles=[] {const char* v=std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");return v&&v[0]=='1'&&v[1]=='\0';}();
+	if (!periodic && !paired_candidate && !track_tiles) return;
 	const auto report = [frame, submit](const char* reason) {
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_LIGHT_ATLAS_INPUT] frame={} submit={} capture={}\n", frame, submit, reason));
 	};
 	if (indirect_buffer && !ReadDsGpuWords(context, indirect_buffer, indirect_offset, groups)) {
+		if(track_tiles)ds_atlas_tile_history.Invalidate();
 		report("indirect_args_unreadable");
 		return;
 	}
+	if(track_tiles)RememberDsAtlasTileInputs(context,bindings,submit,groups);
+	if (!periodic && !paired_candidate) return;
 	if (groups[0] == 0 || groups[1] == 0 || groups[2] == 0) {
 		if (periodic) report("empty_dispatch");
 		return;
