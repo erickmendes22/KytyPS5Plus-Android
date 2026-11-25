@@ -310,7 +310,11 @@ object Diagnostics {
                     // Retain both the first and last matched updates of the actually consumed probes.
                     val prioritizedRays = (rayTargets.takeLast(10) + rayTargets.take(20)).distinct()
                     val relightTraces = newest.filter { it.name.startsWith("ds_relight_trace_") }.take(18)
-                    val producer = relightTraces + prioritizedRays +
+                    // These were omitted entirely in 100133 because the old producer list exceeded 96.
+                    val bridge = newest.filter { it.name.startsWith("ds_light_bridge_") }.take(8) +
+                        newest.filter { it.name.startsWith("ds_gbuffer_material_") }.take(12) +
+                        newest.filter { it.name.startsWith("ds_scene_writer_f") }.take(4)
+                    val producer = bridge + relightTraces + prioritizedRays +
                         newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24) +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
@@ -326,7 +330,9 @@ object Diagnostics {
                         newest.filter { it.name.startsWith("cs_567d21ad45386c8d_radiance_") }.take(16)
                     producer + (files - producer.toSet()).take((96 - producer.size).coerceAtLeast(0))
                 } else {
-                    files.take(when (subdir) {
+                    val relightModules = if (subdir == "spv" || subdir == "pipelines")
+                        files.filter { it.name.contains("_bcbcc6ba1e68c974_") } else emptyList()
+                    (relightModules + files).distinct().take(when (subdir) {
                         "guest-shaders" -> 96
                         "spv" -> 48
                         else -> 24

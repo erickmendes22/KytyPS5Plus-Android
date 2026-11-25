@@ -1564,6 +1564,109 @@ static nlohmann::json ReadDsMaskProbeRecords(RenderContext& context,
 	return records;
 }
 
+// Site 12 in all four captured relight modules is a float 2D-array
+// image sample (native binding 4, array element 2, explicit LOD 0).
+// Read the four native texels of the very same sample. This separates
+// pre-existing dark atlas content from a wrong image/sampler/coordinate.
+static nlohmann::json ReadDsRelightAtlasFootprints(RenderContext& context,
+    const PreparedBindings& bindings, std::span<const uint32_t> words) {
+    namespace P=DemonsRelightProbe;
+    namespace IR=ShaderRecompiler::IR;
+    const auto& program=*bindings.runtime->program;
+    const auto& resources=program.info.images;
+    size_t slot=resources.size();
+    for(size_t i=0;i<resources.size();++i){
+        const auto kind=IR::DescriptorBindingForImage(resources[i]);
+        if(!kind || IR::NativeBinding(program.stage,*kind)!=4u || resources[i].descriptor_index!=2u)continue;
+        if(slot!=resources.size())return {{"status","ambiguous_descriptor"}};
+        slot=i;
+    }
+    if(slot>=resources.size()||slot>=bindings.images.size()||resources[slot].written)
+        return {{"status","source_descriptor_missing_or_written"}};
+    const auto& binding=bindings.images[slot];
+    if(!binding.image_id||binding.placeholder)return {{"status","placeholder"}};
+    auto& image=context.GetTextureCache().GetImage(binding.image_id);
+    const auto found=std::ranges::find(image.views,binding.image_view,&CachedImageView::view);
+    if(found==image.views.end())return {{"status","missing_view"}};
+    const auto view=found->info;
+    const auto& host=image.backing;
+    nlohmann::json report={{"status","unsupported_view"},{"resource",slot},
+        {"binding",4},{"element",2},{"guest",binding.desc.info.data.address},
+        {"owner",image.info.data.address},{"version",image.ContentVersion()},
+        {"format",static_cast<uint32_t>(host.format)},{"mip",view.base_level},
+        {"layer",view.base_layer},{"layers",view.layer_count}};
+    if(host.format!=vk::Format::eR16G16B16A16Sfloat||host.samples!=1||
+        !(host.usage&vk::ImageUsageFlagBits::eTransferSrc)||view.type!=vk::ImageViewType::e2DArray||
+        view.base_level>=host.mip_levels||view.base_layer>=host.layers)return report;
+    // A post-dispatch copy is valid only when the sampled image did not
+    // alias an output of the dispatch.
+    for(size_t i=0;i<resources.size()&&i<bindings.images.size();++i){
+        if(!resources[i].written||!bindings.images[i].image_id||bindings.images[i].placeholder)continue;
+        const auto& output=context.GetTextureCache().GetImage(bindings.images[i].image_id);
+        const auto& a=image.info.data;const auto& b=output.info.data;
+        if(bindings.images[i].image_id==binding.image_id||
+            (a.size&&b.size&&a.address<b.address+b.size&&b.address<a.address+a.size)){
+            report["status"]="source_aliases_output";return report;
+        }
+    }
+    const uint32_t width=std::max(host.extent.width>>view.base_level,1u);
+    const uint32_t height=std::max(host.extent.height>>view.base_level,1u);
+    report["extent"]={width,height};
+    struct Sample{uint32_t probe,lane,event,x,y,layer;float u,v;std::array<uint32_t,4> rgba;};
+    std::vector<Sample> samples;
+    // Sample at most 32 unique footprints per probe, stratified over lanes.
+    // Keep only interior LOD0 reads with integral in-range array indices.
+    for(uint32_t p=0;p<P::Probes;++p){
+        const auto start=samples.size();
+        for(uint32_t lane=0;lane<P::Rays&&samples.size()-start<32;lane+=4){
+            const auto off=P::Header+(p*P::Rays+lane)*P::Sites*P::SiteWords+12u*P::SiteWords;
+            for(uint32_t event=0;event<std::min(words[off],P::Events)&&samples.size()-start<32;++event){
+                const auto* a=words.data()+off+1+event*P::EventWords;
+                const float u=std::bit_cast<float>(a[0]),v=std::bit_cast<float>(a[1]),z=std::bit_cast<float>(a[2]);
+                if(a[8]!=0||!std::isfinite(u)||!std::isfinite(v)||!std::isfinite(z)||
+                    u<=0||u>=1||v<=0||v>=1||z<0||z!=std::floor(z)||
+                    z>=static_cast<float>(std::min(view.layer_count,host.layers-view.base_layer)))continue;
+                const auto x=static_cast<int32_t>(std::floor(u*width-0.5f));
+                const auto y=static_cast<int32_t>(std::floor(v*height-0.5f));
+                if(x<0||y<0||uint32_t(x+1)>=width||uint32_t(y+1)>=height)continue;
+                const auto layer=view.base_layer+static_cast<uint32_t>(z);
+                if(std::ranges::any_of(samples,[&](const auto& q){return q.probe==p&&q.x==uint32_t(x)&&q.y==uint32_t(y)&&q.layer==layer;}))continue;
+                samples.push_back({p,lane,event,uint32_t(x),uint32_t(y),layer,u,v,{a[4],a[5],a[6],a[7]}});
+            }
+        }
+    }
+    if(samples.empty()){report["status"]="no_interior_samples";return report;}
+    constexpr uint32_t stride=32;
+    const uint32_t bytes=static_cast<uint32_t>(samples.size())*stride;
+    auto& download=context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+    auto [mapped,offset]=download.Map(bytes,16u,true);
+    if(!mapped){report["status"]="download_map_failed";return report;}
+    download.Commit();
+    std::vector<vk::BufferImageCopy> copies(samples.size());
+    for(size_t i=0;i<samples.size();++i){
+        const auto& sample=samples[i];auto& copy=copies[i];
+        copy.bufferOffset=offset+i*stride;
+        copy.imageSubresource.aspectMask=vk::ImageAspectFlagBits::eColor;
+        copy.imageSubresource.mipLevel=view.base_level;
+        copy.imageSubresource.baseArrayLayer=sample.layer;
+        copy.imageSubresource.layerCount=1;
+        copy.imageOffset=vk::Offset3D{static_cast<int32_t>(sample.x),static_cast<int32_t>(sample.y),0};
+        copy.imageExtent=vk::Extent3D{2,2,1};
+    }
+    image.Download(std::span{copies},download.Handle(),offset,bytes);
+    context.GetCommandScheduler().Finish();download.Invalidate(offset,bytes);
+    auto data=nlohmann::json::array();
+    for(size_t i=0;i<samples.size();++i){
+        const auto& sample=samples[i];std::array<uint16_t,16> texels{};
+        std::memcpy(texels.data(),mapped+i*stride,stride);
+        data.push_back({{"probe_slot",sample.probe},{"lane",sample.lane},{"event",sample.event},
+            {"xy",{sample.x,sample.y}},{"layer",sample.layer},{"uv",{sample.u,sample.v}},
+            {"sample_rgba32_bits",sample.rgba},{"native_rgba16_bits",texels}});
+    }
+    report["status"]="captured";report["samples"]=std::move(data);
+    return report;
+}
+
 static void SaveDsRelightTrace(RenderContext& context,const PreparedBindings& bindings,
     uint64_t submit,const DsRelightSelection& sel){
     namespace P=DemonsRelightProbe;
@@ -1614,6 +1717,7 @@ static void SaveDsRelightTrace(RenderContext& context,const PreparedBindings& bi
         raw+=words[base]!=0;exported+=words[base+(P::Sites-1)*P::SiteWords]!=0;
     }
     report["raw_rays_seen"]=raw;report["exports_seen"]=exported;
+    report["site12_atlas_footprints"]=ReadDsRelightAtlasFootprints(context,bindings,words);
     std::ofstream json(folder/(stem+".json"),std::ios::trunc);json<<report;json.close();
     Log::WriteToConsoleAndLog(fmt::format("[DS_RELIGHT_TRACE] frame={} submit={} raw={} exported={} file={} saved={}\n",
         frame,submit,raw,exported,stem,json.good()));
