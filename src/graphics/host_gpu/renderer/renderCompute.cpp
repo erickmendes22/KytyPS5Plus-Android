@@ -1659,12 +1659,19 @@ static nlohmann::json DsDescriptor224(RenderContext& context,const PreparedBindi
         j["root_table_backing"]=DsTransitionBacking(context,table,8);
     }
     j["descriptor_backing"]=DsTransitionBacking(context,address,4);
+    const auto& backing=j["descriptor_backing"];
+    if(backing.contains("words")&&backing["words"].size()==4){
+        const auto actual=backing["words"].get<std::array<uint32_t,4>>();
+        j["backing_matches_flat"]=std::equal(actual.begin(),actual.end(),flat.begin()+20);
+        j["backing_matches_materialized"]=std::equal(actual.begin(),actual.end(),d.dwords.begin());
+        j["backing_may_be_stale"]=backing.value("gpu_dirty",true)||backing.value("pending_publication",true);
+    }
     return j;
 }
 struct DsBrightMaskRecord {int32_t frame=-1;std::array<uint32_t,4> position{};std::array<uint32_t,16> mask{};};
-static std::vector<DsBrightMaskRecord> ds_bright_mask_records(92160);
+static std::vector<DsBrightMaskRecord> ds_bright_mask_records;
 static nlohmann::json DsMaskTransition(RenderContext& context,const PreparedBindings& bindings,
-    std::span<const uint32_t> ids,uint32_t phase,uint32_t& matched_lost_index){
+    std::span<const uint32_t> ids,bool bright_reference,uint32_t& matched_lost_index){
     namespace T=DemonsTransitionTrace;
     const auto& p=*bindings.runtime->program;const auto frame=context.GetGpu().GetFrameNum();
     const auto slot=p.info.buffers[4].descriptor_index;
@@ -1674,7 +1681,7 @@ static nlohmann::json DsMaskTransition(RenderContext& context,const PreparedBind
     const auto c=T::Summarize(words,ids);
     nlohmann::json result={{"status","captured"},{"rows",c.rows},{"valid_rows",c.valid},
         {"group1_rows",c.group1},{"group1_light_bits",c.group1_lights},{"inconsistent_group1",c.inconsistent},
-        {"mask_words_all",words},{"probe_ids_all",ids}};
+        {"mask_words_all",words},{"probe_ids_all",std::vector<uint32_t>(ids.begin(),ids.end())}};
     const auto& source=bindings.buffer_sources[slot];
     if(const auto* w=FindDsBufferProducer(frame,source.address,words.size()*4,false)){
         result["last_writer"]={{"shader",fmt::format("{:016x}",w->shader)},{"frame",w->frame},{"submit",w->submit}};
@@ -1688,6 +1695,7 @@ static nlohmann::json DsMaskTransition(RenderContext& context,const PreparedBind
     }
     // Match the same probe AND its same position, not arbitrary min/max rows in
     // a different scene. Compare the previous bright mask before updating it.
+    if(ds_bright_mask_records.empty())ds_bright_mask_records.resize(92160);
     const auto positions=ReadDsMaskProbeRecords(context,bindings,p.info.buffers[2].descriptor_index,ids,16);
     auto matches=nlohmann::json::array();uint32_t lost=0,matched=0;
     if(positions.is_array()&&positions.size()==ids.size()){
@@ -1702,7 +1710,7 @@ static nlohmann::json DsMaskTransition(RenderContext& context,const PreparedBind
                 if(matches.size()<64||loss)matches.push_back({{"id",ids[i]},{"z",i},{"position",pos},{"bright_frame",old.frame},
                     {"bright_mask",old.mask},{"current_mask",std::vector<uint32_t>(row.begin(),row.end())},{"lost_group1",loss}});
             }
-            if(phase==1){old.frame=frame;old.position=pos;std::copy(row.begin(),row.end(),old.mask.begin());}
+            if(bright_reference&&(row[13]&2u)){old.frame=frame;old.position=pos;std::copy(row.begin(),row.end(),old.mask.begin());}
         }
     }
     result["matched_bright_positions"]=matched;result["lost_group1_same_position"]=lost;
@@ -1749,9 +1757,9 @@ static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const Prep
     bool edge=false;
     if(focus){
         auto desc=DsDescriptor224(context,bindings);
-        auto mask=DsMaskTransition(context,bindings,ids,phase,lost_index);
         const bool known=desc.value("status",std::string{})=="captured";
         const bool is_null=desc.value("null",false);
+        auto mask=DsMaskTransition(context,bindings,ids,phase==1&&known&&!is_null,lost_index);
         static int previous=-1;static uint32_t edge_count=0;static bool had_bright=false;
         if(phase==1)had_bright=true;
         if(known){edge=had_bright&&previous>=0&&previous!=int(is_null)&&edge_count<8;previous=int(is_null);}

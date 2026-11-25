@@ -1745,7 +1745,7 @@ bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& sc
 		}
 		if(trace_transition&&i==3){
 			auto& trace=snapshot.ds_transition_descriptor;trace.captured=true;trace.source=base.source;
-			trace.active=active.empty()||active[base.source];trace.raw=descriptor_value;trace.normalized=descriptor.Type()!=0;
+			trace.active=active.empty()||(base.source<active.size()&&active[base.source]);trace.raw=descriptor_value;trace.normalized=descriptor.Type()!=0;
 		}
 		if (descriptor.Type() != 0) {
 			descriptor_value.dwords.fill(0);
