@@ -1789,6 +1789,23 @@ static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const Prep
     // color scores, rather than unrelated probes at arbitrary Z positions.
     // Record the actual GPU buffer, never infer a probe's contents from ID.
     const auto records=ReadDsMaskProbeRecords(context,bindings,ray_slot,ids,2048);
+    // Compare the exact same probe and position across captured dispatches, including
+    // two late gameplay dispatches with different radiance. Do not conflate different scenes.
+    struct RayReference {
+        int32_t frame=-1;
+        std::array<uint32_t,4> position{};
+        uint32_t color=0,emission=0;
+        std::array<uint32_t,512> words{};
+    };
+    static std::vector<RayReference> references;
+    static int32_t previous_frame=-1;
+    if(previous_frame>frame) references.clear();
+    previous_frame=frame;
+    if(references.empty()) references.resize(92160);
+    const auto positions=ReadDsMaskProbeRecords(context,bindings,p.info.buffers[2].descriptor_index,ids,16);
+    auto pairs=nlohmann::json::array();
+    uint32_t ray_loss_index=UINT32_MAX, max_loss=0, matched=0;
+    nlohmann::json strongest;
     if(records.is_array()&&records.size()==ids.size()){
         uint32_t lo=UINT32_MAX,hi=0;bool found=false;
         for(uint32_t i=0;i<ids.size();++i){
@@ -1802,9 +1819,37 @@ static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const Prep
             if(!found||score<lo){lo=score;first=i;}
             if(!found||score>hi){hi=score;second=i;}
             found=true;
+            if(ids[i]>=references.size()||!positions.is_array()||positions.size()!=ids.size()||
+                !positions[i].is_array()||positions[i].size()!=4)continue;
+            const auto pos=positions[i].get<std::array<uint32_t,4>>();
+            auto& ref=references[ids[i]];
+            if(ref.frame>=0&&ref.frame<frame&&ref.position==pos){
+                ++matched;
+                const uint32_t loss=ref.color>color?ref.color-color:0u;
+                if(loss){
+                    pairs.push_back({{"id",ids[i]},{"z",i},{"position",pos},{"reference_frame",ref.frame},
+                        {"reference_color",ref.color},{"current_color",color},
+                        {"reference_emission",ref.emission},{"current_emission",emission}});
+                    if(loss>max_loss){
+                        max_loss=loss;ray_loss_index=i;
+                        strongest=pairs.back();
+                        strongest["reference_words"]=ref.words;
+                        strongest["current_words"]=row;
+                    }
+                }
+            }
+            // Retain the highest-color known observation for this exact position.
+            // This is a data reference, not a claim that the frame was illuminated.
+            if(ref.frame<0||ref.position!=pos||color>ref.color){
+                ref.frame=frame;ref.position=pos;ref.color=color;ref.emission=emission;
+                ref.words=row.get<std::array<uint32_t,512>>();
+            }
         }
     }
-    if(lost_index!=UINT32_MAX)first=lost_index;
+    result.transition["matched_ray_records"]={{"matched",matched},{"color_losses",pairs},
+        {"strongest_loss",strongest},{"reference_policy","same_id_exact_position_highest_color"}};
+    if(ray_loss_index!=UINT32_MAX)first=ray_loss_index;
+    else if(lost_index!=UINT32_MAX)first=lost_index;
     if(second==first&&groups[2]>1)second=(first+1)%groups[2];
     result.header={1,first,second==first?UINT32_MAX:second};
     result.probes={ids[first],second==first?UINT32_MAX:ids[second]};
