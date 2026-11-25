@@ -1797,11 +1797,10 @@ static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const Prep
         uint32_t color=0,emission=0;
         std::array<uint32_t,512> words{};
     };
-    static std::vector<RayReference> references;
+    static std::unordered_map<uint32_t,RayReference> references;
     static int32_t previous_frame=-1;
     if(previous_frame>frame) references.clear();
     previous_frame=frame;
-    if(references.empty()) references.resize(92160);
     const auto positions=ReadDsMaskProbeRecords(context,bindings,p.info.buffers[2].descriptor_index,ids,16);
     auto pairs=nlohmann::json::array();
     uint32_t ray_loss_index=UINT32_MAX, max_loss=0, matched=0;
@@ -1819,9 +1818,10 @@ static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const Prep
             if(!found||score<lo){lo=score;first=i;}
             if(!found||score>hi){hi=score;second=i;}
             found=true;
-            if(ids[i]>=references.size()||!positions.is_array()||positions.size()!=ids.size()||
+            if(ids[i]>=92160u||!positions.is_array()||positions.size()!=ids.size()||
                 !positions[i].is_array()||positions[i].size()!=4)continue;
             const auto pos=positions[i].get<std::array<uint32_t,4>>();
+            if(references.size()>=4096u&&!references.contains(ids[i]))continue;
             auto& ref=references[ids[i]];
             if(ref.frame>=0&&ref.frame<frame&&ref.position==pos){
                 ++matched;
