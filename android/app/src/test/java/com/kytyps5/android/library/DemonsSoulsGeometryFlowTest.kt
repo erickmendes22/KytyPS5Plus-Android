@@ -35,6 +35,21 @@ class DemonsSoulsGeometryFlowTest {
             assertArrayEquals(originalElf, elf.readBytes())
         } finally { folder.deleteRecursively() }
     }
+    @Test fun matrixCullingModesAreExclusiveAndReversible() {
+        val folder = Files.createTempDirectory("ds-matrix").toFile()
+        try {
+            File(folder, "eboot.bin").writeText(supported)
+            val config = File(folder, "PackageCmdLineArgs.txt").apply { writeText("+User=true") }
+            assertTrue(DemonsSoulsGeometryFlow.configure(folder, "PPSA01341", true, 1).ok)
+            assertTrue(config.readText().contains("+doIndexBufferCulling=0"))
+            assertFalse(config.readText().contains("+doSunShadowIndexBufferCulling=0"))
+            assertTrue(DemonsSoulsGeometryFlow.configure(folder, "PPSA01341", true, 2).ok)
+            assertFalse(config.readText().contains("+doIndexBufferCulling=0"))
+            assertTrue(config.readText().contains("+doSunShadowIndexBufferCulling=0"))
+            assertTrue(DemonsSoulsGeometryFlow.configure(folder, "PPSA01341", false, 0).ok)
+            assertEquals("+User=true", config.readText())
+        } finally { folder.deleteRecursively() }
+    }
     @Test fun unsupportedExecutableAndOtherTitlesDoNotChangeFiles() {
         val folder = Files.createTempDirectory("ds-geometry-guard").toFile()
         try {

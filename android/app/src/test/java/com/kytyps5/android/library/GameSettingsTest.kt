@@ -9,6 +9,15 @@ import org.junit.Test
 
 class GameSettingsTest {
     @Test
+    fun matrixModeRoundTripsAndDefaultsToControl() {
+        assertEquals(0, GameSettings.DEFAULT.demonsSoulsMatrix)
+        for (mode in 0..8) {
+            val s = GameSettings(demonsSoulsMatrix = mode)
+            assertEquals(s, GameSettings.fromJson(s.toJson()))
+        }
+        assertEquals(8, GameSettings.fromJson("""{"demonsSoulsMatrix":999}""").demonsSoulsMatrix)
+    }
+    @Test
     fun nexusRouteIsOffByDefaultAndCanBeRestored() {
         assertFalse(GameSettings.DEFAULT.demonsSoulsNexusRoute)
         val enabled = GameSettings(demonsSoulsNexusRoute = true)

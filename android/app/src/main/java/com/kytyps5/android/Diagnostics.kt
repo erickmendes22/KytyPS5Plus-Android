@@ -226,6 +226,10 @@ object Diagnostics {
      * resolved inputs and GPU light lists alongside the frame-correlated session log.
      */
     private fun exportDsLightingCapture(context: Context, zip: ZipOutputStream): Int {
+        val launch = File(context.filesDir, "logs/last-launch.txt")
+        // A–D have no full captures. Do not attach cached shader modules
+        // from E/F or earlier launches to their ZIPs.
+        if (launch.isFile && launch.readLines().any { it.matches(Regex("KYTY_DS_MATRIX=[0-6]")) }) return 0
         val dump = File(context.filesDir, "ds-lighting-dumps")
         if (!dump.isDirectory) return 0
         val queueShaders = setOf("f0c482b0b355e9de", "e3daeb1e7426761b", "32c7da582db1795a")

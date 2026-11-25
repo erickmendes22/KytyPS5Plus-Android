@@ -192,6 +192,11 @@ IndirectDrawFixup::Output IndirectDrawFixup::Dispatch(CommandBuffer& buffer, uin
 		before.srcAccessMask |= vk::AccessFlagBits::eColorAttachmentWrite |
 		                        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
 	}
+	if(DemonsCausalMatrix::Mode()==DemonsCausalMatrix::GpuBarrier) {
+        static std::atomic_uint32_t logs{0};
+        if(logs.fetch_add(1,std::memory_order_relaxed)<16)
+            LOGF("[DS_MATRIX_GPU_BARRIER] mode=C2 fixup_mode=%u groups=%u\n",fixup.mode,groups);
+    }
 	before.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
 	command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                        vk::PipelineStageFlagBits::eComputeShader, {}, 1, &before, 0, nullptr,

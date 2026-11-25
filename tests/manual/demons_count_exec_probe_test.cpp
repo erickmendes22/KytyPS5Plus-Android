@@ -69,6 +69,8 @@ int main(int argc,char** argv) {
         auto original=Fixture(version),v=original;
         assert(!Instrument(v,Fingerprint^1,55) && v==original);
         assert(Instrument(v,Fingerprint,55));
+        auto alt=original;
+        assert(Instrument(alt,AlternateFingerprint,55)&&alt==v);
         size_t entries=0;
         for(size_t i=5;i<v.size();) {
             const auto n=v[i]>>16;

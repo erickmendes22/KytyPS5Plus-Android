@@ -194,7 +194,6 @@ class GameSettingsDialog(
                 addView(nexusRoute)
                 addView(label("Additional code patch skips profile language, brightness and character creation. Requires decrypted eboot.bin signature match; never edits it.", secondary = true))
                 addView(firstBoot)
-                addView(label("Tests cross-queue CPU/GPU synchronization. Automatically logs guest flips and blocked GPU waits every 5 seconds.", secondary = true))
                 addView(label("Bluepoint worker fix: preserves the original empty-job poll and sleeps only when no work is available. Reversible; ARM64 FEX HLE host trap.", secondary = true))
                 addView(idleBackoff)
                 addView(ds1080p)
@@ -202,12 +201,6 @@ class GameSettingsDialog(
                 addView(label("Matriz causal — uma variável por execução", bold = true))
                 addView(dsMatrix)
                 addView(label("A primeiro; mesmo save/câmera; um ZIP por modo. E/F ativam capturas GPU. Os experimentos antigos depth/MRT/DPP/sync não são combinados com a matriz.", secondary = true))
-                addView(label("Demon's Souls: depth prepass / material EQUAL compatibility (PC reference; experimental)", bold = true))
-                addView(label("Default 0 and mode 3 retain original EQUAL. Modes 1/2 are optional experiments; do not affect shadows.", secondary = true))
-                addView(label("Off by default. Disable only depth writes for the two exact unmatched draws measured in frame 497. Reversible occlusion experiment, not a confirmed rendering fix.", secondary = true))
-                addView(label("Off by default. Uses the PC renderer's actual shader export mask instead of binding every guest color target; tests whether the extra attachments clear or overwrite deferred materials.", secondary = true))
-                addView(label("Off by default. Replaces native quad DPP and the inactive-source override in the ray producer, relight and probe projector with the original PC-style path; no global shader changes.", secondary = true))
-                addView(label("Off by default: synchronous GPU pixel readbacks previously interrupted rendering and added GPU/CPU overhead.", secondary = true))
             }
             if (presetSwitches.isNotEmpty()) {
                 addView(label("Game presets", bold = true))

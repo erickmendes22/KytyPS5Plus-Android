@@ -435,7 +435,7 @@ void RenderExecutor::RememberDsAtlasWriter(ImageId id, const ImageInfo& info,
 void RenderExecutor::BindDsCountExec(PreparedBindings& bindings,bool capture) {
     namespace D=DemonsCountExecProbe;
     const auto& p=*bindings.runtime->program;
-    if(p.shader_hash!=D::Shader || p.ds_light_math_variant!=D::Fingerprint)return;
+    if(p.shader_hash!=D::Shader || !D::SupportedFingerprint(p.ds_light_math_variant))return;
     auto& storage=m_ds_count_exec_buffers[capture];
     const bool initialize=!storage;
     constexpr auto bytes=D::WordCount*sizeof(uint32_t);
@@ -3372,7 +3372,7 @@ static void EndDsCountProducer(RenderContext& context,const PreparedBindings& bi
     if (!report) return;
     namespace P=DemonsCountExecProbe;
     if(bindings.runtime->program->shader_hash==P::Shader &&
-       bindings.runtime->program->ds_light_math_variant==P::Fingerprint){
+       P::SupportedFingerprint(bindings.runtime->program->ds_light_math_variant)){
         std::vector<uint32_t> words(P::WordCount);
         const auto& native=bindings.shared_memory;
         // The shader writes only the dedicated debug descriptor. Readback
@@ -3410,10 +3410,41 @@ static void EndDsCountProducer(RenderContext& context,const PreparedBindings& bi
                 }
             }
             (*report)["bda_reads"]=std::move(bda);
-            (*report)["exec_trace"]={{"fingerprint",fmt::format("{:016x}",P::Fingerprint)},
+            // Guest ISA gate: lane<count, list DWORD0 at base+lane,
+            // object flag at id*220+208, then (flags&8)==0. Compare
+            // independently captured descriptor words with actual execution
+            // of the same lane in this dispatch, not another scene/frame.
+            if(report->contains("first_gate")) {
+                auto& gate=(*report)["first_gate"];
+                auto rows=nlohmann::json::array();
+                uint32_t compared=0,mismatched=0,unavailable=0;
+                if(gate.contains("lanes")) for(const auto& row:gate["lanes"]) {
+                    const auto lane=row["lane"].get<uint32_t>();
+                    if(lane>=P::Lanes || !row.contains("flags")) {++unavailable;continue;}
+                    const auto lane_id=word(lane,187),count=word(lane,208),active=word(lane,210),
+                        object=word(lane,230),flags=word(lane,246),pass=word(lane,250);
+                    if(!lane_id||!count||!active||!object||!flags||!pass||*lane_id!=lane) {++unavailable;continue;}
+                    const auto expected_count=gate["count"].get<uint32_t>();
+                    const auto expected_object=row["object_id"].get<uint32_t>();
+                    const auto expected_flags=row["flags"].get<uint32_t>();
+                    const bool expected_pass=(lane<expected_count)&&((expected_flags&8u)==0u);
+                    const bool same=*count==expected_count && *active==1u && *object==expected_object &&
+                        *flags==expected_flags && *pass==uint64_t(expected_pass);
+                    ++compared;mismatched+=!same;
+                    rows.push_back({{"lane",lane},{"expected_count",expected_count},{"actual_count",*count},
+                        {"expected_object",expected_object},{"actual_object",*object},
+                        {"expected_flags",expected_flags},{"actual_flags",*flags},
+                        {"expected_pass",expected_pass},{"actual_pass",*pass},{"actual_active",*active},{"match",same}});
+                }
+                gate["execution_replay"]={{"status",compared?(mismatched?"divergence":"match"):"unavailable"},
+                    {"compared",compared},{"mismatched",mismatched},{"unavailable",unavailable},{"rows",std::move(rows)}};
+            }
+            (*report)["exec_trace"]={{"fingerprint",fmt::format("{:016x}",bindings.runtime->program->ds_light_math_variant)},
                 {"site_ids",P::Sites},{"lanes",P::Lanes},{"words_per_site",P::WordsPerSite},
                 {"words",std::move(words)}};
         }else (*report)["exec_trace_status"]="readback_failed";
+    } else if(bindings.runtime->program->shader_hash==P::Shader) {
+        (*report)["exec_trace_status"]="no_validated_variant";
     }
     (*report)["groups_valid"]=!indirect || ReadDsGpuWords(context,indirect,indirect_offset,groups);
     (*report)["groups"]=groups;

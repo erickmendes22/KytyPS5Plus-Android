@@ -32,3 +32,13 @@ No lighting correction or gameplay verification claimed.
 First mismatching producer/consumer or guest-semantic output. If an
 isolation mode recovers the image, narrow to specific operation before
 making default change. If negative, use E/F data to discriminate M1–M7.
+
+## Capture completeness
+Both native fb18 fingerprints 737447ebe010052e and bc2046dc2a822ad8
+have identical defining instructions at all 157 recorded sites, verified
+from 185122. Accept only those exact hashes and validate the instrumented
+module; export unknown modules without instrumenting. Compare each captured
+first-gate input from actual GPU descriptors to the guest ISA-derived gate
+and the recorded lane's count, active state, object ID, flags and pass.
+Missing values are unavailable, not a pass. This narrows M1 but is not a
+full offline visibility replay. A–D exclude cached full diagnostic dumps.

@@ -10,6 +10,10 @@
 namespace Libs::Graphics::DemonsCountExecProbe {
 constexpr uint64_t Shader=0xfb18d110fab8234eull;
 constexpr uint64_t Fingerprint=0x737447ebe010052eull;
+constexpr uint64_t AlternateFingerprint=0xbc2046dc2a822ad8ull;
+// Verified all 157 defining instructions (opcodes, type, result, operands)
+// against both native modules in 185122; the site map is identical.
+constexpr bool SupportedFingerprint(uint64_t f) { return f==Fingerprint || f==AlternateFingerprint; }
 // Exact module exported in 202757. 187 is the guest invocation index.
 // All subgroup-any predicates/results, important float comparisons, BDA
 // addresses/loads, and atomic operands/results. Values are RAW bits.
@@ -18,7 +22,7 @@ constexpr std::array<uint32_t,157> Sites{
 constexpr uint32_t Lanes=64, WordsPerSite=3;
 constexpr uint32_t WordCount=1+Lanes*Sites.size()*WordsPerSite;
 inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fingerprint,uint32_t binding) {
-    if (fingerprint!=Fingerprint || spirv.size()<5) return false;
+    if (!SupportedFingerprint(fingerprint) || spirv.size()<5) return false;
     constexpr uint32_t u32=1,f32=19,u64=31,boolean=113,void_type=153,ptr_word=147,ptr_input_word=6;
     uint32_t next=spirv[3];
     const auto id=[&]{return next++;};
