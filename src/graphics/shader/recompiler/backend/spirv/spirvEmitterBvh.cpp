@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/shader/demonsPcRenderParity.h"
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 namespace {
@@ -409,6 +410,8 @@ uint32_t Boxes(EmitterState& s, const NodeWords& first, uint32_t second, uint32_
 	return value;
 }
 
+#include "graphics/shader/recompiler/backend/spirv/spirvEmitterBvhPc.inc"
+
 } // namespace
 
 void DefineBvhIntersect(EmitterState& s) {
@@ -436,6 +439,12 @@ void DefineBvhIntersect(EmitterState& s) {
 	}
 	std::array<uint32_t, 4> words;
 	for (uint32_t i = 0; i < 4; ++i) words[i] = Extract(s, u, descriptor, i);
+	if (DemonsPcRenderParity::Enabled()) {
+		const auto result=PcBvhLowering(s,words,node,extent,origin,direction,inverse).NodeTest();
+		s.builder.AddFunction(spv::OpReturnValue,result);
+		s.builder.AddFunction(spv::OpFunctionEnd);
+		return;
+	}
 	const auto and_bits = [&](uint32_t value, uint32_t mask) {
 		return Binary(s, spv::OpBitwiseAnd, u, value, ConstantU32(s, mask));
 	};
