@@ -9,23 +9,20 @@
 namespace Libs::Graphics::DemonsVertexPositionProbe {
 constexpr uint32_t Header=3, Stride=23, MaxVertices=65536;
 constexpr uint32_t WordCount=Header+Stride*MaxVertices;
-constexpr bool Material(uint64_t hash) {
-    return hash==0xf825a988127faeb4ull || hash==0x74b55dea9562eda1ull;
-}
-constexpr bool Watched(uint64_t hash) {
-    return hash==0x34c51585c926a664ull || hash==0xa7208481a1f2b760ull || Material(hash);
-}
-constexpr uint32_t PairIndex(uint64_t hash) {
-    return hash==0x34c51585c926a664ull || hash==0xf825a988127faeb4ull ? 0u : 1u;
-}
+// 225647 proved the two small-mesh depth/material pairs equivalent.
+ // Focus the expensive per-vertex capture on the actual dominant surface.
+constexpr bool Material(uint64_t hash) { return hash==0xc96f3fcde8141266ull; }
+constexpr bool Watched(uint64_t hash) { return hash==0xaff9c7ef505c6253ull || Material(hash); }
+constexpr uint32_t PairIndex(uint64_t) { return 0u; }
 // Exact 221410 modules. Inputs are the actual SSA values used by the
 // transform, not a re-read of a potentially different guest buffer.
 struct Site {
     uint64_t hash,fingerprint;
     uint32_t main,boolean,void_type,ptr,vertex,instance,transform,position,store,clip;
     std::array<uint32_t,15> inputs; // position xyz, matrix rows
+    uint32_t f32=8,vec4=9;
 };
-constexpr std::array<Site,8> Sites{{
+constexpr std::array<Site,11> Sites{{
  {0x34c51585c926a664ull,0x92e062bff851bfe3ull,39,60,43,99,71,73,97,593,602,597,
   {366,367,368,253,254,255,256,292,293,294,295,331,332,333,334}},
  {0x34c51585c926a664ull,0x5650cfdc24ed3f10ull,39,60,43,115,71,73,112,878,887,882,
@@ -39,14 +36,22 @@ constexpr std::array<Site,8> Sites{{
  {0xf825a988127faeb4ull,0xdd6b59738d0d2030ull,40,65,44,104,76,78,0,841,850,845,{}},
  {0xf825a988127faeb4ull,0x46d9e68030e3e5a9ull,40,65,44,120,76,78,0,1195,1204,1199,{}},
  {0x74b55dea9562eda1ull,0x861d06190301aef3ull,46,73,50,112,84,86,0,986,994,990,{}},
- {0x74b55dea9562eda1ull,0x5ef07abfcab3a10cull,46,73,50,128,84,86,0,1353,1361,1357,{}}
+ {0x74b55dea9562eda1ull,0x5ef07abfcab3a10cull,46,73,50,128,84,86,0,1353,1361,1357,{}},
+ // 225647: dominant depth VS native loads at 0x80..0x98, and exact
+ // export stores at these SSA sites. Material records its final export.
+ {0xaff9c7ef505c6253ull,0x03110de384d15f6bull,30,47,34,103,58,60,101,489,499,493,
+  {336,338,340,293,295,297,299,246,248,250,252,200,202,204,206}},
+ {0xaff9c7ef505c6253ull,0x5c675684d6527d92ull,32,47,36,109,58,60,107,495,505,499,
+  {342,344,346,299,301,303,305,252,254,256,258,206,208,210,212},10,11},
+ {0xc96f3fcde8141266ull,0x30fa33e11ddb71c9ull,39,62,45,131,73,75,115,787,796,791,{}}
 }};
 inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t hash,uint64_t fingerprint,uint32_t binding) {
     const Site* found=nullptr;
     for (const auto& x:Sites) if(x.hash==hash && x.fingerprint==fingerprint) found=&x;
     if(!found || spirv.size()<5)return false;
     const auto& site=*found;
-    constexpr uint32_t u32=1,f32=8,vec4=9;
+    constexpr uint32_t u32=1;
+    const auto f32=site.f32,vec4=site.vec4;
     uint32_t next=spirv[3];
     const auto id=[&]{return next++;};
     const auto emit=[](std::vector<uint32_t>& out,spv::Op op,std::initializer_list<uint32_t> args){

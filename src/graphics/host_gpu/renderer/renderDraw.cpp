@@ -3380,6 +3380,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     int ds_vertex_phase=-1;
     uint64_t ds_vertex_pair=0;
     DsDepthFullSnapshot ds_vertex_depth_before;
+    nlohmann::json ds_vertex_sources=nlohmann::json::array();
+    nlohmann::json ds_vertex_pixel=nlohmann::json::object();
     struct DsVertexPair {
         int32_t frame=-1;
         int phase=-1;
@@ -3402,8 +3404,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         const bool material=VP::Material(ds_vp->shader_hash);
         auto& pair=ds_vertex_pairs[k];
         const bool matched=ps && ps->shader_hash==(material ?
-            (k==0?0xc92deb23fc611b10ull:0xcfc1d9193e7f9e53ull) :
-            (k==0?0x3dce2bd78d58db62ull:0x895c9fe037e704f5ull));
+            0x552d823dcfcf2deeull : 0x651f53f5932d8794ull);
         const bool due=material ?
             pair.serial && !pair.material_captured && ds_gbuffer_frame>=pair.frame &&
             int64_t{ds_gbuffer_frame}-pair.frame<=1 &&
@@ -3439,6 +3440,36 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                     // separately; do not compare the pre-clear image as if
                     // it were the depth tested by the draw.
                     ds_vertex_depth_before=SnapshotDsDepthFull(m_context,state.depth_info);
+                    // Record the actual descriptors used by the dominant
+                    // position shader, not a later CPU reconstruction.
+                    const auto& bound=bindings.vertex[0];
+                    for(uint32_t slot=0;slot<bound.buffer_sources.size() && slot<bound.buffers.size();++slot){
+                        const auto& source=bound.buffer_sources[slot];
+                        const auto& native=bound.buffers[slot];
+                        nlohmann::json entry={{"slot",slot},{"address",source.address},{"bytes",source.size}};
+                        const auto word=ds_vp->bindings.memory_offset_dword+slot/4u;
+                        if(word<bound.shader_data.size() && native.buffer &&
+                           native.range!=VK_WHOLE_SIZE && source.size && source.size%4==0 &&
+                           source.size<=262144u){
+                            const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
+                            if(adjust<=native.range && source.size<=native.range-adjust){
+                                auto words=ReadDsVertexIndices(m_context,
+                                    PreparedIndexBuffer{native.buffer,native.offset+adjust,vk::IndexType::eUint32},
+                                    static_cast<uint32_t>(source.size/4));
+                                entry["gpu_words"]=std::move(words);
+                                std::vector<uint32_t> backing(source.size/4);
+                                if(LibKernel::Memory::TryReadBacking(source.address,backing.data(),source.size))
+                                    entry["backing_words"]=std::move(backing);
+                                entry["gpu_dirty"]=m_context.GetBufferCache().HasGpuDirtyBytes(source.address,source.size);
+                                entry["cpu_modified"]=m_context.GetBufferCache().IsRegionCpuModified(source.address,source.size);
+                            }
+                        }
+                        ds_vertex_sources.push_back(std::move(entry));
+                    }
+                    if(state.ps_active && state.ps_input_info.stage.resources){
+                        const auto& ps_snap=*state.ps_input_info.stage.resources;
+                        ds_vertex_pixel={{"srt",ps_snap.flattened_srt},{"user_data",ps_snap.user_data}};
+                    }
                 }
             }
         }
@@ -4025,6 +4056,26 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             const uint32_t y0=bound(std::floor(miny)-2,height),y1=bound(std::ceil(maxy)+2,height);
             depth_region={{"status","outside_or_too_large"},{"image_extent",{width,height}},
                 {"projected_bounds",{minx,miny,maxx,maxy}},{"rect",{x0,y0,x1,y1}}};
+            // The dominant surface covers the full attachment. Include
+            // a regular 16x16 comparison and exact aggregate changes even
+            // when a full-resolution rectangular dump would be too large.
+            std::vector<uint32_t> before_grid,after_grid;
+            for(uint32_t y=0;y<16;++y)for(uint32_t x=0;x<16;++x){
+                const size_t p=size_t{(2*y+1)*height/32}*width+(2*x+1)*width/32;
+                before_grid.push_back(ds_vertex_depth_before.bits[p]);
+                after_grid.push_back(depth_after.bits[p]);
+            }
+            uint64_t changed=0,filled_before=0,filled_after=0;
+            for(size_t p=0;p<depth_after.bits.size();++p){
+                changed+=depth_after.bits[p]!=ds_vertex_depth_before.bits[p];
+                filled_before+=ds_vertex_depth_before.bits[p]!=0;
+                filled_after+=depth_after.bits[p]!=0;
+            }
+            depth_region["grid_before"]=std::move(before_grid);
+            depth_region["grid_after"]=std::move(after_grid);
+            depth_region["changed_pixels"]=changed;
+            depth_region["filled_before"]=filled_before;
+            depth_region["filled_after"]=filled_after;
             if(x1>x0 && y1>y0 && uint64_t{x1-x0}*(y1-y0)<=65536){
                 std::vector<uint32_t> before,after;
                 before.reserve(size_t{x1-x0}*(y1-y0));after.reserve(before.capacity());
@@ -4067,6 +4118,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             {"stencil_reference_back",back_ref},{"depth_load_clear",state.depth_info.depth_load_clear_enable},
             {"depth_clear_value",state.depth_info.depth_clear_value},
             {"depth_region",std::move(depth_region)},
+            {"vertex_sources",std::move(ds_vertex_sources)},
+            {"pixel_resources",std::move(ds_vertex_pixel)},
             {"srt",snap.flattened_srt},{"user_data",snap.user_data},{"descriptors",std::move(descriptors)},
             {"columns",{"vertex","instance","transform","clip_x","clip_y","clip_z","clip_w","clip_distance",
                 "input_x","input_y","input_z","m00","m01","m02","m03","m10","m11","m12","m13","m20","m21","m22","m23"}},

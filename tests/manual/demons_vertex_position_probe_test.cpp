@@ -16,21 +16,21 @@ static std::vector<uint32_t> Fixture(const Site& s,uint32_t version){
     E(v,spv::OpEntryPoint,{spv::ExecutionModelVertex,s.main,0x6e69616d,0,s.store});
     E(v,spv::OpDecorate,{s.store,spv::DecorationBuiltIn,spv::BuiltInPosition});
     E(v,spv::OpTypeInt,{1,32,0});
-    E(v,spv::OpTypeFloat,{8,32});
-    E(v,spv::OpTypeVector,{9,8,4});
+    E(v,spv::OpTypeFloat,{s.f32,32});
+    E(v,spv::OpTypeVector,{s.vec4,s.f32,4});
     E(v,spv::OpTypeBool,{s.boolean});
     E(v,spv::OpTypeVoid,{s.void_type});
     E(v,spv::OpTypePointer,{s.ptr,spv::StorageClassStorageBuffer,1});
-    E(v,spv::OpTypePointer,{outptr,spv::StorageClassOutput,9});
+    E(v,spv::OpTypePointer,{outptr,spv::StorageClassOutput,s.vec4});
     E(v,spv::OpTypeFunction,{functype,s.void_type});
-    E(v,spv::OpConstant,{8,one,0x3f800000});
-    E(v,spv::OpConstant,{8,zero,0});
+    E(v,spv::OpConstant,{s.f32,one,0x3f800000});
+    E(v,spv::OpConstant,{s.f32,zero,0});
     E(v,spv::OpConstant,{1,s.vertex,0});
     E(v,spv::OpConstant,{1,s.instance,0});
     if(s.transform)E(v,spv::OpConstant,{1,s.transform,0});
-    E(v,spv::OpConstant,{8,s.clip,0});
+    E(v,spv::OpConstant,{s.f32,s.clip,0});
     for(auto i:s.inputs)if(i)E(v,spv::OpConstant,{1,i,0});
-    E(v,spv::OpConstantComposite,{9,s.position,zero,zero,zero,one});
+    E(v,spv::OpConstantComposite,{s.vec4,s.position,zero,zero,zero,one});
     E(v,spv::OpVariable,{outptr,s.store,spv::StorageClassOutput});
     E(v,spv::OpFunction,{s.void_type,s.main,0,functype});
     E(v,spv::OpLabel,{label});
@@ -64,5 +64,5 @@ int main(int argc,char** argv){
             Save(std::string(argv[1])+std::to_string(k)+"-"+std::to_string(version)+".spv",v);
         }
     }
-    std::cout<<"Vertex position recorder: all eight site maps and SPIR-V versions assembled\n";
+    std::cout<<"Vertex position recorder: all eleven site maps and SPIR-V versions assembled\n";
 }
