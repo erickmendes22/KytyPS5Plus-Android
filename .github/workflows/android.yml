@@ -343,7 +343,9 @@ jobs:
           fi
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_count_exec_probe_test.cpp -o /tmp/ds-count-probe
           /tmp/ds-count-probe /tmp/ds-count-
-          for f in /tmp/ds-count-*.spv; do
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_vertex_position_probe_test.cpp -o /tmp/ds-vertex-probe
+          /tmp/ds-vertex-probe /tmp/ds-vertex-
+          for f in /tmp/ds-count-*.spv /tmp/ds-vertex-*.spv; do
             echo "Validating $f"
             spirv-val --target-env vulkan1.3 "$f"
           done

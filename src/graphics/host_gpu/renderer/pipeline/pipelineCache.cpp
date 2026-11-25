@@ -4,6 +4,7 @@
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsCountExecProbe.h"
+#include "graphics/host_gpu/renderer/pipeline/demonsVertexPositionProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsMaterialCoverage.h"
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
@@ -614,6 +615,24 @@ struct PipelineCache::ProgramCache {
 			    "[DS_LIGHT_MATH_VARIANT] shader=0x{:016x} binary=0x{:016x} instrumented={}\n",
 			    options.shader_hash, fingerprint, program.ds_light_math_variant != 0));
 		}
+		if (DemonsVertexPositionProbe::Watched(options.shader_hash) && trace && std::strcmp(trace,"1")==0) {
+            constexpr auto kind=ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
+            constexpr auto slot=static_cast<size_t>(kind);
+            const auto fp=XXH3_64bits(result.spirv.data(),result.spirv.size()*sizeof(uint32_t));
+            auto copy=result.spirv;
+            const bool assembled=!program.bindings.descriptor_counts[slot] &&
+                DemonsVertexPositionProbe::Instrument(copy,options.shader_hash,fp,
+                    ShaderRecompiler::IR::NativeBinding(program.stage,kind));
+            const bool valid=assembled && ValidateShaderSpirv(options.dump_label,options.shader_hash,copy,options.maintenance8_enabled,true);
+            Log::WriteToConsoleAndLog(fmt::format("[DS_VERTEX_POSITION_STATUS] shader={:016x} binary={:016x} assembled={} validated={}\n",
+                options.shader_hash,fp,assembled,valid));
+            if(valid){
+                result.spirv=std::move(copy);
+                program.bindings.descriptor_counts[slot]=1;
+                program.bindings.descriptor_mask|=uint64_t{1}<<slot;
+                program.ds_light_math_variant=fp;
+            }
+        }
 		DumpShaderSpirv(stage_name, options.shader_hash, result.spirv);
 
 		vk::ShaderModule module = nullptr;

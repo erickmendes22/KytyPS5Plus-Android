@@ -452,6 +452,7 @@ private:
 	                          const std::array<uint32_t, 3>& groups = {}, bool groups_valid = false);
 	std::array<std::unique_ptr<Buffer>, 2> m_ds_light_math_buffers;
 	std::array<std::unique_ptr<Buffer>, 2> m_ds_count_exec_buffers;
+	std::array<std::unique_ptr<Buffer>, 2> m_ds_vertex_position_buffers;
 	struct DsAtlasWriter {
 		uint64_t shader = 0, address = 0, size = 0, owner = 0, version = 0;
 		int frame = 0;

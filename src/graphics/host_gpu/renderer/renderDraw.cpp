@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
+#include "graphics/host_gpu/renderer/pipeline/demonsVertexPositionProbe.h"
 #include "graphics/host_gpu/renderer/renderDraw.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 #include "graphics/host_gpu/renderer/demonsAdaptiveCapture.h"
@@ -2383,6 +2384,39 @@ static PreparedIndexBuffer PrepareIndexBuffer(CommandBuffer&               buffe
 	return prepared;
 }
 
+// Read exactly the GPU index data that the original indexed draw consumes.
+static std::vector<uint32_t> ReadDsVertexIndices(RenderContext& context,const PreparedIndexBuffer& source,uint32_t count) {
+    if(!source.buffer || !count || count>32768) return {};
+    const uint32_t width=source.type==vk::IndexType::eUint16?2u:4u;
+    const size_t bytes=size_t{count}*width;
+    auto& scheduler=context.GetCommandScheduler();
+    auto& download=context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+    auto [mapped,dest]=download.Map(bytes,16u,true);
+    if(!mapped)return {};
+    download.Commit();
+    scheduler.EndRendering(PassEnd::Buffer);
+    const auto command=scheduler.Current().Handle();
+    vk::MemoryBarrier before{};
+    before.srcAccessMask=vk::AccessFlagBits::eMemoryWrite;
+    before.dstAccessMask=vk::AccessFlagBits::eTransferRead;
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,
+        {},1,&before,0,nullptr,0,nullptr);
+    const vk::BufferCopy copy{source.offset,dest,bytes};
+    command.copyBuffer(source.buffer,download.Handle(),1,&copy);
+    vk::MemoryBarrier after{};
+    after.srcAccessMask=vk::AccessFlagBits::eTransferWrite;
+    after.dstAccessMask=vk::AccessFlagBits::eHostRead;
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eHost,
+        {},1,&after,0,nullptr,0,nullptr);
+    scheduler.Finish();
+    download.Invalidate(dest,bytes);
+    std::vector<uint32_t> result(count);
+    for(uint32_t i=0;i<count;++i){
+        std::memcpy(&result[i],static_cast<const uint8_t*>(mapped)+size_t{i}*width,width);
+    }
+    return result;
+}
+
 static void CommitVertexBuffers(vk::CommandBuffer            vk_buffer,
                                 const PreparedVertexBuffers& prepared) {
 	for (uint32_t i = 0; i < prepared.count; i++) {
@@ -3340,6 +3374,53 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// Everything that may still end the open render pass (compute dispatch, image layout
 	// transitions, barriers) is recorded on the primary buffer first; the pass commands then go
 	// to the pass's secondary buffer and nothing in between may end the pass.
+    namespace VP=DemonsVertexPositionProbe;
+    std::vector<uint32_t> ds_vertex_indices;
+    uint32_t ds_vertex_base=0,ds_vertex_count=0;
+    int ds_vertex_phase=-1;
+    const auto* ds_vp=state.vertex_info[0].stage.program;
+    if(ds_vp && VP::Watched(ds_vp->shader_hash) && ds_vp->ds_light_math_variant){
+        const auto& gate=DemonsAdaptiveCapture::Current();
+        const auto* ps=state.ps_active?state.ps_input_info.stage.program:nullptr;
+        const int phase=gate.PostTransitionDarkDue(ds_gbuffer_frame)?3:
+            gate.DarkOnsetDue(ds_gbuffer_frame)?2:gate.BrightSceneActive(ds_gbuffer_frame)?1:0;
+        static std::array<std::array<int32_t,4>,2> last{{{{-1,-1,-1,-1}},{{-1,-1,-1,-1}}}};
+        static std::array<std::array<uint32_t,4>,2> counts{};
+        const uint32_t k=ds_vp->shader_hash==0x34c51585c926a664ull?0u:1u;
+        const bool matched=ps && ps->shader_hash==(k==0?0x3dce2bd78d58db62ull:0x895c9fe037e704f5ull);
+        if(matched && vertex_stages.size()==1 && !mesh_active && !mesh_emulated && !indirect &&
+            draw.IsIndexed() && draw.instance_count==1 && !primitive_restart_enable &&
+            topology==vk::PrimitiveTopology::eTriangleList && index_source.guest_element_size>=2 &&
+            state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress &&
+            counts[k][phase]<(phase==3?2u:1u) &&
+            (last[k][phase]<0 || ds_gbuffer_frame-last[k][phase]>=24)){
+            ds_vertex_indices=ReadDsVertexIndices(m_context,index_binding,draw.index_count);
+            if(!ds_vertex_indices.empty()){
+                const auto [lo,hi]=std::minmax_element(ds_vertex_indices.begin(),ds_vertex_indices.end());
+                const int64_t base=int64_t{*lo}+emit.vertex_offset, end=int64_t{*hi}+emit.vertex_offset;
+                if(base>=0 && end<=UINT32_MAX && end-base<VP::MaxVertices){
+                    ds_vertex_base=static_cast<uint32_t>(base);
+                    ds_vertex_count=static_cast<uint32_t>(end-base+1);
+                    ds_vertex_phase=phase;
+                    last[k][phase]=ds_gbuffer_frame;
+                    ++counts[k][phase];
+                }
+            }
+        }
+        const bool capture=ds_vertex_phase>=0;
+        auto& storage=m_ds_vertex_position_buffers[capture];
+        const bool init=!storage;
+        const auto bytes=(capture?VP::WordCount:VP::Header)*sizeof(uint32_t);
+        if(init)storage=std::make_unique<Buffer>(m_context.GetGraphics(),m_context.GetCommandScheduler(),
+            MemoryUsage::Download,0,vk::BufferUsageFlagBits::eStorageBuffer,bytes);
+        if(init||capture){
+            std::vector<uint32_t> words(capture?VP::WordCount:VP::Header);
+            words[0]=capture?1u:0u;words[1]=ds_vertex_base;words[2]=ds_vertex_count;
+            std::memcpy(storage->Mapped().data(),words.data(),bytes);
+            storage->Flush(0,bytes);
+        }
+        bindings.vertex[0].shared_memory=vk::DescriptorBufferInfo{storage->Handle(),0,bytes};
+    }
 	IndirectDrawFixup::Records indirect_records;
 	if (indirect != nullptr && !mesh_active) {
 		const auto* vertex_program = state.vertex_info[0].stage.program;
@@ -3838,6 +3919,55 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		                     mesh_emulated ? uint64_t {emulated_mesh.index_count}
 		                                   : uint64_t {draw.index_count} * draw.instance_count);
 	}
+    if(ds_vertex_phase>=0){
+        auto& scheduler=m_context.GetCommandScheduler();
+        scheduler.EndRendering(PassEnd::Buffer);
+        vk::MemoryBarrier host{};
+        host.srcAccessMask=vk::AccessFlagBits::eShaderWrite;
+        host.dstAccessMask=vk::AccessFlagBits::eHostRead;
+        scheduler.Current().Handle().pipelineBarrier(vk::PipelineStageFlagBits::eVertexShader,
+            vk::PipelineStageFlagBits::eHost,{},1,&host,0,nullptr,0,nullptr);
+        scheduler.Finish();
+        auto& storage=m_ds_vertex_position_buffers[1];
+        const auto words=VP::Header+size_t{ds_vertex_count}*VP::Stride;
+        storage->Invalidate(0,words*sizeof(uint32_t));
+        std::vector<uint32_t> values(words);
+        std::memcpy(values.data(),storage->Mapped().data(),words*sizeof(uint32_t));
+        nlohmann::json rows=nlohmann::json::array();
+        uint32_t missing=0;
+        std::vector<uint32_t> unique=ds_vertex_indices;
+        std::sort(unique.begin(),unique.end());
+        unique.erase(std::unique(unique.begin(),unique.end()),unique.end());
+        for(auto raw:unique){
+            const auto idx=static_cast<uint32_t>(int64_t{raw}+emit.vertex_offset);
+            const auto p=VP::Header+size_t{idx-ds_vertex_base}*VP::Stride;
+            if(!values[p]){++missing;continue;}
+            nlohmann::json row=nlohmann::json::array();
+            row.push_back(idx);
+            for(uint32_t j=1;j<VP::Stride;++j)row.push_back(values[p+j]);
+            rows.push_back(std::move(row));
+        }
+        const auto& snap=*state.vertex_info[0].stage.resources;
+        auto descriptors=nlohmann::json::array();
+        for(const auto& desc:snap.buffers)descriptors.push_back(desc.dwords);
+        const auto folder=Config::GetShaderDumpFolder()/"queue-state";
+        std::error_code ec;std::filesystem::create_directories(folder,ec);
+        const auto name=fmt::format("ds_vertex_position_{:016x}_f{}_s{}_p{}.json",
+            ds_vp->shader_hash,ds_gbuffer_frame,submit_id,ds_vertex_phase);
+        std::ofstream file(folder/name,std::ios::trunc);
+        if(file)file<<nlohmann::json{{"frame",ds_gbuffer_frame},{"submit",submit_id},
+            {"phase",ds_vertex_phase},{"shader",fmt::format("{:016x}",ds_vp->shader_hash)},
+            {"fingerprint",fmt::format("{:016x}",ds_vp->ds_light_math_variant)},
+            {"index_guest",index_source.address},{"base_vertex",emit.vertex_offset},
+            {"first_instance",emit.first_instance},{"indices",ds_vertex_indices},{"missing",missing},
+            {"srt",snap.flattened_srt},{"user_data",snap.user_data},{"descriptors",std::move(descriptors)},
+            {"columns",{"vertex","instance","transform","clip_x","clip_y","clip_z","clip_w","clip_distance",
+                "input_x","input_y","input_z","m00","m01","m02","m03","m10","m11","m12","m13","m20","m21","m22","m23"}},
+            {"rows",std::move(rows)}};
+        file.close();
+        Log::WriteToConsoleAndLog(fmt::format("[DS_VERTEX_POSITION] frame={} shader={:016x} vertices={} missing={} file={} saved={}\n",
+            ds_gbuffer_frame,ds_vp->shader_hash,unique.size(),missing,name,file.good()));
+    }
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x600u);
 	}

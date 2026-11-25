@@ -263,6 +263,7 @@ object Diagnostics {
                             (subdir == "guest-shaders" ||
                                 (subdir == "queue-state" &&
                                     (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+(_t[0-9]+)?\\.json")) ||
+                                     file.name.matches(Regex("ds_vertex_position_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_coverage_f[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_dominant_material_f[0-9]+_s[0-9]+\\.json")) ||
@@ -304,7 +305,8 @@ object Diagnostics {
                     val geometry = newest.filter { it.name.startsWith("ds_geometry_writer_") }
                     val countTraces = newest.filter { it.name.startsWith("ds_count_producer_") }
                     val upstreamCounts = countTraces.filter { it.name.contains("cb3b9c1ea64fe876") }.take(20)
-                    val producer = countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
+                    val producer = newest.filter { it.name.startsWith("ds_vertex_position_") }.take(12) +
+                        countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
                         geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +
                         geometry.filterNot { it.name.contains("f0c140ea8df8f532") }.take(20) +
