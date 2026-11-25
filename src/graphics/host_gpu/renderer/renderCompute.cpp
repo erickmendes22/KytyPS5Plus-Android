@@ -2925,7 +2925,12 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 	static uint32_t reports = 0;
 	const bool followup = !late && capture_gate.FollowupDue(frame);
 	const bool due = capture_gate.Due(frame, onset, late) || followup;
-	if (!valid_dispatch || !DemonsPcDppPolicy::CaptureActive(ds_ray_producer_activity.valid, due)) return;
+	// 231552: the consumed dark probes were not in the previous fixed list.
+	// Scan bounded active maps even after the initial generic capture budget.
+	static uint32_t targeted_reports = 0;
+	const bool ordinary = DemonsPcDppPolicy::CaptureActive(ds_ray_producer_activity.valid, due);
+	if (!valid_dispatch || (!ordinary &&
+	    (ds_ray_producer_activity.valid > 128 || targeted_reports >= 20))) return;
 	const auto note = [&](const char* status, uint32_t slot, uint64_t address) {
 		if (reports++ >= 32) return;
 		Log::WriteToConsoleAndLog(fmt::format(
@@ -2940,9 +2945,13 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		return;
 	}
 	constexpr uint64_t expected_bytes = 188743680ull;
-	std::vector<uint32_t> probes(ds_ray_producer_targets.probes.begin(),
-	                             ds_ray_producer_targets.probes.end());
-	probes[0] = 4445u;
+	// Exact atlas IDs from DS_LIGHT_TERM at frames 481/721/961 in 231552.
+	constexpr std::array<uint32_t,3> consumed {4701u,24540u,23322u};
+	std::vector<uint32_t> probes(consumed.begin(), consumed.end());
+	probes.push_back(4445u); // historical control
+	for (auto p : ds_ray_producer_targets.probes)
+		if (std::find(probes.begin(), probes.end(), p) == probes.end()) probes.push_back(p);
+	bool targeted = false;
 	// The captured guest/SPIR-V is a scatter copy, not a ray tracer.
 	// Read its actual source row index and payload, not an unrelated output
 	// probe that the current dispatch may never touch.
@@ -2992,6 +3001,8 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 					if (id != NoRow && std::find(probes.begin(), probes.end(), id) == probes.end())
 						probes.push_back(id);
 				}
+				for (auto p : consumed)
+					targeted |= Find(map, map_base, active_rows, p).matches != 0;
 				source_report["map_words"] = map;
 				source_report["flagged_rows"] = flagged;
 				source_report["valid_destination_rows"] = destinations;
@@ -2999,6 +3010,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			}
 		}
 	}
+	if (!ordinary && !targeted) return;
 	constexpr uint64_t words_per_probe = 256ull * 2ull;
 	constexpr uint64_t bytes_per_probe = words_per_probe * sizeof(uint32_t);
 	for (const auto& resource: program.info.buffers) {
@@ -3090,6 +3102,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 					    {"submit", writer->submit}, {"address", writer->address}, {"bytes", writer->size},
 					    {"fill", writer->fill}};
 					entry["source_gpu_dirty"] = context.GetBufferCache().HasGpuDirtyBytes(addr, bytes_per_probe);
+					entry["source_cpu_modified"] = context.GetBufferCache().IsRegionCpuModified(addr, bytes_per_probe);
 					std::array<uint32_t, words_per_probe> backing {};
 					if (LibKernel::Memory::TryReadBacking(addr, backing.data(), bytes_per_probe)) {
 						uint32_t different = 0, colored = 0;
@@ -3099,6 +3112,15 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 						}
 						entry["backing_different_pairs"] = different;
 						entry["backing_colored"] = colored;
+						entry["source_backing_words"] = backing;
+						if (entry.contains("source_words")) {
+							uint32_t differences = 0;
+							const auto& gpu = entry["source_words"];
+							for (size_t j = 0; j < words_per_probe; j += 2)
+								differences += gpu[j].get<uint32_t>() != backing[j] ||
+								               gpu[j+1].get<uint32_t>() != backing[j+1];
+							entry["source_vs_backing_different_pairs"] = differences;
+						}
 					}
 				}
 			}
@@ -3111,8 +3133,8 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			note("create_directory_failed", slot, source.address);
 			return;
 		}
-		const auto name = fmt::format("ds_ray_producer_f{}_s{}_t{}.json", frame, submit,
-		                             context.GetCommandScheduler().CurrentTick());
+		const auto name = fmt::format("ds_ray_producer_f{}_s{}_t{}{}.json", frame, submit,
+		                             context.GetCommandScheduler().CurrentTick(), targeted ? "_target" : "");
 		nlohmann::json output {{"frame", frame}, {"submit", submit},
 		    {"shader", "684e797dce67bb8e"},
 		    {"groups", groups}, {"bvh", program.info.bvh},
@@ -3125,6 +3147,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		    {"selected_from_consumer_frame", ds_ray_producer_targets.consumer_frame},
 		    {"producer_tick", context.GetCommandScheduler().CurrentTick()},
 		    {"producer_dispatches_seen", ds_ray_producer_activity.valid},
+		    {"consumed_probe_ids", consumed}, {"targeted_map_match", targeted},
 		    {"entries", std::move(entries)}};
 		// Save exact live shader inputs on each bounded active producer dispatch.
 		output["copy_source"] = std::move(source_report);
@@ -3147,6 +3170,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			note("write_failed", slot, source.address);
 			return;
 		}
+		if (targeted) ++targeted_reports;
 		if (followup) capture_gate.NoteFollowup(frame);
 		else capture_gate.NoteCaptured(frame, onset, late);
 		note(late ? "captured_post_transition" :

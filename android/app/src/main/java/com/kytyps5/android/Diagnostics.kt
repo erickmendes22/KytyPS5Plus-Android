@@ -262,7 +262,7 @@ object Diagnostics {
                                 launchTime == 0L || file.lastModified() >= launchTime) &&
                             (subdir == "guest-shaders" ||
                                 (subdir == "queue-state" &&
-                                    (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+(_t[0-9]+)?\\.json")) ||
+                                    (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+(_t[0-9]+)?(_target)?\\.json")) ||
                                      file.name.matches(Regex("ds_vertex_position_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_coverage_f[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
@@ -305,7 +305,11 @@ object Diagnostics {
                     val geometry = newest.filter { it.name.startsWith("ds_geometry_writer_") }
                     val countTraces = newest.filter { it.name.startsWith("ds_count_producer_") }
                     val upstreamCounts = countTraces.filter { it.name.contains("cb3b9c1ea64fe876") }.take(20)
-                    val producer = newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24) +
+                    val rayTargets = newest.filter { it.name.startsWith("ds_ray_producer_f") && it.name.endsWith("_target.json") }
+                    // Retain both the first and last matched updates of the actually consumed probes.
+                    val prioritizedRays = (rayTargets.takeLast(10) + rayTargets.take(20)).distinct()
+                    val producer = prioritizedRays +
+                        newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24) +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
                         geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +
@@ -313,7 +317,7 @@ object Diagnostics {
                         newest.filter { it.name.startsWith("ds_dominant_material_f") }.take(2) +
                         newest.filter { it.name.startsWith("ds_geometry_coverage_f") }.take(1) +
                         newest.filter { it.name.startsWith("ds_depth_prepass_f") }.take(4) +
-                        newest.filter { it.name.startsWith("ds_ray_producer_f") }.take(16) +
+                        newest.filter { it.name.startsWith("ds_ray_producer_f") && !it.name.endsWith("_target.json") }.take(16) +
                         newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
                         .take(18) +
                         newest.filter { it.name.startsWith("cs_bcbcc6ba1e68c974_ray_hits_") }.take(18) +
