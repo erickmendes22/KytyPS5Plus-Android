@@ -353,6 +353,8 @@ jobs:
           /tmp/ds-pc-render-parity
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_ray_source_history_test.cpp -o /tmp/ds-ray-source-history
           /tmp/ds-ray-source-history
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_guest_write_history_test.cpp -o /tmp/ds-guest-write-history
+          /tmp/ds-guest-write-history
           for f in /tmp/ds-count-*.spv /tmp/ds-vertex-*.spv /tmp/ds-relight-*.spv; do
             echo "Validating $f"
             spirv-val --target-env vulkan1.3 "$f"

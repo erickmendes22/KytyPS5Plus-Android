@@ -3,6 +3,7 @@
 #include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
 #include "graphics/host_gpu/renderer/demonsRaySourceHistory.h"
 #include "kernel/demonsFileReadHistory.h"
+#include "cpu/demonsGuestWriteHistory.h"
 #include "graphics/host_gpu/renderer/demonsAtlasTileHistory.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
@@ -1439,6 +1440,7 @@ static DemonsRaySourceHistory::History ds_ray_source_history;
 struct DsRaySourceDispatch {
     uint32_t id=0;
     std::vector<LibKernel::DemonsFileReadHistory::Event> file_reads;
+    Cpu::DemonsGuestWriteHistory::Result write_faults;
 };
 static std::array<DsRaySourceDispatch,128> ds_ray_source_dispatches;
 
@@ -1473,6 +1475,7 @@ static void RememberDsRaySourceRows(RenderContext& context,const PreparedBinding
     auto& provenance=ds_ray_source_dispatches[dispatch-1];
     provenance.id=dispatch;
     provenance.file_reads=LibKernel::DemonsFileReadHistory::Overlap(input.address+begin,end-begin);
+    provenance.write_faults=Cpu::DemonsGuestWriteHistory::Overlap(input.address+begin,end-begin);
     history.Begin(output.address);
     std::vector<uint32_t> occurrence(H::ProbeCount);
     for(uint32_t row=base;row<base+count;++row){
@@ -1566,6 +1569,22 @@ static nlohmann::json DsRaySourceAtConsumer(uint64_t owner,uint32_t probe,const 
     // An overlapping file read is only a candidate; it may have been followed
     // by a guest memcpy/decompression or another write before GPU upload.
     result["file_read_candidates"]=std::move(reads);
+    auto faults=nlohmann::json::array();
+    if(row->dispatch&&row->dispatch<=ds_ray_source_dispatches.size()){
+        const auto& p=ds_ray_source_dispatches[row->dispatch-1];
+        const auto addr=Kernel::AddressFold::Fold(row->source_guest);
+        if(p.id==row->dispatch){
+            result["write_fault_candidates_truncated"]=p.write_faults.truncated;
+            for(const auto& e:p.write_faults.events){
+                const auto window=e.address&~(Cpu::DemonsGuestWriteHistory::Window-1);
+                if(window>=addr+H::BytesPerProbe||window+Cpu::DemonsGuestWriteHistory::Window<=addr)continue;
+                faults.push_back({{"event",e.id},{"fault_address",e.address},{"guest_rip",e.rip},
+                    {"rsi",e.rsi},{"rdi",e.rdi},{"rcx",e.rcx},{"inside_row",e.address>=addr&&e.address<addr+H::BytesPerProbe}});
+                if(faults.size()==16)break;
+            }
+        }
+    }
+    result["guest_write_fault_candidates"]=std::move(faults);
     return result;
 }
 
@@ -1595,11 +1614,59 @@ static std::array<uint32_t,2> ds_relight_trace_targets{UINT32_MAX,UINT32_MAX};
 static nlohmann::json ReadDsMaskProbeRecords(RenderContext& context,
     const PreparedBindings& bindings, uint32_t slot, std::span<const uint32_t> indices, uint32_t stride);
 
+// Guest relight 0xbcbcc6ba1e68c974 at pc 0x1890 loads s[28:35]
+// from the second user-data pointer +0x10; pc 0x1898 loads a
+// 96-byte V# at +0xb0. s28/s29 are the loop counts, s32/s33
+// the first record indices. Only these four surviving SGPRs are
+// flattened into slots 170..173 in the validated 125653 layout.
+static nlohmann::json CaptureDsRelightLocalLights(RenderContext& context,const PreparedBindings& bindings){
+    const auto& p=*bindings.runtime->program;
+    const auto& s=*bindings.runtime->resources;
+    if(s.flattened_srt.size()!=174||s.buffers.size()!=9||p.info.buffers.size()!=9)
+        return {{"status","different_srt_layout"}};
+    const auto& flat=s.flattened_srt;
+    const uint64_t base=uint64_t{flat[2]}|(uint64_t{flat[3]}<<32u);
+    const std::array<uint32_t,2> counts{flat[170],flat[171]},first{flat[172],flat[173]};
+    nlohmann::json result={{"status","captured_control"},{"guest_table",base},{"count",counts},{"first_record",first}};
+    if(base&&base<=UINT64_MAX-0xc0){
+        std::array<uint32_t,8> control{};std::array<uint32_t,4> descriptor{};
+        if(LibKernel::Memory::TryReadBacking(base+0x10,control.data(),sizeof(control))){
+            result["guest_control_words"]=control;
+            result["control_matches_flat"]=control[0]==counts[0]&&control[1]==counts[1]&&control[4]==first[0]&&control[5]==first[1];
+        }
+        if(LibKernel::Memory::TryReadBacking(base+0xb0,descriptor.data(),sizeof(descriptor))){
+            result["guest_descriptor_words"]=descriptor;
+            result["descriptor_matches_flat"]=std::equal(descriptor.begin(),descriptor.end(),flat.begin()+116);
+        }
+    }
+    const auto& words=s.buffers[8].dwords;
+    result["materialized_descriptor"]=words;
+    const auto desc=DecodeNativeDescriptor<ShaderBufferResource>(s.buffers[8]);
+    if(!desc.Base48()){result["status"]="null_descriptor";return result;}
+    if(!std::equal(words.begin(),words.begin()+4,flat.begin()+116)||desc.Stride()!=96||desc.NumRecords()>4096||
+        p.info.buffers[8].written){result["status"]="unexpected_local_light_descriptor";return result;}
+    const auto slot=p.info.buffers[8].descriptor_index;
+    result["native_slot"]=slot;result["guest_records"]=desc.Base48();result["record_count"]=desc.NumRecords();
+    auto loops=nlohmann::json::array();
+    for(uint32_t k=0;k<2;++k){
+        nlohmann::json loop={{"count",counts[k]},{"first",first[k]}};
+        if(counts[k]<=256&&first[k]<=desc.NumRecords()&&counts[k]<=desc.NumRecords()-first[k]){
+            std::vector<uint32_t> indices(counts[k]);
+            for(uint32_t i=0;i<counts[k];++i)indices[i]=first[k]+i;
+            loop["words"]=indices.empty()?nlohmann::json::array():ReadDsMaskProbeRecords(context,bindings,slot,indices,96);
+        }else loop["status"]="range_unproved";
+        loops.push_back(std::move(loop));
+    }
+    result["loops"]=std::move(loops);result["status"]="captured";
+    return result;
+}
+
 struct DsRelightSelection {
     std::array<uint32_t,3> header{0,UINT32_MAX,UINT32_MAX};
     std::array<uint32_t,2> probes{UINT32_MAX,UINT32_MAX};
     std::array<uint32_t,3> groups{};
     uint32_t phase=0;
+    nlohmann::json local_lights;
 };
 static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const PreparedBindings& bindings,
     std::array<uint32_t,3> groups,vk::Buffer indirect={},uint64_t offset=0){
@@ -1644,6 +1711,7 @@ static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const Prep
     result.header={1,first,second==first?UINT32_MAX:second};
     result.probes={ids[first],second==first?UINT32_MAX:ids[second]};
     result.groups=groups;result.phase=phase;last[phase]=frame;++count[phase];
+    result.local_lights=CaptureDsRelightLocalLights(context,bindings);
     ds_relight_trace_targets=result.probes;
     return result;
 }
@@ -1958,6 +2026,7 @@ static void SaveDsRelightTrace(RenderContext& context,const PreparedBindings& bi
         const auto row=rays.is_array()&&i<rays.size()?rays[i]:nlohmann::json{};
         report["ray_source_history"].push_back(DsRaySourceAtConsumer(bindings.buffer_sources[ray_slot].address,probes[i],row));
     }
+    report["local_lights_before_dispatch"]=sel.local_lights;
     report["site12_atlas_footprints"]=ReadDsRelightAtlasFootprints(context,bindings,words);
     std::ofstream json(folder/(stem+".json"),std::ios::trunc);json<<report;json.close();
     Log::WriteToConsoleAndLog(fmt::format("[DS_RELIGHT_TRACE] frame={} submit={} raw={} exported={} file={} saved={}\n",

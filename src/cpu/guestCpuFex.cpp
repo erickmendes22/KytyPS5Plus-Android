@@ -2,6 +2,7 @@
 // minus the ELF loader, so it runs without a RootFS: guest code here is raw x86-64 bytes.
 
 #include "cpu/guestCpuFex.h"
+#include "cpu/demonsGuestWriteHistory.h"
 #include "cpu/guestTscPolicy.h"
 #include "cpu/fexDecodeDiagnostics.h"
 #include "cpu/hleThreadDiagnostics.h"
@@ -115,7 +116,13 @@ bool HostSigsegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/, vo
 	const auto* si       = static_cast<const siginfo_t*>(info);
 	const bool  is_write = Common::HostException::IsWriteFault(ucontext);
 	Common::HostException::RecordFaultRegisters(ucontext);
-	return handler(reinterpret_cast<uintptr_t>(si->si_addr), is_write);
+	const bool trace=is_write&&Cpu::DemonsGuestWriteHistory::Enabled();
+	GuestRegisters regs{};
+	const bool exact=trace&&CaptureFaultingGuestRegisters(ucontext,&regs);
+	const auto address=reinterpret_cast<uintptr_t>(si->si_addr);
+	const bool handled=handler(address,is_write);
+	if(handled&&exact)Cpu::DemonsGuestWriteHistory::Record(address,regs.rip,regs.gpr[GuestRegisters::kRsi],regs.gpr[GuestRegisters::kRdi],regs.gpr[GuestRegisters::kRcx]);
+	return handled;
 }
 
 void FexMsgHandler(LogMan::DebugLevels /*level*/, const char* message) {
@@ -528,6 +535,7 @@ bool CaptureFaultingGuestRegisters(void* host_signal_context, GuestRegisters* ou
 }
 
 void RegisterHostFaultHandler(HostFaultHandler handler) {
+	Cpu::DemonsGuestWriteHistory::Init();
 	if (!Init()) {
 		Die("RegisterHostFaultHandler before translator init");
 	}
