@@ -356,6 +356,10 @@ bool ValidateShaderSpirv(const char* label, uint64_t shader_hash,
 	                             static_cast<uint32_t>(SPV_BINARY_TO_TEXT_OPTION_COMMENT) |
 	                             static_cast<uint32_t>(SPV_BINARY_TO_TEXT_OPTION_INDENT) |
 	                             static_cast<uint32_t>(SPV_BINARY_TO_TEXT_OPTION_COLOR));
+	if (force && shader_hash == DemonsCountExecProbe::Shader) {
+		Log::WriteToConsoleAndLog(fmt::format("[DS_COUNT_EXEC_VALIDATION_FAILED] shader=0x{:016x} {}\n",
+		    shader_hash, messages.substr(0, 4096)));
+	}
 	LOGF_COLOR(Log::Color::BrightRed, "%s SPIR-V validation failed hash=0x%016" PRIx64 ":\n%s",
 	           label, shader_hash, messages.c_str());
 	LOGF("%s\n", text.c_str());
@@ -587,12 +591,20 @@ struct PipelineCache::ProgramCache {
 			const auto fingerprint = XXH3_64bits(result.spirv.data(), result.spirv.size() * sizeof(uint32_t));
 			auto copy = result.spirv;
 			const auto binding = ShaderRecompiler::IR::NativeBinding(program.stage, kind);
-			if (!program.bindings.descriptor_counts[slot] &&
+			const bool free_slot = !program.bindings.descriptor_counts[slot];
+			const bool assembled = free_slot &&
 			    (options.shader_hash == DemonsCountExecProbe::Shader ?
 			     DemonsCountExecProbe::Instrument(copy, fingerprint, binding) :
-			     DemonsLightMathProbe::Instrument(copy, fingerprint, binding)) &&
+			     DemonsLightMathProbe::Instrument(copy, fingerprint, binding));
+			const bool validated = assembled &&
 			    ValidateShaderSpirv(options.dump_label, options.shader_hash, copy,
-			                        options.maintenance8_enabled, true)) {
+			                        options.maintenance8_enabled, true);
+			if (options.shader_hash == DemonsCountExecProbe::Shader) {
+				Log::WriteToConsoleAndLog(fmt::format(
+				    "[DS_COUNT_EXEC_STATUS] binary=0x{:016x} version=0x{:08x} free_slot={} assembled={} validated={}\n",
+				    fingerprint, result.spirv[1], free_slot, assembled, validated));
+			}
+			if (validated) {
 				result.spirv = std::move(copy);
 				program.bindings.descriptor_counts[slot] = 1;
 				program.bindings.descriptor_mask |= uint64_t{1} << slot;

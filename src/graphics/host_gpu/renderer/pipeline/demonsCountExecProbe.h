@@ -108,9 +108,18 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fingerprint,uint32_
         }
         if(op==spv::OpEntryPoint){
             if(entry)return false;
-            result.push_back(spirv[i]+(1u<<16));
-            result.insert(result.end(),spirv.begin()+i+1,spirv.begin()+i+n);
-            result.push_back(buffer);entry=true;
+            // SPIR-V <=1.3 permits only Input/Output variables in the
+            // entry-point interface. >=1.4 requires all used globals.
+            // 214450 exported version 0x00010300, so listing the new
+            // StorageBuffer here made the diagnostic invalid.
+            if (spirv[1]>=0x00010400u) {
+                result.push_back(spirv[i]+(1u<<16));
+                result.insert(result.end(),spirv.begin()+i+1,spirv.begin()+i+n);
+                result.push_back(buffer);
+            } else {
+                result.insert(result.end(),spirv.begin()+i,spirv.begin()+i+n);
+            }
+            entry=true;
         }else result.insert(result.end(),spirv.begin()+i,spirv.begin()+i+n);
         if(main && n>=3){
             const auto type=spirv[i+1],value=spirv[i+2];
