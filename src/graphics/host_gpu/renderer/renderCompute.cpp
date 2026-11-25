@@ -1648,15 +1648,29 @@ static nlohmann::json DsDescriptor224(RenderContext& context,const PreparedBindi
     const auto decoded=DecodeNativeDescriptor<ShaderBufferResource>(d);
     if(decoded.Base48()&&(decoded.Stride()!=384||decoded.NumRecords()!=224))
         return {{"status","unexpected_descriptor"}};
-    const uint64_t root=T::Pointer(flat[0],flat[1]),address=T::Descriptor224Address(root);
+    // Guest 0x0c loads s[16:23] from user data; 0xa4 loads the V# at s[16:17]+0xc30.
+    // The flattened pointer is at 2:3, not 0:1 (all eight captured root-table reads agree).
+    const uint64_t root=T::Pointer(flat[2],flat[3]),address=T::Descriptor224Address(root);
+    const uint64_t old_candidate=T::Pointer(flat[0],flat[1]);
     const auto& tr=s.ds_transition_descriptor;
     nlohmann::json j={{"status","captured"},{"null",decoded.Base48()==0},{"root",root},{"address",address},
+        {"flat_root_slots",{2,3}},{"old_flat_root_candidate",old_candidate},
         {"flat_words",std::vector<uint32_t>(flat.begin()+20,flat.begin()+24)},{"materialized",d.dwords},
         {"raw_descriptor_captured",tr.captured},{"source_active",tr.active},{"source",tr.source},
         {"normalized_to_null",tr.normalized},{"raw_descriptor",tr.raw.dwords}};
     if(s.user_data.size()>=2){
         const auto table=T::Pointer(s.user_data[0],s.user_data[1]);
         j["root_table_backing"]=DsTransitionBacking(context,table,8);
+        const auto& tb=j["root_table_backing"];
+        if(tb.contains("words")&&tb["words"].size()==8){
+            const auto raw=tb["words"].get<std::array<uint32_t,8>>();
+            const auto backing_root=T::Pointer(raw[0],raw[1]);
+            j["root_table_first_pointer"]=backing_root;
+            j["root_matches_table_backing"]=root==backing_root;
+            j["root_backing_may_be_stale"]=tb.value("gpu_dirty",true)||tb.value("pending_publication",true);
+            if(backing_root!=root&&backing_root)
+                j["table_chain_descriptor_backing"]=DsTransitionBacking(context,T::Descriptor224Address(backing_root),4);
+        }
     }
     j["descriptor_backing"]=DsTransitionBacking(context,address,4);
     const auto& backing=j["descriptor_backing"];
@@ -1665,6 +1679,7 @@ static nlohmann::json DsDescriptor224(RenderContext& context,const PreparedBindi
         j["backing_matches_flat"]=std::equal(actual.begin(),actual.end(),flat.begin()+20);
         j["backing_matches_materialized"]=std::equal(actual.begin(),actual.end(),d.dwords.begin());
         j["backing_may_be_stale"]=backing.value("gpu_dirty",true)||backing.value("pending_publication",true);
+        j["backing_chain_verified"]=j.value("root_matches_table_backing",false)&&!j.value("root_backing_may_be_stale",true)&&!j.value("backing_may_be_stale",true);
     }
     return j;
 }
