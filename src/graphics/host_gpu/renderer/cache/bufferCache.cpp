@@ -506,12 +506,36 @@ void BufferCache::WatchProbeRays(uint64_t address, uint64_t size) {
 	m_probe_ray_ranges.push_back(range);
 }
 
+void BufferCache::NoteProbeRayTransfer(uint64_t address,uint64_t size,const char* path,uint64_t source,uint64_t shader) {
+    static const bool enabled=[]{
+        const char* v=std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");return v&&v[0]=='1'&&v[1]=='\0';
+    }();
+    if(!enabled||!size)return;
+    address=Kernel::AddressFold::Fold(address);
+    if(!GuestRange{address,size}.Valid())return;
+    m_probe_ray_transfers[m_next_probe_ray_transfer]={path,m_scheduler.CurrentTick(),source,shader,address,address+size};
+    m_next_probe_ray_transfer=(m_next_probe_ray_transfer+1)%m_probe_ray_transfers.size();
+}
+
+std::array<BufferCache::ProbeRayWrite,8> BufferCache::RecentProbeRayTransfers(uint64_t address,uint64_t size) const {
+    std::array<ProbeRayWrite,8> result{};
+    address=Kernel::AddressFold::Fold(address);
+    if(!size||!GuestRange{address,size}.Valid())return result;
+    size_t out=0;
+    for(size_t i=0;i<m_probe_ray_transfers.size()&&out<result.size();++i){
+        const auto& w=m_probe_ray_transfers[(m_next_probe_ray_transfer+m_probe_ray_transfers.size()-1-i)%m_probe_ray_transfers.size()];
+        if(w.path&&w.begin<address+size&&w.end>address)result[out++]=w;
+    }
+    return result;
+}
+
 void BufferCache::NoteProbeRayWrite(uint64_t address, uint64_t size, const char* path,
                                     uint64_t source, uint64_t shader) {
 	static const bool trace_geometry = [] {
 		const char* v = std::getenv("KYTY_DS_FRAME_TRACE");
 		return v && v[0] == '1' && v[1] == '\0';
 	}();
+	NoteProbeRayTransfer(address,size,path,source,shader);
 	if ((!trace_geometry && m_probe_ray_ranges.empty()) || size == 0) return;
 	address = Kernel::AddressFold::Fold(address);
 	source = Kernel::AddressFold::Fold(source);
@@ -1327,6 +1351,8 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
                               copies.data());
             Common::PerfStats::Count(Common::PerfStats::Counter::UploadBytes, total_size);
             UploadStats::NoteSync(total_size);
+            for(const auto& copy:copies)
+                NoteProbeRayTransfer(buffer.CpuAddress()+copy.dstOffset,copy.size,"guest_backing_upload",buffer.CpuAddress()+copy.dstOffset);
             auto after          = before;
             after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
             after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;

@@ -8,7 +8,7 @@
 
 namespace Libs::Graphics::DemonsRelightProbe {
 constexpr uint64_t Shader=0xbcbcc6ba1e68c974ull;
-constexpr uint32_t Header=3, Sites=17, Events=4, EventWords=12,
+constexpr uint32_t Header=3, Sites=17, Events=8, EventWords=12,
     SiteWords=1+Events*EventWords, Rays=256, Probes=2,
     WordCount=Header+Probes*Rays*Sites*SiteWords;
 struct Map {uint64_t fp; uint32_t ray,boolean,ptr;};

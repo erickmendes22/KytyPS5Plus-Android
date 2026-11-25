@@ -335,7 +335,7 @@ object Diagnostics {
                 selected.map { subdir to it }
             }
             var count = 0
-            var budget = 40L * 1024L * 1024L
+            var budget = 56L * 1024L * 1024L
             val info = "PPSA01341 lighting shaders and GPU buffer capture. " +
                 "The session.log entries [DS_GPU_BUFFER_CAPTURE] contain native Vulkan " +
                 "buffer summaries; buffers/*.bin contain the actual bytes. " +

@@ -1446,6 +1446,10 @@ bool DsCoefficientCaptureDue(int32_t frame) {
 	return DsCoefficientPairDue(frame) || DemonsAdaptiveCapture::Current().CaptureDue(frame);
 }
 
+static std::array<uint32_t,2> ds_relight_trace_targets{UINT32_MAX,UINT32_MAX};
+static nlohmann::json ReadDsMaskProbeRecords(RenderContext& context,
+    const PreparedBindings& bindings, uint32_t slot, std::span<const uint32_t> indices, uint32_t stride);
+
 struct DsRelightSelection {
     std::array<uint32_t,3> header{0,UINT32_MAX,UINT32_MAX};
     std::array<uint32_t,2> probes{UINT32_MAX,UINT32_MAX};
@@ -1466,17 +1470,36 @@ static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const Prep
     if(count[phase]>=(phase==3?3u:2u)||int64_t{frame}-last[phase]<24)return result;
     if(indirect&&!ReadDsGpuWords(context,indirect,offset,groups))return result;
     if(groups[0]!=2||groups[1]!=2||!groups[2]||groups[2]>256)return result;
-    auto ids=ReadDsBoundWords(context,bindings,0,groups[2]);
+    if(p.info.buffers.size()<6)return result;
+    const auto map_slot=p.info.buffers[0].descriptor_index;
+    const auto ray_slot=p.info.buffers[1].descriptor_index;
+    auto ids=ReadDsBoundWords(context,bindings,map_slot,groups[2]);
     if(ids.size()!=groups[2])return result;
     uint32_t first=0,second=groups[2]/2;
-    for(uint32_t target:{4701u,24540u,23322u}){
-        const auto it=std::find(ids.begin(),ids.end(),target);
-        if(it!=ids.end()){first=uint32_t(it-ids.begin());break;}
+    // Within one dispatch, pair the lowest and highest nonzero emission/
+    // color scores, rather than unrelated probes at arbitrary Z positions.
+    // Record the actual GPU buffer, never infer a probe's contents from ID.
+    const auto records=ReadDsMaskProbeRecords(context,bindings,ray_slot,ids,2048);
+    if(records.is_array()&&records.size()==ids.size()){
+        uint32_t lo=UINT32_MAX,hi=0;bool found=false;
+        for(uint32_t i=0;i<ids.size();++i){
+            const auto& row=records[i];if(!row.is_array()||row.size()!=512)continue;
+            uint32_t color=0,emission=0;
+            for(uint32_t j=0;j<512;j+=2){
+                const auto v=row[j].get<uint32_t>();
+                color+=(v&0xffffffu)!=0;emission+=(v>>28)!=0;
+            }
+            const uint32_t score=emission*257u+color;
+            if(!found||score<lo){lo=score;first=i;}
+            if(!found||score>hi){hi=score;second=i;}
+            found=true;
+        }
     }
     if(second==first&&groups[2]>1)second=(first+1)%groups[2];
     result.header={1,first,second==first?UINT32_MAX:second};
     result.probes={ids[first],second==first?UINT32_MAX:ids[second]};
     result.groups=groups;result.phase=phase;last[phase]=frame;++count[phase];
+    ds_relight_trace_targets=result.probes;
     return result;
 }
 
@@ -1561,19 +1584,29 @@ static void SaveDsRelightTrace(RenderContext& context,const PreparedBindings& bi
     for(const auto& a:snap.samplers)samplers.push_back(a.dwords);
     std::vector<uint32_t> probes,z;
     for(uint32_t i=0;i<P::Probes;++i)if(sel.probes[i]!=UINT32_MAX){probes.push_back(sel.probes[i]);z.push_back(sel.header[i+1]);}
-    // slot 1 stores 256 ray pairs per probe; slot 4 is the actual mask
-    // indexed by workgroup Z, and slot 5 contains the light records.
-    const auto rays=ReadDsMaskProbeRecords(context,bindings,1,probes,2048);
-    const auto masks=ReadDsMaskProbeRecords(context,bindings,4,z,64);
-    const auto lights=ReadDsBoundWords(context,bindings,5,384u*96u);
-    const auto positions=ReadDsMaskProbeRecords(context,bindings,2,probes,16);
+    // Resource ordinal is not the native descriptor binding index.
+    const auto& info=bindings.runtime->program->info.buffers;
+    if(info.size()<6)return;
+    const auto ray_slot=info[1].descriptor_index, position_slot=info[2].descriptor_index;
+    const auto mask_slot=info[4].descriptor_index, light_slot=info[5].descriptor_index;
+    const auto rays=ReadDsMaskProbeRecords(context,bindings,ray_slot,probes,2048);
+    const auto masks=ReadDsMaskProbeRecords(context,bindings,mask_slot,z,64);
+    const auto lights=ReadDsBoundWords(context,bindings,light_slot,384u*96u);
+    const auto positions=ReadDsMaskProbeRecords(context,bindings,position_slot,probes,16);
+    auto mask_checks=nlohmann::json::array();
+    for(size_t i=0;i<probes.size();++i){
+        const bool valid=masks.is_array()&&i<masks.size()&&masks[i].is_array()&&masks[i].size()==16;
+        mask_checks.push_back(valid&&masks[i][14].get<uint32_t>()==probes[i]);
+    }
     nlohmann::json report={{"frame",frame},{"submit",submit},{"phase",sel.phase},
         {"fingerprint",fmt::format("{:016x}",bindings.runtime->program->ds_light_math_variant)},
         {"groups",sel.groups},{"probe_ids",sel.probes},{"z",sel.header},
         {"header_words",P::Header},{"rays",P::Rays},{"sites",P::Sites},{"events",P::Events},
         {"site_words",P::SiteWords},{"event_words",P::EventWords},
         {"binary",stem+".bin"},{"ray_words",rays},{"mask_words",masks},{"light_words",lights},
-        {"positions",positions},{"srt",snap.flattened_srt},{"shader_data",bindings.shader_data},
+        {"positions",positions},{"mask_probe_matches",mask_checks},
+        {"native_slots",{{"ray",ray_slot},{"position",position_slot},{"mask",mask_slot},{"light",light_slot}}},
+        {"srt",snap.flattened_srt},{"shader_data",bindings.shader_data},
         {"buffers",desc},{"images",images},{"samplers",samplers}};
     uint32_t raw=0,exported=0;
     for(uint32_t row=0;row<P::Probes*P::Rays;++row){
@@ -3049,6 +3082,9 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 	probes.push_back(4445u); // historical control
 	for (auto p : ds_ray_producer_targets.probes)
 		if (std::find(probes.begin(), probes.end(), p) == probes.end()) probes.push_back(p);
+	for (auto p : ds_relight_trace_targets)
+		if (p != UINT32_MAX && std::find(probes.begin(), probes.end(), p) == probes.end()) probes.push_back(p);
+	const auto target_candidates = probes;
 	bool targeted = false;
 	// The captured guest/SPIR-V is a scatter copy, not a ray tracer.
 	// Read its actual source row index and payload, not an unrelated output
@@ -3099,7 +3135,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 					if (id != NoRow && std::find(probes.begin(), probes.end(), id) == probes.end())
 						probes.push_back(id);
 				}
-				for (auto p : consumed)
+				for (auto p : target_candidates)
 					targeted |= Find(map, map_base, active_rows, p).matches != 0;
 				source_report["map_words"] = map;
 				source_report["flagged_rows"] = flagged;
@@ -3199,6 +3235,12 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 					    {"shader", fmt::format("{:016x}", writer->shader)}, {"frame", writer->frame},
 					    {"submit", writer->submit}, {"address", writer->address}, {"bytes", writer->size},
 					    {"fill", writer->fill}};
+					const auto transfers = context.GetBufferCache().RecentProbeRayTransfers(addr, bytes_per_probe);
+					auto provenance = nlohmann::json::array();
+					for (const auto& w : transfers) if(w.path) provenance.push_back({
+					    {"path",w.path},{"tick",w.tick},{"source",w.source},{"shader",fmt::format("{:016x}",w.shader)},
+					    {"begin",w.begin},{"end",w.end}});
+					entry["source_transfer_history"] = std::move(provenance);
 					entry["source_gpu_dirty"] = context.GetBufferCache().HasGpuDirtyBytes(addr, bytes_per_probe);
 					entry["source_cpu_modified"] = context.GetBufferCache().IsRegionCpuModified(addr, bytes_per_probe);
 					std::array<uint32_t, words_per_probe> backing {};
@@ -3245,7 +3287,8 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		    {"selected_from_consumer_frame", ds_ray_producer_targets.consumer_frame},
 		    {"producer_tick", context.GetCommandScheduler().CurrentTick()},
 		    {"producer_dispatches_seen", ds_ray_producer_activity.valid},
-		    {"consumed_probe_ids", consumed}, {"targeted_map_match", targeted},
+		    {"consumed_probe_ids", consumed}, {"relight_trace_targets",ds_relight_trace_targets},
+		    {"targeted_probe_ids",target_candidates}, {"targeted_map_match", targeted},
 		    {"entries", std::move(entries)}};
 		// Save exact live shader inputs on each bounded active producer dispatch.
 		output["copy_source"] = std::move(source_report);
