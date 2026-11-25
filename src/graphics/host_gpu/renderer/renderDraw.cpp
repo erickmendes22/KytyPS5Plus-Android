@@ -3454,13 +3454,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         const bool material=VP::Material(ds_vp->shader_hash);
         auto& pair=ds_vertex_pairs[k];
         const bool matched=ps && ps->shader_hash==(material ?
-            0x552d823dcfcf2deeull : 0x651f53f5932d8794ull);
+            (k==0 ? 0xc92deb23fc611b10ull : 0xcfc1d9193e7f9e53ull) :
+            (k==0 ? 0x3dce2bd78d58db62ull : 0x895c9fe037e704f5ull));
         const bool due=material ?
             pair.serial && !pair.material_captured && ds_gbuffer_frame>=pair.frame &&
             int64_t{ds_gbuffer_frame}-pair.frame<=1 &&
             pair.address==index_source.address && pair.count==draw.index_count &&
             pair.base==emit.vertex_offset && pair.instance==emit.first_instance :
-            counts[k][phase]<(phase==3?2u:1u) &&
+            phase!=0 && counts[k][phase]<(phase==3?2u:1u) &&
             (last[k][phase]<0 || ds_gbuffer_frame-last[k][phase]>=24);
         if(matched && due && vertex_stages.size()==1 && !mesh_active && !mesh_emulated && !indirect &&
             draw.IsIndexed() && draw.instance_count==1 && !primitive_restart_enable &&
@@ -4186,7 +4187,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             {"pair_id",ds_vertex_pair},{"material",VP::Material(ds_vp->shader_hash)},
             {"pixel_shader",state.ps_input_info.stage.program?
                 fmt::format("{:016x}",state.ps_input_info.stage.program->shader_hash):std::string{}},
-            {"transform_inputs_valid",!VP::Material(ds_vp->shader_hash)},
+            {"transform_inputs_valid",VP::HasTransformInputs(ds_vp->shader_hash,ds_vp->ds_light_math_variant)},
             {"viewport",{viewport.x,viewport.y,viewport.width,viewport.height,viewport.minDepth,viewport.maxDepth}},
             {"scissor",{scissor.offset.x,scissor.offset.y,scissor.extent.width,scissor.extent.height}},
             {"dx_clip_space",bool(buffer.GetRegisters().GetClipControl().dx_clip_space)},

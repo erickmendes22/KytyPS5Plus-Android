@@ -636,15 +636,14 @@ struct PipelineCache::ProgramCache {
         }
 		// The earlier vertex experiment is retained for reproducing its
 		// evidence, but not active in this relight-specific diagnostic.
-		if (std::getenv("KYTY_DS_VERTEX_POSITION_RECHECK") &&
-		    DemonsVertexPositionProbe::Watched(options.shader_hash) && trace && std::strcmp(trace,"1")==0) {
+		if (DemonsVertexPositionProbe::Watched(options.shader_hash) && trace && std::strcmp(trace,"1")==0) {
             constexpr auto kind=ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
             constexpr auto slot=static_cast<size_t>(kind);
             const auto fp=XXH3_64bits(result.spirv.data(),result.spirv.size()*sizeof(uint32_t));
             auto copy=result.spirv;
             const bool assembled=!program.bindings.descriptor_counts[slot] &&
                 DemonsVertexPositionProbe::Instrument(copy,options.shader_hash,fp,
-                    ShaderRecompiler::IR::NativeBinding(program.stage,kind));
+                    ShaderRecompiler::IR::NativeBinding(program.stage,kind),true);
             const bool valid=assembled && ValidateShaderSpirv(options.dump_label,options.shader_hash,copy,options.maintenance8_enabled,true);
             Log::WriteToConsoleAndLog(fmt::format("[DS_VERTEX_POSITION_STATUS] shader={:016x} binary={:016x} assembled={} validated={}\n",
                 options.shader_hash,fp,assembled,valid));

@@ -11,9 +11,9 @@ constexpr uint32_t Header=3, Stride=23, MaxVertices=65536;
 constexpr uint32_t WordCount=Header+Stride*MaxVertices;
 // 225647 proved the two small-mesh depth/material pairs equivalent.
  // Focus the expensive per-vertex capture on the actual dominant surface.
-constexpr bool Material(uint64_t hash) { return hash==0xc96f3fcde8141266ull; }
-constexpr bool Watched(uint64_t hash) { return hash==0xaff9c7ef505c6253ull || Material(hash); }
-constexpr uint32_t PairIndex(uint64_t) { return 0u; }
+constexpr bool Material(uint64_t hash) { return hash==0xf825a988127faeb4ull || hash==0x74b55dea9562eda1ull; }
+constexpr bool Watched(uint64_t hash) { return hash==0x34c51585c926a664ull || hash==0xa7208481a1f2b760ull || Material(hash); }
+constexpr uint32_t PairIndex(uint64_t hash) { return hash==0xa7208481a1f2b760ull || hash==0x74b55dea9562eda1ull ? 1u : 0u; }
 // Exact 221410 modules. Inputs are the actual SSA values used by the
 // transform, not a re-read of a potentially different guest buffer.
 struct Site {
@@ -22,7 +22,7 @@ struct Site {
     std::array<uint32_t,15> inputs; // position xyz, matrix rows
     uint32_t f32=8,vec4=9;
 };
-constexpr std::array<Site,11> Sites{{
+constexpr std::array<Site,13> Sites{{
  {0x34c51585c926a664ull,0x92e062bff851bfe3ull,39,60,43,99,71,73,97,593,602,597,
   {366,367,368,253,254,255,256,292,293,294,295,331,332,333,334}},
  {0x34c51585c926a664ull,0x5650cfdc24ed3f10ull,39,60,43,115,71,73,112,878,887,882,
@@ -43,11 +43,89 @@ constexpr std::array<Site,11> Sites{{
   {336,338,340,293,295,297,299,246,248,250,252,200,202,204,206}},
  {0xaff9c7ef505c6253ull,0x5c675684d6527d92ull,32,47,36,109,58,60,107,495,505,499,
   {342,344,346,299,301,303,305,252,254,256,258,206,208,210,212},10,11},
- {0xc96f3fcde8141266ull,0x30fa33e11ddb71c9ull,39,62,45,131,73,75,115,787,796,791,{}}
+ {0xc96f3fcde8141266ull,0x30fa33e11ddb71c9ull,39,62,45,131,73,75,115,787,796,791,{}},
+ // Exact material export sites verified from the 185122 modules.
+ {0xf825a988127faeb4ull,0x0397926184a9f830ull,40,65,44,120,76,78,0,1195,1204,1199,{}},
+ {0x74b55dea9562eda1ull,0x3998632d8b97d056ull,46,73,50,128,84,86,0,1353,1361,1357,{}}
 }};
-inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t hash,uint64_t fingerprint,uint32_t binding) {
+inline bool HasTransformInputs(uint64_t hash,uint64_t fingerprint) {
+    for(const auto& x:Sites) if(x.hash==hash&&x.fingerprint==fingerprint) return x.inputs[0]!=0;
+    return false;
+}
+// A new specialization may move SSA IDs. Find its actual position export,
+// not a guessed operand map. Only exact site maps certify transform inputs.
+inline bool DiscoverExport(const std::vector<uint32_t>& w,Site& site) {
+    if(w.size()<5||w[3]>100000||w[3]<2)return false;
+    const auto bound=w[3];
+    std::vector<uint32_t> builtin(bound,UINT32_MAX),member0(bound,UINT32_MAX),pointee(bound),
+        variable_type(bound),constant(bound,UINT32_MAX),load(bound),base(bound),index(bound,UINT32_MAX);
+    uint32_t u32=0,f32=0,vec4=0,vertex_var=0,instance_var=0,clip_var=0;
+    for(size_t i=5;i<w.size();){
+        const auto n=w[i]>>16;const auto op=static_cast<spv::Op>(w[i]&65535u);
+        if(!n||n>w.size()-i)return false;
+        const auto* a=w.data()+i;
+        if(op==spv::OpEntryPoint&&n>=4){
+            if(site.main||a[1]!=spv::ExecutionModelVertex)return false;
+            site.main=a[2];
+        }
+        if(op==spv::OpTypeInt&&n==4&&a[2]==32&&a[3]==0)u32=a[1];
+        if(op==spv::OpTypeFloat&&n==3&&a[2]==32)f32=a[1];
+        if(op==spv::OpTypeVector&&n==4&&a[2]==f32&&a[3]==4)vec4=a[1];
+        if(op==spv::OpTypeVoid&&n==2)site.void_type=a[1];
+        if(op==spv::OpTypeBool&&n==2)site.boolean=a[1];
+        if(op==spv::OpTypePointer&&n==4&&a[1]<bound){
+            pointee[a[1]]=a[3];
+            if(a[2]==spv::StorageClassStorageBuffer&&a[3]==1)site.ptr=a[1];
+        }
+        if(op==spv::OpDecorate&&n==4&&a[1]<bound&&a[2]==spv::DecorationBuiltIn)builtin[a[1]]=a[3];
+        if(op==spv::OpMemberDecorate&&n==5&&a[1]<bound&&a[2]==0&&a[3]==spv::DecorationBuiltIn)member0[a[1]]=a[4];
+        if(op==spv::OpVariable&&n>=4&&a[2]<bound)variable_type[a[2]]=a[1];
+        if(op==spv::OpConstant&&n==4&&a[2]<bound)constant[a[2]]=a[3];
+        i+=n;
+    }
+    if(u32!=1||!site.main||!site.void_type||!site.boolean||!site.ptr||!f32||!vec4)return false;
+    for(uint32_t v=1;v<bound;++v){
+        if(builtin[v]==spv::BuiltInVertexIndex){if(vertex_var)return false;vertex_var=v;}
+        if(builtin[v]==spv::BuiltInInstanceIndex){if(instance_var)return false;instance_var=v;}
+        if(builtin[v]==spv::BuiltInClipDistance){if(clip_var)return false;clip_var=v;}
+    }
+    if(!vertex_var||!instance_var||!clip_var)return false;
+    bool main=false;
+    for(size_t i=5;i<w.size();){
+        const auto n=w[i]>>16;const auto op=static_cast<spv::Op>(w[i]&65535u);const auto* a=w.data()+i;
+        if(op==spv::OpFunction&&n>=3)main=a[2]==site.main;
+        if(op==spv::OpFunctionEnd)main=false;
+        if(main){
+            if(op==spv::OpLoad&&n>=4&&a[2]<bound)load[a[2]]=a[3];
+            if(op==spv::OpBitcast&&n==4&&a[1]==u32&&a[3]<bound){
+                if(load[a[3]]==vertex_var){if(site.vertex)return false;site.vertex=a[2];}
+                if(load[a[3]]==instance_var){if(site.instance)return false;site.instance=a[2];}
+            }
+            if((op==spv::OpAccessChain||op==spv::OpInBoundsAccessChain)&&n==5&&a[2]<bound&&a[4]<bound){
+                base[a[2]]=a[3];index[a[2]]=constant[a[4]];
+            }
+            if(op==spv::OpStore&&n==3&&a[1]<bound){
+                const auto b=base[a[1]];
+                if(b==clip_var&&index[a[1]]==0){if(site.clip)return false;site.clip=a[2];}
+                bool pos=builtin[a[1]]==spv::BuiltInPosition;
+                if(b&&b<bound&&index[a[1]]==0&&variable_type[b]<bound&&pointee[variable_type[b]]<bound)
+                    pos|=member0[pointee[variable_type[b]]]==spv::BuiltInPosition;
+                if(pos){
+                    if(site.store||!site.clip||!site.vertex||!site.instance)return false;
+                    site.store=a[1];site.position=a[2];
+                }
+            }
+        }
+        i+=n;
+    }
+    site.f32=f32;site.vec4=vec4;
+    return site.store&&site.position;
+}
+inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t hash,uint64_t fingerprint,uint32_t binding,bool discover=false) {
     const Site* found=nullptr;
+    Site fallback{};
     for (const auto& x:Sites) if(x.hash==hash && x.fingerprint==fingerprint) found=&x;
+    if(!found&&discover&&Watched(hash)&&DiscoverExport(spirv,fallback))found=&fallback;
     if(!found || spirv.size()<5)return false;
     const auto& site=*found;
     constexpr uint32_t u32=1;

@@ -319,8 +319,8 @@ object Diagnostics {
                     // Geometry coverage has four distinct causal phases per launch. Keep all before large producer dumps.
                     val coverage = newest.filter { it.name.startsWith("ds_geometry_coverage_f") }
                     val depthOwners = newest.filter { it.name.startsWith("ds_depth_prepass_f") }
-                    val producer = coverage + depthOwners + edges + bridge + relightTraces + prioritizedRays +
-                        newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24) +
+                    val positions = newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24)
+                    val producer = coverage + depthOwners + positions + edges + bridge + relightTraces + prioritizedRays +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
                         geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +
@@ -335,7 +335,9 @@ object Diagnostics {
                 } else {
                     val relightModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { it.name.contains("_bcbcc6ba1e68c974_") } else emptyList()
-                    (relightModules + files).distinct().take(when (subdir) {
+                    val sceneModules = if (subdir == "spv" || subdir == "pipelines")
+                        files.filter { f -> listOf("34c51585c926a664", "a7208481a1f2b760", "f825a988127faeb4", "74b55dea9562eda1").any { f.name.contains("_${it}_") } } else emptyList()
+                    (sceneModules + relightModules + files).distinct().take(when (subdir) {
                         "guest-shaders" -> 96
                         "spv" -> 48
                         else -> 24
