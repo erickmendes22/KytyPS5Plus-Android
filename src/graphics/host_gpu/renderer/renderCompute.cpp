@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
 #include "graphics/host_gpu/renderer/demonsAtlasTileHistory.h"
@@ -205,7 +206,7 @@ void RenderExecutor::UpdateComputeMetaClears(const ShaderComputeInputInfo& input
 		return v && v[0] == '1' && v[1] == '\0';
 	}();
 	const auto invalidate_unproven = [&](uint64_t addr) {
-		if (!HtileMetaWritePolicy::MustInvalidatePendingClear(ds_htile_safe, true, false) ||
+		if (DemonsPcRenderParity::Enabled() || !HtileMetaWritePolicy::MustInvalidatePendingClear(ds_htile_safe, true, false) ||
 		    !cache.InvalidateUnprovenHtileWrite(addr)) return false;
 		static std::atomic<uint32_t> noted {0};
 		const auto count = noted.fetch_add(1u, std::memory_order_relaxed);
@@ -239,8 +240,10 @@ void RenderExecutor::UpdateComputeMetaClears(const ShaderComputeInputInfo& input
 			if (resource.written) {
 				const auto descriptor =
 				    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
-				if (!invalidate_unproven(descriptor.Base48()))
-					(void)cache.ClearMeta(descriptor.Base48());
+				if (!invalidate_unproven(descriptor.Base48())) {
+					if (DemonsPcRenderParity::Enabled()) (void)cache.ClearMetaRange(descriptor.Base48(),descriptor.GetSize());
+					else (void)cache.ClearMeta(descriptor.Base48());
+				}
 			}
 		}
 	}
@@ -362,14 +365,16 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 			return false;
 		command.GetContext().GetBufferCache().FillBuffer(descriptor.Base48(), size, packed_clear,
 		                                                 false);
-		(void)cache.ClearMeta(descriptor.Base48(), packed_clear);
+		if (DemonsPcRenderParity::Enabled()) (void)cache.ClearMetaRange(descriptor.Base48(),size,packed_clear,true);
+		else (void)cache.ClearMeta(descriptor.Base48(), packed_clear);
 		if (DsTraceEnabled()) {
 			RememberDsBufferProducer({descriptor.Base48(), size, input.stage.program->shader_hash,
 			                         command.GetContext().GetGpu().GetFrameNum(), false, true});
 		}
 		return true;
 	}
-	(void)cache.ClearMeta(descriptor.Base48(), packed_clear);
+	if (DemonsPcRenderParity::Enabled()) (void)cache.ClearMetaRange(descriptor.Base48(),size,packed_clear,true);
+		else (void)cache.ClearMeta(descriptor.Base48(), packed_clear);
 	static std::atomic<uint32_t> logged_clears {0};
 	if (logged_clears.fetch_add(1, std::memory_order_relaxed) < 32) {
 		LOGF("GraphicsRenderDispatchDirect: compute image clear shader=0x%016" PRIx64

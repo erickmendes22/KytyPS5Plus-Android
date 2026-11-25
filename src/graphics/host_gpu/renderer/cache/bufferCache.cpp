@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/cache/bufferUploadPolicy.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
@@ -1569,7 +1570,8 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 		EXIT("BufferCache: invalid fill memory address\n");
 	}
 	NoteProbeRayWrite(vaddr, size, "dma_fill", value);
-	(void)m_texture_cache.ClearMeta(vaddr);
+	if(DemonsPcRenderParity::Enabled()) (void)m_texture_cache.ClearMetaRange(vaddr,size,value,true);
+	else (void)m_texture_cache.ClearMeta(vaddr);
 	if (!IsRegionGpuModified(vaddr, size)) {
 		// Access the guest mapping so write faults invalidate cached buffers and images.
 		auto* destination = reinterpret_cast<uint32_t*>(vaddr);
@@ -1585,6 +1587,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 		return;
 	}
 
+	if(DemonsPcRenderParity::Enabled()) (void)m_texture_cache.PublishGpuImageForIndirectArgs(vaddr,size);
 	m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
 	auto [dst, dst_offset] = ObtainBuffer(vaddr, size, true, true);
 	dst->Fill(dst_offset, size, value);
@@ -1617,6 +1620,7 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 
 	auto& command = m_scheduler.Current();
 	if (dst_memory) {
+		if(DemonsPcRenderParity::Enabled()) (void)m_texture_cache.PublishGpuImageForIndirectArgs(dst_vaddr,size);
 		m_texture_cache.InvalidateMemoryFromGPU(dst_vaddr, size);
 	}
 	const auto src_id      = src_memory ? FindBuffer(src_vaddr, size) : BufferId {};

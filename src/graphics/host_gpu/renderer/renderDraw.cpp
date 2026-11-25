@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsVertexPositionProbe.h"
 #include "graphics/host_gpu/renderer/renderDraw.h"
@@ -477,7 +478,7 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	    (depth.stencil_front.compareOp == vk::CompareOp::eAlways &&
 	     depth.stencil_back.compareOp == vk::CompareOp::eAlways);
 	const auto decision = DemonsDepthEqualPolicy::Select(
-	    ds_depth_equal_mode, pixel_shader_hash, depth.desc.info.data.address,
+	    DemonsPcRenderParity::Enabled() ? 0 : ds_depth_equal_mode, pixel_shader_hash, depth.desc.info.data.address,
 	    depth.depth_test_enable, depth.depth_write_enable, stencil_always,
 	    static_cast<uint32_t>(depth_compare));
 	if (decision != DemonsDepthEqualPolicy::Decision::Guest) {
@@ -877,8 +878,13 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		depth.trace_meta_depth_clear = decision.depth_meta_clear;
 		depth.trace_meta_stencil_clear = decision.stencil_meta_clear;
 		depth.trace_meta_uniform = decision.depth_uniform;
+		if (DemonsPcRenderParity::Enabled()) {
+			depth.trace_meta_depth_clear = meta_clear;
+			depth.trace_meta_stencil_clear = meta_clear && metadata.stencil_compressed;
+			depth.trace_meta_uniform = false;
+		}
 		depth.load_clear_aspects = {};
-		if (ds_htile_semantics) {
+		if (ds_htile_semantics && !DemonsPcRenderParity::Enabled()) {
 			if (decision.depth_uniform) depth.depth_clear_value = decision.uniform_value;
 			if (depth.depth_clear_enable || decision.depth_meta_clear)
 				depth.load_clear_aspects |= vk::ImageAspectFlagBits::eDepth;
@@ -1816,6 +1822,16 @@ static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
 	const auto& sh_regs     = ctx.GetShaderRegisters();
 	const auto  write_mask  = ctx.GetRenderTargetMask() & sh_regs.m_cbShaderMask;
 	uint32_t    output_mask = ctx.HasObjectPrimitiveIdOutput() ? 1u << 7u : 0;
+	if (DemonsPcRenderParity::Enabled()) {
+		// U59 preset does not enable KYTY_SKIP_INACTIVE_PS. Mapping is based on
+		// backed guest target slots, not on inferred export format or CB_SHADER_MASK.
+		for (uint32_t slot=0;slot<RENDER_COLOR_ATTACHMENTS_MAX;++slot) {
+			const auto& rt=ctx.GetRenderTarget(slot);
+			if(rt.base.addr && rt.info.format!=Prospero::ChannelLayout::kInvalid &&
+			    render_target_mask_slot(ctx.GetRenderTargetMask(),slot)) output_mask|=1u<<slot;
+		}
+		return output_mask;
+	}
 	for (uint32_t index = 0; index < RENDER_COLOR_ATTACHMENTS_MAX; index++) {
 		const auto slot = ShaderPixelExportTarget(sh_regs.m_cbShaderMask, index);
 		if (slot >= RENDER_COLOR_ATTACHMENTS_MAX) {
@@ -2233,6 +2249,9 @@ GpuPipeline::Prefetch RenderExecutor::PrefetchDraw(CommandBuffer& buffer, bool i
 	state.ps_active = buffer.GetShaders().GetPs().ps_regs.data_addr != 0 &&
 	                  (out.color_output_mask != 0 ||
 	                   PixelShaderHasDepthOrCoverageSideEffects(shader_regs));
+	if(DemonsPcRenderParity::Enabled()) state.ps_active=DemonsPcRenderParity::PixelActive(
+	    buffer.GetShaders().GetPs().ps_regs.data_addr!=0,hw.GetRenderTargetMask(),
+	    shader_regs.m_cbShaderMask,PixelShaderHasDepthOrCoverageSideEffects(shader_regs));
 	RefreshShaders(buffer, draw, out.color_output_mask, state);
 	out.ps_active     = state.ps_active;
 	out.programs      = state.programs;
@@ -2253,6 +2272,9 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 	state.ps_active = buffer.GetShaders().GetPs().ps_regs.data_addr != 0 &&
 	                  (color_output_mask != 0 ||
 	                   PixelShaderHasDepthOrCoverageSideEffects(shader_regs));
+	if(DemonsPcRenderParity::Enabled()) state.ps_active=DemonsPcRenderParity::PixelActive(
+	    buffer.GetShaders().GetPs().ps_regs.data_addr!=0,buffer.GetRegisters().GetRenderTargetMask(),
+	    shader_regs.m_cbShaderMask,PixelShaderHasDepthOrCoverageSideEffects(shader_regs));
 	RefreshShaders(buffer, draw, color_output_mask, state);
 	if (state.programs.ready)
 		state.previous_vertex_stages = state.programs.VertexStageCount();
@@ -2272,7 +2294,7 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 			}
 		}
 	}
-	mrt_mask &= color_output_mask;
+	if(!DemonsPcRenderParity::Enabled()) mrt_mask &= color_output_mask;
 	// Match the reference PS5 renderer: attachment lifetime follows guest
 	// CB_TARGET_MASK, not the subset of PS exports the translator detects.
 	// Static/dynamic write masks still honor CB_SHADER_MASK. Even depth-only
@@ -2281,7 +2303,7 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		const char* setting = std::getenv("KYTY_DS_GUEST_COLOR_TARGETS");
 		return setting && setting[0] == '1' && setting[1] == '\0';
 	}();
-	if (ds_guest_color_targets) {
+	if (ds_guest_color_targets && !DemonsPcRenderParity::Enabled()) {
 		const auto& ctx = buffer.GetRegisters();
 		uint32_t guest_mask = 0;
 		for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; ++slot) {
@@ -2313,7 +2335,7 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		const char* value = std::getenv("KYTY_DS_ISOLATE_DEPTH_OCCLUDERS");
 		return value && value[0] == '1' && value[1] == '\0';
 	}();
-	if (isolate && state.depth_info.image_id && state.ps_active &&
+	if (isolate && !DemonsPcRenderParity::Enabled() && state.depth_info.image_id && state.ps_active &&
 	    state.ps_input_info.stage.program && state.vertex_info[0].stage.program) {
 		const auto vs = state.vertex_info[0].stage.program->shader_hash;
 		const auto ps = state.ps_input_info.stage.program->shader_hash;
@@ -3809,7 +3831,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	vk::CullModeFlags base_cull {};
 	if (!rect_face && face_mode.cull_front) base_cull |= vk::CullModeFlagBits::eFront;
 	if (!rect_face && face_mode.cull_back) base_cull |= vk::CullModeFlagBits::eBack;
-	if (ds_per_face_bias) {
+	if (ds_per_face_bias && !DemonsPcRenderParity::Enabled()) {
 		vk_buffer.setCullMode(base_cull);
 		vk_buffer.setDepthBiasEnable(front_bias || back_bias);
 		if (front_bias || back_bias) {

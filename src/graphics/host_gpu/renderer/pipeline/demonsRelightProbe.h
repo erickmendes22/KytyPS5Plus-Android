@@ -12,11 +12,12 @@ constexpr uint32_t Header=3, Sites=17, Events=8, EventWords=12,
     SiteWords=1+Events*EventWords, Rays=256, Probes=2,
     WordCount=Header+Probes*Rays*Sites*SiteWords;
 struct Map {uint64_t fp; uint32_t ray,boolean,ptr;};
-constexpr std::array<Map,4> Maps{{
+constexpr std::array<Map,5> Maps{{
     {0x2746d5f7af6311deull,379,228,238},
     {0x97ea10ade6976354ull,374,223,233},
     {0xb611c71dabffe99cull,374,223,233},
-    {0xf93c8d74323b5ffaull,373,222,232}
+    {0xf93c8d74323b5ffaull,373,222,232},
+    {0x4690ec9f28ed697cull,378,227,237}
 }};
 // Exact observed module: 8x8 local size, 2x2 workgroups per probe.
 // Site 0 is raw ray pair, 1..15 are actual image operations in program
@@ -29,7 +30,7 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fp,uint32_t binding
     for(const auto& a:Maps)if(a.fp==fp)m=&a;
     // This fifth fingerprint was seen on-device, but its dump was evicted.
     // Accept it only after a unique structural match below.
-    if(!m && fp!=0x4690ec9f28ed697cull)return false;
+    // Only the relight shader invokes this helper; unknown variants must pass every structural check below.
     if(spirv.size()<5||spirv[3]>100000)return false;
     const auto bound=spirv[3];
     constexpr uint32_t u=1,f=20,vec3=2,voidt=177,mainid=56;

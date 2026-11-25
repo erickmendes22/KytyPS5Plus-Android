@@ -37,7 +37,7 @@ object GameEnvironment {
         "KYTY_FAN_AUTO_ON_US", "KYTY_FAN_AUTO_OFF_US",
     )
 
-    internal val demonsSoulsPresetKeys = setOf("KYTY_DS_START_INSTANCE_SGPR")
+    internal val demonsSoulsPresetKeys = setOf("KYTY_DS_START_INSTANCE_SGPR", "KYTY_DS_PC_RENDER_PARITY")
 
     fun apply(lines: Array<String>?) {
         val vars = EnvVars.parse(lines?.joinToString("\n").orEmpty()).vars

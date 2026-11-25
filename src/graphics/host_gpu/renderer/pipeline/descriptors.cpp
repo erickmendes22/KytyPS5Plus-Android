@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsRadianceTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
@@ -427,9 +428,10 @@ static TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::Image
 	}
 	const bool null_depth_compare = resource.depth_compare &&
 	                               binding == TextureCache::BindingType::Texture;
-	if (null_depth_compare) desc.info.guest_format = Prospero::BufferFormat::k16UNorm;
-	desc.info.pixel_format    = null_depth_compare ? vk::Format::eD16Unorm
-	                                                 : VulkanFormat(desc.info.guest_format);
+	const bool use_d16=null_depth_compare && !DemonsPcRenderParity::Enabled();
+	if (use_d16) desc.info.guest_format = Prospero::BufferFormat::k16UNorm;
+	desc.info.pixel_format    = use_d16 ? vk::Format::eD16Unorm :
+	    null_depth_compare ? vk::Format::eD32Sfloat : VulkanFormat(desc.info.guest_format);
 	desc.info.type            = Prospero::ImageType::kColor2D;
 	desc.info.extent          = {1, 1, 1};
 	desc.info.resources       = {1, 1};

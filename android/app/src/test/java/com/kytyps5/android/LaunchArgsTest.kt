@@ -288,6 +288,7 @@ class LaunchArgsTest {
             assertEquals(1, env.count { it == "KYTY_DS_GPU_LDS_GROUPS=1" })
             assertEquals(1, env.count { it == "KYTY_DS_GPU_DRAW_ARGS=1" })
             assertEquals(1, env.count { it == "KYTY_DS_CB_MASK_PREPARE=1" })
+            assertEquals(1, env.count { it == "KYTY_DS_PC_RENDER_PARITY=1" })
             assertEquals(1, env.count { it == "KYTY_DS_STABLE_IMAGE_BINDINGS=1" })
         }
         for (title in listOf("PPSA03671", "PPSA21564", "PPSA24156", null)) {

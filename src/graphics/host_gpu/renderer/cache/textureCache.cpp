@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/sampleHtileClearPolicy.h"
 #include "graphics/host_gpu/renderer/demonsRadianceTrace.h"
@@ -2413,7 +2414,7 @@ vk::ImageView TextureCache::FindTexture(ImageId id, const ImageDesc& desc) {
 			const char* value = std::getenv("KYTY_DS_HTILE_FILL_SEMANTICS");
 			return value != nullptr && value[0] == '1' && value[1] == '\0';
 		}();
-		if (ds_sample_htile && desc.type == BindingType::Texture && image.info.IsDepth() &&
+		if (ds_sample_htile && !DemonsPcRenderParity::Enabled() && desc.type == BindingType::Texture && image.info.IsDepth() &&
 		    image.info.metadata.kind == ImageMetadataKind::Htile &&
 		    (desc.view_info.aspect & vk::ImageAspectFlagBits::eDepth) &&
 		    image.info.resources.levels == 1 && image.info.resources.layers == 1 &&
@@ -2525,6 +2526,8 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 		}
 		metadata->second.type  = MetaDataInfo::Type::HTile;
 		metadata->second.owner = id;
+		metadata->second.range_size=desc.info.metadata.range.size;
+		metadata->second.layers=image.info.resources.layers;
 	}
 	RefreshImage(id);
 	if (desc.info.HasStencil()) {
@@ -3345,6 +3348,40 @@ bool TextureCache::ClearMeta(uint64_t address, uint32_t fill_value) {
 	found->second.fill_value = fill_value;
 	found->second.fill_known = true;
 	return true;
+}
+
+bool TextureCache::ClearMetaRange(uint64_t address,uint64_t size,uint32_t fill_value,bool fill_known) {
+    address=Kernel::AddressFold::Fold(address);
+    static const bool slices=[] {const char* v=std::getenv("KYTY_HTILE_SLICE_CLEAR");return v&&v[0]=='1';}();
+    static const bool size_rule=[] {const char* v=std::getenv("KYTY_HTILE_SIZE_RULE");return v&&v[0]=='1';}();
+    std::scoped_lock lock {m_lock};
+    auto it=m_surface_metas.find(address);
+    if(it==m_surface_metas.end()){
+        if(!slices)return false;
+        it=m_surface_metas.upper_bound(address);
+        if(it==m_surface_metas.begin())return false;
+        --it;
+        if(it->second.type!=MetaDataInfo::Type::HTile)return false;
+    }
+    auto& meta=it->second;
+    if(meta.type!=MetaDataInfo::Type::HTile){
+        if(it->first!=address)return false;
+        meta.clear_mask.set();meta.sample_depth_done=false;
+        meta.fill_value=fill_value;meta.fill_known=fill_known;
+        return true;
+    }
+    if(size_rule&&it->first==address&&meta.range_size&&size>meta.range_size){
+        m_surface_metas.erase(it);return false;
+    }
+    if(!slices&&it->first==address){
+        meta.clear_mask.set();
+    }else{
+        const auto result=DemonsPcRenderParity::MetaLayers(it->first,meta.range_size,meta.layers,address,size,slices,size_rule);
+        if(!result.count)return false;
+        for(uint32_t i=result.first;i<result.first+result.count&&i<meta.clear_mask.size();++i)meta.clear_mask.set(i);
+    }
+    meta.sample_depth_done=false;meta.fill_value=fill_value;meta.fill_known=fill_known;
+    return address==it->first;
 }
 
 bool TextureCache::TouchMeta(uint64_t address, uint32_t slice, bool is_clear) {

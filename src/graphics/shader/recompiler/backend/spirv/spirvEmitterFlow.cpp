@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
@@ -1015,9 +1016,11 @@ uint32_t EmitDppUpdateU32(ValueEmitContext& ctx, const IR::Inst& inst) {
 		const auto* value = std::getenv("KYTY_DS_DPP_SKIP_INACTIVE");
 		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
-	if (ds_dpp_skip_inactive && !DemonsPcDppPolicy::Applies(DemonsPcDppPolicy::Enabled(), state.program.shader_hash) &&
-	    state.program.stage == ShaderType::Compute &&
-	    !flags.bound_control && !flags.fetch_inactive && !flags.dpp8) {
+	const bool parity=DemonsPcRenderParity::Enabled();
+	const bool skip_source=parity || (ds_dpp_skip_inactive &&
+	    !DemonsPcDppPolicy::Applies(DemonsPcDppPolicy::Enabled(), state.program.shader_hash) &&
+	    state.program.stage == ShaderType::Compute);
+	if (DemonsPcRenderParity::DppSkipSource(skip_source,flags.bound_control,flags.fetch_inactive,flags.dpp8)) {
 		const auto target = EmitDppTargetLane(state, flags);
 		const auto ballot = ctx.Ballot(inst.Arg(2));
 		const auto active = EmitBallotLaneActiveBool(state, ballot, target.lane);

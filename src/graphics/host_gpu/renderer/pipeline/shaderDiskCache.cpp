@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDiskCache.h"
 
 #include "common/logging/log.h"
@@ -184,11 +185,11 @@ uint64_t ShaderDiskCache::Signature(uint64_t options_signature) {
 	// Wrong (stale translations) if the recompiler or its inputs changed between those builds.
 	const char* build_override = std::getenv("KYTY_SHADER_CACHE_BUILD");
 	const bool  overridden     = build_override != nullptr && build_override[0] != '\0';
-	const auto  text = fmt::format("v{} {} {} vs{} ps{} cs{} opt{:016x}", FormatVersion,
+	const auto  text = fmt::format("v{} {} {} vs{} ps{} cs{} opt{:016x} ds_pc_parity{}", FormatVersion,
 	                              overridden ? std::string(build_override) : ModuleBuildId(),
 	                              overridden ? "" : KYTY_GIT_REVISION, sizeof(ShaderVertexInputInfo),
 	                              sizeof(ShaderPixelInputInfo), sizeof(ShaderComputeInputInfo),
-	                              options_signature);
+	                              options_signature, DemonsPcRenderParity::Enabled());
 	return XXH3_64bits(text.data(), text.size());
 }
 

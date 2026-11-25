@@ -218,6 +218,8 @@ object LaunchArgs {
                     // indirect lighting dispatch. Vulkan still reads the actual
                     // arguments; the existing clamp handles device limits.
                     "--env", "KYTY_DS_GPU_ZERO_INDIRECT=1",
+                    // Match U59 guest-visible renderer semantics; no debug depth suppression.
+                    "--env", "KYTY_DS_PC_RENDER_PARITY=1",
                     // Turnip lacks native shared 64-bit atomics. Only compute
                     // programs actually using them take StorageBuffer-backed LDS.
                     "--env", "KYTY_DS_LDS64_STORAGE=1",
