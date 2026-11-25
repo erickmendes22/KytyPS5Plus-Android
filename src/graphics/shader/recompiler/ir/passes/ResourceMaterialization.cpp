@@ -1710,6 +1710,8 @@ bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& sc
 		return SpecializationFail(fmt::format("indirect {} resource={} source={} candidates={} capacity={}",
 		    kind, resource, source, candidates, capacity));
 	};
+	snapshot.ds_transition_descriptor={};
+	const bool trace_transition=program.shader_hash==0xbcbcc6ba1e68c974ull && program.info.buffers.size()==9;
 	snapshot.buffers.resize(program.info.buffers.size());
 	specialization.buffers.assign(program.info.buffers.size(), {});
 	for (uint32_t i = 0; i < snapshot.buffers.size(); ++i) {
@@ -1740,6 +1742,10 @@ bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& sc
 		ShaderBufferResource descriptor;
 		if (!DecodeBufferDescriptor(descriptor_value, descriptor)) {
 			return SpecializationFail(fmt::format("buffer descriptor {} has invalid width", i));
+		}
+		if(trace_transition&&i==3){
+			auto& trace=snapshot.ds_transition_descriptor;trace.captured=true;trace.source=base.source;
+			trace.active=active.empty()||active[base.source];trace.raw=descriptor_value;trace.normalized=descriptor.Type()!=0;
 		}
 		if (descriptor.Type() != 0) {
 			descriptor_value.dwords.fill(0);

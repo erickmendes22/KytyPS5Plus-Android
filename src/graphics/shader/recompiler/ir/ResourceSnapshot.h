@@ -50,6 +50,9 @@ struct ResourceSnapshot {
 	std::vector<uint32_t>        user_data;
 	std::vector<std::pair<uint64_t, uint64_t>> specialization_reads;
 	UniformFill                 uniform_fill;
+	// DS relight only: descriptor ordinal 3, before inactive-source/format decisions.
+	struct TransitionDescriptor {bool captured=false,active=false,normalized=false;uint32_t source=UINT32_MAX;DescriptorValue raw;};
+	TransitionDescriptor ds_transition_descriptor{};
 };
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

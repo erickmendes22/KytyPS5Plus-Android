@@ -19,7 +19,7 @@ inline std::array<Cell,Capacity> ring{};
 inline std::atomic<uint64_t> next{};
 inline std::atomic<bool> enabled{};
 inline void Init(){
-    const char* v=std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
+    const char* v=std::getenv("KYTY_DS_RAY_SOURCE_HISTORY");
     enabled.store(v&&v[0]=='1'&&v[1]=='\0',std::memory_order_release);
 }
 inline bool Enabled(){return enabled.load(std::memory_order_acquire);}

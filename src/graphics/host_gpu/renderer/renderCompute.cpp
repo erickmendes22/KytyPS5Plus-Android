@@ -2,6 +2,7 @@
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/demonsRayCopyPolicy.h"
 #include "graphics/host_gpu/renderer/demonsRaySourceHistory.h"
+#include "graphics/host_gpu/renderer/demonsTransitionTrace.h"
 #include "kernel/demonsFileReadHistory.h"
 #include "cpu/demonsGuestWriteHistory.h"
 #include "graphics/host_gpu/renderer/demonsAtlasTileHistory.h"
@@ -1424,6 +1425,10 @@ struct DsRelightMaskSample {
 	nlohmann::json dispatch;
 };
 DsRelightMaskSample ds_relight_mask;
+static std::array<DsRelightMaskSample,8> ds_transition_masks;
+static size_t ds_transition_mask_next=0;
+static bool DsTransitionEnabled(){return LibKernel::DemonsFileReadHistory::Enabled();}
+static bool DsExtendedRayHistoryEnabled(){static const bool enabled=[] {const char* v=std::getenv("KYTY_DS_RAY_SOURCE_HISTORY");return v&&v[0]=='1';}();return enabled;}
 
 // Producer activity is tracked independently of the bounded GPU snapshots.
 // A missing post-transition ray file then has an unambiguous explanation:
@@ -1614,51 +1619,101 @@ static std::array<uint32_t,2> ds_relight_trace_targets{UINT32_MAX,UINT32_MAX};
 static nlohmann::json ReadDsMaskProbeRecords(RenderContext& context,
     const PreparedBindings& bindings, uint32_t slot, std::span<const uint32_t> indices, uint32_t stride);
 
-// Guest relight 0xbcbcc6ba1e68c974 at pc 0x1890 loads s[28:35]
-// from the second user-data pointer +0x10; pc 0x1898 loads a
-// 96-byte V# at +0xb0. s28/s29 are the loop counts, s32/s33
-// the first record indices. Only these four surviving SGPRs are
-// flattened into slots 170..173 in the validated 125653 layout.
-static nlohmann::json CaptureDsRelightLocalLights(RenderContext& context,const PreparedBindings& bindings){
-    const auto& p=*bindings.runtime->program;
-    const auto& s=*bindings.runtime->resources;
-    if(s.flattened_srt.size()!=174||s.buffers.size()!=9||p.info.buffers.size()!=9)
-        return {{"status","different_srt_layout"}};
-    const auto& flat=s.flattened_srt;
-    const uint64_t base=uint64_t{flat[2]}|(uint64_t{flat[3]}<<32u);
-    const std::array<uint32_t,2> counts{flat[170],flat[171]},first{flat[172],flat[173]};
-    nlohmann::json result={{"status","captured_control"},{"guest_table",base},{"count",counts},{"first_record",first}};
-    if(base&&base<=UINT64_MAX-0xc0){
-        std::array<uint32_t,8> control{};std::array<uint32_t,4> descriptor{};
-        if(LibKernel::Memory::TryReadBacking(base+0x10,control.data(),sizeof(control))){
-            result["guest_control_words"]=control;
-            result["control_matches_flat"]=control[0]==counts[0]&&control[1]==counts[1]&&control[4]==first[0]&&control[5]==first[1];
-        }
-        if(LibKernel::Memory::TryReadBacking(base+0xb0,descriptor.data(),sizeof(descriptor))){
-            result["guest_descriptor_words"]=descriptor;
-            result["descriptor_matches_flat"]=std::equal(descriptor.begin(),descriptor.end(),flat.begin()+116);
+// Source: guest relight PC 0x000c reads s[16:23] from the user-data root;
+// PC 0x00a4 loads V# s[0:3] from s[16:17]+0xc30. Flat slots 20..23
+// match descriptor ordinal 3 in every non-null 125653 snapshot.
+// Raw backing is not necessarily authoritative when GPU publication is pending.
+static nlohmann::json DsTransitionBacking(RenderContext& context,uint64_t addr,uint32_t dwords){
+    if(!addr||!dwords||dwords>8||addr>UINT64_MAX-dwords*4u)return {{"status","invalid_range"}};
+    std::vector<uint32_t> values(dwords);
+    auto& cache=context.GetBufferCache();
+    const bool dirty=cache.HasGpuDirtyBytes(addr,dwords*4u),pending=cache.HasPendingBackingPublication(addr,dwords*4u);
+    nlohmann::json j={{"address",addr},{"gpu_dirty",dirty},{"pending_publication",pending}};
+    if(LibKernel::Memory::TryReadBacking(addr,values.data(),values.size()*4))j["words"]=values;
+    else j["status"]="backing_unavailable";
+    auto history=nlohmann::json::array();
+    for(const auto& e:cache.RecentProbeRayTransfers(addr,dwords*4u))if(e.path)
+        history.push_back({{"path",e.path},{"tick",e.tick},{"source",e.source},{"shader",fmt::format("{:016x}",e.shader)},{"begin",e.begin},{"end",e.end}});
+    j["transfer_candidates"]=std::move(history);
+    if(const auto* w=FindDsBufferProducer(context.GetGpu().GetFrameNum(),addr,dwords*4u,false))
+        j["compute_writer_candidate"]={{"shader",fmt::format("{:016x}",w->shader)},{"frame",w->frame},{"submit",w->submit},{"address",w->address},{"size",w->size}};
+    return j;
+}
+static nlohmann::json DsDescriptor224(RenderContext& context,const PreparedBindings& bindings){
+    namespace T=DemonsTransitionTrace;
+    const auto& s=*bindings.runtime->resources;const auto& p=*bindings.runtime->program;
+    if(s.buffers.size()!=9||s.flattened_srt.size()!=174||p.info.buffers.size()!=9)
+        return {{"status","unexpected_layout"}};
+    const auto& flat=s.flattened_srt;const auto& d=s.buffers[3];
+    const auto decoded=DecodeNativeDescriptor<ShaderBufferResource>(d);
+    if(decoded.Base48()&&(decoded.Stride()!=384||decoded.NumRecords()!=224))
+        return {{"status","unexpected_descriptor"}};
+    const uint64_t root=T::Pointer(flat[0],flat[1]),address=T::Descriptor224Address(root);
+    const auto& tr=s.ds_transition_descriptor;
+    nlohmann::json j={{"status","captured"},{"null",decoded.Base48()==0},{"root",root},{"address",address},
+        {"flat_words",std::vector<uint32_t>(flat.begin()+20,flat.begin()+24)},{"materialized",d.dwords},
+        {"raw_descriptor_captured",tr.captured},{"source_active",tr.active},{"source",tr.source},
+        {"normalized_to_null",tr.normalized},{"raw_descriptor",tr.raw.dwords}};
+    if(s.user_data.size()>=2){
+        const auto table=T::Pointer(s.user_data[0],s.user_data[1]);
+        j["root_table_backing"]=DsTransitionBacking(context,table,8);
+    }
+    j["descriptor_backing"]=DsTransitionBacking(context,address,4);
+    return j;
+}
+struct DsBrightMaskRecord {int32_t frame=-1;std::array<uint32_t,4> position{};std::array<uint32_t,16> mask{};};
+static std::vector<DsBrightMaskRecord> ds_bright_mask_records(92160);
+static nlohmann::json DsMaskTransition(RenderContext& context,const PreparedBindings& bindings,
+    std::span<const uint32_t> ids,uint32_t phase,uint32_t& matched_lost_index){
+    namespace T=DemonsTransitionTrace;
+    const auto& p=*bindings.runtime->program;const auto frame=context.GetGpu().GetFrameNum();
+    const auto slot=p.info.buffers[4].descriptor_index;
+    if(slot>=bindings.buffer_sources.size())return {{"status","missing_mask"}};
+    const auto words=ReadDsBoundWords(context,bindings,slot,ids.size()*16);
+    if(words.size()!=ids.size()*16)return {{"status","mask_read_failed"}};
+    const auto c=T::Summarize(words,ids);
+    nlohmann::json result={{"status","captured"},{"rows",c.rows},{"valid_rows",c.valid},
+        {"group1_rows",c.group1},{"group1_light_bits",c.group1_lights},{"inconsistent_group1",c.inconsistent},
+        {"mask_words_all",words},{"probe_ids_all",ids}};
+    const auto& source=bindings.buffer_sources[slot];
+    if(const auto* w=FindDsBufferProducer(frame,source.address,words.size()*4,false)){
+        result["last_writer"]={{"shader",fmt::format("{:016x}",w->shader)},{"frame",w->frame},{"submit",w->submit}};
+        for(const auto& x:ds_transition_masks){
+            if(x.frame!=w->frame||x.submit!=w->submit||x.address!=source.address||w->shader!=DemonsRadianceTrace::MaskWriter)continue;
+            result["writer_words_match"]=T::ExactWriter(words,x.words);
+            result["writer_inputs"]=x.dispatch;
+            result["writer_output_words"]=x.words;
+            break;
         }
     }
-    const auto& words=s.buffers[8].dwords;
-    result["materialized_descriptor"]=words;
-    const auto desc=DecodeNativeDescriptor<ShaderBufferResource>(s.buffers[8]);
-    if(!desc.Base48()){result["status"]="null_descriptor";return result;}
-    if(!std::equal(words.begin(),words.begin()+4,flat.begin()+116)||desc.Stride()!=96||desc.NumRecords()>4096||
-        p.info.buffers[8].written){result["status"]="unexpected_local_light_descriptor";return result;}
-    const auto slot=p.info.buffers[8].descriptor_index;
-    result["native_slot"]=slot;result["guest_records"]=desc.Base48();result["record_count"]=desc.NumRecords();
-    auto loops=nlohmann::json::array();
-    for(uint32_t k=0;k<2;++k){
-        nlohmann::json loop={{"count",counts[k]},{"first",first[k]}};
-        if(counts[k]<=256&&first[k]<=desc.NumRecords()&&counts[k]<=desc.NumRecords()-first[k]){
-            std::vector<uint32_t> indices(counts[k]);
-            for(uint32_t i=0;i<counts[k];++i)indices[i]=first[k]+i;
-            loop["words"]=indices.empty()?nlohmann::json::array():ReadDsMaskProbeRecords(context,bindings,slot,indices,96);
-        }else loop["status"]="range_unproved";
-        loops.push_back(std::move(loop));
+    // Match the same probe AND its same position, not arbitrary min/max rows in
+    // a different scene. Compare the previous bright mask before updating it.
+    const auto positions=ReadDsMaskProbeRecords(context,bindings,p.info.buffers[2].descriptor_index,ids,16);
+    auto matches=nlohmann::json::array();uint32_t lost=0,matched=0;
+    if(positions.is_array()&&positions.size()==ids.size()){
+        for(uint32_t i=0;i<ids.size();++i){
+            const auto row=std::span{words}.subspan(i*16,16);
+            if(ids[i]>=ds_bright_mask_records.size()||!T::ValidRow(row,ids[i])||!positions[i].is_array()||positions[i].size()!=4)continue;
+            const auto pos=positions[i].get<std::array<uint32_t,4>>();
+            auto& old=ds_bright_mask_records[ids[i]];
+            if(old.frame>=0&&old.frame<frame&&old.position==pos){
+                ++matched;const bool loss=(old.mask[13]&2u)&&!(row[13]&2u);
+                if(loss){++lost;if(matched_lost_index==UINT32_MAX)matched_lost_index=i;}
+                if(matches.size()<64||loss)matches.push_back({{"id",ids[i]},{"z",i},{"position",pos},{"bright_frame",old.frame},
+                    {"bright_mask",old.mask},{"current_mask",std::vector<uint32_t>(row.begin(),row.end())},{"lost_group1",loss}});
+            }
+            if(phase==1){old.frame=frame;old.position=pos;std::copy(row.begin(),row.end(),old.mask.begin());}
+        }
     }
-    result["loops"]=std::move(loops);result["status"]="captured";
+    result["matched_bright_positions"]=matched;result["lost_group1_same_position"]=lost;
+    result["bright_matches"]=std::move(matches);
     return result;
+}
+static void SaveDsTransitionEdge(int32_t frame,uint64_t submit,uint32_t phase,const nlohmann::json& report){
+    const auto folder=Config::GetShaderDumpFolder()/"queue-state";
+    std::error_code ec;std::filesystem::create_directories(folder,ec);
+    std::ofstream file(folder/fmt::format("ds_transition_edge_f{}_s{}_p{}.json",frame,submit,phase),std::ios::trunc);
+    file<<report;
 }
 
 struct DsRelightSelection {
@@ -1666,20 +1721,23 @@ struct DsRelightSelection {
     std::array<uint32_t,2> probes{UINT32_MAX,UINT32_MAX};
     std::array<uint32_t,3> groups{};
     uint32_t phase=0;
-    nlohmann::json local_lights;
+    nlohmann::json transition;
 };
 static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const PreparedBindings& bindings,
-    std::array<uint32_t,3> groups,vk::Buffer indirect={},uint64_t offset=0){
+    std::array<uint32_t,3> groups,uint64_t submit,vk::Buffer indirect={},uint64_t offset=0){
     namespace P=DemonsRelightProbe;
     DsRelightSelection result;
     const auto& p=*bindings.runtime->program;
-    if(p.shader_hash!=P::Shader||!p.ds_light_math_variant||p.info.group_pack>1)return result;
+    if(p.shader_hash!=P::Shader||p.info.group_pack>1)return result;
+    const bool focus=DsTransitionEnabled();
+    if(!focus&&!p.ds_light_math_variant)return result;
     const auto frame=context.GetGpu().GetFrameNum();
     const auto& gate=DemonsAdaptiveCapture::Current();
     const uint32_t phase=gate.PostTransitionDarkDue(frame)?3:gate.DarkOnsetDue(frame)?2:gate.BrightSceneActive(frame)?1:0;
     static std::array<int32_t,4> last{-10000,-10000,-10000,-10000};
     static std::array<uint32_t,4> count{};
-    if(count[phase]>=(phase==3?3u:2u)||int64_t{frame}-last[phase]<24)return result;
+    const bool ordinary_due=count[phase]<(phase==3?3u:2u)&&int64_t{frame}-last[phase]>=24;
+    if(!focus&&!ordinary_due)return result;
     if(indirect&&!ReadDsGpuWords(context,indirect,offset,groups))return result;
     if(groups[0]!=2||groups[1]!=2||!groups[2]||groups[2]>256)return result;
     if(p.info.buffers.size()<6)return result;
@@ -1687,6 +1745,22 @@ static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const Prep
     const auto ray_slot=p.info.buffers[1].descriptor_index;
     auto ids=ReadDsBoundWords(context,bindings,map_slot,groups[2]);
     if(ids.size()!=groups[2])return result;
+    uint32_t lost_index=UINT32_MAX;
+    bool edge=false;
+    if(focus){
+        auto desc=DsDescriptor224(context,bindings);
+        auto mask=DsMaskTransition(context,bindings,ids,phase,lost_index);
+        const bool known=desc.value("status",std::string{})=="captured";
+        const bool is_null=desc.value("null",false);
+        static int previous=-1;static uint32_t edge_count=0;static bool had_bright=false;
+        if(phase==1)had_bright=true;
+        if(known){edge=had_bright&&previous>=0&&previous!=int(is_null)&&edge_count<8;previous=int(is_null);}
+        const auto valid=mask.value("valid_rows",0u),group1=mask.value("group1_rows",0u),lost=mask.value("lost_group1_same_position",0u);
+        Log::WriteToConsoleAndLog(fmt::format("[DS_TRANSITION] frame={} submit={} phase={} descriptor_known={} descriptor_null={} mask_valid={} group1_rows={} matched_lost={} edge={}\n",frame,submit,phase,known,is_null,valid,group1,lost,edge));
+        result.transition={{"frame",frame},{"submit",submit},{"phase",phase},{"descriptor_224",std::move(desc)},{"mask",std::move(mask)}};
+        if(edge){++edge_count;SaveDsTransitionEdge(frame,submit,phase,result.transition);}
+    }
+    if(!ordinary_due||!p.ds_light_math_variant)return result;
     uint32_t first=0,second=groups[2]/2;
     // Within one dispatch, pair the lowest and highest nonzero emission/
     // color scores, rather than unrelated probes at arbitrary Z positions.
@@ -1707,11 +1781,16 @@ static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const Prep
             found=true;
         }
     }
+    if(lost_index!=UINT32_MAX)first=lost_index;
     if(second==first&&groups[2]>1)second=(first+1)%groups[2];
     result.header={1,first,second==first?UINT32_MAX:second};
     result.probes={ids[first],second==first?UINT32_MAX:ids[second]};
     result.groups=groups;result.phase=phase;last[phase]=frame;++count[phase];
-    result.local_lights=CaptureDsRelightLocalLights(context,bindings);
+    if(focus&&p.info.buffers.size()==9&&bindings.runtime->resources->buffers.size()==9){
+        const auto& d=bindings.runtime->resources->buffers[3];const auto desc=DecodeNativeDescriptor<ShaderBufferResource>(d);
+        if(desc.Base48()&&desc.Stride()==384&&desc.NumRecords()==224)
+            result.transition["descriptor_224_records_before_dispatch"]=ReadDsBoundWords(context,bindings,p.info.buffers[3].descriptor_index,224u*96u);
+    }
     ds_relight_trace_targets=result.probes;
     return result;
 }
@@ -2026,7 +2105,7 @@ static void SaveDsRelightTrace(RenderContext& context,const PreparedBindings& bi
         const auto row=rays.is_array()&&i<rays.size()?rays[i]:nlohmann::json{};
         report["ray_source_history"].push_back(DsRaySourceAtConsumer(bindings.buffer_sources[ray_slot].address,probes[i],row));
     }
-    report["local_lights_before_dispatch"]=sel.local_lights;
+    report["transition_before_dispatch"]=sel.transition;
     report["site12_atlas_footprints"]=ReadDsRelightAtlasFootprints(context,bindings,words);
     std::ofstream json(folder/(stem+".json"),std::ios::trunc);json<<report;json.close();
     Log::WriteToConsoleAndLog(fmt::format("[DS_RELIGHT_TRACE] frame={} submit={} raw={} exported={} file={} saved={}\n",
@@ -2039,7 +2118,8 @@ static void CaptureDsRelightMaskWriter(RenderContext& context, const PreparedBin
 	const auto& program = *bindings.runtime->program;
 	if (program.shader_hash != DemonsRadianceTrace::MaskWriter || !DsTraceEnabled()) return;
 	const auto frame = context.GetGpu().GetFrameNum();
-	if (!DsCoefficientCaptureDue(frame) || ds_relight_mask.frame == frame ||
+	const bool focus=DsTransitionEnabled();
+	if ((!focus&&(!DsCoefficientCaptureDue(frame)||ds_relight_mask.frame==frame)) ||
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	for (const auto& buffer: program.info.buffers) {
 		const auto slot = buffer.descriptor_index;
@@ -2079,7 +2159,21 @@ static void CaptureDsRelightMaskWriter(RenderContext& context, const PreparedBin
 			dispatch["light_count"] = light_count;
 			dispatch["cull_threshold_bits"] = resources.flattened_srt[23];
 			dispatch["light_words"] = ReadDsBoundWords(context, bindings, plan[3].descriptor_index,
-			    std::min({light_count, light_capacity, 384u}) * 96u);
+			    std::min({light_count, light_capacity, focus?64u:384u}) * 96u);
+            if(focus&&resources.user_data.size()>=2){
+                const auto root=DemonsTransitionTrace::Pointer(resources.user_data[0],resources.user_data[1]);
+                dispatch["root_backing"]=DsTransitionBacking(context,root,4);
+                const auto& root_info=dispatch["root_backing"];
+                if(root_info.contains("words")&&root_info["words"].size()==4){
+                    const auto a=root_info["words"].get<std::array<uint32_t,4>>();
+                    const auto table=DemonsTransitionTrace::Pointer(a[2],a[3]);
+                    dispatch["light_count_backing"]=DsTransitionBacking(context,table,1);
+                    if(table&&table<=UINT64_MAX-0x40)dispatch["threshold_backing"]=DsTransitionBacking(context,table+0x3c,1);
+                }
+                const auto c=DemonsTransitionTrace::Summarize(words,ids);
+                dispatch["group1_rows"]=c.group1;dispatch["valid_rows"]=c.valid;
+                Log::WriteToConsoleAndLog(fmt::format("[DS_MASK_TRANSITION] frame={} submit={} light_count={} group1_rows={} valid={}\n",frame,submit,light_count,c.group1,c.valid));
+            }
 		}
 		for (size_t i = 0; i < std::min(program.info.buffers.size(), resources.buffers.size()); ++i) {
 			const auto& resource = program.info.buffers[i];
@@ -2089,11 +2183,12 @@ static void CaptureDsRelightMaskWriter(RenderContext& context, const PreparedBin
 			nlohmann::json entry {{"slot", input_slot}, {"guest", source.address}, {"bytes", source.size},
 			    {"read", resource.read}, {"written", resource.written},
 			    {"descriptor", resources.buffers[i].dwords}};
-			if (resource.read && !resource.written)
+			if (!focus && resource.read && !resource.written)
 				entry["prefix_words"] = ReadDsBoundWords(context, bindings, input_slot, 2048);
 			dispatch["buffers"].push_back(std::move(entry));
 		}
 		ds_relight_mask = {frame, submit, output.address, std::move(words), std::move(dispatch)};
+        if(focus){ds_transition_masks[ds_transition_mask_next]=ds_relight_mask;ds_transition_mask_next=(ds_transition_mask_next+1)%ds_transition_masks.size();}
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_RELIGHT_MASK_WRITER] frame={} submit={} guest=0x{:x} words={}\n",
 		    frame, submit, output.address, ds_relight_mask.words.size()));
@@ -3563,7 +3658,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 			}
 		}
 	}
-	if(LibKernel::DemonsFileReadHistory::Enabled()) RememberDsRaySourceRows(context,bindings,submit,map,map_base,active_rows);
+	if(DsExtendedRayHistoryEnabled()&&LibKernel::DemonsFileReadHistory::Enabled()) RememberDsRaySourceRows(context,bindings,submit,map,map_base,active_rows);
 	if (!ordinary && (!targeted || targeted_reports>=20)) return;
 	constexpr uint64_t words_per_probe = 256ull * 2ull;
 	constexpr uint64_t bytes_per_probe = words_per_probe * sizeof(uint32_t);
@@ -4418,7 +4513,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	auto coefficient_trace = BeginDsCoefficientDispatch(m_context, bindings, submit_id);
 	auto count_producer_trace = BeginDsCountProducer(m_context, bindings, submit_id);
 	if (count_producer_trace) BindDsCountExec(bindings,true);
-    const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{thread_group_x,thread_group_y,thread_group_z});
+    const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{thread_group_x,thread_group_y,thread_group_z},submit_id);
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
@@ -4925,7 +5020,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	auto coefficient_trace = BeginDsCoefficientDispatch(m_context, bindings, submit_id);
 	auto count_producer_trace = BeginDsCountProducer(m_context, bindings, submit_id);
 	if (count_producer_trace) BindDsCountExec(bindings,true);
-    const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{args.x,args.y,args.z},
+    const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{args.x,args.y,args.z},submit_id,
         split_on_cpu?vk::Buffer{}:indirect_buffer,indirect_offset);
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,

@@ -264,6 +264,7 @@ object Diagnostics {
                                 (subdir == "queue-state" &&
                                     (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+(_t[0-9]+)?(_target)?\\.json")) ||
                                      file.name.matches(Regex("ds_relight_trace_f[0-9]+_s[0-9]+_p[0-9]+\\.(json|bin)")) ||
+                                     file.name.matches(Regex("ds_transition_edge_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_vertex_position_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_coverage_f[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
@@ -314,7 +315,8 @@ object Diagnostics {
                     val bridge = newest.filter { it.name.startsWith("ds_light_bridge_") }.take(8) +
                         newest.filter { it.name.startsWith("ds_gbuffer_material_") }.take(12) +
                         newest.filter { it.name.startsWith("ds_scene_writer_f") }.take(4)
-                    val producer = bridge + relightTraces + prioritizedRays +
+                    val edges = newest.filter { it.name.startsWith("ds_transition_edge_") }.take(8)
+                    val producer = edges + bridge + relightTraces + prioritizedRays +
                         newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24) +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
