@@ -3820,6 +3820,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// dynamic culling, which must be explicitly set on *every* draw (including
 	// ordinary draws) to avoid inheriting the preceding split face.
 	static const bool ds_per_face_bias = [] {
+		if(DemonsPcRenderParity::Enabled())return false;
 		const char* setting = std::getenv("KYTY_DS_PER_FACE_BIAS");
 		return setting != nullptr && setting[0] == '1' && setting[1] == '\0';
 	}();
@@ -3831,7 +3832,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	vk::CullModeFlags base_cull {};
 	if (!rect_face && face_mode.cull_front) base_cull |= vk::CullModeFlagBits::eFront;
 	if (!rect_face && face_mode.cull_back) base_cull |= vk::CullModeFlagBits::eBack;
-	if (ds_per_face_bias && !DemonsPcRenderParity::Enabled()) {
+	if (ds_per_face_bias) {
 		vk_buffer.setCullMode(base_cull);
 		vk_buffer.setDepthBiasEnable(front_bias || back_bias);
 		if (front_bias || back_bias) {

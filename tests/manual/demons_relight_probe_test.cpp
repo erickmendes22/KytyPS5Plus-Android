@@ -97,8 +97,8 @@ int main(int argc,char** argv){
         Save(std::string(argv[1])+std::to_string(k)+"-original.spv",original);
         Save(std::string(argv[1])+std::to_string(k)+"-instrumented.spv",v);
     }
-    auto fifth=Fixture(Maps[0]);
+    auto fifth=Fixture(Maps[4]);
     assert(Instrument(fifth,0x4690ec9f28ed697cull,55));
     Save(std::string(argv[1])+"fifth-instrumented.spv",fifth);
-    std::cout<<"Relight trace: struct/phi ray pair, 17 sites, four maps and guarded fifth OK\n";
+    std::cout<<"Relight trace: struct/phi ray pair, 17 sites, five captured maps and guarded layout OK\n";
 }

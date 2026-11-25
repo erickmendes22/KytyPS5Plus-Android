@@ -821,7 +821,8 @@ ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
 	const auto type = desc.info.type == Prospero::ImageType::kColor1D ||
 	                  desc.info.type == Prospero::ImageType::kColor3D
 	                      ? desc.info.type : Prospero::ImageType::kColor2D;
-	const bool depth_compare = desc.info.pixel_format == vk::Format::eD16Unorm &&
+	const bool depth_compare = (desc.info.pixel_format == vk::Format::eD16Unorm ||
+	                            desc.info.pixel_format == vk::Format::eD32Sfloat) &&
 	                           desc.view_info.aspect == vk::ImageAspectFlagBits::eDepth;
 	// Preserve the existing all-shadow fallback for games which rely on it.
 	// PPSA01341's U59 reference leaves KYTY_NULL_COMPARE_DEPTH disabled by
@@ -845,7 +846,8 @@ ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
 		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
 	const bool compare_one =
-	    clear_one_for_compare(depth_compare, t_null_compare_funcs, unshadow_greater);
+	    clear_one_for_compare(depth_compare && desc.info.pixel_format == vk::Format::eD16Unorm,
+	                          t_null_compare_funcs, unshadow_greater);
 	const uint64_t key = static_cast<uint64_t>(desc.info.pixel_format) |
 	                     (static_cast<uint64_t>(type) << 32u) |
 	                     (static_cast<uint64_t>(compare_one ? 1u : 0u) << 40u);

@@ -28,9 +28,8 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fp,uint32_t binding
     Map discovered{fp,0,0,0};
     const Map* m=nullptr;
     for(const auto& a:Maps)if(a.fp==fp)m=&a;
-    // This fifth fingerprint was seen on-device, but its dump was evicted.
-    // Accept it only after a unique structural match below.
-    // Only the relight shader invokes this helper; unknown variants must pass every structural check below.
+    // All five known modules were captured in 112246. Only the relight shader
+    // invokes this helper; unknown variants must prove the same atlas binding below.
     if(spirv.size()<5||spirv[3]>100000)return false;
     const auto bound=spirv[3];
     constexpr uint32_t u=1,f=20,vec3=2,voidt=177,mainid=56;
@@ -42,6 +41,8 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fp,uint32_t binding
     uint32_t bool_count=0, ptr_count=0;
     std::vector<bool> pair_struct(bound), pair_phi(bound);
     uint32_t previous_pair=0, candidate_count=0;
+    std::vector<uint32_t> binding_of(bound,UINT32_MAX), constants(bound,UINT32_MAX), load_from(bound), chain_base(bound), chain_index(bound), sampled_image(bound);
+    uint32_t image_sites=0;bool atlas_layout=false;
     for(size_t i=5;i<spirv.size();){
         const auto n=spirv[i]>>16;
         if(!n||n>spirv.size()-i)return false;
@@ -52,6 +53,19 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fp,uint32_t binding
         if(o==spv::OpTypeVector&&n==4&&spirv[i+1]<bound&&spirv[i+2]<bound&&spirv[i+3]<=4&&types[spirv[i+2]].count==1)
             types[spirv[i+1]]={spirv[i+2],spirv[i+3]};
         if(o==spv::OpExecutionMode&&n==6&&spirv[i+1]==mainid&&spirv[i+2]==17&&spirv[i+3]==8&&spirv[i+4]==8&&spirv[i+5]==1)local=true;
+        if(o==spv::OpDecorate&&n==4&&spirv[i+1]<bound&&spirv[i+2]==spv::DecorationBinding)binding_of[spirv[i+1]]=spirv[i+3];
+        if(o==spv::OpConstant&&n==4&&(spirv[i+1]==u||spirv[i+1]==f)&&spirv[i+2]<bound)constants[spirv[i+2]]=spirv[i+3];
+        if(o==spv::OpLoad&&n>=4&&spirv[i+2]<bound)load_from[spirv[i+2]]=spirv[i+3];
+        if(o==spv::OpAccessChain&&n==5&&spirv[i+2]<bound){chain_base[spirv[i+2]]=spirv[i+3];chain_index[spirv[i+2]]=spirv[i+4];}
+        if(o==spv::OpSampledImage&&n==5&&spirv[i+2]<bound)sampled_image[spirv[i+2]]=spirv[i+3];
+        if(o==spv::OpImageSampleExplicitLod||o==spv::OpImageSampleDrefExplicitLod||o==spv::OpImageFetch){
+            if(++image_sites==12&&o==spv::OpImageSampleExplicitLod&&n==7&&spirv[i+5]==2&&spirv[i+6]<bound&&constants[spirv[i+6]]==0){
+                const auto s=spirv[i+3];const auto im=s<bound?sampled_image[s]:0;
+                const auto ptr=im<bound?load_from[im]:0;
+                const auto base=ptr<bound?chain_base[ptr]:0,ix=ptr<bound?chain_index[ptr]:0;
+                atlas_layout=base&&base<bound&&ix&&ix<bound&&binding_of[base]==4&&constants[ix]==2;
+            }
+        }
         if(o==spv::OpTypeBool&&n==2){discovered.boolean=spirv[i+1];++bool_count;}
         if(o==spv::OpTypePointer&&n==4&&spirv[i+2]==spv::StorageClassStorageBuffer&&spirv[i+3]==u){discovered.ptr=spirv[i+1];++ptr_count;}
         // AMD buffer loads lower to a struct {uint,uint}, not a vector.
@@ -73,7 +87,7 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fp,uint32_t binding
     }
     if(!first_type||!local||types[u].count!=1||types[f].count!=1)return false;
     if(!m){
-        if(bool_count!=1||ptr_count!=1||candidate_count!=1)return false;
+        if(bool_count!=1||ptr_count!=1||candidate_count!=1||!atlas_layout)return false;
         m=&discovered;
     }
     if(m->ray>=bound||m->boolean>=bound||m->ptr>=bound)return false;

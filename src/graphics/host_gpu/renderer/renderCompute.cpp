@@ -1663,6 +1663,10 @@ static nlohmann::json ReadDsRelightAtlasFootprints(RenderContext& context,
     namespace P=DemonsRelightProbe;
     namespace IR=ShaderRecompiler::IR;
     const auto& program=*bindings.runtime->program;
+    // The fifth observed module uses binding 3, element 0 (2D), not the
+    // 360-layer atlas at binding 4, element 2. Do not misattribute its samples.
+    if(program.ds_light_math_variant==0x4690ec9f28ed697cull)
+        return {{"status","different_site12_resource"},{"binding",3},{"element",0}};
     const auto& resources=program.info.images;
     size_t slot=resources.size();
     for(size_t i=0;i<resources.size();++i){
