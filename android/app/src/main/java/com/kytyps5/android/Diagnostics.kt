@@ -269,7 +269,7 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_geometry_coverage_f[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_dominant_material_f[0-9]+_s[0-9]+\\.json")) ||
-                                     file.name.matches(Regex("ds_depth_prepass_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_depth_prepass_f[0-9]+_s[0-9]+_p[0-9]+(_d[0-9]+)?\\.json")) ||
                                      file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark|post_transition)_f[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark|post_transition)_f[0-9]+_s[0-9]+(_ps[0-9a-f]{16})?\\.json")))) ||
@@ -318,14 +318,14 @@ object Diagnostics {
                     val edges = newest.filter { it.name.startsWith("ds_transition_edge_") }.take(8)
                     // Geometry coverage has four distinct causal phases per launch. Keep all before large producer dumps.
                     val coverage = newest.filter { it.name.startsWith("ds_geometry_coverage_f") }
-                    val producer = coverage + edges + bridge + relightTraces + prioritizedRays +
+                    val depthOwners = newest.filter { it.name.startsWith("ds_depth_prepass_f") }
+                    val producer = coverage + depthOwners + edges + bridge + relightTraces + prioritizedRays +
                         newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24) +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
                         geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +
                         geometry.filterNot { it.name.contains("f0c140ea8df8f532") }.take(20) +
                         newest.filter { it.name.startsWith("ds_dominant_material_f") }.take(2) +
-                        newest.filter { it.name.startsWith("ds_depth_prepass_f") }.take(4) +
                         newest.filter { it.name.startsWith("ds_ray_producer_f") && !it.name.endsWith("_target.json") }.take(16) +
                         newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
                         .take(18) +
