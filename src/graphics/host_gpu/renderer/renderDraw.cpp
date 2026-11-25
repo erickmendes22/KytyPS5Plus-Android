@@ -3631,17 +3631,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		vk::QueryPool pool {};
 		int32_t frame = -1;
 		uint64_t last_tick = 0;
-		bool done = false;
+		int32_t phase = -1;
+		std::array<bool,4> completed {};
+		bool capacity_reached = false;
 		std::array<bool,2> replay_seen {};
 		nlohmann::json rows = nlohmann::json::array();
 	};
 	static DsGeometryFrame geometry;
-	constexpr uint32_t geometry_capacity = 192;
+	constexpr uint32_t geometry_capacity = 512;
 	uint32_t geometry_query = UINT32_MAX;
 	uint32_t geometry_replay_first = UINT32_MAX;
 	std::array<vk::Pipeline,3> geometry_replay {};
 	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
-	    graphics.occlusion_query_precise_enabled && !geometry.done) {
+	    graphics.occlusion_query_precise_enabled) {
 		if (geometry.pool && int64_t{ds_gbuffer_frame} > int64_t{geometry.frame} + 1 && !geometry.rows.empty() &&
 		    geometry.last_tick != 0 && m_context.GetCommandScheduler().GetMasterSemaphore().IsFree(geometry.last_tick)) {
 			std::vector<uint64_t> result(geometry.rows.size() * 2);
@@ -3660,14 +3662,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				std::filesystem::create_directories(folder, ec);
 				const auto name = fmt::format("ds_geometry_coverage_f{}.json", geometry.frame);
 				std::ofstream file(folder / name, std::ios::trunc);
-				if (file) file << nlohmann::json{{"frame", geometry.frame}, {"draws", geometry.rows}};
+				if (file) file << nlohmann::json{{"frame", geometry.frame}, {"phase", geometry.phase},
+				    {"capacity_reached", geometry.capacity_reached}, {"draws", geometry.rows}};
 				file.close();
 				Log::WriteToConsoleAndLog(fmt::format(
 				    "[DS_GEOMETRY_COVERAGE] frame={} draws={} file={} saved={}\n",
 				    geometry.frame, geometry.rows.size(), name, file.good()));
 				graphics.device.destroyQueryPool(geometry.pool, nullptr);
 				geometry.pool = nullptr;
-				geometry.done = true;
+				geometry.completed[static_cast<size_t>(geometry.phase)] = true;
+				geometry.rows.clear();
+				geometry.last_tick = 0;
 			}
 		}
 		const bool relevant_depth = state.depth_info.image_id &&
@@ -3678,19 +3683,36 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			       color.desc.view_info.base_layer == 0 && color.desc.view_info.base_level == 0;
 		});
 		const bool relevant = relevant_depth || gbuffer != colors.end();
-		if (!geometry.pool && !geometry.done && relevant &&
-		    DemonsAdaptiveCapture::Current().PostTransitionDarkDue(ds_gbuffer_frame)) {
+		const auto& geometry_gate = DemonsAdaptiveCapture::Current();
+		const int geometry_phase = geometry_gate.PostTransitionDarkDue(ds_gbuffer_frame) ? 3
+		    : geometry_gate.DarkOnsetDue(ds_gbuffer_frame) ? 1
+		    : geometry_gate.BrightBaselineDue(ds_gbuffer_frame) ? 0
+		    : geometry_gate.CaptureDue(ds_gbuffer_frame) ? 2 : -1;
+		if (!geometry.pool && relevant && geometry_phase >= 0 &&
+		    !geometry.completed[static_cast<size_t>(geometry_phase)]) {
 			vk::QueryPoolCreateInfo info {};
 			info.queryType = vk::QueryType::eOcclusion;
 			info.queryCount = geometry_capacity;
 			if (graphics.device.createQueryPool(&info, nullptr, &geometry.pool) == vk::Result::eSuccess) {
 				geometry.frame = ds_gbuffer_frame;
+				geometry.phase = geometry_phase;
+				geometry.capacity_reached = false;
+				geometry.replay_seen = {};
+				geometry.rows.clear();
+				geometry.last_tick = 0;
 				m_context.GetCommandScheduler().EndRendering(PassEnd::Buffer);
 				buffer.Handle().resetQueryPool(geometry.pool, 0, geometry_capacity);
-			} else { geometry.pool = nullptr; geometry.done = true; }
+			} else {
+				geometry.pool = nullptr;
+				geometry.completed[static_cast<size_t>(geometry_phase)] = true;
+				Log::WriteToConsoleAndLog(fmt::format("[DS_GEOMETRY_COVERAGE] phase={} frame={} query_pool_failed=true\n", geometry_phase, ds_gbuffer_frame));
+			}
 		}
 		// Guest flips can split depth prepass and G-buffer across adjacent host
 		// frame numbers (213553: depth=429, material=430). Keep both.
+		if (geometry.pool && relevant && int64_t{ds_gbuffer_frame} >= geometry.frame &&
+		    int64_t{ds_gbuffer_frame} <= int64_t{geometry.frame} + 1 &&
+		    geometry.rows.size() >= geometry_capacity) geometry.capacity_reached = true;
 		if (geometry.pool && int64_t{ds_gbuffer_frame} >= geometry.frame &&
 		    int64_t{ds_gbuffer_frame} <= int64_t{geometry.frame} + 1 && relevant &&
 		    geometry.rows.size() < geometry_capacity) {
@@ -3712,6 +3734,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    {"depth_test", state.depth_info.depth_test_enable}, {"depth_write", state.depth_info.depth_write_enable},
 			    {"depth_compare", static_cast<uint32_t>(state.depth_info.depth_compare_op)},
 			    {"depth_load_clear", state.depth_info.depth_load_clear_enable},
+			    {"guest_depth_clear", state.depth_info.depth_clear_enable},
+			    {"htile_pending", state.depth_info.trace_meta_pending},
+			    {"htile_fill_known", state.depth_info.trace_meta_known},
+			    {"htile_fill_word", state.depth_info.trace_meta_fill},
+			    {"htile_depth_clear", state.depth_info.trace_meta_depth_clear},
+			    {"depth_clear_value", state.depth_info.depth_clear_value},
 			    {"stencil_test", state.depth_info.stencil_test_enable},
 			    {"gbuffer_layer0", gbuffer != colors.end()},
 			    {"gbuffer_write_mask", gbuffer != colors.end() ?
