@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "common/hostArch.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/demonsPcRenderParity.h"
 
 #if KYTY_HOST_X86
 #include <xbyak/xbyak.h>
@@ -14,6 +15,7 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 #include <map>
 #include <optional>
 #include <unordered_map>
@@ -1559,15 +1561,20 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		}
 		return true;
 	}
+	// PC U59 determines active sources with the strict walker before a separate flat refresh.
+	// Keep this parity experiment confined to the relight program with verified descriptor provenance.
+	const bool pc_relight = m_program.shader_hash == 0xbcbcc6ba1e68c974ull &&
+	    DemonsPcRenderParity::Enabled() && m_runtime.read_specialization_memory != nullptr &&
+	    m_clean_evaluator != nullptr;
 	auto& visited = m_scratch.visited_blocks;
 	auto& reachable = m_scratch.reachable_blocks;
 	auto& pending = m_scratch.pending_blocks;
 	visited.assign(m_program.control_flow.size(), 1u);
 	ResetUnknowns();
-	m_reachable_blocks = &visited;
+	m_reachable_blocks = pc_relight ? nullptr : &visited;
 	if (m_clean_evaluator != nullptr) {
 		m_clean_evaluator->ResetUnknowns();
-		m_clean_evaluator->m_reachable_blocks = &visited;
+		m_clean_evaluator->m_reachable_blocks = pc_relight ? nullptr : &visited;
 	}
 	// Block conditions get their own walker (and memo context) that never waits for the GPU:
 	// a uniform branch on a GPU-written count (Astro Bot's indirect computes) otherwise submits
@@ -1575,7 +1582,7 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 	// stays unknown here only; the descriptor evaluation below still reads the same values
 	// through the strict reader.
 	std::optional<SrtWalker> branch;
-	if (m_runtime.read_branch_memory != nullptr) {
+	if (!pc_relight && m_runtime.read_branch_memory != nullptr) {
 		// On this walk's scratch: the plan's own scratch belongs to the GPU thread, and walks of one
 		// plan run concurrently on fan-out workers (c17_drain1 / c17_fan3a crashed in ResetUnknowns).
 		branch.emplace(m_program, m_scratch, BranchRuntime(m_runtime));
@@ -1606,7 +1613,7 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		}
 		if (reachable == visited) break;
 		visited.swap(reachable);
-		if (m_program.control_phi_predecessors.empty()) break;
+		if (pc_relight || m_program.control_phi_predecessors.empty()) break;
 		// Only unknown values need another evaluation: successful Phi facts remain
 		// true as their possible predecessors shrink. Keep uniform-read memos stable.
 		ResetUnknowns();
@@ -1619,9 +1626,29 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		for (const auto source: block.sources) active.at(source) = 0u;
 	for (uint32_t index = 0; index < visited.size(); ++index) {
 		if (!visited[index]) continue;
-		const auto& block = m_program.control_flow[index];
-		for (const auto source: block.sources) active[source] = 1u;
-		for (const auto slot: block.srt_reads)
+		for (const auto source: m_program.control_flow[index].sources) active[source] = 1u;
+	}
+	if (pc_relight) {
+		bool complete = true;
+		for (uint32_t slot = 0; slot < m_program.srt_reads.size(); ++slot) {
+			if (!refresh(slot)) { complete = false; break; }
+		}
+		static std::atomic_uint32_t reports {0};
+		if (reports.fetch_add(1, std::memory_order_relaxed) < 24u)
+			std::printf("[DS_SRT_PC_WALK] source3_active=%d full_refresh=%d\n",
+			    int(active.size() > 3 && active[3]), int(complete));
+		if (complete) return true;
+		// Retain the Android reachable-read fallback for unsupported inactive reads.
+		// Do not replace a descriptor with arbitrary words or change the guest condition.
+		flat.assign(m_program.srt_reads.size(), 0u);
+		m_reachable_blocks = &visited;
+		m_clean_evaluator->m_reachable_blocks = &visited;
+		ResetUnknowns();
+		m_clean_evaluator->ResetUnknowns();
+	}
+	for (uint32_t index = 0; index < visited.size(); ++index) {
+		if (!visited[index]) continue;
+		for (const auto slot: m_program.control_flow[index].srt_reads)
 			if (!refresh(slot)) return false;
 	}
 	return true;
