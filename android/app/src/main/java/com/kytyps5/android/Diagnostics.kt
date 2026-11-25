@@ -263,6 +263,7 @@ object Diagnostics {
                             (subdir == "guest-shaders" ||
                                 (subdir == "queue-state" &&
                                     (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+(_t[0-9]+)?(_target)?\\.json")) ||
+                                     file.name.matches(Regex("ds_relight_trace_f[0-9]+_s[0-9]+_p[0-9]+\\.(json|bin)")) ||
                                      file.name.matches(Regex("ds_vertex_position_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_coverage_f[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
@@ -308,7 +309,8 @@ object Diagnostics {
                     val rayTargets = newest.filter { it.name.startsWith("ds_ray_producer_f") && it.name.endsWith("_target.json") }
                     // Retain both the first and last matched updates of the actually consumed probes.
                     val prioritizedRays = (rayTargets.takeLast(10) + rayTargets.take(20)).distinct()
-                    val producer = prioritizedRays +
+                    val relightTraces = newest.filter { it.name.startsWith("ds_relight_trace_") }.take(18)
+                    val producer = relightTraces + prioritizedRays +
                         newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24) +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +

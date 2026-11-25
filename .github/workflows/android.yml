@@ -345,7 +345,9 @@ jobs:
           /tmp/ds-count-probe /tmp/ds-count-
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_vertex_position_probe_test.cpp -o /tmp/ds-vertex-probe
           /tmp/ds-vertex-probe /tmp/ds-vertex-
-          for f in /tmp/ds-count-*.spv /tmp/ds-vertex-*.spv; do
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_relight_probe_test.cpp -o /tmp/ds-relight-probe
+          /tmp/ds-relight-probe /tmp/ds-relight-
+          for f in /tmp/ds-count-*.spv /tmp/ds-vertex-*.spv /tmp/ds-relight-*.spv; do
             echo "Validating $f"
             spirv-val --target-env vulkan1.3 "$f"
           done

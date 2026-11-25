@@ -3,6 +3,7 @@
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsCountExecProbe.h"
+#include "graphics/host_gpu/renderer/pipeline/demonsRelightProbe.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -436,10 +437,28 @@ void RenderExecutor::BindDsCountExec(PreparedBindings& bindings,bool capture) {
     bindings.shared_memory=vk::DescriptorBufferInfo{storage->Handle(),0,bytes};
 }
 
+void RenderExecutor::BindDsRelightTrace(PreparedBindings& bindings,std::array<uint32_t,3> header) {
+    namespace P=DemonsRelightProbe;
+    auto& storage=m_ds_relight_buffers[header[0]!=0];
+    const bool init=!storage;
+    const auto bytes=(header[0]?P::WordCount:P::Header)*sizeof(uint32_t);
+    if(init)storage=std::make_unique<Buffer>(m_context.GetGraphics(),m_context.GetCommandScheduler(),
+        MemoryUsage::Download,0,vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc,bytes);
+    if(init||header[0]){
+        std::vector<uint32_t> words(header[0]?P::WordCount:P::Header);
+        std::copy(header.begin(),header.end(),words.begin());
+        std::memcpy(storage->Mapped().data(),words.data(),bytes);storage->Flush(0,bytes);
+    }
+    bindings.shared_memory=vk::DescriptorBufferInfo{storage->Handle(),0,bytes};
+}
+
 void RenderExecutor::BindDsLightMath(PreparedBindings& bindings,
                                     const DemonsQueueProbe::Capture* capture) {
 	using namespace DemonsLightMathProbe;
 	if (!bindings.runtime->program->ds_light_math_variant) return;
+    if(bindings.runtime->program->shader_hash==DemonsRelightProbe::Shader){
+        BindDsRelightTrace(bindings,{0,UINT32_MAX,UINT32_MAX});return;
+    }
     if(bindings.runtime->program->shader_hash==DemonsCountExecProbe::Shader){
         BindDsCountExec(bindings,false);return;
     }
@@ -1427,6 +1446,40 @@ bool DsCoefficientCaptureDue(int32_t frame) {
 	return DsCoefficientPairDue(frame) || DemonsAdaptiveCapture::Current().CaptureDue(frame);
 }
 
+struct DsRelightSelection {
+    std::array<uint32_t,3> header{0,UINT32_MAX,UINT32_MAX};
+    std::array<uint32_t,2> probes{UINT32_MAX,UINT32_MAX};
+    std::array<uint32_t,3> groups{};
+    uint32_t phase=0;
+};
+static DsRelightSelection SelectDsRelightTrace(RenderContext& context,const PreparedBindings& bindings,
+    std::array<uint32_t,3> groups,vk::Buffer indirect={},uint64_t offset=0){
+    namespace P=DemonsRelightProbe;
+    DsRelightSelection result;
+    const auto& p=*bindings.runtime->program;
+    if(p.shader_hash!=P::Shader||!p.ds_light_math_variant||p.info.group_pack>1)return result;
+    const auto frame=context.GetGpu().GetFrameNum();
+    const auto& gate=DemonsAdaptiveCapture::Current();
+    const uint32_t phase=gate.PostTransitionDarkDue(frame)?3:gate.DarkOnsetDue(frame)?2:gate.BrightSceneActive(frame)?1:0;
+    static std::array<int32_t,4> last{-10000,-10000,-10000,-10000};
+    static std::array<uint32_t,4> count{};
+    if(count[phase]>=(phase==3?3u:2u)||int64_t{frame}-last[phase]<24)return result;
+    if(indirect&&!ReadDsGpuWords(context,indirect,offset,groups))return result;
+    if(groups[0]!=2||groups[1]!=2||!groups[2]||groups[2]>256)return result;
+    auto ids=ReadDsBoundWords(context,bindings,0,groups[2]);
+    if(ids.size()!=groups[2])return result;
+    uint32_t first=0,second=groups[2]/2;
+    for(uint32_t target:{4701u,24540u,23322u}){
+        const auto it=std::find(ids.begin(),ids.end(),target);
+        if(it!=ids.end()){first=uint32_t(it-ids.begin());break;}
+    }
+    if(second==first&&groups[2]>1)second=(first+1)%groups[2];
+    result.header={1,first,second==first?UINT32_MAX:second};
+    result.probes={ids[first],second==first?UINT32_MAX:ids[second]};
+    result.groups=groups;result.phase=phase;last[phase]=frame;++count[phase];
+    return result;
+}
+
 void RetagDsRecordedComputeWrites(RenderContext& context, const PreparedBindings& bindings,
                                   uint64_t preparation_tick) {
 	auto& cache = context.GetBufferCache();
@@ -1486,6 +1539,51 @@ static nlohmann::json ReadDsMaskProbeRecords(RenderContext& context,
 		records.push_back(std::vector<uint32_t>(begin, begin + words_per_record));
 	}
 	return records;
+}
+
+static void SaveDsRelightTrace(RenderContext& context,const PreparedBindings& bindings,
+    uint64_t submit,const DsRelightSelection& sel){
+    namespace P=DemonsRelightProbe;
+    if(!sel.header[0])return;
+    std::vector<uint32_t> words(P::WordCount);
+    if(!ReadDsGpuWords(context,bindings.shared_memory.buffer,bindings.shared_memory.offset,words))return;
+    const auto frame=context.GetGpu().GetFrameNum();
+    const auto folder=Config::GetShaderDumpFolder()/"queue-state";
+    std::error_code ec;std::filesystem::create_directories(folder,ec);
+    const auto stem=fmt::format("ds_relight_trace_f{}_s{}_p{}",frame,submit,sel.phase);
+    std::ofstream out(folder/(stem+".bin"),std::ios::binary|std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(words.data()),words.size()*sizeof(uint32_t));out.close();
+    if(!out.good())return;
+    const auto& snap=*bindings.runtime->resources;
+    nlohmann::json desc=nlohmann::json::array(),images=nlohmann::json::array(),samplers=nlohmann::json::array();
+    for(const auto& a:snap.buffers)desc.push_back(a.dwords);
+    for(const auto& a:snap.images)images.push_back(a.dwords);
+    for(const auto& a:snap.samplers)samplers.push_back(a.dwords);
+    std::vector<uint32_t> probes,z;
+    for(uint32_t i=0;i<P::Probes;++i)if(sel.probes[i]!=UINT32_MAX){probes.push_back(sel.probes[i]);z.push_back(sel.header[i+1]);}
+    // slot 1 stores 256 ray pairs per probe; slot 4 is the actual mask
+    // indexed by workgroup Z, and slot 5 contains the light records.
+    const auto rays=ReadDsMaskProbeRecords(context,bindings,1,probes,2048);
+    const auto masks=ReadDsMaskProbeRecords(context,bindings,4,z,64);
+    const auto lights=ReadDsBoundWords(context,bindings,5,384u*96u);
+    const auto positions=ReadDsMaskProbeRecords(context,bindings,2,probes,16);
+    nlohmann::json report={{"frame",frame},{"submit",submit},{"phase",sel.phase},
+        {"fingerprint",fmt::format("{:016x}",bindings.runtime->program->ds_light_math_variant)},
+        {"groups",sel.groups},{"probe_ids",sel.probes},{"z",sel.header},
+        {"header_words",P::Header},{"rays",P::Rays},{"sites",P::Sites},{"events",P::Events},
+        {"site_words",P::SiteWords},{"event_words",P::EventWords},
+        {"binary",stem+".bin"},{"ray_words",rays},{"mask_words",masks},{"light_words",lights},
+        {"positions",positions},{"srt",snap.flattened_srt},{"shader_data",bindings.shader_data},
+        {"buffers",desc},{"images",images},{"samplers",samplers}};
+    uint32_t raw=0,exported=0;
+    for(uint32_t row=0;row<P::Probes*P::Rays;++row){
+        const auto base=P::Header+row*P::Sites*P::SiteWords;
+        raw+=words[base]!=0;exported+=words[base+(P::Sites-1)*P::SiteWords]!=0;
+    }
+    report["raw_rays_seen"]=raw;report["exports_seen"]=exported;
+    std::ofstream json(folder/(stem+".json"),std::ios::trunc);json<<report;json.close();
+    Log::WriteToConsoleAndLog(fmt::format("[DS_RELIGHT_TRACE] frame={} submit={} raw={} exported={} file={} saved={}\n",
+        frame,submit,raw,exported,stem,json.good()));
 }
 
 static void CaptureDsRelightMaskWriter(RenderContext& context, const PreparedBindings& bindings,
@@ -3851,6 +3949,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	auto coefficient_trace = BeginDsCoefficientDispatch(m_context, bindings, submit_id);
 	auto count_producer_trace = BeginDsCountProducer(m_context, bindings, submit_id);
 	if (count_producer_trace) BindDsCountExec(bindings,true);
+    const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{thread_group_x,thread_group_y,thread_group_z});
+    if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
@@ -3955,6 +4055,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
 	EndDsCountProducer(m_context,bindings,std::move(count_producer_trace),
 	                   {thread_group_x,thread_group_y,thread_group_z});
+    SaveDsRelightTrace(m_context,bindings,submit_id,relight_trace);
 	CaptureDsGeometryWriter(m_context, bindings, submit_id,
 	                           {thread_group_x, thread_group_y, thread_group_z});
 	CaptureDsRelightMaskWriter(m_context, bindings, submit_id,
@@ -4355,6 +4456,9 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	auto coefficient_trace = BeginDsCoefficientDispatch(m_context, bindings, submit_id);
 	auto count_producer_trace = BeginDsCountProducer(m_context, bindings, submit_id);
 	if (count_producer_trace) BindDsCountExec(bindings,true);
+    const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{args.x,args.y,args.z},
+        split_on_cpu?vk::Buffer{}:indirect_buffer,indirect_offset);
+    if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
 	const auto vk_buffer = buffer.Handle();
@@ -4413,6 +4517,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	EndDsCountProducer(m_context,bindings,std::move(count_producer_trace),{args.x,args.y,args.z},
 	                   split_on_cpu ? vk::Buffer {} : indirect_buffer,indirect_offset);
+    SaveDsRelightTrace(m_context,bindings,submit_id,relight_trace);
 	CaptureDsGeometryWriter(m_context, bindings, submit_id, {args.x, args.y, args.z},
 	                           split_on_cpu ? vk::Buffer {} : indirect_buffer, indirect_offset);
 	CaptureDsRelightMaskWriter(m_context, bindings, submit_id, {args.x, args.y, args.z},
