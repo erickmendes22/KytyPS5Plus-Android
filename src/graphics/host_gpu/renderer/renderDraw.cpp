@@ -2386,7 +2386,7 @@ static PreparedIndexBuffer PrepareIndexBuffer(CommandBuffer&               buffe
 
 // Read exactly the GPU index data that the original indexed draw consumes.
 static std::vector<uint32_t> ReadDsVertexIndices(RenderContext& context,const PreparedIndexBuffer& source,uint32_t count) {
-    if(!source.buffer || !count || count>32768) return {};
+    if(!source.buffer || !count || count>65536) return {};
     const uint32_t width=source.type==vk::IndexType::eUint16?2u:4u;
     const size_t bytes=size_t{count}*width;
     auto& scheduler=context.GetCommandScheduler();
@@ -3378,6 +3378,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     std::vector<uint32_t> ds_vertex_indices;
     uint32_t ds_vertex_base=0,ds_vertex_count=0;
     int ds_vertex_phase=-1;
+    uint64_t ds_vertex_pair=0;
+    DsDepthFullSnapshot ds_vertex_depth_before;
+    struct DsVertexPair {
+        int32_t frame=-1;
+        int phase=-1;
+        uint64_t serial=0,address=0;
+        uint32_t count=0,instance=0;
+        int32_t base=0;
+        bool material_captured=false;
+    };
+    static std::array<DsVertexPair,2> ds_vertex_pairs{};
+    static uint64_t ds_vertex_serial=0;
     const auto* ds_vp=state.vertex_info[0].stage.program;
     if(ds_vp && VP::Watched(ds_vp->shader_hash) && ds_vp->ds_light_math_variant){
         const auto& gate=DemonsAdaptiveCapture::Current();
@@ -3386,14 +3398,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             gate.DarkOnsetDue(ds_gbuffer_frame)?2:gate.BrightSceneActive(ds_gbuffer_frame)?1:0;
         static std::array<std::array<int32_t,4>,2> last{{{{-1,-1,-1,-1}},{{-1,-1,-1,-1}}}};
         static std::array<std::array<uint32_t,4>,2> counts{};
-        const uint32_t k=ds_vp->shader_hash==0x34c51585c926a664ull?0u:1u;
-        const bool matched=ps && ps->shader_hash==(k==0?0x3dce2bd78d58db62ull:0x895c9fe037e704f5ull);
-        if(matched && vertex_stages.size()==1 && !mesh_active && !mesh_emulated && !indirect &&
+        const uint32_t k=VP::PairIndex(ds_vp->shader_hash);
+        const bool material=VP::Material(ds_vp->shader_hash);
+        auto& pair=ds_vertex_pairs[k];
+        const bool matched=ps && ps->shader_hash==(material ?
+            (k==0?0xc92deb23fc611b10ull:0xcfc1d9193e7f9e53ull) :
+            (k==0?0x3dce2bd78d58db62ull:0x895c9fe037e704f5ull));
+        const bool due=material ?
+            pair.serial && !pair.material_captured && ds_gbuffer_frame>=pair.frame &&
+            int64_t{ds_gbuffer_frame}-pair.frame<=1 &&
+            pair.address==index_source.address && pair.count==draw.index_count &&
+            pair.base==emit.vertex_offset && pair.instance==emit.first_instance :
+            counts[k][phase]<(phase==3?2u:1u) &&
+            (last[k][phase]<0 || ds_gbuffer_frame-last[k][phase]>=24);
+        if(matched && due && vertex_stages.size()==1 && !mesh_active && !mesh_emulated && !indirect &&
             draw.IsIndexed() && draw.instance_count==1 && !primitive_restart_enable &&
             topology==vk::PrimitiveTopology::eTriangleList && index_source.guest_element_size>=2 &&
-            state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress &&
-            counts[k][phase]<(phase==3?2u:1u) &&
-            (last[k][phase]<0 || ds_gbuffer_frame-last[k][phase]>=24)){
+            state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress){
             ds_vertex_indices=ReadDsVertexIndices(m_context,index_binding,draw.index_count);
             if(!ds_vertex_indices.empty()){
                 const auto [lo,hi]=std::minmax_element(ds_vertex_indices.begin(),ds_vertex_indices.end());
@@ -3401,9 +3422,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                 if(base>=0 && end<=UINT32_MAX && end-base<VP::MaxVertices){
                     ds_vertex_base=static_cast<uint32_t>(base);
                     ds_vertex_count=static_cast<uint32_t>(end-base+1);
-                    ds_vertex_phase=phase;
-                    last[k][phase]=ds_gbuffer_frame;
-                    ++counts[k][phase];
+                    if(material){
+                        ds_vertex_phase=pair.phase;
+                        ds_vertex_pair=pair.serial;
+                        pair.material_captured=true;
+                    }else{
+                        ds_vertex_phase=phase;
+                        ds_vertex_pair=++ds_vertex_serial;
+                        pair={ds_gbuffer_frame,phase,ds_vertex_pair,index_source.address,
+                            draw.index_count,emit.first_instance,emit.vertex_offset,false};
+                        last[k][phase]=ds_gbuffer_frame;
+                        ++counts[k][phase];
+                    }
+                    // This read is before the current draw, including before
+                    // any pending attachment load clear. Record that clear
+                    // separately; do not compare the pre-clear image as if
+                    // it were the depth tested by the draw.
+                    ds_vertex_depth_before=SnapshotDsDepthFull(m_context,state.depth_info);
                 }
             }
         }
@@ -3920,6 +3955,20 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		                                   : uint64_t {draw.index_count} * draw.instance_count);
 	}
     if(ds_vertex_phase>=0){
+        const auto viewport=dynamic_state.viewports[0];
+        const auto scissor=dynamic_state.scissors[0];
+        const auto viewport_count=dynamic_state.num_viewports;
+        const auto depth_compare=dynamic_state.depth_compare_op;
+        const auto depth_write=dynamic_state.depth_write_enabled;
+        const auto depth_test=dynamic_state.depth_test_enabled;
+        const auto bias=dynamic_state.depth_bias_enabled;
+        const auto bias_values=std::array<float,3>{dynamic_state.depth_bias_constant,
+            dynamic_state.depth_bias_slope,dynamic_state.depth_bias_clamp};
+        const auto stencil_test=dynamic_state.stencil_test_enabled;
+        const auto stencil_front=dynamic_state.stencil_front_ops.compare_op;
+        const auto stencil_back=dynamic_state.stencil_back_ops.compare_op;
+        const auto front_ref=dynamic_state.stencil_front_reference;
+        const auto back_ref=dynamic_state.stencil_back_reference;
         auto& scheduler=m_context.GetCommandScheduler();
         scheduler.EndRendering(PassEnd::Buffer);
         vk::MemoryBarrier host{};
@@ -3947,6 +3996,50 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             for(uint32_t j=1;j<VP::Stride;++j)row.push_back(values[p+j]);
             rows.push_back(std::move(row));
         }
+        // Retain the exact region of D32 consumed by this draw. The
+        // previous 64-point grid missed these ~12x8-pixel meshes entirely.
+        // Restrict exported regions to at most 65536 pixels, but keep the
+        // actual projected bounds and a reason if a region is unavailable.
+        const auto depth_after=SnapshotDsDepthFull(m_context,state.depth_info);
+        nlohmann::json depth_region={{"status","unavailable"}};
+        double minx=std::numeric_limits<double>::infinity(),miny=minx;
+        double maxx=-minx,maxy=-minx;
+        for(const auto& row:rows){
+            const float x=std::bit_cast<float>(row[3].get<uint32_t>());
+            const float y=std::bit_cast<float>(row[4].get<uint32_t>());
+            const float w=std::bit_cast<float>(row[6].get<uint32_t>());
+            if(!(std::isfinite(x)&&std::isfinite(y)&&std::isfinite(w)) || w<=0)continue;
+            const double px=viewport.x+(double{x}/w+1.0)*viewport.width*0.5;
+            const double py=viewport.y+(double{y}/w+1.0)*viewport.height*0.5;
+            minx=std::min(minx,px);maxx=std::max(maxx,px);
+            miny=std::min(miny,py);maxy=std::max(maxy,py);
+        }
+        if(std::isfinite(minx)&&std::isfinite(miny)&&viewport_count==1 &&
+           !ds_vertex_depth_before.bits.empty() &&
+           ds_vertex_depth_before.width==depth_after.width &&
+           ds_vertex_depth_before.height==depth_after.height &&
+           ds_vertex_depth_before.bits.size()==depth_after.bits.size()){
+            const auto width=depth_after.width,height=depth_after.height;
+            const auto bound=[](double x,uint32_t limit){return static_cast<uint32_t>(std::clamp(x,0.0,static_cast<double>(limit)));};
+            const uint32_t x0=bound(std::floor(minx)-2,width),x1=bound(std::ceil(maxx)+2,width);
+            const uint32_t y0=bound(std::floor(miny)-2,height),y1=bound(std::ceil(maxy)+2,height);
+            depth_region={{"status","outside_or_too_large"},{"image_extent",{width,height}},
+                {"projected_bounds",{minx,miny,maxx,maxy}},{"rect",{x0,y0,x1,y1}}};
+            if(x1>x0 && y1>y0 && uint64_t{x1-x0}*(y1-y0)<=65536){
+                std::vector<uint32_t> before,after;
+                before.reserve(size_t{x1-x0}*(y1-y0));after.reserve(before.capacity());
+                for(uint32_t y=y0;y<y1;++y){
+                    const size_t off=size_t{y}*width+x0;
+                    before.insert(before.end(),ds_vertex_depth_before.bits.begin()+off,
+                        ds_vertex_depth_before.bits.begin()+off+(x1-x0));
+                    after.insert(after.end(),depth_after.bits.begin()+off,
+                        depth_after.bits.begin()+off+(x1-x0));
+                }
+                depth_region["status"]="captured";
+                depth_region["before_bits"]=std::move(before);
+                depth_region["after_bits"]=std::move(after);
+            }
+        }
         const auto& snap=*state.vertex_info[0].stage.resources;
         auto descriptors=nlohmann::json::array();
         for(const auto& desc:snap.buffers)descriptors.push_back(desc.dwords);
@@ -3960,6 +4053,20 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             {"fingerprint",fmt::format("{:016x}",ds_vp->ds_light_math_variant)},
             {"index_guest",index_source.address},{"base_vertex",emit.vertex_offset},
             {"first_instance",emit.first_instance},{"indices",ds_vertex_indices},{"missing",missing},
+            {"pair_id",ds_vertex_pair},{"material",VP::Material(ds_vp->shader_hash)},
+            {"pixel_shader",state.ps_input_info.stage.program?
+                fmt::format("{:016x}",state.ps_input_info.stage.program->shader_hash):std::string{}},
+            {"transform_inputs_valid",!VP::Material(ds_vp->shader_hash)},
+            {"viewport",{viewport.x,viewport.y,viewport.width,viewport.height,viewport.minDepth,viewport.maxDepth}},
+            {"scissor",{scissor.offset.x,scissor.offset.y,scissor.extent.width,scissor.extent.height}},
+            {"dx_clip_space",bool(buffer.GetRegisters().GetClipControl().dx_clip_space)},
+            {"depth_test",depth_test},{"depth_write",depth_write},{"depth_compare",uint32_t(depth_compare)},
+            {"depth_bias",bias},{"depth_bias_values",bias_values},
+            {"stencil_test",stencil_test},{"stencil_compare_front",uint32_t(stencil_front)},
+            {"stencil_compare_back",uint32_t(stencil_back)},{"stencil_reference_front",front_ref},
+            {"stencil_reference_back",back_ref},{"depth_load_clear",state.depth_info.depth_load_clear_enable},
+            {"depth_clear_value",state.depth_info.depth_clear_value},
+            {"depth_region",std::move(depth_region)},
             {"srt",snap.flattened_srt},{"user_data",snap.user_data},{"descriptors",std::move(descriptors)},
             {"columns",{"vertex","instance","transform","clip_x","clip_y","clip_z","clip_w","clip_distance",
                 "input_x","input_y","input_z","m00","m01","m02","m03","m10","m11","m12","m13","m20","m21","m22","m23"}},

@@ -9,8 +9,14 @@
 namespace Libs::Graphics::DemonsVertexPositionProbe {
 constexpr uint32_t Header=3, Stride=23, MaxVertices=65536;
 constexpr uint32_t WordCount=Header+Stride*MaxVertices;
+constexpr bool Material(uint64_t hash) {
+    return hash==0xf825a988127faeb4ull || hash==0x74b55dea9562eda1ull;
+}
 constexpr bool Watched(uint64_t hash) {
-    return hash==0x34c51585c926a664ull || hash==0xa7208481a1f2b760ull;
+    return hash==0x34c51585c926a664ull || hash==0xa7208481a1f2b760ull || Material(hash);
+}
+constexpr uint32_t PairIndex(uint64_t hash) {
+    return hash==0x34c51585c926a664ull || hash==0xf825a988127faeb4ull ? 0u : 1u;
 }
 // Exact 221410 modules. Inputs are the actual SSA values used by the
 // transform, not a re-read of a potentially different guest buffer.
@@ -19,7 +25,7 @@ struct Site {
     uint32_t main,boolean,void_type,ptr,vertex,instance,transform,position,store,clip;
     std::array<uint32_t,15> inputs; // position xyz, matrix rows
 };
-constexpr std::array<Site,4> Sites{{
+constexpr std::array<Site,8> Sites{{
  {0x34c51585c926a664ull,0x92e062bff851bfe3ull,39,60,43,99,71,73,97,593,602,597,
   {366,367,368,253,254,255,256,292,293,294,295,331,332,333,334}},
  {0x34c51585c926a664ull,0x5650cfdc24ed3f10ull,39,60,43,115,71,73,112,878,887,882,
@@ -27,7 +33,13 @@ constexpr std::array<Site,4> Sites{{
  {0xa7208481a1f2b760ull,0x42cb3db63c2693b2ull,45,71,49,110,82,84,108,761,769,765,
   {378,379,380,264,265,266,267,304,305,306,307,343,344,345,346}},
  {0xa7208481a1f2b760ull,0xa338dff0ce2abb1aull,45,71,49,126,82,84,123,1059,1067,1063,
-  {425,427,429,290,292,294,296,337,339,341,343,383,385,387,389}}
+  {425,427,429,290,292,294,296,337,339,341,343,383,385,387,389}},
+ // 223656 material position and clip-distance stores. Zero site means
+ // not captured (do not pretend to have material transform operands).
+ {0xf825a988127faeb4ull,0xdd6b59738d0d2030ull,40,65,44,104,76,78,0,841,850,845,{}},
+ {0xf825a988127faeb4ull,0x46d9e68030e3e5a9ull,40,65,44,120,76,78,0,1195,1204,1199,{}},
+ {0x74b55dea9562eda1ull,0x861d06190301aef3ull,46,73,50,112,84,86,0,986,994,990,{}},
+ {0x74b55dea9562eda1ull,0x5ef07abfcab3a10cull,46,73,50,128,84,86,0,1353,1361,1357,{}}
 }};
 inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t hash,uint64_t fingerprint,uint32_t binding) {
     const Site* found=nullptr;
@@ -134,8 +146,9 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t hash,uint64_t finge
         if(main && op==spv::OpStore && n==3 && spirv[i+1]==site.store && spirv[i+2]==site.position){
             if(inserted)return false;
             result.push_back((24u<<16)|spv::OpFunctionCall);
-            result.insert(result.end(),{site.void_type,id(),rec,site.vertex,site.instance,site.transform,site.position,site.clip});
-            result.insert(result.end(),site.inputs.begin(),site.inputs.end());
+            result.insert(result.end(),{site.void_type,id(),rec,site.vertex,site.instance,
+                site.transform?site.transform:c[0],site.position,site.clip});
+            for(auto operand:site.inputs)result.push_back(operand?operand:c[0]);
             inserted=true;
         }
         if(op==spv::OpFunctionEnd)main=false;

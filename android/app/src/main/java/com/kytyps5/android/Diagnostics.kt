@@ -305,7 +305,7 @@ object Diagnostics {
                     val geometry = newest.filter { it.name.startsWith("ds_geometry_writer_") }
                     val countTraces = newest.filter { it.name.startsWith("ds_count_producer_") }
                     val upstreamCounts = countTraces.filter { it.name.contains("cb3b9c1ea64fe876") }.take(20)
-                    val producer = newest.filter { it.name.startsWith("ds_vertex_position_") }.take(12) +
+                    val producer = newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24) +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
                         geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +

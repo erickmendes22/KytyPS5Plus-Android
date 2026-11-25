@@ -27,9 +27,9 @@ static std::vector<uint32_t> Fixture(const Site& s,uint32_t version){
     E(v,spv::OpConstant,{8,zero,0});
     E(v,spv::OpConstant,{1,s.vertex,0});
     E(v,spv::OpConstant,{1,s.instance,0});
-    E(v,spv::OpConstant,{1,s.transform,0});
+    if(s.transform)E(v,spv::OpConstant,{1,s.transform,0});
     E(v,spv::OpConstant,{8,s.clip,0});
-    for(auto i:s.inputs)E(v,spv::OpConstant,{1,i,0});
+    for(auto i:s.inputs)if(i)E(v,spv::OpConstant,{1,i,0});
     E(v,spv::OpConstantComposite,{9,s.position,zero,zero,zero,one});
     E(v,spv::OpVariable,{outptr,s.store,spv::StorageClassOutput});
     E(v,spv::OpFunction,{s.void_type,s.main,0,functype});
@@ -64,5 +64,5 @@ int main(int argc,char** argv){
             Save(std::string(argv[1])+std::to_string(k)+"-"+std::to_string(version)+".spv",v);
         }
     }
-    std::cout<<"Vertex position recorder: all four site maps and SPIR-V versions assembled\n";
+    std::cout<<"Vertex position recorder: all eight site maps and SPIR-V versions assembled\n";
 }
