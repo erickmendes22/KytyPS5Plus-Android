@@ -2523,6 +2523,7 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 			metadata->second.sample_depth_done = false;
 			metadata->second.fill_known = false;
 			metadata->second.fill_value = 0;
+			metadata->second.clear_origin={image.info.htile_initial_clear?"initial_clear":"new_owner",desc.info.metadata.range.address,desc.info.metadata.range.size,0,m_scheduler.CurrentTick()};
 			if (image.info.htile_initial_clear) metadata->second.clear_mask.set();
 			metadata->second.depth_address = image.info.data.address;
 		}
@@ -3372,6 +3373,7 @@ bool TextureCache::ClearMeta(uint64_t address) {
 	found->second.clear_mask.set();
 	found->second.sample_depth_done = false;
 	found->second.fill_known = false;
+	found->second.clear_origin={"explicit_or_legacy_clear",address,found->second.range_size,0,m_scheduler.CurrentTick()};
 	return true;
 }
 
@@ -3384,10 +3386,18 @@ bool TextureCache::ClearMeta(uint64_t address, uint32_t fill_value) {
 	found->second.sample_depth_done = false;
 	found->second.fill_value = fill_value;
 	found->second.fill_known = true;
+	found->second.clear_origin={"legacy_fill",address,found->second.range_size,0,m_scheduler.CurrentTick()};
 	return true;
 }
 
-bool TextureCache::ClearMetaRange(uint64_t address,uint64_t size,uint32_t fill_value,bool fill_known) {
+TextureCache::MetaClearOrigin TextureCache::GetMetaClearOrigin(uint64_t address) {
+    address=Kernel::AddressFold::Fold(address);
+    std::scoped_lock lock{m_lock};
+    const auto found=m_surface_metas.find(address);
+    return found==m_surface_metas.end()?MetaClearOrigin{}:found->second.clear_origin;
+}
+
+bool TextureCache::ClearMetaRange(uint64_t address,uint64_t size,uint32_t fill_value,bool fill_known,const char* source,uint64_t shader) {
     address=Kernel::AddressFold::Fold(address);
     static const bool slices=[] {const char* v=std::getenv("KYTY_HTILE_SLICE_CLEAR");return v&&v[0]=='1';}();
     static const bool size_rule=[] {const char* v=std::getenv("KYTY_HTILE_SIZE_RULE");return v&&v[0]=='1';}();
@@ -3405,6 +3415,7 @@ bool TextureCache::ClearMetaRange(uint64_t address,uint64_t size,uint32_t fill_v
         if(it->first!=address)return false;
         meta.clear_mask.set();meta.sample_depth_done=false;
         meta.fill_value=fill_value;meta.fill_known=fill_known;
+        meta.clear_origin={source,address,size,shader,m_scheduler.CurrentTick()};
         return true;
     }
     if(size_rule&&it->first==address&&meta.range_size&&size>meta.range_size){
@@ -3418,6 +3429,7 @@ bool TextureCache::ClearMetaRange(uint64_t address,uint64_t size,uint32_t fill_v
         for(uint32_t i=result.first;i<result.first+result.count&&i<meta.clear_mask.size();++i)meta.clear_mask.set(i);
     }
     meta.sample_depth_done=false;meta.fill_value=fill_value;meta.fill_known=fill_known;
+    meta.clear_origin={source,address,size,shader,m_scheduler.CurrentTick()};
     return address==it->first;
 }
 

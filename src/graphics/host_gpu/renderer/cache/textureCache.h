@@ -108,7 +108,9 @@ public:
 	                                 uint32_t* fill_value = nullptr, bool* fill_known = nullptr);
 	[[nodiscard]] bool ClearMeta(uint64_t address);
 	[[nodiscard]] bool ClearMeta(uint64_t address, uint32_t fill_value);
-	[[nodiscard]] bool ClearMetaRange(uint64_t address,uint64_t size,uint32_t fill_value=0,bool fill_known=false);
+	[[nodiscard]] bool ClearMetaRange(uint64_t address,uint64_t size,uint32_t fill_value=0,bool fill_known=false,const char* source="range",uint64_t shader=0);
+	struct MetaClearOrigin { const char* source="unknown";uint64_t address=0,bytes=0,shader=0,tick=0; };
+	[[nodiscard]] MetaClearOrigin GetMetaClearOrigin(uint64_t address);
 	[[nodiscard]] bool TouchMeta(uint64_t address, uint32_t slice, bool is_clear);
 	// Invalidates an HTile fast-clear claim after an unproven/partial compute
 	// metadata write; the real compute shader is never suppressed.
@@ -149,6 +151,7 @@ private:
 		// PS5 HTile belongs to the source depth surface, across D32/D32S8 variants.
 		uint64_t depth_address = 0;
 		uint64_t range_size = 0;
+		MetaClearOrigin clear_origin{};
 		uint32_t layers = 0;
 	};
 

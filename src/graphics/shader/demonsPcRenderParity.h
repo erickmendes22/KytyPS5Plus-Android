@@ -9,6 +9,7 @@ inline bool Enabled(){
     static const bool on=[] {const char* v=std::getenv("KYTY_DS_PC_RENDER_PARITY");return v&&v[0]=='1'&&v[1]=='\0';}();
     return on;
 }
+constexpr bool ConsumeMetaDispatch(bool parity,bool cleared,bool keep) {return parity&&cleared&&!keep;}
 constexpr bool PixelActive(bool present,uint32_t target,uint32_t shader,bool side_effects){
     return present&&((target&shader)!=0||side_effects);
 }

@@ -872,6 +872,11 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		}();
 		const auto decision = DecideHtileLoad(meta_clear, htile_fill, htile_fill_known,
 		                                      metadata.stencil_compressed);
+		if(meta_clear&&depth.desc.info.data.address==0x282b60000ull&&DemonsPcRenderParity::Enabled()) {
+			static const bool trace=[] {const char* v=std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");return v&&v[0]=='1';}();
+			if(trace){const auto origin=cache.GetMetaClearOrigin(metadata.range.address);
+				Log::WriteToConsoleAndLog(fmt::format("[DS_HTILE_ORIGIN] frame={} target=0x{:x} meta=0x{:x} slice={} source={} writer=0x{:016x} write_addr=0x{:x} write_bytes=0x{:x} meta_bytes=0x{:x} writer_tick={} consumer_tick={} fill_known={} fill=0x{:08x} guest_clear={}\n",m_context.GetGpu().GetFrameNum(),depth.desc.info.data.address,metadata.range.address,depth.desc.view_info.base_layer,origin.source,origin.shader,origin.address,origin.bytes,metadata.range.size,origin.tick,m_context.GetCommandScheduler().CurrentTick(),htile_fill_known,htile_fill,depth.depth_clear_enable));}
+		}
 		depth.trace_meta_pending = meta_clear;
 		depth.trace_meta_known = htile_fill_known;
 		depth.trace_meta_fill = htile_fill;

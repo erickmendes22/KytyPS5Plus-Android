@@ -190,7 +190,7 @@ static bool FillSourcesDisjoint(std::span<const ShaderRecompiler::IR::Descriptor
 	return true;
 }
 
-void RenderExecutor::UpdateComputeMetaClears(const ShaderComputeInputInfo& input,
+bool RenderExecutor::UpdateComputeMetaClears(const ShaderComputeInputInfo& input,
                                             const CommandBuffer&          buffer) {
 	const auto& program   = *input.stage.program;
 	const auto& resources = *input.stage.resources;
@@ -225,7 +225,7 @@ void RenderExecutor::UpdateComputeMetaClears(const ShaderComputeInputInfo& input
 		// Reads and transforms of metadata do not establish a clear state.
 		if ((!resource.written || resource.read) && cache.IsMeta(descriptor.Base48())) {
 			if (resource.written) (void)invalidate_unproven(descriptor.Base48());
-			return;
+			return false;
 		}
 	}
 
@@ -236,6 +236,7 @@ void RenderExecutor::UpdateComputeMetaClears(const ShaderComputeInputInfo& input
 			(void)invalidate_unproven(desc.Base48());
 		}
 	}
+	bool cleared=false;
 	if (!program.info.has_bitwise_xor) {
 		for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
 			const auto& resource = program.info.buffers[i];
@@ -243,12 +244,13 @@ void RenderExecutor::UpdateComputeMetaClears(const ShaderComputeInputInfo& input
 				const auto descriptor =
 				    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
 				if (!invalidate_unproven(descriptor.Base48())) {
-					if (DemonsPcRenderParity::Enabled()) (void)cache.ClearMetaRange(descriptor.Base48(),descriptor.GetSize());
+					if (DemonsPcRenderParity::Enabled()) cleared|=cache.ClearMetaRange(descriptor.Base48(),descriptor.GetSize(),0,false,"compute_meta",program.shader_hash);
 					else (void)cache.ClearMeta(descriptor.Base48());
 				}
 			}
 		}
 	}
+	return cleared;
 }
 
 bool ResolveComputeBufferFill(const ShaderComputeInputInfo& input, uint32_t group_x,
@@ -367,7 +369,7 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 			return false;
 		command.GetContext().GetBufferCache().FillBuffer(descriptor.Base48(), size, packed_clear,
 		                                                 false);
-		if (DemonsPcRenderParity::Enabled()) (void)cache.ClearMetaRange(descriptor.Base48(),size,packed_clear,true);
+		if (DemonsPcRenderParity::Enabled()) (void)cache.ClearMetaRange(descriptor.Base48(),size,packed_clear,true,"compute_uniform_fill",program.shader_hash);
 		else (void)cache.ClearMeta(descriptor.Base48(), packed_clear);
 		if (DsTraceEnabled()) {
 			RememberDsBufferProducer({descriptor.Base48(), size, input.stage.program->shader_hash,
@@ -375,7 +377,7 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 		}
 		return true;
 	}
-	if (DemonsPcRenderParity::Enabled()) (void)cache.ClearMetaRange(descriptor.Base48(),size,packed_clear,true);
+	if (DemonsPcRenderParity::Enabled()) (void)cache.ClearMetaRange(descriptor.Base48(),size,packed_clear,true,"compute_uniform_fill",program.shader_hash);
 		else (void)cache.ClearMeta(descriptor.Base48(), packed_clear);
 	static std::atomic<uint32_t> logged_clears {0};
 	if (logged_clears.fetch_add(1, std::memory_order_relaxed) < 32) {
@@ -4274,7 +4276,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	if (resources.specialization_reads.empty()) {
 		// Cached metadata addresses can be reused as ordinary buffers; preserve their guest writes.
-		UpdateComputeMetaClears(input_info, buffer);
+		const bool meta_cleared=UpdateComputeMetaClears(input_info, buffer);
+		static const bool keep_meta_dispatch=[] {const char* v=std::getenv("KYTY_COMPUTE_META_CLEAR_DISPATCH");return v&&*v&&std::strcmp(v,"0")!=0;}();
+		// U59 consumes a recorded exact metadata clear by default; do not execute
+		// its raw buffer writes again. Retain the original Android behavior outside DS.
+		if(DemonsPcRenderParity::ConsumeMetaDispatch(DemonsPcRenderParity::Enabled(),meta_cleared,keep_meta_dispatch)) {
+			ResetBindings();return;
+		}
 		if (TryConsumeComputeImageClear(input_info, buffer, thread_group_x, thread_group_y,
 		                               thread_group_z, mode)) {
 			ResetBindings();

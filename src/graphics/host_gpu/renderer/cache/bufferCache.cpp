@@ -1571,7 +1571,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	}
 	NoteProbeRayWrite(vaddr, size, "dma_fill", value);
 	if(DemonsPcRenderParity::Enabled()) {
-		(void)m_texture_cache.ClearMetaRange(vaddr,size,value,true);
+		(void)m_texture_cache.ClearMetaRange(vaddr,size,value,true,"dma_fill");
 		(void)m_texture_cache.PublishGpuImagesForBufferAccess(vaddr,size);
 	} else (void)m_texture_cache.ClearMeta(vaddr);
 	if (!IsRegionGpuModified(vaddr, size)) {

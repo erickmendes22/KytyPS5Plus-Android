@@ -404,7 +404,7 @@ private:
 	void                      BindImage(ImageId id, bool storage);
 	void                      BindRenderTarget(ImageId id);
 	void                      ResetBindings();
-	void                     UpdateComputeMetaClears(const ShaderComputeInputInfo& input,
+	bool                     UpdateComputeMetaClears(const ShaderComputeInputInfo& input,
 	                                                 const CommandBuffer&          buffer);
 	[[nodiscard]] bool TryConsumeComputeImageClear(const ShaderComputeInputInfo& input,
 	                                              CommandBuffer& command, uint32_t group_x,

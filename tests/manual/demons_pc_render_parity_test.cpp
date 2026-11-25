@@ -1,6 +1,10 @@
 #include "graphics/shader/demonsPcRenderParity.h"
 #include <cassert>
 using namespace Libs::Graphics::DemonsPcRenderParity;
+static_assert(ConsumeMetaDispatch(true,true,false));
+static_assert(!ConsumeMetaDispatch(false,true,false));
+static_assert(!ConsumeMetaDispatch(true,false,false));
+static_assert(!ConsumeMetaDispatch(true,true,true));
 static_assert(PixelActive(true,0xf0,0xf0,false));
 static_assert(!PixelActive(true,0xf0,0xf,false));
 static_assert(PixelActive(true,0,0,true));
