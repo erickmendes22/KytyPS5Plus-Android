@@ -244,7 +244,7 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t fp,uint32_t binding
             const auto op=static_cast<spv::Op>(spirv[d]&65535u);
             if(op==spv::OpBitcast&&(spirv[d]>>16)==4){v=spirv[d+3];continue;}
             if(op==spv::OpCompositeExtract&&(spirv[d]>>16)==5){
-                const auto a=def(spirv[d+3]),ix=spirv[d+4];
+                const auto a=def(spirv[d+3]);const auto ix=spirv[d+4];
                 if(a&&(spirv[a]&65535u)==spv::OpCompositeConstruct&&ix+3<(spirv[a]>>16)){
                     v=spirv[a+3+ix];continue;
                 }

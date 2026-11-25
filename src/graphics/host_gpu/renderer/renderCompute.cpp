@@ -3419,6 +3419,7 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 		    program.info.bvh, program.has_address_writes));
 	};
 	if (!groups_valid || !groups[0] || !groups[1] || !groups[2]) {
+        if(!groups_valid)ds_ray_source_history.Invalidate();
 		note("inactive_dispatch", 0, 0);
 		return;
 	}
