@@ -316,14 +316,15 @@ object Diagnostics {
                         newest.filter { it.name.startsWith("ds_gbuffer_material_") }.take(12) +
                         newest.filter { it.name.startsWith("ds_scene_writer_f") }.take(4)
                     val edges = newest.filter { it.name.startsWith("ds_transition_edge_") }.take(8)
-                    val producer = edges + bridge + relightTraces + prioritizedRays +
+                    // Geometry coverage has four distinct causal phases per launch. Keep all before large producer dumps.
+                    val coverage = newest.filter { it.name.startsWith("ds_geometry_coverage_f") }
+                    val producer = coverage + edges + bridge + relightTraces + prioritizedRays +
                         newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24) +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
                         geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +
                         geometry.filterNot { it.name.contains("f0c140ea8df8f532") }.take(20) +
                         newest.filter { it.name.startsWith("ds_dominant_material_f") }.take(2) +
-                        newest.filter { it.name.startsWith("ds_geometry_coverage_f") }.take(1) +
                         newest.filter { it.name.startsWith("ds_depth_prepass_f") }.take(4) +
                         newest.filter { it.name.startsWith("ds_ray_producer_f") && !it.name.endsWith("_target.json") }.take(16) +
                         newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
