@@ -23,15 +23,22 @@ namespace ShaderDump {
 
 [[nodiscard]] bool Enabled();
 [[nodiscard]] bool DsLightingCapture();
+[[nodiscard]] bool DsDecisionCapture();
 void RecordDsProbeGuestCode(uint64_t hash, std::span<const uint32_t> code,
                            const char* stage_name = "cs");
 
 // Writes the module's SPIR-V (once per distinct content) and remembers the file for `module`.
 void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t guest_hash,
                   std::span<const uint32_t> spirv);
+// F retains the original executable before inserting the diagnostic stores.
+// This records bytes only; it never invents or registers a Vulkan module handle.
+std::string RecordUninstrumentedModule(const char* stage_name, uint64_t guest_hash,
+                                      std::span<const uint32_t> spirv);
 // Must be called before a recorded module handle is destroyed, since handles are reused.
 void ForgetModule(vk::ShaderModule module);
-// Diagnostic identity of the exact original bound module, not a cached hash guess.
+// Identity of the exact bound module, including diagnostic instrumentation.
+// The name remains available on an I/O/budget failure, which is recorded in
+// ds_prelight_shader_status.json; exporters must verify the file actually exists.
 std::string ModuleFile(vk::ShaderModule module);
 
 using LayoutState = PipelineRecord::LayoutState;

@@ -50,6 +50,21 @@ int main(){
         assert(!retained.Retain(ids[1],"too_large",true,true,limits));
         assert(retained.inputs.empty()&&retained.bytes==0&&retained.dropped==1);
     }
+    // Binary operands participate in the same admission/reset budget as JSON.
+    // A short JSON label cannot bypass the retained-byte cap.
+    {
+        CycleInputRetention retained;
+        const CycleInputRetention::Limits limits{12,12,2};
+        assert(retained.Retain(1,"json",true,true,limits,8));
+        assert(retained.bytes==12&&retained.costs.front()==12);
+        assert(!retained.Retain(2,"x",false,true,limits,1));
+        assert(retained.Retain(3,"next",true,true,limits,4));
+        assert(retained.bytes==8&&retained.dropped==0&&retained.inputs.size()==1);
+        assert(retained.Retain(4,"last",false,false,limits,4));
+        assert(retained.bytes==8&&retained.inputs.front().first==4);
+        assert(!retained.Retain(5,"x",false,true,limits,UINT64_MAX));
+        assert(retained.bytes==8&&retained.dropped==1);
+    }
     BisectionWindow root;
     assert(root.Phase(10)==-1);
     assert(!root.Observe(10,0,1440000,1440000)&&root.Phase(11)==0);

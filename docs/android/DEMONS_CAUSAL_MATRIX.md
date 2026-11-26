@@ -2,6 +2,34 @@
 References: Jetsku dd9f990 (#130 documents fog-transition crash), Chenxiao07
 66cdb39 (v20261016 family reports gameplay, no identical GPU capture).
 
+## Continuidade executável após #744 — 26/11/2026
+
+Mesmo caso e mesmo ciclo: #741 40367→40979; #744 39624→40091.
+A autorização de aquisição não depende de já conhecer a resposta global.
+Foi removido do auditor o veto constante à compilação, preservando os estados
+de evidência: ainda não há uma divisão global P8 demonstrada nem uma correção
+de iluminação comprovada.
+
+| Aresta | Resultado reutilizável | Ação desta revisão |
+| --- | --- | --- |
+| Clear executado → retenção do primeiro input | O clear aparece após AcquireRenderTargets em ambos os ZIPs; o seletor anterior perdia o início. | Admitir o input pendente depois de zerar o orçamento do ciclo anterior; contar JSON e bytes binários juntos. |
+| ISA guest → POS0 nativo do céu | Referência numérica independente: 152/152 componentes bit a bit na #744, com o contrato de ligação legado explicitado. | Preservar certificado local; expandir a mesma comparação aos draws anteriores do mesmo ciclo com endereços SRT reais. |
+| POS0 do céu → D32/material | Replay integral da máscara já validado, sem divergência de cobertura. | Reutilizar posições e snapshots; não pedir outra build só para confirmar o céu. |
+| Operandos foreground → POS0 | Os bytes/índices e vários shaders não foram exportados na #744. | Capturar buffers ligados em lote, SRT consumida, índices completos e POS0 por draw. Comparador retorna MATCH/DIVERGENCE/UNSUPPORTED por operação. |
+| Captura local → ZIP | Limites take48/take96/take24 podiam remover dependências; allowlist omitira VS557d e materiais usados. | Fechar dependências obrigatórias antes dos opcionais, registrar tamanho/SHA-256/ausência e verificar o exportador real com os ZIPs existentes. |
+
+O log SRT observa o retorno dos callbacks originais, incluindo o leitor
+ordinário usado pelo caminho Android; não relê a memória depois do consumo.
+Somente F desativa a memoização de snapshots para preservar endereços atuais.
+O caminho A mantém seu comportamento. O recorder generalizado preserva as
+instruções originais e rejeita layouts incompatíveis com motivo explícito.
+
+`prelight_vertex_oracle.py` também reproduz W0 NaN da #737 e localiza em W1
+a lacuna de slot2/load0xc8. São controles positivos/de suficiência do oráculo;
+não reabrem W0/W1 como hipóteses causais da testemunha atual. Uma discrepância
+numérica terá seu modo de precisão e sua ligação ao sintoma conferidos antes
+de se tornar fix de produção.
+
 ## Evidence ledger (9 ZIPs through 201032)
 Unique captures: cb3b arithmetic 138/138, f0c140 count transfer 1344/1344,
 fb18 first gate metadata 1748/1748 matched. fb18 84/107 nonempty inputs

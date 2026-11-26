@@ -64,7 +64,7 @@ struct SrtRuntime {
 // equal user-data words whose re-reads all return the logged values would produce the same
 // resources (pipeline/resourceMemo.h). Reads are recorded on the walking thread only.
 struct SrtReadLog {
-	enum class Kind : uint8_t { Host, Spec, Branch, Mapped };
+	enum class Kind : uint8_t { Host, Spec, Branch, Mapped, Ordinary };
 	struct Entry {
 		uint64_t address      = 0;
 		uint32_t bytes        = 0;
@@ -73,13 +73,14 @@ struct SrtReadLog {
 		bool     ok           = true;
 	};
 	static constexpr size_t MaxValueBytes = 16 * 1024;
+	size_t max_value_bytes = MaxValueBytes;
 
 	std::vector<Entry>    entries;
 	std::vector<uint8_t>  values;
 	std::vector<uint64_t> user_data_words; // bit i: user data word i was read
 	bool                  complete = true;  // false: too large to keep (nothing can be reused)
 	// Per kind: the entry a contiguous access extends (logging scratch).
-	std::array<uint32_t, 4> last_entry {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+	std::array<uint32_t, 5> last_entry {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
 
 	void Clear();
 	void NoteUserData(size_t index);
@@ -89,7 +90,7 @@ struct SrtReadLog {
 // log when they come from LoggingRuntime().
 class ScopedSrtReadLog {
 public:
-	ScopedSrtReadLog(SrtReadLog& log, const SrtRuntime& source);
+	ScopedSrtReadLog(SrtReadLog& log, const SrtRuntime& source, bool record_ordinary = false);
 	~ScopedSrtReadLog();
 	ScopedSrtReadLog(const ScopedSrtReadLog&)            = delete;
 	ScopedSrtReadLog& operator=(const ScopedSrtReadLog&) = delete;
@@ -101,6 +102,7 @@ private:
 	SrtReadLog*       m_previous_log;
 	const SrtRuntime* m_previous_source;
 	SrtRuntime        m_source;
+	bool              m_record_ordinary = false;
 };
 
 // Re-reads every logged access, in order, through `runtime` (the unwrapped runtime of the logged

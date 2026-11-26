@@ -55,7 +55,7 @@ void LogAccess(SrtReadLog::Kind kind, uint64_t address, const void* data, size_t
 	auto* log = t_read_log;
 	if (log == nullptr || !log->complete) return;
 	const bool has_values = ok && kind != SrtReadLog::Kind::Mapped;
-	if (bytes == 0 || bytes > UINT32_MAX || (has_values && log->values.size() + bytes > SrtReadLog::MaxValueBytes)) {
+	if (bytes == 0 || bytes > UINT32_MAX || (has_values && log->values.size() + bytes > log->max_value_bytes)) {
 		log->complete = false;
 		return;
 	}
@@ -119,6 +119,13 @@ bool LoggedSpecRead(void* userdata, uint64_t address, std::span<uint32_t> values
 	return ok;
 }
 
+bool LoggedOrdinaryRead(void* userdata, uint64_t address, std::span<uint32_t> values) {
+	EXIT_IF(t_read_source == nullptr);
+	const bool ok = t_read_source->read_memory(userdata, address, values);
+	LogAccess(SrtReadLog::Kind::Ordinary, address, values.data(), values.size_bytes(), ok);
+	return ok;
+}
+
 bool LoggedBranchRead(void* userdata, uint64_t address, std::span<uint32_t> values) {
 	EXIT_IF(t_read_source == nullptr);
 	const bool ok = t_read_source->read_branch_memory(userdata, address, values);
@@ -170,11 +177,11 @@ void SrtReadLog::NoteUserData(size_t index) {
 	user_data_words[word] |= uint64_t {1} << (index % 64u);
 }
 
-ScopedSrtReadLog::ScopedSrtReadLog(SrtReadLog& log, const SrtRuntime& source)
-    : m_previous_log(t_read_log), m_previous_source(t_read_source), m_source(source) {
+ScopedSrtReadLog::ScopedSrtReadLog(SrtReadLog& log, const SrtRuntime& source, bool record_ordinary)
+    : m_previous_log(t_read_log), m_previous_source(t_read_source), m_source(source), m_record_ordinary(record_ordinary) {
 	log.Clear();
 	// An ordinary reader of the caller's would be an unlogged input.
-	if (source.read_memory != nullptr) log.complete = false;
+	if (source.read_memory != nullptr && !record_ordinary) log.complete = false;
 	t_read_log    = &log;
 	t_read_source = &m_source;
 }
@@ -186,6 +193,7 @@ ScopedSrtReadLog::~ScopedSrtReadLog() {
 
 SrtRuntime ScopedSrtReadLog::Runtime() const {
 	auto runtime = m_source;
+	if (m_record_ordinary && runtime.read_memory != nullptr) runtime.read_memory = LoggedOrdinaryRead;
 	if (runtime.read_specialization_memory != nullptr) runtime.read_specialization_memory = LoggedSpecRead;
 	if (runtime.read_branch_memory != nullptr) runtime.read_branch_memory = LoggedBranchRead;
 	if (runtime.mapped != nullptr) runtime.mapped = LoggedMapped;
@@ -213,6 +221,11 @@ bool SrtReadLogMatches(const SrtReadLog& log, const SrtRuntime& runtime) {
 				if (runtime.read_branch_memory == nullptr || (entry.bytes & 3u) != 0u) return false;
 				ok = runtime.read_branch_memory(runtime.userdata, entry.address,
 				                                std::span(scratch).first(entry.bytes / 4u));
+				break;
+			case SrtReadLog::Kind::Ordinary:
+				if (runtime.read_memory == nullptr || (entry.bytes & 3u) != 0u) return false;
+				ok = runtime.read_memory(runtime.userdata, entry.address,
+				                         std::span(scratch).first(entry.bytes / 4u));
 				break;
 			case SrtReadLog::Kind::Mapped: break;
 		}

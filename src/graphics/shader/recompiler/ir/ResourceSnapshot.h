@@ -49,6 +49,16 @@ struct ResourceSnapshot {
 	std::vector<uint32_t>        flattened_srt;
 	std::vector<uint32_t>        user_data;
 	std::vector<std::pair<uint64_t, uint64_t>> specialization_reads;
+	// F capture: values returned by the SRT walk, at their original addresses.
+	// This is observation of the consumed read, never a later CPU re-read.
+	struct ScalarRead {
+		uint64_t address = 0;
+		uint8_t kind = 0;
+		std::vector<uint32_t> words;
+	};
+	std::vector<ScalarRead> diagnostic_scalar_reads;
+	bool diagnostic_scalar_complete = false;
+	uint32_t diagnostic_user_data_base = 0;
 	UniformFill                 uniform_fill;
 	// DS relight only: descriptor ordinal 3, before inactive-source/format decisions.
 	struct TransitionDescriptor {bool captured=false,active=false,normalized=false;uint32_t source=UINT32_MAX;DescriptorValue raw;};

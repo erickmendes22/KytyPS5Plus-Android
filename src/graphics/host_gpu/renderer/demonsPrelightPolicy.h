@@ -96,16 +96,18 @@ struct ExecutedCycle {
 struct CycleInputRetention {
     struct Limits {
         uint64_t bytes=48u*1024u*1024u;
-        uint64_t record_bytes=4u*1024u*1024u;
+        uint64_t record_bytes=12u*1024u*1024u;
         std::size_t records=192;
     };
     uint64_t bytes=0,dropped=0;
     std::vector<std::pair<uint64_t,std::string>> inputs;
+    std::vector<uint64_t> costs;
 
     bool Retain(uint64_t draw,std::string payload,bool begins_cycle,
-                bool cycle_selected,Limits limits) {
-        if(begins_cycle){inputs.clear();bytes=0;dropped=0;}
-        const uint64_t size=payload.size();
+                bool cycle_selected,Limits limits,uint64_t binary_bytes=0) {
+        if(begins_cycle){inputs.clear();costs.clear();bytes=0;dropped=0;}
+        if(binary_bytes>limits.bytes||payload.size()>limits.bytes-binary_bytes){++dropped;return false;}
+        const uint64_t size=payload.size()+binary_bytes;
         if(!draw||payload.empty()||size>limits.record_bytes||size>limits.bytes||!limits.records){
             ++dropped;return false;
         }
@@ -113,11 +115,11 @@ struct CycleInputRetention {
         // Once selected, missing records must be reported, never evicted.
         if(!cycle_selected){
             while(!inputs.empty()&&(bytes>limits.bytes||size>limits.bytes-bytes||inputs.size()>=limits.records)){
-                bytes-=inputs.front().second.size();inputs.erase(inputs.begin());
+                bytes-=costs.front();inputs.erase(inputs.begin());costs.erase(costs.begin());
             }
         }
         if(bytes>limits.bytes||size>limits.bytes-bytes||inputs.size()>=limits.records){++dropped;return false;}
-        bytes+=size;inputs.emplace_back(draw,std::move(payload));return true;
+        bytes+=size;inputs.emplace_back(draw,std::move(payload));costs.push_back(size);return true;
     }
 };
 enum class Certificate {Blocked,Pass,Fail};

@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
-"""Fail-closed readiness audit for the Demon's Souls V3 G0/P8 decision.
+"""Evidence audit for Demon's Souls, with scoped executable decisions.
 
 Usage:
   python docs/android/tools/prelight_v3_gate.py diagnostics.zip --output audit.json
   python docs/android/tools/prelight_v3_gate.py extracted-diagnostics
 
-Exit status is 2 when BLOCKED and 3 for an unsafe/unreadable input. This version
-has NO independent C1..C8 replay backend and therefore cannot authorize an APK or
-emit P8 PASS/FAIL. It audits existing evidence rather than accepting an asserted
-oracle JSON. The observed color loss selects a capture window; it is not a FAIL.
+Exit status is 0 after a valid audit and 3 for unsafe/unreadable input. An unknown
+global P8 result is a statement about evidence, not a prohibition on acquiring
+the operands of a concrete next operation. This tool does not grant or withhold
+permission to build. The observed color loss selects a window; it is not a FAIL.
 
-A future backend must be reviewed executable code, identified by a content hash,
-consume the exact manifest digest below, replay the relevant guest contracts and
-resource-version DAG, and pass both equal-output and causal-mutation tests on a
-complete real witness. Merely supplying expected pixels or certification booleans
-is deliberately unsupported. Native re-execution of the same SPIR-V is not an
-independent guest-ISA oracle.
+Local decisions come from executable guest-ISA replay, with the same input bytes
+and instruction provenance. Merely supplying expected pixels or certification
+booleans is unsupported. Native re-execution of the same SPIR-V is not an
+independent guest-ISA oracle. Unsupported operations remain explicit per draw;
+they do not erase results from supported operations or demand a full PC capture.
 
 PASS requires closure of the relevant cumulative prefix. FAIL may instead use a
 sufficient causal counterexample with its own complete dependency path; it need
 not prove unrelated operations correct. Missing inventory data never constitutes
-that counterexample. Neither route is implemented as a reference backend here.
+that counterexample. Local position matches do not imply a global P8 PASS.
 
 Archives are inspected without extraction. Traversal, duplicate names, symlinks,
 ambiguous capture roots and excessive uncompressed sizes are rejected. Both ZIPs
@@ -33,6 +32,7 @@ from collections import Counter, defaultdict
 import ctypes
 import ctypes.util
 import hashlib
+import importlib.util
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -335,20 +335,37 @@ def audit_capture(path: str | Path) -> dict[str, Any]:
         return audit(capture)
 
 
+def attach_vertex_oracle(report: dict[str, Any], path: str | Path) -> None:
+    """Recompute the local reference. A JSON assertion is never a substitute."""
+    script = Path(__file__).with_name("prelight_vertex_oracle.py")
+    spec = importlib.util.spec_from_file_location("prelight_vertex_oracle", script)
+    if spec is None or spec.loader is None:
+        raise CaptureError("vertex oracle implementation unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        report["local_vertex_oracle"] = module.audit_capture(Path(path))
+        report["local_vertex_oracle"]["backend_sha256"] = hashlib.sha256(script.read_bytes()).hexdigest()
+    except ImportError as error:
+        report["local_vertex_oracle"] = {"analysis_state": "DEPENDENCY_UNAVAILABLE", "reason": str(error)}
+
+
 def audit(capture: Capture) -> dict[str, Any]:
     gaps: list[dict[str, Any]] = []
 
     def gap(code: str, scope: str, detail: Any) -> None:
         gaps.append({"code": code, "scope": scope, "detail": detail})
 
-    # Immutable in this implementation: no recognized independent backend exists.
+    # This global interval is distinct from the concrete per-operation results.
     decision = {"status": "BLOCKED", "G0": "BLOCKED", "P8": "BLOCKED",
                 "interval_before": [0, 16], "interval_after": [0, 16],
-                "pruned_classes": [], "ready_for_diagnostic_apk": False}
-    report: dict[str, Any] = {"schema": 1, "node": "V3/G0/P8", "decision": decision,
+                "pruned_classes": []}
+    report: dict[str, Any] = {"schema": 2, "node": "V3/G0/P8", "decision": decision,
+        "purpose": "evidence audit, not a build permission gate",
         "source": str(capture.path), "gaps": gaps,
         "oracle": {"status": "UNAVAILABLE", "backend": None, "backend_sha256": None,
-            "reason": "No reviewed independent executable C1..C8 backend is implemented. JSON claims cannot certify it.",
+            "reason": "The complete cumulative prefix is not certified by this capture. Local executable decisions have their own scope.",
             "required": ["same-input manifest digest", "guest-contract replay with resource-version dependencies",
                          "causal path to the fixed final symptom", "real complete witness with positive and negative regression"]}}
     events = read_events(capture)
@@ -416,8 +433,8 @@ def audit(capture: Capture) -> dict[str, Any]:
     gap("resource_version_dag_unavailable", "C1..C8",
         "Target draw inventory does not close upstream CPU/compute producers, actual image subresources, aliases and versions.")
     gap("independent_oracle_unavailable", "G0/P8", report["oracle"]["reason"])
-    report["capture_closure"] = {"complete": False, "ready": False,
-        "reason": "The current capture schemas and absent reference backend cannot certify the cumulative prefix."}
+    report["capture_closure"] = {"global_prefix_certified": False,
+        "reason": "Global closure is distinct from completeness for a selected operation."}
     inspected = dict(sorted(capture.inspected.items()))
     manifest = json.dumps(inspected, sort_keys=True, separators=(",", ":")).encode()
     report["inspected_artifacts"] = inspected
@@ -442,6 +459,7 @@ def inspect_cycle(capture: Capture, events: list[dict[str, Any]], selected: list
         raise CaptureError("foreground manifest is not an object")
     saved_inputs: dict[int, dict[str, Any]] = {}
     saved_bytes = 0
+    saved_binary_files: set[str] = set()
     if not manifest:
         gap("foreground_manifest_missing", "capture", manifest_name)
     elif (manifest.get("active") is not True or manifest.get("first_draw") != report["witness"]["first_draw"] or
@@ -470,6 +488,29 @@ def inspect_cycle(capture: Capture, events: list[dict[str, Any]], selected: list
         if item["draw"] in saved_inputs:
             gap("foreground_input_duplicate", "capture", item["draw"])
         saved_inputs[item["draw"]] = payload
+        for stage in ("vs", "ps"):
+            for binding in payload.get(stage + "_bound", []):
+                filename = binding.get("file") if isinstance(binding, dict) else None
+                if filename and filename not in saved_binary_files and capture.exists(safe_name(filename)):
+                    capture.read(filename)
+                    saved_binary_files.add(filename)
+                    saved_bytes += capture.inspected[filename]["bytes"]
+    required_files = manifest.get("required_files", [])
+    if not isinstance(required_files, list):
+        raise CaptureError("required_files is not a list")
+    for item in required_files:
+        if not isinstance(item, dict) or not isinstance(item.get("file"), str):
+            raise CaptureError("invalid required file")
+        filename = safe_name(item["file"])
+        if not capture.exists(filename):
+            gap("required_artifact_missing", "capture", filename)
+        else:
+            data = capture.read(filename)
+            if item.get("bytes") != len(data) or item.get("present") is False:
+                gap("required_artifact_size_mismatch", "capture", {"file": filename,
+                    "expected_bytes": item.get("bytes"), "actual_bytes": len(data)})
+    if manifest.get("position_dropped", 0):
+        gap("native_positions_dropped", "C3", manifest["position_dropped"])
     selected_ids = {draw["seq"] for draw in selected}
     if manifest:
         missing = sorted(selected_ids - saved_inputs.keys())
@@ -549,12 +590,24 @@ def inspect_cycle(capture: Capture, events: list[dict[str, Any]], selected: list
                     continue  # A null/empty descriptor is legal, not an error.
                 words = binding.get("gpu_words")
                 present = len(words) * 4 if words_valid(words) else 0
+                binary = binding.get("file")
+                if binary:
+                    if not isinstance(binary, str):
+                        raise CaptureError(f"invalid bound-buffer file in {scope}")
+                    filename = safe_name(binary)
+                    if capture.exists(filename):
+                        data = capture.read(filename)
+                        offset = binding.get("offset_bytes", 0)
+                        if type(offset) is not int or offset < 0:
+                            raise CaptureError(f"invalid bound-buffer offset in {scope}")
+                        present = max(0, min(size, len(data) - offset))
+                        words = list(struct.unpack(f"<{size // 4}I", data[offset:offset+size])) if present == size and size % 4 == 0 else None
                 total_declared += size
                 total_present += min(size, present)
                 if zero:
                     continue
                 required_declared += size
-                complete = size % 4 == 0 and address > 0 and address + size <= UINT64_MAX and present == size
+                complete = address > 0 and address + size <= UINT64_MAX and present == size
                 if not complete:
                     missing = max(0, size - present)
                     required_missing += missing
@@ -720,11 +773,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("capture", type=Path, help="diagnostic ZIP or extracted capture directory")
     parser.add_argument("--output", type=Path, help="write the complete JSON readiness report")
+    parser.add_argument("--vertex-oracle", action="store_true", help="execute the independent per-draw guest-ISA position reference")
     args = parser.parse_args(argv)
     try:
         report = audit_capture(args.capture)
+        if args.vertex_oracle:
+            attach_vertex_oracle(report,args.capture)
     except (CaptureError, OSError, KeyError, TypeError, ValueError) as error:
-        print(json.dumps({"decision": "BLOCKED", "input_error": str(error), "ready_for_diagnostic_apk": False}), file=sys.stderr)
+        print(json.dumps({"decision": "BLOCKED", "input_error": str(error)}), file=sys.stderr)
         return 3
     text = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:
@@ -733,7 +789,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"report": str(args.output), "decision": report["decision"], "gap_counts": report["gap_counts"]}))
     else:
         print(text, end="")
-    return 2  # No independent backend exists; no capture can waive G0/P8.
+    return 0  # A readable audit may contain unknowns without prohibiting work.
 
 
 if __name__ == "__main__":

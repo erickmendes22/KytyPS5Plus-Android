@@ -75,6 +75,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -2684,6 +2685,52 @@ std::vector<uint32_t> DemonsPrelightTrace::ReadNativeWords(RenderContext& contex
     return ReadDsVertexIndices(context,PreparedIndexBuffer{source,offset,vk::IndexType::eUint32},count);
 }
 
+struct DsNativeSlice {
+    vk::Buffer buffer{};
+    uint64_t offset=0,bytes=0,skip=0;
+};
+// One submit/wait for all buffers of a draw. The former per-descriptor
+// readback introduced thousands of additional Finish() calls per window.
+static std::vector<std::vector<uint8_t>> ReadDsNativeSlices(RenderContext& context,
+                                                          std::span<const DsNativeSlice> slices) {
+    std::vector<std::vector<uint8_t>> result(slices.size());
+    if(slices.empty())return result;
+    uint64_t total=0;
+    std::vector<uint64_t> offsets;
+    for(const auto& slice:slices){
+        if(!slice.buffer||!slice.bytes||(slice.offset&3u)||(slice.bytes&3u)||
+           slice.skip>=slice.bytes||slice.bytes>8u*1024u*1024u-total)return result;
+        offsets.push_back(total);total+=slice.bytes;
+    }
+    auto& scheduler=context.GetCommandScheduler();
+    auto& download=context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+    auto [mapped,dest]=download.Map(total,16u,true);
+    if(!mapped)return result;
+    download.Commit();
+    scheduler.EndRendering(PassEnd::Buffer);
+    const auto command=scheduler.Current().Handle();
+    vk::MemoryBarrier before{};
+    before.srcAccessMask=vk::AccessFlagBits::eMemoryWrite;
+    before.dstAccessMask=vk::AccessFlagBits::eTransferRead;
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,
+        {},1,&before,0,nullptr,0,nullptr);
+    for(size_t i=0;i<slices.size();++i){
+        const vk::BufferCopy copy{slices[i].offset,dest+offsets[i],slices[i].bytes};
+        command.copyBuffer(slices[i].buffer,download.Handle(),1,&copy);
+    }
+    vk::MemoryBarrier after{};
+    after.srcAccessMask=vk::AccessFlagBits::eTransferWrite;
+    after.dstAccessMask=vk::AccessFlagBits::eHostRead;
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eHost,
+        {},1,&after,0,nullptr,0,nullptr);
+    scheduler.Finish();download.Invalidate(dest,total);
+    for(size_t i=0;i<slices.size();++i){
+        const auto* start=static_cast<const uint8_t*>(mapped)+offsets[i]+slices[i].skip;
+        result[i].assign(start,start+slices[i].bytes-slices[i].skip);
+    }
+    return result;
+}
+
 static void CommitVertexBuffers(vk::CommandBuffer            vk_buffer,
                                 const PreparedVertexBuffers& prepared) {
 	for (uint32_t i = 0; i < prepared.count; i++) {
@@ -2996,12 +3043,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     struct RootDepthCycle {
         DemonsPrelightPolicy::ExecutedCycle boundary;
         DemonsPrelightPolicy::CycleInputRetention retained;
+        std::unordered_map<uint64_t,std::vector<uint8_t>> binary;
+        std::unordered_map<uint64_t,std::string> positions;
+        uint64_t position_bytes=0,position_dropped=0;
         int32_t frame=-1;
         uint64_t first_submit=0;
     };
     static RootDepthCycle root_cycle;
     bool root_capture_inputs=false;
     std::string root_pending_input;
+    std::vector<uint8_t> root_pending_binary;
+    std::vector<uint32_t> root_index_words;
+    nlohmann::json root_vertex_sources=nlohmann::json::array();
     const int root_phase=root_trace?DemonsPrelightTrace::Phase(root_frame):-1;
     if(root_trace&&command_seq)command_prepared=true;
     if(root_phase>=0&&(root_target!=root_colors.end()||root_depth)){
@@ -3439,8 +3492,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             (root_depth||root_target!=root_colors.end());
         nlohmann::json inputs={{"kind","background_inputs"},{"draw",root_draw},{"frame",root_frame},
             {"submit",submit_id},{"tick",m_context.GetCommandScheduler().CurrentTick()},
+            {"vs_hash",fmt::format("{:016x}",root_vs?root_vs->shader_hash:0ull)},
+            {"ps_hash",fmt::format("{:016x}",root_ps?root_ps->shader_hash:0ull)},
             {"vs_file",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
             {"ps_file",ShaderDump::ModuleFile(state.programs.pixel.module)},
+            {"vs_original_file",root_vs&&root_vs->ds_light_math_variant?
+                fmt::format("spv/vs_{:016x}_{:016x}.spv",root_vs->shader_hash,root_vs->ds_light_math_variant):std::string{}},
+            {"vs_float_mode",buffer.GetShaders().GetVs().gs_regs.rsrc1.float_mode},
+            {"vs_ieee_mode",buffer.GetShaders().GetVs().gs_regs.rsrc1.ieee_mode},
+            {"vs_dx10_clamp",buffer.GetShaders().GetVs().gs_regs.rsrc1.dx10_clamp},
+            {"vs_float_mode_source","SPI_SHADER_PGM_RSRC1_GS"},
+            {"base_vertex",emit.vertex_offset},{"first_vertex",emit.first_vertex},{"first_instance",emit.first_instance},
+            {"instances",draw.instance_count},{"index_guest",index_source.address},
+            {"index_element_bytes",index_source.guest_element_size},
             {"depth_load_clear",state.depth_info.depth_load_clear_enable},
             {"depth_clear_value",state.depth_info.depth_clear_value}};
         if(state.depth_info.image_id){
@@ -3454,6 +3518,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             const auto& snap=*state.ps_input_info.stage.resources;
             inputs["ps_srt"]=snap.flattened_srt;
             inputs["ps_user_data"]=snap.user_data;
+            inputs["ps_buffers"]=nlohmann::json::array();
+            for(const auto& b:snap.buffers)inputs["ps_buffers"].push_back(b.dwords);
         }
         if(state.vertex_info[0].stage.resources){
             const auto& snap=*state.vertex_info[0].stage.resources;
@@ -3462,17 +3528,42 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             inputs["vs_buffers"]=nlohmann::json::array();
             for(const auto& b:snap.buffers)inputs["vs_buffers"].push_back(b.dwords);
         }
+        const auto scalar_reads=[&](const char* prefix,const auto* resources){
+            if(!root_capture_inputs||!resources)return;
+            const auto& snap=*resources;
+            auto regions=nlohmann::json::array();
+            for(const auto& read:snap.diagnostic_scalar_reads){
+                regions.push_back({{"address",read.address},{"bytes",read.words.size()*4u},
+                    {"source","consumed_srt"},{"read_kind",read.kind==0?"host":read.kind==1?"specialization":read.kind==4?"ordinary":"branch"},
+                    {"words",read.words}});
+            }
+            inputs[std::string(prefix)+"_scalar_regions"]=std::move(regions);
+            inputs[std::string(prefix)+"_scalar_capture_complete"]=snap.diagnostic_scalar_complete;
+            inputs[std::string(prefix)+"_user_data_base"]=snap.diagnostic_user_data_base;
+        };
+        scalar_reads("vs",state.vertex_info[0].stage.resources);
+        scalar_reads("ps",state.ps_input_info.stage.resources);
         inputs["kind"]="draw_inputs";
         inputs["native_index_count"]=draw.index_count;
         if(draw.IsIndexed()&&!mesh_active&&!indirect&&draw.index_count&&draw.index_count<=65536&&
            index_source.guest_element_size&&uint64_t{draw.index_count}*index_source.guest_element_size<=index_source.size){
-            const auto raw=ReadDsVertexIndices(m_context,index_binding,draw.index_count);
+            auto raw=ReadDsVertexIndices(m_context,index_binding,draw.index_count);
             inputs["index_words_captured"]=raw.size();
             inputs["index_digest"]=DemonsPrelightTrace::VertexWordDigest(raw);
             // Retain complete short index arrays; longer streams are not certified by digest alone.
             if(raw.size()<=4096||root_capture_inputs)inputs["index_words"]=raw;
+            if(root_capture_inputs)root_index_words=std::move(raw);
         }
-        const auto encode_bound=[&](const PreparedBindings& bound,const auto* program){
+        if(root_capture_inputs&&!draw.IsIndexed()&&!indirect&&!mesh_active&&draw.index_count<=65536u){
+            root_index_words.resize(draw.index_count);
+            for(uint32_t i=0;i<draw.index_count;++i)root_index_words[i]=i;
+            inputs["index_words"]=root_index_words;
+            inputs["index_words_synthetic"]=true;
+        }
+        std::vector<DsNativeSlice> slices;
+        std::vector<std::pair<std::string,size_t>> slice_slots;
+        uint64_t batch_bytes=0;
+        const auto encode_bound=[&](const PreparedBindings& bound,const auto* program,const char* key){
             auto out=nlohmann::json::array();
             if(!program)return out;
             for(uint32_t slot=0;slot<bound.buffer_sources.size()&&slot<bound.buffers.size();++slot){
@@ -3491,20 +3582,49 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                 item["gpu_dirty"]=m_context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size);
                 const auto word=program->bindings.memory_offset_dword+slot/4u;
                 if(word<bound.shader_data.size()&&native.buffer&&
-                   src.size<=(root_capture_inputs?262144u:1024u)){
+                   src.size<=(root_capture_inputs?4u*1024u*1024u:1024u)){
                     const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
                     if(DemonsPrelightPolicy::DiagnosticSlice(native.offset,native.range,adjust,src.size)){
-                        auto captured=DemonsPrelightTrace::ReadNativeWords(m_context,native.buffer,native.offset+adjust,uint32_t(src.size/4));
-                        item["capture_status"]=captured.size()==src.size/4?"complete":"readback_unavailable";
-                        item["gpu_words"]=std::move(captured);
+                        const auto start=native.offset+adjust;
+                        const auto skip=start&3u;
+                        const auto aligned=start-skip;
+                        const auto length=(src.size+skip+3u)&~uint64_t{3};
+                        if(aligned<native.offset||length>native.range-(aligned-native.offset)){
+                            item["capture_status"]="unaligned_slice_exceeds_native_range";
+                        }else if(length>8u*1024u*1024u-batch_bytes){
+                            item["capture_status"]="draw_readback_budget_exceeded";
+                        }else{
+                            slices.push_back({native.buffer,aligned,length,skip});
+                            slice_slots.emplace_back(key,out.size());batch_bytes+=length;
+                            item["capture_status"]="pending_batch";
+                            item["native_offset"]=start;item["native_range"]=native.range;
+                        }
                     }else item["capture_status"]="invalid_native_slice";
-                }else item["capture_status"]="not_captured";
+                }else item["capture_status"]="descriptor_or_capture_size_unsupported";
                 out.push_back(std::move(item));
             }
             return out;
         };
-        inputs["vs_bound"]=encode_bound(bindings.vertex[0],root_vs);
-        if(bindings.pixel&&root_ps)inputs["ps_bound"]=encode_bound(*bindings.pixel,root_ps);
+        inputs["vs_bound"]=encode_bound(bindings.vertex[0],root_vs,"vs_bound");
+        if(bindings.pixel&&root_ps)inputs["ps_bound"]=encode_bound(*bindings.pixel,root_ps,"ps_bound");
+        const auto captured=ReadDsNativeSlices(m_context,slices);
+        for(size_t i=0;i<slice_slots.size();++i){
+            auto& item=inputs[slice_slots[i].first][slice_slots[i].second];
+            const auto size=item["bytes"].get<size_t>();
+            if(captured[i].size()<size){item["capture_status"]="readback_unavailable";continue;}
+            item["capture_status"]="complete";
+            if(!root_capture_inputs||(size<=1024u&&(size%4u)==0)){
+                std::vector<uint32_t> words(size/4u);
+                std::memcpy(words.data(),captured[i].data(),words.size()*4u);
+                item["gpu_words"]=std::move(words);
+            }else{
+                while(root_pending_binary.size()%4u)root_pending_binary.push_back(0);
+                item["file"]=fmt::format("queue-state/ds_prelight_witness_data_{}.bin",root_draw);
+                item["offset_bytes"]=root_pending_binary.size();
+                root_pending_binary.insert(root_pending_binary.end(),captured[i].begin(),captured[i].begin()+size);
+            }
+        }
+        if(root_capture_inputs)root_vertex_sources=inputs["vs_bound"];
         if(root_capture_inputs){
             inputs["cycle_first_draw_before_acquire"]=root_cycle.boundary.first;
             inputs["indexed"]=draw.IsIndexed();
@@ -3538,6 +3658,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             }
             if(inputs.contains("index_words")&&inputs["index_words"].size()>4096)inputs.erase("index_words");
             inputs.erase("vs_shader_data");inputs.erase("ps_shader_data");
+            inputs.erase("vs_scalar_regions");inputs.erase("ps_scalar_regions");
         }
         Record(std::move(inputs));
     }
@@ -3925,6 +4046,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     uint32_t ds_vertex_base=0,ds_vertex_count=0;
     int ds_vertex_phase=-1;
     uint64_t ds_vertex_pair=0;
+    const int64_t ds_vertex_offset=draw.IsIndexed()?int64_t{emit.vertex_offset}:int64_t{emit.first_vertex};
+    bool ds_vertex_sky_pair=false;
+    const char* ds_vertex_status="native_vertex_instrumentation_unavailable";
     DsDepthFullSnapshot ds_vertex_depth_before;
     nlohmann::json ds_vertex_sources=nlohmann::json::array();
     nlohmann::json ds_vertex_pixel=nlohmann::json::object();
@@ -3939,7 +4063,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     static std::array<DsVertexPair,VP::FocusPairCount> ds_vertex_pairs{};
     static uint64_t ds_vertex_serial=0;
     const auto* ds_vp=state.vertex_info[0].stage.program;
-    if(ds_vp && VP::Watched(ds_vp->shader_hash) && ds_vp->ds_light_math_variant){
+    if(ds_vp && (root_trace||VP::Watched(ds_vp->shader_hash)) && ds_vp->ds_light_math_variant){
         const auto& gate=DemonsAdaptiveCapture::Current();
         const auto* ps=state.ps_active?state.ps_input_info.stage.program:nullptr;
         const int phase=root_trace?std::max(root_phase,0):gate.PostTransitionDarkDue(ds_gbuffer_frame)?3:
@@ -3956,43 +4080,58 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         // AND pair identity, not the first occurrence of a shader.
         const bool root_witness=root_trace&&root_phase>=0&&k==4&&
             !root_witness_latched&&draw.index_count>0&&draw.index_count<=64;
-        const bool due=(!root_trace||root_witness) && matched && (material ?
+        const bool legacy_due=(!root_trace||root_witness) && matched && (material ?
             pair.serial && !pair.material_captured && ds_gbuffer_frame>=pair.frame &&
             int64_t{ds_gbuffer_frame}-pair.frame<=1 &&
             pair.address==index_source.address && pair.count==draw.index_count &&
             pair.base==emit.vertex_offset && pair.instance==emit.first_instance :
             (root_trace?root_witness:(phase>=2&&counts[k][phase]<1u)));
-        if(matched && due && vertex_stages.size()==1 && !mesh_active && !mesh_emulated && !indirect &&
-            draw.IsIndexed() && draw.instance_count==1 && !primitive_restart_enable &&
-            topology==vk::PrimitiveTopology::eTriangleList && index_source.guest_element_size>=2 &&
-            state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress){
-            ds_vertex_indices=ReadDsVertexIndices(m_context,index_binding,draw.index_count);
+        const bool due=root_trace?root_capture_inputs:legacy_due;
+        ds_vertex_status="unsupported_draw_shape";
+        if(due && vertex_stages.size()==1 && !mesh_active && !mesh_emulated && !indirect &&
+            (draw.IsIndexed()||root_trace) && draw.instance_count==1 && !primitive_restart_enable &&
+            topology==vk::PrimitiveTopology::eTriangleList &&
+            (!draw.IsIndexed()||index_source.guest_element_size>=2) &&
+            (root_trace||(state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress))){
+            ds_vertex_indices=root_trace?root_index_words:ReadDsVertexIndices(m_context,index_binding,draw.index_count);
+            ds_vertex_status="index_readback_unavailable";
             if(!ds_vertex_indices.empty()){
                 const auto [lo,hi]=std::minmax_element(ds_vertex_indices.begin(),ds_vertex_indices.end());
-                const int64_t base=int64_t{*lo}+emit.vertex_offset, end=int64_t{*hi}+emit.vertex_offset;
+                const int64_t base=int64_t{*lo}+ds_vertex_offset, end=int64_t{*hi}+ds_vertex_offset;
+                ds_vertex_status="vertex_span_exceeds_recorder";
                 if(base>=0 && end<=UINT32_MAX && end-base<VP::MaxVertices){
                     ds_vertex_base=static_cast<uint32_t>(base);
                     ds_vertex_count=static_cast<uint32_t>(end-base+1);
-                    if(material){
+                    ds_vertex_status="armed";
+                    if(root_trace&&k!=4){
+                        ds_vertex_phase=phase;ds_vertex_pair=root_draw;
+                    }else if(material&&pair.serial&&pair.address==index_source.address&&
+                             pair.count==draw.index_count&&pair.base==emit.vertex_offset&&
+                             pair.instance==emit.first_instance&&ds_gbuffer_frame>=pair.frame&&
+                             int64_t{ds_gbuffer_frame}-pair.frame<=1){
                         ds_vertex_phase=pair.phase;
                         ds_vertex_pair=pair.serial;
                         pair.material_captured=true;
+                        ds_vertex_sky_pair=root_trace&&k==4;
                     }else{
                         ds_vertex_phase=phase;
                         ds_vertex_pair=++ds_vertex_serial;
                         pair={ds_gbuffer_frame,phase,ds_vertex_pair,index_source.address,
                             draw.index_count,emit.first_instance,emit.vertex_offset,false};
                         if(!root_trace)++counts[k][phase];
+                        ds_vertex_sky_pair=root_trace&&k==4&&!material;
                     }
                     // This read is before the current draw, including before
                     // any pending attachment load clear. Record that clear
                     // separately; do not compare the pre-clear image as if
                     // it were the depth tested by the draw.
-                    ds_vertex_depth_before=SnapshotDsDepthFull(m_context,state.depth_info);
+                    if(!root_trace||ds_vertex_sky_pair)
+                        ds_vertex_depth_before=SnapshotDsDepthFull(m_context,state.depth_info);
                     // Record the actual descriptors used by the dominant
                     // position shader, not a later CPU reconstruction.
                     const auto& bound=bindings.vertex[0];
-                    for(uint32_t slot=0;slot<bound.buffer_sources.size() && slot<bound.buffers.size();++slot){
+                    if(root_trace)ds_vertex_sources=root_vertex_sources;
+                    for(uint32_t slot=0;!root_trace&&slot<bound.buffer_sources.size() && slot<bound.buffers.size();++slot){
                         const auto& source=bound.buffer_sources[slot];
                         const auto& native=bound.buffers[slot];
                         nlohmann::json entry={{"slot",slot},{"address",source.address},{"bytes",source.size}};
@@ -4032,13 +4171,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         if(init)storage=std::make_unique<Buffer>(m_context.GetGraphics(),m_context.GetCommandScheduler(),
             MemoryUsage::Download,0,vk::BufferUsageFlagBits::eStorageBuffer,bytes);
         if(init||capture){
-            std::vector<uint32_t> words(capture?VP::WordCount:VP::Header);
+            const auto initialized_words=capture?VP::Header+ds_vertex_count*VP::Stride:VP::Header;
+            std::vector<uint32_t> words(initialized_words);
             words[0]=capture?1u:0u;words[1]=ds_vertex_base;words[2]=ds_vertex_count;
-            std::memcpy(storage->Mapped().data(),words.data(),bytes);
-            storage->Flush(0,bytes);
+            std::memcpy(storage->Mapped().data(),words.data(),initialized_words*sizeof(uint32_t));
+            storage->Flush(0,initialized_words*sizeof(uint32_t));
         }
         bindings.vertex[0].shared_memory=vk::DescriptorBufferInfo{storage->Handle(),0,bytes};
     }
+    if(root_capture_inputs)Record({{"kind","witness_vertex_capture"},{"draw",root_draw},{"frame",root_frame},
+        {"status",ds_vertex_status},{"native_vs_file",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
+        {"first_vertex",emit.first_vertex},{"base_vertex",emit.vertex_offset},{"first_instance",emit.first_instance},
+        {"vertices",ds_vertex_count},{"sky_pair",ds_vertex_sky_pair}});
 	IndirectDrawFixup::Records indirect_records;
 	if (indirect != nullptr && !mesh_active) {
 		const auto* vertex_program = state.vertex_info[0].stage.program;
@@ -4412,12 +4556,21 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         if(root_capture_inputs){
             const bool begins_cycle=root_cycle.boundary.Observe(root_draw,root_depth,state.depth_info.depth_load_clear_enable);
             const bool retained=root_cycle.retained.Retain(root_draw,std::move(root_pending_input),
-                begins_cycle,root_cycle.boundary.first!=0,{});
+                begins_cycle,root_cycle.boundary.first!=0,{},root_pending_binary.size());
             if(begins_cycle){
+                root_cycle.binary.clear();root_cycle.positions.clear();
+                root_cycle.position_bytes=0;root_cycle.position_dropped=0;
                 root_cycle.frame=root_frame;root_cycle.first_submit=submit_id;
                 Record({{"kind","witness_depth_cycle_begin"},{"frame",root_frame},{"draw",root_draw},
                     {"submit",submit_id},{"first_input_retained",retained},
                     {"scope","executed clear, input admitted after resetting previous cycle budget"}});
+            }
+            if(retained&&!root_pending_binary.empty())root_cycle.binary.emplace(root_draw,std::move(root_pending_binary));
+            if(!root_cycle.boundary.first){
+                // Prune payloads evicted from the pre-boundary rolling prefix.
+                std::erase_if(root_cycle.binary,[&](const auto& entry){
+                    return std::ranges::none_of(root_cycle.retained.inputs,[&](const auto& input){return input.first==entry.first;});
+                });
             }
             Record({{"kind","witness_input_retention"},{"frame",root_frame},{"draw",root_draw},
                 {"submit",submit_id},{"retained",retained},{"cycle_first_draw",root_cycle.boundary.first},
@@ -4772,7 +4925,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         nlohmann::json projection_rows=nlohmann::json::array();
         size_t ordinal=0;
         for(auto raw:unique){
-            const auto idx=static_cast<uint32_t>(int64_t{raw}+emit.vertex_offset);
+            const auto idx=static_cast<uint32_t>(int64_t{raw}+ds_vertex_offset);
             const auto p=VP::Header+size_t{idx-ds_vertex_base}*VP::Stride;
             if(!values[p]){++missing;continue;}
             nlohmann::json row=nlohmann::json::array();
@@ -4789,7 +4942,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         // previous 64-point grid missed these ~12x8-pixel meshes entirely.
         // Restrict exported regions to at most 65536 pixels, but keep the
         // actual projected bounds and a reason if a region is unavailable.
-        auto depth_after=SnapshotDsDepthFull(m_context,state.depth_info);
+        auto depth_after=(!root_trace||ds_vertex_sky_pair)?SnapshotDsDepthFull(m_context,state.depth_info):DsDepthFullSnapshot{};
         nlohmann::json depth_region={{"status","unavailable"}};
         double minx=std::numeric_limits<double>::infinity(),miny=minx;
         double maxx=-minx,maxy=-minx;
@@ -4855,21 +5008,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         const auto folder=Config::GetShaderDumpFolder()/"queue-state";
         std::error_code ec;std::filesystem::create_directories(folder,ec);
         const auto name=root_trace?
-            std::string(VP::Material(ds_vp->shader_hash)?"ds_prelight_witness_sky_material.json":"ds_prelight_witness_sky_prepass.json"):
+            fmt::format("ds_prelight_witness_vertex_{}.json",root_draw):
             fmt::format("ds_vertex_position_{:016x}_f{}_s{}_p{}_pair{}.json",
                 ds_vp->shader_hash,ds_gbuffer_frame,submit_id,ds_vertex_phase,ds_vertex_pair);
-        std::ofstream file(folder/name,std::ios::trunc);
-        if(file)file<<nlohmann::json{{"frame",ds_gbuffer_frame},{"submit",submit_id},
+        nlohmann::json position_report={{"frame",ds_gbuffer_frame},{"submit",submit_id},
             {"phase",ds_vertex_phase},{"shader",fmt::format("{:016x}",ds_vp->shader_hash)},
             {"fingerprint",fmt::format("{:016x}",ds_vp->ds_light_math_variant)},
+            {"original_vs_file",fmt::format("spv/vs_{:016x}_{:016x}.spv",ds_vp->shader_hash,ds_vp->ds_light_math_variant)},
             {"native_vs_file",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
             {"native_ps_file",ShaderDump::ModuleFile(state.programs.pixel.module)},
-            {"depth_owner",m_context.GetTextureCache().GetImage(state.depth_info.image_id).info.data.address},
-            {"depth_version",m_context.GetTextureCache().GetImage(state.depth_info.image_id).ContentVersion()},
+            {"depth_owner",state.depth_info.image_id?m_context.GetTextureCache().GetImage(state.depth_info.image_id).info.data.address:0ull},
+            {"depth_version",state.depth_info.image_id?m_context.GetTextureCache().GetImage(state.depth_info.image_id).ContentVersion():0ull},
             {"tick",m_context.GetCommandScheduler().CurrentTick()},
-            {"index_guest",index_source.address},{"base_vertex",emit.vertex_offset},
+            {"index_guest",index_source.address},{"base_vertex",emit.vertex_offset},{"first_vertex",emit.first_vertex},
+            {"indexed",draw.IsIndexed()},{"instances",draw.instance_count},
             {"first_instance",emit.first_instance},{"indices",ds_vertex_indices},{"missing",missing},
-            {"pair_id",ds_vertex_pair},{"journal_draw",root_draw},{"command",command_seq},{"material",VP::Material(ds_vp->shader_hash)},
+            {"pair_id",ds_vertex_pair},{"journal_draw",root_draw},{"command",command_seq},
+            {"material",root_trace?root_target!=root_colors.end():VP::Material(ds_vp->shader_hash)},
+            {"target_layer0",root_target!=root_colors.end()},{"depth_target",root_depth},
             {"pixel_shader",state.ps_input_info.stage.program?
                 fmt::format("{:016x}",state.ps_input_info.stage.program->shader_hash):std::string{}},
             {"transform_inputs_valid",VP::HasTransformInputs(ds_vp->shader_hash,ds_vp->ds_light_math_variant)},
@@ -4892,12 +5048,28 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             {"columns",{"vertex","instance","transform","clip_x","clip_y","clip_z","clip_w","clip_distance",
                 "input_x","input_y","input_z","m00","m01","m02","m03","m10","m11","m12","m13","m20","m21","m22","m23"}},
             {"rows",std::move(rows)}};
-        file.close();
-        if(root_trace&&!VP::Material(ds_vp->shader_hash)){
+        bool position_saved=false;
+        const auto position_payload=position_report.dump();
+        if(root_trace){
+            if(position_payload.size()<=64u*1024u*1024u-root_cycle.position_bytes){
+                root_cycle.positions[root_draw]=position_payload;
+                root_cycle.position_bytes+=position_payload.size();position_saved=true;
+            }else ++root_cycle.position_dropped;
+            if(ds_vertex_sky_pair){
+                const auto alias=VP::Material(ds_vp->shader_hash)?"ds_prelight_witness_sky_material.json":"ds_prelight_witness_sky_prepass.json";
+                std::ofstream out(folder/alias,std::ios::trunc);
+                if(out)out<<position_payload;
+            }
+        }else{
+            std::ofstream out(folder/name,std::ios::trunc);
+            if(out)out<<position_payload;
+            out.close();position_saved=out.good();
+        }
+        if(root_trace&&ds_vertex_sky_pair&&!VP::Material(ds_vp->shader_hash)){
             root_witness_pre_serial=ds_vertex_pair;
             root_witness_pre_before=std::move(ds_vertex_depth_before);
             root_witness_pre_after=std::move(depth_after);
-        }else if(root_trace&&root_witness_loss){
+        }else if(root_trace&&ds_vertex_sky_pair&&root_witness_loss){
             const auto write_depth=[&](const char* filename,const DsDepthFullSnapshot& depth){
                 if(depth.bits.empty())return false;
                 std::ofstream out(folder/filename,std::ios::binary|std::ios::trunc);
@@ -4919,30 +5091,71 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                 {"material_before_saved",material_ok},{"material_before_equals_pre_after",equal},
                 {"material_width",ds_vertex_depth_before.width},{"material_height",ds_vertex_depth_before.height},
                 {"pre_width",root_witness_pre_before.width},{"pre_height",root_witness_pre_before.height},
-                {"material_indices",ds_vertex_indices},{"material_position_saved",file.good()}};
+                {"material_indices",ds_vertex_indices},{"material_position_saved",position_saved}};
             root_witness_pre_before={};root_witness_pre_after={};
         }
         Log::WriteToConsoleAndLog(fmt::format("[DS_VERTEX_POSITION] frame={} shader={:016x} vertices={} missing={} file={} saved={}\n",
-            ds_gbuffer_frame,ds_vp->shader_hash,unique.size(),missing,name,file.good()));
+            ds_gbuffer_frame,ds_vp->shader_hash,unique.size(),missing,name,position_saved));
     }
     if(root_witness_loss){
         root_witness_latched=true;
         const auto folder=DemonsPrelightTrace::Folder();
         std::error_code ec;std::filesystem::create_directories(folder,ec);
         nlohmann::json saved=nlohmann::json::array();
+        std::map<std::string,uint64_t> required;
+        const auto require=[&](const std::string& path){
+            if(path.empty())return;
+            std::error_code error;
+            const auto size=std::filesystem::file_size(Config::GetShaderDumpFolder()/path,error);
+            required[path]=error?0:size;
+        };
+        nlohmann::json position_files=nlohmann::json::array();
+        for(const auto& [id,bytes]:root_cycle.binary){
+            const auto name=fmt::format("ds_prelight_witness_data_{}.bin",id);
+            std::ofstream out(folder/name,std::ios::binary|std::ios::trunc);
+            if(out)out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+            out.close();require("queue-state/"+name);
+        }
+        for(const auto& [id,line]:root_cycle.positions){
+            const auto name=fmt::format("ds_prelight_witness_vertex_{}.json",id);
+            std::ofstream out(folder/name,std::ios::trunc);
+            if(out)out<<line;
+            out.close();require("queue-state/"+name);
+            position_files.push_back({{"draw",id},{"file",name},{"saved",out.good()}});
+        }
         for(const auto& [id,line]:root_cycle.retained.inputs){
             const auto name=fmt::format("ds_prelight_witness_foreground_{}.json",id);
             std::ofstream out(folder/name,std::ios::trunc);
             if(out)out<<line;
             out.close();
             saved.push_back({{"draw",id},{"file",name},{"saved",out.good()}});
+            require("queue-state/"+name);
+            const auto input=nlohmann::json::parse(line,nullptr,false);
+            if(input.is_object()){
+                for(const char* key:{"vs_file","ps_file","vs_original_file"})require(input.value(key,std::string{}));
+                for(const char* stage:{"vs","ps"}){
+                    const auto hash=input.value(std::string(stage)+"_hash",std::string{});
+                    if(!hash.empty()&&hash!="0000000000000000")
+                        require(fmt::format("guest-shaders/{}_{}_probe.bin",stage,hash));
+                }
+            }
         }
+        for(const char* name:{"ds_prelight_witness_sky_prepass.json","ds_prelight_witness_sky_material.json",
+            "ds_prelight_witness_depth.json","ds_prelight_witness_depth_pre_before.bin",
+            "ds_prelight_witness_depth_pre_after.bin"})require(std::string("queue-state/")+name);
+        const auto optional_depth="ds_prelight_witness_depth_material_before.bin";
+        if(std::filesystem::exists(folder/optional_depth,ec))require(std::string("queue-state/")+optional_depth);
+        nlohmann::json required_files=nlohmann::json::array();
+        for(const auto& [name,bytes]:required)required_files.push_back({{"file",name},{"bytes",bytes},{"present",bytes!=0}});
         std::ofstream meta(folder/"ds_prelight_witness_foreground_manifest.json",std::ios::trunc);
         if(meta)meta<<nlohmann::json{{"active",root_cycle.boundary.first!=0},{"first_frame",root_cycle.frame},
             {"first_draw",root_cycle.boundary.first},{"first_submit",root_cycle.first_submit},
             {"loss_frame",root_frame},{"loss_draw",root_draw},{"bytes",root_cycle.retained.bytes},
             {"dropped",root_cycle.retained.dropped},{"inputs",saved},
-            {"scope","same prepass cycle native buffers; unsupported and uncaptured operands remain BLOCKED"}};
+            {"position_bytes",root_cycle.position_bytes},{"position_dropped",root_cycle.position_dropped},
+            {"positions",position_files},{"required_files",required_files},{"schema",2},
+            {"scope","independent guest VS positions versus native positions on the same consumed scalar and vector bytes"},
+            {"decision","POSITION_MATCH or POSITION_DIVERGENCE per supported draw; unsupported operands reported per draw, not as a global build prohibition"}};
         root_cycle={};
         Record({{"kind","witness_latched"},{"frame",root_frame},{"draw",root_draw},
             {"position_captured",ds_vertex_phase>=0},{"pair",ds_vertex_pair},

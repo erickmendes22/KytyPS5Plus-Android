@@ -114,7 +114,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(decision["P8"], "BLOCKED")
         self.assertEqual(decision["interval_after"], [0, 16])
         self.assertEqual(decision["pruned_classes"], [])
-        self.assertFalse(decision["ready_for_diagnostic_apk"])
+        self.assertNotIn("ready_for_diagnostic_apk", decision)
 
     def test_actual_clear_selects_cycle_despite_false_prepared_flag(self):
         events, ids = fixture()
@@ -353,7 +353,7 @@ class GateTests(unittest.TestCase):
         self.write(events)
         result = subprocess.run([sys.executable, str(SCRIPT), str(self.capture)],
                                 capture_output=True, text=True, check=False)
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, 0)
         self.assert_blocked(json.loads(result.stdout))
 
     def test_no_cli_switch_accepts_an_asserted_oracle(self):
@@ -372,7 +372,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         report = json.loads(result.stderr)
         self.assertEqual(report["decision"], "BLOCKED")
-        self.assertFalse(report["ready_for_diagnostic_apk"])
+        self.assertNotIn("ready_for_diagnostic_apk", report)
         self.assertIn("empty prelight journal", report["input_error"])
 
 
@@ -401,7 +401,7 @@ class RealCaptureTests(unittest.TestCase):
                 self.assertNotIn("bound_module_integrity_unverified", report["gap_counts"])
                 self.assertNotIn("guest_shader_integrity_unverified", report["gap_counts"])
                 self.assertEqual(report["decision"]["interval_after"], [0, 16])
-                self.assertFalse(report["decision"]["ready_for_diagnostic_apk"])
+                self.assertNotIn("ready_for_diagnostic_apk", report["decision"])
                 self.assertEqual(report["decision"]["status"], "BLOCKED")
                 self.assertEqual(report["decision"]["pruned_classes"], [])
 

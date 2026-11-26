@@ -1,5 +1,6 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/WalkCost.h"
+#include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 
 #include "common/assert.h"
 #include "graphics/guest_gpu/gpu_format.h"
@@ -13,6 +14,7 @@
 #include <bit>
 #include <cinttypes>
 #include <cstdio>
+#include <cstring>
 #include <fmt/format.h>
 #include <functional>
 #include <mutex>
@@ -1631,8 +1633,41 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 }
 
 bool MaterializeResources(const ResourcePlan& program, ResourcePlan::Scratch& scratch,
-                          const SrtRuntime& runtime, ResourceSnapshot& snapshot,
+                          const SrtRuntime& incoming_runtime, ResourceSnapshot& snapshot,
                           ResourceSpecialization& specialization) {
+	const bool diagnostic = DemonsCausalMatrix::Mode()==DemonsCausalMatrix::Trace;
+	SrtReadLog diagnostic_log;
+	std::optional<ScopedSrtReadLog> diagnostic_scope;
+	if (diagnostic) {
+		diagnostic_log.max_value_bytes = 256u * 1024u;
+		diagnostic_scope.emplace(diagnostic_log, incoming_runtime, true);
+	}
+	const auto runtime = diagnostic ? diagnostic_scope->Runtime() : incoming_runtime;
+	snapshot.diagnostic_scalar_reads.clear();
+	snapshot.diagnostic_scalar_complete = false;
+	snapshot.diagnostic_user_data_base = program.user_data_base;
+	struct SaveConsumedReads {
+		ResourceSnapshot& snapshot;
+		const SrtReadLog& log;
+		bool enabled;
+		~SaveConsumedReads() {
+			if (!enabled) return;
+			snapshot.diagnostic_scalar_complete = log.complete;
+			for (const auto& entry: log.entries) {
+				if (entry.kind==SrtReadLog::Kind::Mapped) continue;
+				if (!entry.ok) {snapshot.diagnostic_scalar_complete=false;continue;}
+				if ((entry.bytes & 3u) || entry.value_offset>log.values.size() ||
+				    entry.bytes>log.values.size()-entry.value_offset) {
+					snapshot.diagnostic_scalar_complete=false; continue;
+				}
+				ResourceSnapshot::ScalarRead read;
+				read.address=entry.address;read.kind=static_cast<uint8_t>(entry.kind);
+				read.words.resize(entry.bytes/4u);
+				std::memcpy(read.words.data(),log.values.data()+entry.value_offset,entry.bytes);
+				snapshot.diagnostic_scalar_reads.push_back(std::move(read));
+			}
+		}
+	} save_consumed_reads{snapshot,diagnostic_log,diagnostic};
 	const WalkCost::Scope walk_cost; // KYTY_GPU_FAN=auto
 	if (scratch.selector_keys.size() != program.selector_keys.size()) scratch.selector_keys = program.selector_keys;
 	for (auto& keys: scratch.selector_keys) keys.resolved = false;

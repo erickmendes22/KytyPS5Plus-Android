@@ -16144,6 +16144,98 @@ void TestPatternFill() {
   }
 }
 
+void TestSrtReadLogOrdinaryCapture() {
+  using namespace ShaderRecompiler::IR;
+  struct Memory {
+    uint32_t value = 0x12345678u;
+    uint32_t calls = 0;
+    bool mutate = true;
+    bool succeeds = true;
+  } memory;
+  const auto read = +[](void* opaque, uint64_t, std::span<uint32_t> words) {
+    auto& source = *static_cast<Memory*>(opaque);
+    ++source.calls;
+    for (size_t i = 0; i < words.size(); ++i) words[i] = source.value + static_cast<uint32_t>(i);
+    if (source.mutate) source.value ^= 0x10000u;
+    return source.succeeds;
+  };
+  const SrtRuntime original{.user_data = {}, .read_memory = read, .userdata = &memory,
+                            .workgroup_counts = {}};
+  const auto logged_word = [](const SrtReadLog& log, size_t word) {
+    uint32_t value = 0;
+    std::memcpy(&value, log.values.data() + word * sizeof(uint32_t), sizeof(value));
+    return value;
+  };
+  SrtReadLog log;
+  std::array<uint32_t, 2> actual{};
+  {
+    const ScopedSrtReadLog scope(log, original, true);
+    const auto runtime = scope.Runtime();
+    Check(runtime.userdata == &memory && runtime.read_memory != read,
+          "ordinary SRT logging lost the original callback userdata");
+    Check(runtime.read_memory(runtime.userdata, 0x500000, actual),
+          "ordinary SRT logger changed successful read result");
+    Check(memory.calls == 1 && actual == std::array<uint32_t, 2>{0x12345678u, 0x12345679u},
+          "ordinary SRT logger re-read memory instead of preserving consumed values");
+  }
+  Check(log.complete && log.entries.size() == 1 && log.values.size() == sizeof(actual) &&
+            log.entries[0].kind == SrtReadLog::Kind::Ordinary &&
+            log.entries[0].address == 0x500000 && log.entries[0].ok &&
+            logged_word(log, 0) == actual[0] && logged_word(log, 1) == actual[1],
+        "ordinary SRT bytes/address were not retained by the diagnostic scope");
+  memory.mutate = false;
+  Check(!SrtReadLogMatches(log, original), "ordinary SRT log accepted mutated source bytes");
+  memory.value = actual[0];
+  Check(SrtReadLogMatches(log, original), "ordinary SRT log rejected identical source bytes");
+
+  // ResourceMemo's default policy still declines unlogged ordinary callbacks.
+  {
+    const ScopedSrtReadLog memo_scope(log, original);
+    const auto runtime = memo_scope.Runtime();
+    Check(!log.complete && runtime.read_memory == read,
+          "diagnostic ordinary capture changed the default memo policy");
+    Check(runtime.read_memory(runtime.userdata, 0x500000, actual), "memo callback changed");
+  }
+  Check(log.entries.empty(), "default memo scope claimed to capture ordinary reads");
+
+  // Materialization may add SrtReadCapture around the logger; both wrappers
+  // must forward the original userdata and observe the same single read.
+  std::vector<std::pair<uint64_t, uint64_t>> ranges;
+  const auto prior_calls = memory.calls;
+  {
+    const ScopedSrtReadLog scope(log, original, true);
+    SrtReadCapture capture(scope.Runtime(), ranges);
+    const auto observed = capture.ObservedRuntime();
+    Check(observed.read_memory(observed.userdata, 0x600000, actual),
+          "ordinary SRT capture wrapper failed");
+  }
+  Check(memory.calls == prior_calls + 1 && log.complete && log.entries.size() == 1 &&
+            ranges == std::vector<std::pair<uint64_t, uint64_t>>{{0x600000, sizeof(actual)}},
+        "nested resource-read capture duplicated or lost the original read");
+
+  memory.succeeds = false;
+  {
+    const ScopedSrtReadLog scope(log, original, true);
+    const auto runtime = scope.Runtime();
+    Check(!runtime.read_memory(runtime.userdata, 0x700000, actual),
+          "ordinary SRT logger changed a refused callback into success");
+  }
+  Check(log.complete && log.entries.size() == 1 && !log.entries[0].ok && log.values.empty(),
+        "ordinary SRT refusal was replaced by invented bytes");
+  Check(SrtReadLogMatches(log, original), "ordinary SRT refusal could not be matched");
+  memory.succeeds = true;
+  Check(!SrtReadLogMatches(log, original), "ordinary SRT refusal matched a later successful read");
+
+  log.max_value_bytes = sizeof(uint32_t);
+  {
+    const ScopedSrtReadLog scope(log, original, true);
+    const auto runtime = scope.Runtime();
+    Check(runtime.read_memory(runtime.userdata, 0x800000, actual),
+          "diagnostic byte budget changed the original callback result");
+  }
+  Check(!log.complete && log.values.empty(), "ordinary SRT log exceeded its capture byte budget");
+}
+
 void TestGpuProducedWritableDescriptor() {
   using namespace ShaderRecompiler::IR;
   // Reduced from 994af59d50bedca8: the GPU-built BVH header supplies a relative
@@ -18281,6 +18373,7 @@ int main() {
   TestBoundedScalarMaterialImageKeys();
   TestImmutableDescriptorPredicate();
   TestTypedDescriptorRealCarryAndScalarLoads();
+  TestSrtReadLogOrdinaryCapture();
   TestSrtWalkerRealSmemTranslation();
   TestSrtWalkerVccBaseTranslation();
   TestSrtWalkerRealSBufferTranslation();

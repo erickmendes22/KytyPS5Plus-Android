@@ -1,4 +1,47 @@
 # V3 — investigação binária integral (normativa, substitui V2 e V1)
+
+## Continuidade operacional — 26/11/2026
+
+A falta de certificação integral de P8 não é uma proibição de adquirir os
+operandos de uma comparação concreta. O usuário corrigiu expressamente esse
+bloqueio circular nesta sessão. Mantêm-se a testemunha #741/#744, as classes,
+os certificados locais e o intervalo global ainda não decidido. Não se exige
+uma captura de PC ou um emulador de referência completo para continuar.
+
+A aresta executável desta revisão é **bytes consumidos → posição guest →
+posição nativa**, nos draws do mesmo ciclo iniciado pelo clear executado e
+encerrado pela primeira perda. `tools/prelight_vertex_oracle.py` decodifica
+a ISA gfx1010 e avalia o slice de EXP POS0 com os buffers nativos e as leituras
+SRT registradas no instante de materialização. Não usa as colunas de matriz,
+posição de entrada ou XYZW nativo como resposta esperada.
+
+| Resultado da comparação | Redução comprovada e próxima ação |
+| --- | --- |
+| POSITION_MATCH | Para as invocações e bytes comparados, remover o cálculo/fetch desse VS da lista de operações divergentes. Seguir a origem dos operandos ou a próxima operação já delimitada da mesma testemunha. |
+| POSITION_DIVERGENCE | Fixar draw, componente, instrução EXP, bits esperados/observados e loads do slice. Investigar somente a tradução/fetch/aritmética desse contraexemplo, conferindo modo numérico, até a primeira instrução divergente. |
+| UNSUPPORTED_DRAW | Informar a instrução ou faixa exata ausente; preservar os resultados dos demais draws. Um novo opcode pode ser implementado offline com a ISA e os operandos já exportados. |
+
+Isso decide uma aresta real dentro da investigação de G0/P8. Não transforma
+um resultado local em PASS global, nem seleciona o ramo de iluminação por
+exclusão incompleta. A promoção para uma metade global requer o vínculo com
+o sintoma conforme as regras abaixo. O auditor `prelight_v3_gate.py` não é
+um mecanismo de autorização de builds e não tem mais um veto incondicional.
+
+Antes da compilação, o novo oráculo reproduziu os dois VS do céu da #744:
+38 vértices, 152 componentes XYZW bit a bit. A máscara raster já certificada
+permanece preservada. Na #737, W0 reproduz os NaNs; W1 identifica a leitura
+0xc8 cujo slot2 não contém os 448.296 bytes necessários. Estes últimos são
+controles do mecanismo, não novas testemunhas do defeito de iluminação.
+
+O APK desta revisão completa a correção da captura: admissão após o clear
+executado, orçamento que inclui os blobs, leituras GPU em lote por draw,
+posições de todos os VS estruturalmente suportados, ISA guest inclusive em
+cache hits, SPIR-V original e ligado, fecho obrigatório de exportação com
+SHA-256 e motivos explícitos de ausência. A captura guarda os operandos dos
+draws seguintes do mesmo ciclo, permitindo continuar offline sem uma build
+para cada shader ou hipótese. Gameplay e resultado visual serão conferidos
+no aparelho; não há alteração artificial de luz, albedo, contagens ou depth.
+
 ## Auditoria de completude e invariantes
 V2 assumia falha pré-iluminação sem prova G0 e não cobria iluminação,
 pós-processamento e apresentação. V3 cobre o grafo causal da imagem
@@ -86,11 +129,13 @@ Estado: G0/P8 BLOCKED, primeira divisão não selecionada.
 
 A [auditoria reproduzível](DEMONS_V3_AUDIT_2026_11_26.md) preserva G0/P8,
 o mesmo ciclo e o intervalo potencial [0,16]. Nenhuma metade global foi
-eliminada. `tools/prelight_v3_gate.py` confere o fecho da captura e retorna
-BLOCKED/exit 2 nos dois ZIPs reais; não aceita booleanos de certificação
+eliminada. `tools/prelight_v3_gate.py` confere o fecho da captura e registra
+P8 BLOCKED nos dois ZIPs reais; não aceita booleanos de certificação
 como substituto de um replay independente. O backend integral C1..C8 ainda
 não existe, e o gate declara essa ausência. Esse script é auditoria de
-prontidão, não um oráculo P8 implementado.
+de evidências. Uma auditoria legível retorna exit 0; dados inválidos retornam
+exit 3. `--vertex-oracle` executa as comparações locais acima e as inclui no
+relatório, sem aceitar um arquivo externo de PASS/FAIL.
 
 Clear executado seleciona corretamente 40367→40979 (#741) e
 39624→40091 (#744), 50 draws em cada ciclo. Faltam 3.304.608 bytes de

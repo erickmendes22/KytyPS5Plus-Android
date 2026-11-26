@@ -172,18 +172,21 @@ operação sem referência ficam BLOCKED. Não aceita `--oracle` com booleanos
 autoafirmados ou uma cor arbitrária como certificado. O digest do conjunto
 inspecionado identifica a evidência usada pelo relatório.
 
-**Este gate de prontidão não contém um backend integral de replay C1..C8.**
-Ele declara essa ausência e retorna código 2, sem reduzir [0,16] ou
-autorizar um APK. Isso é intencional: rejeitar captura insuficiente não é
-ter implementado o oráculo ausente. Um backend futuro precisa consumir os
-operandos reais com integridade/versionamento e ser validado com paridade
-e mutação causal em uma testemunha real completa. Um contraexemplo local
-suficiente pode decidir FAIL; uma coleta apenas maior não decide PASS.
+**O auditor não contém um backend integral de replay C1..C8.** Essa ausência
+limita o certificado global, sem funcionar como veto à próxima aquisição.
+O oráculo executável por draw agora está em `prelight_vertex_oracle.py`:
+ele calcula POS0 pela ISA guest e compara aos valores nativos, preservando
+lacunas e resultados por operação. O auditor retorna 0 para relatório legível
+e 3 para entrada inválida; `--vertex-oracle` inclui a execução independente.
+Não aceita PASS/FAIL autoafirmado. Um contraexemplo causal suficiente pode
+decidir FAIL global; um match local não certifica todo o G-buffer.
 
 Comandos reproduzíveis, executados da raiz do repositório:
 
 ```bash
 python3 docs/android/tools/prelight_v3_gate.py /caminho/diagnostico.zip
+python3 docs/android/tools/prelight_v3_gate.py /caminho/diagnostico.zip --vertex-oracle
+python3 docs/android/tools/prelight_vertex_oracle.py /caminho/diagnostico.zip
 python3 docs/android/tools/prelight_sky_replay.py /caminho/diagnostico-744.zip
 python3 docs/android/tools/prelight_position_formula_replay.py --capture /caminho/diagnostico-744.zip --self-test
 ```
@@ -200,6 +203,9 @@ está funcional; o bloqueio da decisão é a evidência/oráculo, não a fila de
 build nem a assinatura. A #744 foi baixada e sua assinatura/revisão foram
 reverificadas como baseline, sem apresentá-la como uma nova correção.
 
-Não houve nova build Android nesta auditoria. A staging permanece separada
-da branch que dispara o workflow. A próxima publicação de APK continua
-condicionada à suficiência da captura e do oráculo do **mesmo G0/P8**.
+A auditoria inicial não gerou APK. Após a correção expressa do usuário sobre
+esse bloqueio circular, a continuidade implementou o comparador numérico,
+o fecho da exportação e a captura da aresta concreta do mesmo ciclo. O estado
+operacional atualizado está no início da árvore e da matriz. Os dados antigos
+continuam suficientes para os certificados locais acima; os bytes que não
+foram gravados serão adquiridos pelo APK, sem exigir um dump externo do jogo.

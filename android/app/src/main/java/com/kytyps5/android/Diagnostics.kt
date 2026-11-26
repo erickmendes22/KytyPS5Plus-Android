@@ -259,6 +259,11 @@ object Diagnostics {
             // can legitimately predate it. Do not silently mix old ray rows
             // with the current session's identical frame numbers.
             val launchTime = File(context.filesDir, "logs/last-launch.txt").lastModified()
+            val decisionCapture = launch.takeIf { it.isFile }?.readLines()
+                ?.lastOrNull { it.matches(Regex("KYTY_DS_MATRIX=[0-9]+")) } == "KYTY_DS_MATRIX=8"
+            // F's explicit dependency closure is independent of the legacy
+            // watched-hash lists and per-directory optional file limits below.
+            val requiredPlan = if (decisionCapture) DsLightingCaptureExport.discover(dump, launchTime) else null
             val exactDepthFiles = File(dump, "queue-state").listFiles().orEmpty()
                 .filter { (it.name.startsWith("ds_geometry_coverage_f") || it.name.startsWith("ds_discard_active_") || it.name.startsWith("ds_vertex_position_") || it.name.startsWith("ds_vertex_producer_") || it.name.startsWith("ds_prelight_witness_")) && it.extension == "json" &&
                     (launchTime == 0L || it.lastModified() >= launchTime) && it.length() <= 8L*1024L*1024L }
@@ -456,7 +461,7 @@ object Diagnostics {
             zip.write(info.toByteArray(Charsets.UTF_8))
             zip.closeEntry()
             count++
-            File(dump, "device.json").takeIf { it.isFile && it.length() in 1L..65536L }?.let { file ->
+            File(dump, "device.json").takeIf { requiredPlan == null && it.isFile && it.length() in 1L..65536L }?.let { file ->
                 zip.putNextEntry(ZipEntry("ds-lighting-capture/device.json"))
                 file.inputStream().use { it.copyTo(zip) }
                 zip.closeEntry()
@@ -464,20 +469,88 @@ object Diagnostics {
             }
             // Reserve space for matching shader modules and pipeline JSON.
             val inventory = StringBuilder()
-            var queueBudget = 64L * 1024L * 1024L
-            for ((subdir, file) in candidates) {
-                if (file.length() > 8L * 1024L * 1024L || file.length() > budget ||
-                    (subdir == "queue-state" && file.length() > queueBudget)) {
-                    inventory.appendLine("OMITTED $subdir/${file.name} bytes=${file.length()}")
-                    continue
+            if (requiredPlan != null) {
+                var selection = DsLightingCaptureExport.select(requiredPlan, candidates.map { it.second })
+                inventory.appendLine("SCHEMA 2 required_dependencies_first total_budget=${DsLightingCaptureExport.TOTAL_BUDGET} queue_budget=${DsLightingCaptureExport.QUEUE_BUDGET}")
+                for (entry in selection.entries) {
+                    val input = try {
+                        entry.file.inputStream()
+                    } catch (error: java.io.IOException) {
+                        selection = selection.withSkippedEntry(entry, DsLightingCaptureExport.Problem(
+                            if (entry.required) "REQUIRED_EXPORT_READ_FAILED" else "OPTIONAL_EXPORT_READ_FAILED",
+                            entry.path, error.javaClass.simpleName))
+                        continue
+                    }
+                    zip.putNextEntry(ZipEntry("ds-lighting-capture/${entry.path}"))
+                    var copied = 0L
+                    var grew = false
+                    var readFailure: String? = null
+                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    input.use {
+                        val bytes = ByteArray(64 * 1024)
+                        while (copied < entry.bytes) {
+                            val n = try {
+                                input.read(bytes, 0, minOf(bytes.size.toLong(), entry.bytes - copied).toInt())
+                            } catch (error: java.io.IOException) {
+                                readFailure = error.javaClass.simpleName
+                                -1
+                            }
+                            if (n < 0) break
+                            zip.write(bytes, 0, n)
+                            digest.update(bytes, 0, n)
+                            copied += n
+                        }
+                        if (readFailure == null) {
+                            grew = try { input.read() >= 0 } catch (error: java.io.IOException) {
+                                readFailure = error.javaClass.simpleName
+                                false
+                            }
+                        }
+                    }
+                    zip.closeEntry()
+                    if (readFailure != null) {
+                        selection = selection.withProblem(DsLightingCaptureExport.Problem(
+                            if (entry.required) "REQUIRED_EXPORT_READ_FAILED" else "OPTIONAL_EXPORT_READ_FAILED",
+                            entry.path, readFailure!!))
+                    }
+                    if (copied != entry.bytes || grew) {
+                        selection = selection.withProblem(DsLightingCaptureExport.Problem(
+                            if (entry.required) "REQUIRED_EXPORT_SIZE_CHANGED" else "OPTIONAL_EXPORT_SIZE_CHANGED",
+                            entry.path, "planned=${entry.bytes} copied=$copied grew=$grew"))
+                    }
+                    val sha = digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+                    if (entry.expectedSha256 != null && entry.expectedSha256 != sha) {
+                        selection = selection.withProblem(DsLightingCaptureExport.Problem(
+                            if (entry.required) "REQUIRED_EXPORT_DIGEST_CHANGED" else "OPTIONAL_EXPORT_DIGEST_CHANGED",
+                            entry.path, "exported sha256 differs from manifest"))
+                    }
+                    inventory.appendLine("INCLUDED ${if (entry.required) "REQUIRED" else "OPTIONAL"} ${entry.path} bytes=$copied sha256=$sha")
+                    count++
                 }
-                if (subdir == "queue-state") queueBudget -= file.length()
-                inventory.appendLine("INCLUDED $subdir/${file.name} bytes=${file.length()}")
-                zip.putNextEntry(ZipEntry("ds-lighting-capture/${subdir}/${file.name}"))
-                file.inputStream().use { it.copyTo(zip) }
+                selection.problems.forEach {
+                    inventory.appendLine("${it.code} ${it.path} ${it.detail}")
+                }
+                inventory.appendLine("REQUIRED_CLOSURE ${if (selection.requiredComplete) "COMPLETE" else "INCOMPLETE"}; file transport only, no G0/P8 verdict")
+                zip.putNextEntry(ZipEntry("ds-lighting-capture/EXPORT-CLOSURE.json"))
+                zip.write(DsLightingCaptureExport.summary(requiredPlan, selection).toString(2).toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
-                budget -= file.length()
                 count++
+            } else {
+                var queueBudget = 64L * 1024L * 1024L
+                for ((subdir, file) in candidates) {
+                    if (file.length() > 8L * 1024L * 1024L || file.length() > budget ||
+                        (subdir == "queue-state" && file.length() > queueBudget)) {
+                        inventory.appendLine("OMITTED $subdir/${file.name} bytes=${file.length()}")
+                        continue
+                    }
+                    if (subdir == "queue-state") queueBudget -= file.length()
+                    inventory.appendLine("INCLUDED $subdir/${file.name} bytes=${file.length()}")
+                    zip.putNextEntry(ZipEntry("ds-lighting-capture/${subdir}/${file.name}"))
+                    file.inputStream().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                    budget -= file.length()
+                    count++
+                }
             }
             zip.putNextEntry(ZipEntry("ds-lighting-capture/EXPORT-INVENTORY.txt"))
             zip.write(inventory.toString().toByteArray(Charsets.UTF_8))

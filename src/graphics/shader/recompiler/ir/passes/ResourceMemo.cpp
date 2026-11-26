@@ -1,5 +1,6 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceMemo.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMemoRebase.h"
+#include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 
 #include <algorithm>
 #include <array>
@@ -314,7 +315,9 @@ void ResourceMemo::Forget(uint32_t index) {
 bool ResourceMemo::Materialize(const ResourcePlan& plan, const SrtRuntime& runtime,
                                ResourceSnapshot& snapshot, ResourceSpecialization& specialization) {
 	// Linked call sources read their code through source_reads, outside the log.
-	if (!Enabled() || !plan.source_reads.empty()) {
+	// F needs the actual address-to-value read log for this draw; rebasing a
+	// previous snapshot would preserve values but make its addresses stale.
+	if (!Enabled() || !plan.source_reads.empty() || DemonsCausalMatrix::Mode()==DemonsCausalMatrix::Trace) {
 		Bump(g_uncached);
 		return MaterializeResources(plan, runtime, snapshot, specialization);
 	}

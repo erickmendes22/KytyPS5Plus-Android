@@ -669,22 +669,26 @@ struct PipelineCache::ProgramCache {
                 program.ds_relight_site12_element=site12.element;
             }
         }
-		// The earlier vertex experiment is retained for reproducing its
-		// evidence, but not active in this relight-specific diagnostic.
-		if (DemonsVertexPositionProbe::Watched(options.shader_hash) && trace && std::strcmp(trace,"1")==0 &&
-            (DemonsCausalMatrix::Mode()!=DemonsCausalMatrix::Trace||
-             options.shader_hash==0xaff9c7ef505c6253ull||
-             options.shader_hash==0xc96f3fcde8141266ull)) {
+		// F records every structurally supported bound VS in the fixed
+		// cycle. The previous allowlist omitted the actual foreground VS.
+		const bool decision_vertex = ShaderDump::DsDecisionCapture() && options.stage == ShaderType::Vertex;
+		const bool legacy_vertex = !ShaderDump::DsDecisionCapture() &&
+		    DemonsVertexPositionProbe::Watched(options.shader_hash);
+		if ((decision_vertex || legacy_vertex) && trace && std::strcmp(trace,"1")==0) {
+            if (decision_vertex)
+                ShaderDump::RecordUninstrumentedModule("vs", options.shader_hash, result.spirv);
             constexpr auto kind=ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
             constexpr auto slot=static_cast<size_t>(kind);
             const auto fp=XXH3_64bits(result.spirv.data(),result.spirv.size()*sizeof(uint32_t));
             auto copy=result.spirv;
+            const char* capture_reason = "diagnostic_storage_binding_in_use";
             const bool assembled=!program.bindings.descriptor_counts[slot] &&
                 DemonsVertexPositionProbe::Instrument(copy,options.shader_hash,fp,
-                    ShaderRecompiler::IR::NativeBinding(program.stage,kind),true);
+                    ShaderRecompiler::IR::NativeBinding(program.stage,kind),true,&capture_reason);
             const bool valid=assembled && ValidateShaderSpirv(options.dump_label,options.shader_hash,copy,options.maintenance8_enabled,true);
-            Log::WriteToConsoleAndLog(fmt::format("[DS_VERTEX_POSITION_STATUS] shader={:016x} binary={:016x} assembled={} validated={}\n",
-                options.shader_hash,fp,assembled,valid));
+            if (assembled && !valid) capture_reason = "instrumented_spirv_validation_failed";
+            Log::WriteToConsoleAndLog(fmt::format("[DS_VERTEX_POSITION_STATUS] shader={:016x} binary={:016x} assembled={} validated={} reason={}\n",
+                options.shader_hash,fp,assembled,valid,capture_reason));
             if(valid){
                 result.spirv=std::move(copy);
                 program.bindings.descriptor_counts[slot]=1;
@@ -954,6 +958,14 @@ struct PipelineCache::ProgramCache {
 			SubmitWalk(*sink, stage, params, input_info);
 			return {};
 		}
+		// The active witness can use an already compiled permutation. Save
+		// its actual guest source before the cache-hit return, including all
+		// graphics hashes in F instead of the old sample-only allowlist.
+		const auto [label, stage_name] = StageLabels(stage);
+		if (ShaderDump::DsLightingCapture() &&
+		    (ShaderDump::DsDecisionCapture() || DemonsDominantGeometry::Watched(params.hash))) {
+			ShaderDump::RecordDsProbeGuestCode(params.hash, params.code, stage_name);
+		}
 		// KYTY_FAULT_TRACE: specialization readbacks below name this shader.
 		struct TraceShaderScope {
 			explicit TraceShaderScope(uint64_t hash) { Common::PerfStats::SetTraceShader(hash); }
@@ -1021,9 +1033,6 @@ struct PipelineCache::ProgramCache {
 			}
 		}
 
-		const auto [label, stage_name] = StageLabels(stage);
-		if (ShaderDump::DsLightingCapture() && DemonsDominantGeometry::Watched(params.hash))
-			ShaderDump::RecordDsProbeGuestCode(params.hash, params.code, stage_name);
 		auto options = MakeOptions(stage, params.hash, user_data, params.back_code, input_info, label);
 
 		// Installs a compiled permutation for this draw; the GPU thread owns the entry.
