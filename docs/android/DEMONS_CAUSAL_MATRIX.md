@@ -91,3 +91,6 @@ no HDR or count replay in this ZIP. Visual result unknown until tester
 reports it. Cannot determine whether prior frame-307 DWORD discrepancy
 resolved, nor rule out coherence/ordering in general. If still dark,
 proceed to B1 as planned, same scene and visual outcome with ZIP.
+
+### D2 visual outcome confirmed by tester
+Lighting exactly unchanged. Negative for the selected compute-completion intervention; does not rule out all synchronization/coherence defects. Do not repeat D2 without new evidence. Next: B1 independently disables index culling, same scene/save/driver, record visual outcome and ZIP. Existing APK #717; no rebuild requested or required.
