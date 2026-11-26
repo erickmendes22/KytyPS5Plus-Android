@@ -26,7 +26,10 @@ jobs:
       - name: Actual Vulkan transfer regression (Lavapipe)
         run: |
           g++ -std=c++20 -Wall -Wextra -Werror -Idocs/android/tools tests/manual/p8_splice_vk_test.cpp -lvulkan -o /tmp/p8-splice
-          VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json /tmp/p8-splice
+          icd=$(find /usr/share/vulkan/icd.d -maxdepth 1 -name "lvp_icd*.json" -print -quit)
+          test -n "$icd" && test -f "$icd"
+          cat "$icd"
+          VK_ICD_FILENAMES="$icd" VK_LOADER_DEBUG=error /tmp/p8-splice
       - name: Check pinned generated replay anchors
         run: |
           git init /tmp/gfxr
