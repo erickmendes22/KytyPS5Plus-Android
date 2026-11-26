@@ -15,6 +15,19 @@ int main(){
     static_assert(Decide(true,true,true,true,true)==Root::Blocked);
     static_assert(Decide(true,true,true,true,false)==Root::Produced);
     static_assert(Decide(true,true,true,false,false)==Root::NotProduced);
+    BisectionWindow root;
+    assert(root.Phase(10)==-1);
+    assert(!root.Observe(10,0,1440000,1440000)&&root.Phase(11)==0);
+    assert(!root.Observe(11,33,0,1440000)); // different queue cannot trigger
+    assert(root.Observe(11,0,651,1440000)&&root.Edge()==11&&root.Queue()==0);
+    assert(root.Phase(13)==1&&root.Phase(14)==-1&&!root.Closed(15)&&root.Closed(16));
+    assert(!root.Observe(20,0,0,1440000));
+    for(unsigned cause=1;cause<=16;++cause){
+        Interval i;unsigned decisions=0;
+        assert(!i.Apply(Certificate::Blocked)&&i.lo==0&&i.hi==16);
+        while(i.hi-i.lo>1){const auto m=i.Mid();assert(i.Apply(m<cause?Certificate::Pass:Certificate::Fail));++decisions;}
+        assert(i.hi==cause&&decisions==4);
+    }
     ProductionWindow w;
     w.Observe(5,0,1440000); assert(w.Phase(5)==-1);
     w.Observe(6,1440000,1440000);w.Observe(7,655,1440000);assert(w.Phase(7)==1&&w.Phase(12)==1&&w.Phase(13)==-1);

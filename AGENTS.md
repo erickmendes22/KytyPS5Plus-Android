@@ -116,3 +116,7 @@ no slice causal da classe isolada até uma operação concreta. Corrigir
 e validar a mesma testemunha e o sintoma global. Não iniciar APK para
 alteração apenas metodológica/documental. A regra de entrega permanece
 para builds efetivamente solicitadas.
+
+
+## V3 — árvore integral (prevalece sobre V2)
+Usar C1..C16 da árvore canônica. G0 fixa sintoma final e oráculo com a mesma entrada. Primeira divisão P(8) (G-buffer completo/iluminação); P(4) ou P(12) depois, até classe e instrução. Não presumir pré-iluminação, não criar linhas paralelas para CPU/GPU/driver/concorrência; tratar dependências no DAG causal da operação afetada. BLOCKED não autoriza mudar de galho. Certificados locais prévios preservados no escopo. A correção precisa explicar e restaurar a testemunha e saída final; residual comprovado segue a mesma árvore com certificados válidos.

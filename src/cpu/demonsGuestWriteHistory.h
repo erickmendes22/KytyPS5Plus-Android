@@ -31,7 +31,7 @@ inline void Init(){
     const char* v=std::getenv("KYTY_DS_RAY_SOURCE_HISTORY");
     const char* mode=std::getenv("KYTY_DS_MATRIX");
     const bool ray=v&&v[0]=='1'&&v[1]=='\0';
-    const bool vertex=mode&&mode[0]=='8'&&mode[1]=='\0';
+    const bool vertex=false; // V3 root acquisition does not run W0 fault probes.
     vertex_only.store(vertex&&!ray,std::memory_order_release);
     enabled.store(ray||vertex,std::memory_order_release);
 }

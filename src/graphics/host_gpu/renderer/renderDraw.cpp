@@ -1556,18 +1556,46 @@ void DemonsPrelightTrace::ObserveCompute(RenderContext& context,const PreparedBi
                 auto sample=SnapshotDsGBufferGrid(context,color);
                 row["grid"]=sample?nlohmann::json(*sample):nlohmann::json();
             }else row["sample_status"]="budget";
-            static std::array<int32_t,3> last_full{-1,-1,-1};
-            if(consumer && queue!=8){
-                const auto q=queue==0?0u:2u;
-                if(last_full[q]!=frame&&AllowSample(true)){
-                    last_full[q]=frame;
-                    const auto full=SnapshotDsAlbedo(context,color);
+            struct RootConsumerSample {
+                int32_t frame=-1;uint64_t version=0,native=0;
+                nlohmann::json meta;
+                std::vector<uint32_t> words;
+            };
+            static std::array<RootConsumerSample,2> prior{};
+            if(consumer&&(queue==0||queue==33)){
+                const auto q=queue==0?0u:1u;
+                auto& prev=prior[q];
+                const auto version=image.ContentVersion();
+                const auto native=std::hash<VkImage>{}(static_cast<VkImage>(image.backing.image));
+                if((prev.frame!=frame||prev.version!=version||prev.native!=native)&&AllowSample(true)){
+                    auto full=SnapshotDsAlbedo(context,color);
                     if(!full.words.empty()){
                         uint64_t hash=14695981039346656037ull,nonzero=0;
                         for(auto v:full.words){nonzero+=DemonsPrelightPolicy::Colored(v);hash=(hash^v)*1099511628211ull;}
-                        ObservePopulation(frame,nonzero,uint64_t{full.width}*full.height);
                         row["full"]={{"width",full.width},{"height",full.height},
                             {"rgb_nonzero",nonzero},{"hash_words",hash}};
+                        auto meta=row;
+                        meta["image_after_sample"]=Identity(image);
+                        const bool edge=ObservePopulation(frame,queue,nonzero,uint64_t{full.width}*full.height);
+                        if(edge){
+                            std::error_code ec;std::filesystem::create_directories(Folder(),ec);
+                            const auto save=[](const char* name,const std::vector<uint32_t>& words){
+                                if(words.empty())return false;
+                                std::ofstream file(Folder()/name,std::ios::binary|std::ios::trunc);
+                                if(!file)return false;
+                                file.write(reinterpret_cast<const char*>(words.data()),words.size()*sizeof(uint32_t));
+                                file.close();return file.good();
+                            };
+                            const bool before_ok=save("ds_prelight_anchor_before.bin",prev.words);
+                            const bool after_ok=save("ds_prelight_anchor_after.bin",full.words);
+                            std::ofstream out(Folder()/"ds_prelight_anchor.json",std::ios::trunc);
+                            if(out)out<<nlohmann::json{{"before",prev.meta},{"after",meta},
+                                {"before_saved",before_ok},{"after_saved",after_ok},
+                                {"before_file","ds_prelight_anchor_before.bin"},
+                                {"after_file","ds_prelight_anchor_after.bin"},
+                                {"scope","observed same-queue temporal edge, not expected-output proof"}};
+                        }
+                        prev={frame,version,native,std::move(meta),std::move(full.words)};
                     }else row["full_status"]="unavailable";
                 }
             }
@@ -2956,9 +2984,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         root_ps->shader_hash==DemonsDominantGeometry::DepthPs;
     const bool root_background_material=root_target!=root_colors.end()&&root_ps&&
         root_ps->shader_hash==DemonsDominantGeometry::MaterialPs;
-    const auto& root_adaptive=DemonsAdaptiveCapture::Current();
-    const int root_phase=!root_trace?-1:DemonsPrelightTrace::Phase(root_frame)>=0?
-        DemonsPrelightTrace::Phase(root_frame):root_adaptive.PostTransitionDarkDue(root_frame)?3:-1;
+    const int root_phase=root_trace?DemonsPrelightTrace::Phase(root_frame):-1;
     if(root_trace&&command_seq)command_prepared=true;
     if(root_phase>=0&&(root_target!=root_colors.end()||root_depth)){
         const auto* v=state.vertex_info[0].stage.program;
@@ -3379,8 +3405,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     // Every prepared target draw gets an explicit sample or missing marker.
     RenderColorInfo root_color{};
     std::optional<std::array<uint32_t,64>> root_before;
-    nlohmann::json root_identity;
-    if(root_draw&&root_background_material){
+    nlohmann::json root_identity,root_full_before;
+    const auto root_population=[&](const RenderColorInfo& color){
+        nlohmann::json data;
+        const auto snap=SnapshotDsAlbedo(m_context,color);
+        if(!snap.words.empty()){
+            uint64_t colored=0,hash=14695981039346656037ull;
+            for(const auto w:snap.words){colored+=DemonsPrelightPolicy::Colored(w);hash=(hash^w)*1099511628211ull;}
+            data={{"rgb_nonzero",colored},{"hash_words",hash},{"width",snap.width},{"height",snap.height}};
+        }
+        return data;
+    };
+    if(root_draw){
         nlohmann::json inputs={{"kind","background_inputs"},{"draw",root_draw},{"frame",root_frame},
             {"submit",submit_id},{"tick",m_context.GetCommandScheduler().CurrentTick()},
             {"vs_file",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
@@ -3406,6 +3442,34 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             inputs["vs_buffers"]=nlohmann::json::array();
             for(const auto& b:snap.buffers)inputs["vs_buffers"].push_back(b.dwords);
         }
+        inputs["kind"]="draw_inputs";
+        inputs["native_index_count"]=draw.index_count;
+        if(draw.IsIndexed()&&!mesh_active&&!indirect&&draw.index_count&&draw.index_count<=262144){
+            const auto raw=ReadDsVertexIndices(m_context,index_binding,draw.index_count);
+            inputs["index_words_captured"]=raw.size();
+            inputs["index_digest"]=DemonsPrelightTrace::VertexWordDigest(raw);
+            // Retain complete short index arrays; longer streams are not certified by digest alone.
+            if(raw.size()<=4096)inputs["index_words"]=raw;
+        }
+        const auto encode_bound=[&](const PreparedBindings& bound,const auto* program){
+            auto out=nlohmann::json::array();
+            if(!program)return out;
+            for(uint32_t slot=0;slot<bound.buffer_sources.size()&&slot<bound.buffers.size();++slot){
+                const auto& src=bound.buffer_sources[slot];const auto& native=bound.buffers[slot];
+                nlohmann::json item={{"slot",slot},{"address",src.address},{"bytes",src.size},
+                    {"gpu_dirty",m_context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size)}};
+                const auto word=program->bindings.memory_offset_dword+slot/4u;
+                if(word<bound.shader_data.size()&&native.buffer&&native.range!=VK_WHOLE_SIZE&&src.size&&src.size%4==0&&src.size<=1024){
+                    const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
+                    if(adjust<=native.range&&src.size<=native.range-adjust)
+                        item["gpu_words"]=DemonsPrelightTrace::ReadNativeWords(m_context,native.buffer,native.offset+adjust,uint32_t(src.size/4));
+                }
+                out.push_back(std::move(item));
+            }
+            return out;
+        };
+        inputs["vs_bound"]=encode_bound(bindings.vertex[0],root_vs);
+        if(bindings.pixel&&root_ps)inputs["ps_bound"]=encode_bound(*bindings.pixel,root_ps);
         Record(std::move(inputs));
     }
     if(root_draw && root_target!=root_colors.end()){
@@ -3413,11 +3477,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         auto& im=m_context.GetTextureCache().GetImage(root_color.image_id);
         Watch(im.info.data.address,im.info.data.size);
         root_identity=Identity(im);
-        if(AllowSample())root_before=SnapshotDsGBufferGrid(m_context,root_color);
+        if(AllowSample()){
+            root_before=SnapshotDsGBufferGrid(m_context,root_color);
+            root_full_before=root_population(root_color);
+        }
         Record({{"kind","draw_before"},{"draw",root_draw},{"frame",root_frame},{"submit",submit_id},
             {"tick",m_context.GetCommandScheduler().CurrentTick()},{"image_before_sample",root_identity},
             {"image",Identity(im)},{"grid",root_before?nlohmann::json(*root_before):nlohmann::json()},
-            {"mip",root_color.desc.view_info.base_level},{"layer",root_color.desc.view_info.base_layer},
+            {"full",root_full_before},{"mip",root_color.desc.view_info.base_level},{"layer",root_color.desc.view_info.base_layer},
             {"slot",root_color.target_slot}});
     }
     // Causal material census: every layer-0 attachment draw, not only
@@ -3803,7 +3870,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     static std::array<DsVertexPair,VP::FocusPairCount> ds_vertex_pairs{};
     static uint64_t ds_vertex_serial=0;
     const auto* ds_vp=state.vertex_info[0].stage.program;
-    if(root_trace&&ds_vp&&ds_vp->shader_hash==0x868546d85ce5090aull&&
+    if(!root_trace&&false&&ds_vp&&ds_vp->shader_hash==0x868546d85ce5090aull&&
         draw.IsIndexed()&&!indirect&&draw.index_count==12765){
         const auto& bound=bindings.vertex[0];
         if(bound.buffer_sources.size()>2){
@@ -3842,44 +3909,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                     row["sources"].push_back(std::move(entry));
                 }
                 DemonsPrelightTrace::RecordVertexConsumer(std::move(row));
-            }
-        }
-    }
-    if(root_trace&&ds_vp&&ds_vp->shader_hash==0x868546d85ce5090aull&&
-        draw.IsIndexed()&&!indirect&&draw.index_count==57066){
-        const auto& bound=bindings.vertex[0];
-        if(bound.buffer_sources.size()>2&&bound.buffer_sources[1].size==160){
-            const auto& s=bound.buffer_sources[1];
-            DemonsPrelightTrace::WatchProjection(s.address,s.size);
-            // One consumer per frame; keep the entire 40-word constant block.
-            // Slot0 and slot2 identities are retained as distinct inputs.
-            static int32_t last_frame=-1;
-            if(last_frame!=ds_gbuffer_frame){
-                last_frame=ds_gbuffer_frame;
-                nlohmann::json row={{"kind","w1_consumer"},{"frame",ds_gbuffer_frame},
-                    {"phase",root_phase},{"submit",submit_id},{"index_guest",index_source.address},
-                    {"tick",m_context.GetCommandScheduler().CurrentTick()},{"sources",nlohmann::json::array()}};
-                for(auto slot:{0u,1u,2u}){
-                    if(slot>=bound.buffers.size())continue;
-                    const auto& src=bound.buffer_sources[slot];const auto& native=bound.buffers[slot];
-                    nlohmann::json entry={{"slot",slot},{"address",src.address},{"bytes",src.size},
-                        {"gpu_dirty",m_context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size)},
-                        {"writers",nlohmann::json::array()}};
-                    for(const auto& w:m_context.GetBufferCache().RecentProbeRayTransfers(src.address,src.size))
-                        if(w.path)entry["writers"].push_back({{"path",w.path},{"tick",w.tick},{"shader",w.shader},
-                            {"begin",w.begin},{"end",w.end},{"source",w.source}});
-                    const auto word=ds_vp->bindings.memory_offset_dword+slot/4u;
-                    if(slot==1&&word<bound.shader_data.size()&&native.buffer&&native.range!=VK_WHOLE_SIZE){
-                        const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
-                        if(adjust<=native.range&&src.size<=native.range-adjust){
-                            entry["gpu_words"]=DemonsPrelightTrace::ReadNativeWords(m_context,native.buffer,native.offset+adjust,40);
-                            std::vector<uint32_t> cpu(40);
-                            if(LibKernel::Memory::TryReadBacking(src.address,cpu.data(),160))entry["backing_words"]=std::move(cpu);
-                        }
-                    }
-                    row["sources"].push_back(std::move(entry));
-                }
-                DemonsPrelightTrace::ProjectionRecord(std::move(row));
             }
         }
     }
@@ -3956,24 +3985,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                                     entry["backing_words"]=std::move(backing);
                                 entry["gpu_dirty"]=m_context.GetBufferCache().HasGpuDirtyBytes(source.address,source.size);
                                 entry["cpu_modified"]=m_context.GetBufferCache().IsRegionCpuModified(source.address,source.size);
-                            }
-                        }
-                        if(draw.index_count==57066&&!material&&slot==2&&source.size==448296&&
-                           word<bound.shader_data.size()&&native.buffer&&native.range!=VK_WHOLE_SIZE){
-                            const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
-                            if(adjust<=native.range&&source.size<=native.range-adjust){
-                                auto words=ReadDsVertexIndices(m_context,
-                                    PreparedIndexBuffer{native.buffer,native.offset+adjust,vk::IndexType::eUint32},
-                                    static_cast<uint32_t>(source.size/4));
-                                const auto folder=DemonsPrelightTrace::Folder();
-                                std::error_code ec;std::filesystem::create_directories(folder,ec);
-                                const auto name=fmt::format("ds_vertex_producer_projection_xyz_f{}_s{}.json",ds_gbuffer_frame,submit_id);
-                                std::ofstream out(folder/name,std::ios::trunc);
-                                if(out)out<<nlohmann::json{{"frame",ds_gbuffer_frame},{"submit",submit_id},
-                                    {"phase",phase},{"address",source.address},{"bytes",source.size},
-                                    {"gpu_words",words}};
-                                entry["xyz_file"]=name;entry["xyz_words"]=words.size();
-                                entry["xyz_digest"]=DemonsPrelightTrace::VertexWordDigest(words);
                             }
                         }
                         ds_vertex_sources.push_back(std::move(entry));
@@ -4139,7 +4150,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
 	    graphics.occlusion_query_precise_enabled) {
 		const auto drain_geometry=[&](DsGeometryFrame& geometry){
-        const auto window=geometry.phase==4?8:1;
+        const auto window=root_trace?0:geometry.phase==4?8:1;
+        if(root_trace&&geometry.pool&&ds_gbuffer_frame>geometry.frame&&geometry.last_tick&&
+           !m_context.GetCommandScheduler().GetMasterSemaphore().IsFree(geometry.last_tick)){
+            m_context.GetCommandScheduler().EndRendering(PassEnd::Buffer);
+            m_context.GetCommandScheduler().Finish();
+        }
         if (geometry.pool && int64_t{ds_gbuffer_frame} > int64_t{geometry.frame} + window && !geometry.rows.empty() &&
 		    geometry.last_tick != 0 && m_context.GetCommandScheduler().GetMasterSemaphore().IsFree(geometry.last_tick)) {
 			std::vector<uint64_t> result(geometry.rows.size() * 2);
@@ -4153,17 +4169,20 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			if (ready) {
 				for (size_t i = 0; i < geometry.rows.size(); ++i)
 					geometry.rows[i]["passed_samples"] = result[2*i];
-				const auto folder = Config::GetShaderDumpFolder() / "queue-state";
-				std::error_code ec;
-				std::filesystem::create_directories(folder, ec);
-				const auto name = fmt::format("ds_geometry_coverage_f{}{}.json", geometry.frame,geometry.phase==4?"_active":"");
-				std::ofstream file(folder / name, std::ios::trunc);
-				if (file) file << nlohmann::json{{"frame", geometry.frame}, {"phase", geometry.phase},
-				    {"capacity_reached", geometry.capacity_reached}, {"draws", geometry.rows}};
-				file.close();
-				Log::WriteToConsoleAndLog(fmt::format(
-				    "[DS_GEOMETRY_COVERAGE] frame={} draws={} file={} saved={}\n",
-				    geometry.frame, geometry.rows.size(), name, file.good()));
+                if(root_trace){
+                    for(auto& row:geometry.rows)Record({{"kind","geometry_query"},{"frame",row.value("frame",geometry.frame)},
+                        {"capture_frame",geometry.frame},{"result",std::move(row)}});
+                    Record({{"kind","geometry_query_end"},{"frame",geometry.frame},
+                        {"rows",result.size()/2},{"capacity_reached",geometry.capacity_reached}});
+                }else{
+                    const auto folder = Config::GetShaderDumpFolder() / "queue-state";
+                    std::error_code ec;std::filesystem::create_directories(folder, ec);
+                    const auto name = fmt::format("ds_geometry_coverage_f{}{}.json", geometry.frame,geometry.phase==4?"_active":"");
+                    std::ofstream file(folder / name, std::ios::trunc);
+                    if (file) file << nlohmann::json{{"frame", geometry.frame}, {"phase", geometry.phase},
+                        {"capacity_reached", geometry.capacity_reached}, {"draws", geometry.rows}};
+                    file.close();
+                }
 				graphics.device.destroyQueryPool(geometry.pool, nullptr);
 				geometry.pool = nullptr;
 				geometry.completed[static_cast<size_t>(geometry.phase)] = true;
@@ -4189,7 +4208,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    : geometry_gate.BrightBaselineDue(ds_gbuffer_frame) ? 0
 		    : geometry_gate.CaptureDue(ds_gbuffer_frame) ? 2 : -1;
 		if (!geometry.pool && relevant && geometry_phase >= 0 &&
-		    !geometry.completed[static_cast<size_t>(geometry_phase)]) {
+		    (root_trace||!geometry.completed[static_cast<size_t>(geometry_phase)])) {
 			vk::QueryPoolCreateInfo info {};
 			info.queryType = vk::QueryType::eOcclusion;
 			info.queryCount = geometry_capacity;
@@ -4210,7 +4229,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 		// Guest flips can split depth prepass and G-buffer across adjacent host
 		// frame numbers (213553: depth=429, material=430). Keep both.
-		const auto window=active_window?8:1;
+		const auto window=root_trace?0:active_window?8:1;
         if (geometry.pool && relevant && int64_t{ds_gbuffer_frame} >= geometry.frame &&
 		    int64_t{ds_gbuffer_frame} <= int64_t{geometry.frame} + window &&
 		    geometry.rows.size() >= geometry_capacity) geometry.capacity_reached = true;
@@ -4259,8 +4278,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			// depth/stencil for the measured zero-coverage scene-depth PS.
 			const auto& depth = state.depth_info;
 			const auto& pixel = state.ps_input_info;
-			if (!root_trace && ps && DemonsDominantGeometry::ProbeDepthPs(ps->shader_hash) &&
-			    relevant_depth && depth.depth_write_enable && draw.IsIndexed() &&
+            if(root_trace)geometry.rows[geometry_query]["replay_status"]="unsupported_or_unavailable";
+			if (ps && ((root_trace&&(relevant_depth||gbuffer!=colors.end())&&depth.image_id)||
+                       (!root_trace&&DemonsDominantGeometry::ProbeDepthPs(ps->shader_hash)&&relevant_depth&&depth.depth_write_enable)) &&
+                draw.IsIndexed() &&
 			    indirect == nullptr && !mesh_active && !mesh_emulated &&
 			    !shader_write_stages && !image_side_effects &&
 			    !depth.depth_bounds_test_enable && depth.desc.info.samples == 1 &&
@@ -4268,11 +4289,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    !hw.GetShaderRegisters().AlphaToMask() &&
 			    geometry.rows.size()+9 <= geometry_capacity) {
 				const auto k = DemonsDominantGeometry::DepthProbeSlot(ps->shader_hash);
-				if (!geometry.replay_seen[k]) {
+				if (root_trace || !geometry.replay_seen[k]) {
                     auto& original=geometry.rows[geometry_query];
                     original["probe_slot"]=k;
                     original["replay_status"]="unavailable";
-                    geometry.replay_seen[k]=true;
+                    if(k<geometry.replay_seen.size())geometry.replay_seen[k]=true;
                     original["tick"]=m_context.GetCommandScheduler().CurrentTick();
                     auto encode=[](const auto& stage){
                         nlohmann::json data=nlohmann::json::object();
@@ -4301,7 +4322,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                         if(depth_grid)original["stored_depth_grid_before"]=*depth_grid;
                     }
                     original["native_vs_file"]=ShaderDump::ModuleFile(state.programs.vertex[0].module);
-                    if(bindings.pixel && state.ps_input_info.stage.resources &&
+                    if(!root_trace&&bindings.pixel && state.ps_input_info.stage.resources &&
                        !state.ps_input_info.stage.resources->images.empty()){
                         const auto& raw=state.ps_input_info.stage.resources->images.front().dwords;
                         original["discard_input"]=SnapshotDsDiscardImage(m_context,*bindings.pixel,raw);
@@ -4320,7 +4341,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 						geometry_replay[i] = rp->pipeline;
 					}
 					if (geometry_replay[0] && geometry_replay[1] && geometry_replay[2]) {
-						geometry.replay_seen[k] = true;
+						if(k<geometry.replay_seen.size())geometry.replay_seen[k] = true;
                         geometry.rows[geometry_query]["replay_status"]="measured";
 						geometry_replay_first = static_cast<uint32_t>(geometry.rows.size());
 						for (const auto* kind: {"raster_no_discard","survive_discard","raster_no_discard_no_cull",
@@ -4330,6 +4351,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 							row["kind"] = kind;
 							row["original_query"] = geometry_query;
                             row.erase("discard_input");
+                            if(root_trace){row.erase("vertex_inputs");row.erase("pixel_inputs");row.erase("stored_depth_grid_before");}
 							const auto q=geometry.rows.size()-geometry_replay_first;
                             row["depth_test"] = (q==3 || q==5 || q>=6) && depth.depth_test_enable;
                             if(q>=6)row["depth_compare"]=uint32_t(q==6?vk::CompareOp::eLess:q==7?vk::CompareOp::eEqual:vk::CompareOp::eGreater);
@@ -4622,7 +4644,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         if(root_color.image_id){
             auto& im=m_context.GetTextureCache().GetImage(root_color.image_id);
             std::optional<std::array<uint32_t,64>> sample;
-            if(AllowSample())sample=SnapshotDsGBufferGrid(m_context,root_color);
+            if(AllowSample()){
+                sample=SnapshotDsGBufferGrid(m_context,root_color);
+                event["full"]=root_population(root_color);
+            }
             event["image"]=Identity(im);
             event["grid"]=sample?nlohmann::json(*sample):nlohmann::json();
             if(root_before&&sample){
@@ -5420,8 +5445,7 @@ static nlohmann::json DsGuestCommand(RenderContext& context,const CommandBuffer&
     using namespace DemonsPrelightTrace;
     if(!Enabled())return nullptr;
     const auto frame=context.GetGpu().GetFrameNum();
-    const auto phase=Phase(frame)>=0?Phase(frame):
-        DemonsAdaptiveCapture::Current().PostTransitionDarkDue(frame)?3:-1;
+    const auto phase=Phase(frame);
     if(phase<0)return nullptr;
     const auto& hw=buffer.GetRegisters();
     const auto& depth=hw.GetDepthRenderTarget();

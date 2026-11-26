@@ -14,6 +14,7 @@
 #include <string_view>
 #include <algorithm>
 #include <vector>
+#include <deque>
 
 namespace Libs::Graphics {
 class RenderContext;
@@ -45,22 +46,26 @@ inline nlohmann::json Identity(const Image& image) {
 struct Journal {
     std::mutex mutex;
     uint64_t seq=0,dropped=0,samples=0,sample_dropped=0,full=0,full_dropped=0;
-    size_t bytes=0;
+    size_t bytes=0,rolling_bytes=0;
+    uint64_t evicted=0,first_retained=0,closed_events=0;
+    int32_t edge=-1,last_consumer=-1;
+    uint32_t edge_queue=UINT32_MAX;
+    bool triggered=false,closed=false;
     unsigned chunk=0;
+    std::deque<std::pair<uint64_t,std::string>> rolling;
     std::ofstream out;
 };
 inline Journal& State(){static Journal j;return j;}
 inline constexpr size_t ChunkBytes=2u*1024u*1024u;
-inline constexpr unsigned MaxChunks=8;
+inline constexpr unsigned MaxChunks=12;
+inline constexpr size_t RollingBytes=12u*1024u*1024u;
 inline thread_local uint64_t active_draw=0;
 inline thread_local uint64_t command_seq=0;
 inline thread_local bool command_prepared=false;
 inline std::mutex phase_mutex;
-inline DemonsPrelightPolicy::ProductionWindow production_window;
+inline DemonsPrelightPolicy::BisectionWindow production_window;
 inline int Phase(int32_t frame){std::scoped_lock lock(phase_mutex);return production_window.Phase(frame);}
-inline void ObservePopulation(int32_t frame,uint64_t colored,uint64_t area){
-    std::scoped_lock lock(phase_mutex);production_window.Observe(frame,colored,area);
-}
+inline bool ObservePopulation(int32_t frame,uint32_t queue,uint64_t colored,uint64_t area);
 struct VertexRange{uint64_t address=0,bytes=0;bool confirmed=false;bool upstream=false;};
 // Prior addresses are candidate seeds only; live VS descriptors certify identity.
 inline std::mutex vertex_mutex;
@@ -127,44 +132,6 @@ inline void VertexRecord(nlohmann::json event) {
     if(seq==1||seq%64==0||dropped){
         std::ofstream status(Folder()/"ds_vertex_producer_timeline_status.json",std::ios::trunc);
         if(status)status<<nlohmann::json{{"events",seq},{"bytes",bytes},{"dropped",dropped},{"scope","candidate writer and exact consumer ranges"}};
-    }
-}
-// N31: actual W1 slot-1 160-byte transform. Session seed is not proof
-// of identity; the exact W1 draw must confirm the live binding.
-inline std::mutex projection_mutex;
-inline std::vector<VertexRange> projection_ranges{{0x20f97e680ull,160,false}};
-inline void WatchProjection(uint64_t address,uint64_t bytes){
-    if(!Enabled()||!address||bytes!=160)return;
-    std::scoped_lock lock(projection_mutex);
-    for(auto& r:projection_ranges)if(r.address==address){r.confirmed=true;return;}
-    if(projection_ranges.size()<16)projection_ranges.push_back({address,bytes,true});
-}
-inline std::vector<VertexRange> ProjectionRanges(){
-    std::scoped_lock lock(projection_mutex);return projection_ranges;
-}
-inline bool ProjectionMatches(uint64_t address,uint64_t bytes){
-    if(!Enabled())return false;
-    for(const auto& r:ProjectionRanges())
-        if(DemonsPrelightPolicy::Overlaps(address,bytes,r.address,r.bytes))return true;
-    return false;
-}
-inline void ProjectionRecord(nlohmann::json event){
-    if(!Enabled())return;
-    static std::mutex mutex;
-    static uint64_t seq=0,bytes=0,dropped=0;
-    static std::ofstream out;
-    std::scoped_lock lock(mutex);
-    event["seq"]=++seq;
-    if(seq==1){
-        std::error_code ec;std::filesystem::create_directories(Folder(),ec);
-        out.open(Folder()/"ds_vertex_producer_projection.jsonl",std::ios::trunc);
-    }
-    const auto line=event.dump();
-    if(!out||bytes+line.size()+1>8u*1024u*1024u)++dropped;
-    else{out<<line<<'\n';out.flush();if(out)bytes+=line.size()+1;else ++dropped;}
-    if(seq==1||seq%32==0||dropped){
-        std::ofstream status(Folder()/"ds_vertex_producer_projection_status.json",std::ios::trunc);
-        if(status)status<<nlohmann::json{{"events",seq},{"bytes",bytes},{"dropped",dropped}};
     }
 }
 inline bool VertexConsumerFrame(uint64_t address,int32_t frame){
@@ -248,38 +215,67 @@ inline void RecordVertexConsumer(nlohmann::json row){
 }
 inline void StatusLocked(const Journal& j) {
     std::ofstream out(Folder()/"ds_prelight_status.json",std::ios::trunc);
-    if(out)out<<nlohmann::json{{"schema",3},{"node","N32/L09 vertex producer"},{"last_seq",j.seq},
+    if(out)out<<nlohmann::json{{"schema",4},{"node","V3/G0/P8"},{"last_seq",j.seq},
+        {"triggered",j.triggered},{"closed",j.closed},{"edge_frame",j.edge},{"edge_queue",j.edge_queue},
+        {"last_consumer_frame",j.last_consumer},{"first_retained_seq",j.first_retained},
+        {"prehistory_evicted",j.evicted},{"postwindow_ignored",j.closed_events},
         {"dropped_events",j.dropped},{"samples",j.samples},{"sample_dropped",j.sample_dropped},
         {"full_samples",j.full},{"full_dropped",j.full_dropped},{"chunks",j.chunk+(j.out.is_open()?1u:0u)},
-        {"scope","observed target range; candidate cache events, not complete guest oracle"},
-        {"root_decision","production_branch_observed_after_zero_clear_expected_geometry_still_unproven"}};
+        {"scope","rolling candidate history; exact consumer snapshots; no automatic causal certificate"},
+        {"root_decision","BLOCKED_UNTIL_SAME_WITNESS_EXPECTED_OUTPUT_CERTIFIED"}};
 }
-inline uint64_t Record(nlohmann::json event) {
-    if(!Enabled())return 0;
-    auto& j=State();std::scoped_lock lock(j.mutex);
-    const auto seq=++j.seq;event["seq"]=seq;
-    auto line=event.dump();
+inline bool WriteLocked(Journal& j,const std::string& line) {
+    if(line.size()+1>ChunkBytes){++j.dropped;return false;}
     if(!j.out.is_open()||j.bytes+line.size()+1>ChunkBytes){
         if(j.out.is_open()){j.out.close();++j.chunk;}
-        if(j.chunk>=MaxChunks){++j.dropped;if(j.dropped==1||j.dropped%256==0)StatusLocked(j);return 0;}
+        if(j.chunk>=MaxChunks){++j.dropped;return false;}
         std::error_code ec;std::filesystem::create_directories(Folder(),ec);
         j.out.open(Folder()/("ds_prelight_events_"+std::to_string(j.chunk)+".jsonl"),std::ios::trunc);
         j.bytes=0;
     }
-    if(!j.out){++j.dropped;StatusLocked(j);return 0;}
+    if(!j.out){++j.dropped;return false;}
     j.out<<line<<'\n';j.out.flush();
-    if(!j.out){++j.dropped;StatusLocked(j);return 0;}
-    j.bytes+=line.size()+1;
-    if(seq==1||seq%128==0||event.value("kind",std::string{})=="consumer")StatusLocked(j);
+    if(!j.out){++j.dropped;return false;}
+    j.bytes+=line.size()+1;return true;
+}
+inline bool ObservePopulation(int32_t frame,uint32_t queue,uint64_t colored,uint64_t area){
+    bool edge=false,close=false;
+    {std::scoped_lock lock(phase_mutex);edge=production_window.Observe(frame,queue,colored,area);
+        close=production_window.Closed(frame);}
+    auto& j=State();std::scoped_lock lock(j.mutex);j.last_consumer=frame;
+    if(edge&&!j.triggered){
+        j.triggered=true;j.edge=frame;j.edge_queue=queue;
+        j.first_retained=j.rolling.empty()?j.seq+1:j.rolling.front().first;
+        for(const auto& entry:j.rolling)WriteLocked(j,entry.second);
+        j.rolling.clear();j.rolling_bytes=0;
+    }
+    if(close)j.closed=true;
+    StatusLocked(j);return edge;
+}
+inline uint64_t Record(nlohmann::json event) {
+    if(!Enabled())return 0;
+    auto& j=State();std::scoped_lock lock(j.mutex);
+    if(j.closed){++j.closed_events;return 0;}
+    const auto seq=++j.seq;event["seq"]=seq;
+    auto line=event.dump();
+    if(!j.triggered){
+        if(line.size()+1>ChunkBytes){++j.dropped;return 0;}
+        while(!j.rolling.empty()&&j.rolling_bytes+line.size()+1>RollingBytes){
+            j.rolling_bytes-=j.rolling.front().second.size()+1;j.rolling.pop_front();++j.evicted;
+        }
+        j.rolling_bytes+=line.size()+1;j.rolling.emplace_back(seq,std::move(line));
+    }else if(!WriteLocked(j,line)){StatusLocked(j);return 0;}
+    if(seq==1||seq%128==0||event.value("kind",std::string{})=="consumer"){
+        std::error_code ec;std::filesystem::create_directories(Folder(),ec);StatusLocked(j);
+    }
     return seq;
 }
 inline bool AllowSample(bool full=false){
     if(!Enabled())return false;
     auto& j=State();std::scoped_lock lock(j.mutex);
-    auto& used=full?j.full:j.samples;auto& dropped=full?j.full_dropped:j.sample_dropped;
-    if(j.chunk>=MaxChunks||used>=(full?2400u:48000u)){
-        ++dropped;if(dropped==1||dropped%256==0)StatusLocked(j);return false;
-    }
+    if(j.closed)return false;
+    auto& used=full?j.full:j.samples;
+    // No launch-global quota: the rolling window retains the actual onset.
     ++used;return true;
 }
 inline void Cache(uint64_t tick,const Image& image,const char* operation,

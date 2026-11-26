@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsMaterialScalarPolicy.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
@@ -662,7 +663,8 @@ struct PipelineCache::ProgramCache {
         }
 		// The earlier vertex experiment is retained for reproducing its
 		// evidence, but not active in this relight-specific diagnostic.
-		if (DemonsVertexPositionProbe::Watched(options.shader_hash) && trace && std::strcmp(trace,"1")==0) {
+		if (DemonsVertexPositionProbe::Watched(options.shader_hash) && trace && std::strcmp(trace,"1")==0 &&
+            DemonsCausalMatrix::Mode()!=DemonsCausalMatrix::Trace) {
             constexpr auto kind=ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
             constexpr auto slot=static_cast<size_t>(kind);
             const auto fp=XXH3_64bits(result.spirv.data(),result.spirv.size()*sizeof(uint32_t));

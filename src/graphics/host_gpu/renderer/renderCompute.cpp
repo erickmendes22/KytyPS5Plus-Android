@@ -3337,48 +3337,7 @@ static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,cons
         bindings.buffer_sources.size()>2&&bindings.buffer_sources[1].size==31488&&
         bindings.buffer_sources[2].size==31488&&groups[0]==123;
     // #734: source CPU-owned for this exact copy; stop capturing unrelated producers.
-    if(!xyz_copy){
-        // Match live or candidate constant range against actual writable
-        // descriptors. Claims are not execution evidence; save both sides.
-        for(auto r:ProjectionRanges()){
-            for(const auto& res:prog.info.buffers){
-                if(!res.written||res.descriptor_index>=bindings.buffer_sources.size())continue;
-                const auto& b=bindings.buffer_sources[res.descriptor_index];
-                if(DemonsPrelightPolicy::Overlaps(b.address,b.size,r.address,r.bytes)){
-                    cap.targets.push_back(r);break;
-                }
-            }
-        }
-        if(cap.targets.empty())return cap;
-        static uint64_t captured=0;
-        if(captured++>=512){
-            if(captured==513)ProjectionRecord({{"kind","capture_budget_exhausted"},{"frame",frame}});
-            cap.targets.clear();return cap;
-        }
-        cap.report={{"projection",true},{"kind","compute_constant_writer"},{"frame",frame},
-            {"submit",submit},{"shader",prog.shader_hash},{"shader_hex",fmt::format("{:016x}",prog.shader_hash)},
-            {"native_cs_file",ShaderDump::ModuleFile(module)},{"groups",groups},{"indirect",indirect},
-            {"tick_before",context.GetCommandScheduler().CurrentTick()},
-            {"target_before",nlohmann::json::array()},{"target_after",nlohmann::json::array()},
-            {"bindings",nlohmann::json::array()}};
-        for(auto r:cap.targets)cap.report["target_before"].push_back(DsVertexRangeWords(context,r));
-        for(uint32_t slot=0;slot<bindings.buffer_sources.size()&&slot<bindings.buffers.size();++slot){
-            const auto& s=bindings.buffer_sources[slot];
-            bool written=false;
-            for(const auto& res:prog.info.buffers)if(res.descriptor_index==slot)written|=res.written;
-            nlohmann::json entry={{"slot",slot},{"address",s.address},{"bytes",s.size},{"written",written}};
-            // Small bound operands only, large input buffers explicitly
-            // identified as not captured in this bounded provenance pass.
-            if(s.size&&s.size<=640&&s.size%4==0)
-                entry["gpu_words"]=ReadDsBoundWords(context,bindings,slot,s.size/4);
-            cap.report["bindings"].push_back(std::move(entry));
-        }
-        return cap;
-    }
-    // W0 1107/1111 exact AVX stores agree; keep a small control budget
-    // rather than evicting the W1 projection evidence.
-    static uint64_t xyz_control=0;
-    if(xyz_control++>=48)return cap;
+    if(!xyz_copy)return cap;
     if(xyz_copy){
         const auto& src=bindings.buffer_sources[1];
         WatchVertexInput(src.address,src.size);
@@ -3458,9 +3417,6 @@ static void EndDsVertexProducer(RenderContext& context,DsVertexProducerCapture&&
     if(cap.report.is_null())return;
     for(auto r:cap.targets)cap.report["target_after"].push_back(DsVertexRangeWords(context,r));
     cap.report["tick_after"]=context.GetCommandScheduler().CurrentTick();
-    if(cap.report.value("projection",false)){
-        ProjectionRecord(std::move(cap.report));return;
-    }
     // Preserve every transition, but only the first unchanged dispatch per
     // shader/target. Emit compact before/after observations for all captures.
     static std::mutex retained_mutex;
@@ -4398,15 +4354,17 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
     const uint32_t queue=DemonsCausalMatrix::LightingQueue(shader);
     if(queue==UINT32_MAX)return;
     const size_t queue_slot=queue==0?0u:queue==8?1u:2u;
+    const bool root=DemonsPrelightTrace::Enabled();
 	if (!DsTraceEnabled() ||
-	    (!before && (!groups_valid || groups[0] == 0 || groups[1] == 0 || groups[2] == 0)) ||
+	    (!root && !before && (!groups_valid || groups[0] == 0 || groups[1] == 0 || groups[2] == 0)) ||
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	const int32_t frame = context.GetGpu().GetFrameNum();
 	const auto& gate = DemonsAdaptiveCapture::Current();
 	// The HDR producer queue may run BEFORE the coefficient/atlas pair
 	// is marked captured in this guest frame. Sampling its output must
 	// not depend on NoteCaptured() having run first.
-	const char* phase = gate.PostTransitionDarkDue(frame)
+    if(root&&DemonsPrelightTrace::Phase(frame)<0)return;
+	const char* phase = root?"root":gate.PostTransitionDarkDue(frame)
 	    ? "post_transition" : gate.DarkOnsetDue(frame) ? "onset"
 	    : gate.BrightSceneActive(frame) ? "bright"
 	    : gate.CapturedFrame(frame) ? "paired_dark" : nullptr;
@@ -4423,7 +4381,9 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	bool* captured = phase[0] == 'b' ? &captured_bright
 	    : phase[0] == 'o' ? &captured_onset
 	    : is_post_transition ? nullptr : &captured_dark;
-	if (is_post_transition) {
+	if (root) {
+        // Root history is rolling, not a once-per-phase capture.
+    } else if (is_post_transition) {
 		// Distinguish the first late event (often zero coefficient updates)
 		// from the subsequent paired update events; never capture more than
 		// three different late guest frames per process.
@@ -4446,6 +4406,8 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	});
 	const auto hdr = find_image(HdrAddress, TextureCache::BindingType::Storage);
 	if (albedo == bindings.images.end() || hdr == bindings.images.end()) {
+        if(root)DemonsPrelightTrace::Record({{"kind","light_bridge_missing_binding"},{"frame",frame},{"submit",submit},
+            {"queue",queue},{"before",before},{"albedo_bound",albedo!=bindings.images.end()},{"hdr_bound",hdr!=bindings.images.end()}});
 		if (is_post_transition) {
 			static uint32_t missing_binding_reports = 0;
 			if (missing_binding_reports++ < 4) {
@@ -4732,7 +4694,7 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	}
 	const nlohmann::json output {
 	    {"frame", frame}, {"phase", phase}, {"submit", submit},
-	    {"shader", fmt::format("{:016x}", shader)}, {"queue",queue},{"workgroups", groups},
+	    {"shader", fmt::format("{:016x}", shader)}, {"queue",queue},{"workgroups", groups},{"workgroups_valid",groups_valid},
 	    {"gbuffer_guest", albedo->desc.info.data.address},
 	    {"gbuffer_owner", albedo_image.info.data.address},
 	    {"gbuffer_version", albedo_image.ContentVersion()},
@@ -4756,6 +4718,8 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
         {"queue_first",previous.queue_first},{"queue_end",previous.queue_end},{"queue_tiles",previous.queue_tiles},
         {"input_bindings_before",paired?previous.inputs:nlohmann::json{}}
 	};
+    if(root){auto row=output;row["kind"]="light_bridge";row["tick"]=context.GetCommandScheduler().CurrentTick();
+        DemonsPrelightTrace::Record(std::move(row));return;}
 	const auto folder = Config::GetShaderDumpFolder() / "queue-state";
 	std::error_code ec;
 	std::filesystem::create_directories(folder, ec);
@@ -5187,8 +5151,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (count_producer_trace) BindDsCountExec(bindings,true);
     const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{thread_group_x,thread_group_y,thread_group_z},submit_id);
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
-    auto vertex_producer=BeginDsVertexProducer(m_context,bindings,submit_id,compute_program.module,{thread_group_x,thread_group_y,thread_group_z},false,0);
+    DsVertexProducerCapture vertex_producer; // V3: no W0 capture
     DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,false);
+    if(DemonsPrelightTrace::Enabled()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
+        CaptureDsLightBridge(m_context,bindings,submit_id,{thread_group_x,thread_group_y,thread_group_z},true,true);
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
@@ -5321,6 +5287,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
 	EndDsVertexProducer(m_context,std::move(vertex_producer));
+    if(DemonsPrelightTrace::Enabled()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
+        CaptureDsLightBridge(m_context,bindings,submit_id,{thread_group_x,thread_group_y,thread_group_z},true);
 	DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,true,false);
 	ResetBindings();
 }
@@ -5704,11 +5672,11 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (count_producer_trace) BindDsCountExec(bindings,true);
     const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{args.x,args.y,args.z},submit_id,
         split_on_cpu?vk::Buffer{}:indirect_buffer,indirect_offset);
+    if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
+    DsVertexProducerCapture vertex_producer; // V3: no W0 capture
+    DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,true,args_addr);
     if(DemonsCausalMatrix::Evidence()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
         CaptureDsLightBridge(m_context,bindings,submit_id,{1,1,1},true,true);
-    if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
-    auto vertex_producer=BeginDsVertexProducer(m_context,bindings,submit_id,compute_program.module,{args.x,args.y,args.z},true,args_addr);
-    DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,true,args_addr);
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
 	const auto vk_buffer = buffer.Handle();

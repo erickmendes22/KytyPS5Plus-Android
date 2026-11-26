@@ -528,3 +528,7 @@ P(4) primeiro, um intervalo ativo, BLOCKED sem descer, sem troca de ramo.
 As podas P01–P06 permanecem restritas ao escopo certificado. Não prometer
 três builds: são três decisões quando há evidência suficiente. #738 já
 existia; aproveitar somente evidência local. Nenhuma build nova por docs.
+
+
+## V3 — auditoria antes da #739
+A árvore integral C1..C16 substitui a premissa pré-iluminação. P8 divide G-buffer completo de iluminação e apresentação. #738 falhou no native; substituída por aquisição circular na fronteira observada, com dados de cobertura e bridge no mesmo ciclo. Sem certificado G0/P8 ainda. Ver árvore canônica V3.

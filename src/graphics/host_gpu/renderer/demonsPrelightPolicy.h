@@ -39,6 +39,42 @@ private:
     bool bright=false;
     int32_t last_frame=-1,start=-1,count=0;
 };
+// V3: the first observed drop is a retention trigger, never a FAIL oracle.
+class BisectionWindow {
+public:
+    constexpr bool Observe(int32_t frame,uint32_t queue,uint64_t colored,uint64_t area){
+        if(frame<0||!area||colored>area||(queue!=0&&queue!=33))return false;
+        if(edge>=0)return false;
+        const auto q=queue==0?0u:1u;
+        if(colored>=area/2){seen_bright[q]=true;armed=true;return false;}
+        if(seen_bright[q]&&colored<=area/10){edge=frame;edge_queue=queue;return true;}
+        return false;
+    }
+    constexpr int Phase(int32_t frame) const {
+        if(!armed)return -1;
+        if(edge<0)return 0;
+        return frame<=edge+2?1:-1;
+    }
+    constexpr bool Closed(int32_t frame)const{return edge>=0&&frame>edge+4;}
+    constexpr int32_t Edge()const{return edge;}
+    constexpr uint32_t Queue()const{return edge_queue;}
+private:
+    bool seen_bright[2]{};
+    bool armed=false;
+    int32_t edge=-1;
+    uint32_t edge_queue=UINT32_MAX;
+};
+enum class Certificate {Blocked,Pass,Fail};
+struct Interval {
+    unsigned lo=0,hi=16;
+    constexpr unsigned Mid()const{return lo+(hi-lo)/2;}
+    constexpr bool Apply(Certificate c){
+        if(hi-lo<=1||c==Certificate::Blocked)return false;
+        const auto mid=Mid();
+        if(c==Certificate::Pass)lo=mid;else hi=mid;
+        return true;
+    }
+};
 // No binary branch may be selected merely from a zero observation.
 // A verified expected word and a complete same-cycle history are required.
 enum class Root {Blocked,Produced,NotProduced};

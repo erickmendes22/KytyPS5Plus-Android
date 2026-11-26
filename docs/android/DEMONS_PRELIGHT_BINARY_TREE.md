@@ -1,3 +1,88 @@
+# V3 — investigação binária integral (normativa, substitui V2 e V1)
+## Auditoria de completude e invariantes
+V2 assumia falha pré-iluminação sem prova G0 e não cobria iluminação,
+pós-processamento e apresentação. V3 cobre o grafo causal da imagem
+inteira, inclusive se o albedo zero for legítimo. Não confundir cobertura
+de classes com captura exaustiva ou garantia de causa única.
+G0: fixar o sintoma final (pixel/amostra/ciclo/versão), mesma entrada
+guest, configuração, câmera/save, objeto e saída esperada independente
+(ISA/contrato/replay com operandos reais). Se não reproduzir ou não houver
+oráculo suficiente, BLOCKED; manter o nó, não assumir erro de cor ou
+selecionar por associação. Os frames 311/312 da #737 são âncora temporal
+observada, não verdade esperada. Mesmo frame host não garante mesmo
+ciclo guest. Capturar ambos extremos, comandos, versões e publicação.
+Classes de primeira divergência do slice causal:
+C1 estado inicial/asset/streaming/decompressão/CPU/HLE/FEX/visibilidade,
+   comando/dispatch guest, predicação, emissão/ordenação e argumentos.
+C2 fetch/loads/índices/atributos/SRT/descritores/BDA/versão de recursos.
+C3 VS/LS/HS/DS/GS/mesh, cálculo e export.
+C4 montagem/topologia/clipping/culling/viewport/scissor/raster.
+C5 testes de fragmento/discard/depth/stencil/coverage, HTile e produtores.
+C6 material/PS, interpolação/sampling/ISA/exports.
+C7 MRT/clear/load/store/resolve/copy/blend/máscaras/formatos/escritores.
+C8 publicação e consumo do G-buffer COMPLETO (todas as camadas/depth/
+   normais/materiais, seleção/alias/layout/versão/coerência).
+C9 entradas de iluminação (luzes, sombras, BVH/rays, probes, radiância,
+   atlas, constantes, produtores, cache/asset).
+C10 seleção de tiles, argumentos e execução de dispatch/filas.
+C11 semântica do shader de iluminação, loads, sampling, controle de fluxo.
+C12 acumulação/precisão/exportação/armazenamento HDR e publicação.
+C13 composição, transparências, passes de fog/forward, UI e blend.
+C14 exposição/tone map, correção de cor, pós-processamento.
+C15 reconstrução temporal/upscale, resolve, conversão, scanout/present.
+C16 entrega ao Android (swapchain/AHB/surface, sincronização, compositor,
+    formato/cor/transformação), inclusive output errado por host/driver.
+Em cada classe, erros de tradução, hardware/driver, memória, ordenação,
+coerência, DMA, versão, recursos ausentes, OOB, alias, concorrência e
+estado incorreto pertencem à operação afetada, não a linhas paralelas.
+Histórico temporal/feedback é DAG de versões: arestas cruzam frames.
+Estado/asset incorreto tem ancestral em C1 ou no produtor efetivo;
+não tratar coincidência de hash, zero/NaN, ou mudança de câmera como erro.
+Testar funções/ISA/cópias com mesmas entradas; PC sem mesma captura não
+é oráculo. Se depende de concorrência, preservar ordem parcial/versões
+e testar interleavings; não assumir uma ordem total por timestamp.
+Causas múltiplas: localizar primeira divergência causal de testemunha
+fixa, corrigir e revalidar até saída final; residual comprovado segue
+a mesma árvore, reutilizando certificados ainda válidos. Não reabrir
+irmãos eliminados sem invalidar certificado por nova evidência.
+Uma operação local correta não prova todos os seus produtores corretos.
+Uma divergência local sem caminho causal até sintoma não é causa raiz.
+## Árvore fixa
+P(k)=prefixo cumulativo C1..Ck certificado no cone causal da testemunha
+(inclui dependências/recursos relevantes, sem depender de contagens
+globais). Se duas saídas compensam erro intermediário, não certifica
+prefixo. PASS/FAIL requer prova; missing/unsupported=BLOCKED.
+Com G0 e P(16) FAIL demonstrados, [0,16], P(0)=PASS. Primeiro P(8).
+PASS: [8,16]; FAIL: [0,8]. Depois P(4) ou P(12), depois P(2)/P(6)/
+P(10)/P(14), depois ímpar. Quatro decisões válidas isolam classe,
+não quatro builds garantidas: custo do oráculo/captura importa.
+Quando hi-lo=1, bissectar operações finitas da classe com extremos
+certificados, DAG de versões, prefixo monotônico, mesma testemunha.
+Nunca trocar de ramo em BLOCKED; adquirir próximos operandos juntos
+na mesma build quando viável. Não inventar expectativa de gameplay.
+## Primeira build V3 (substitui #738)
+#738 falhou na compilação e foi abandonada; restaurar código renderer
+da #737 validada e remover sondas W0/W1 do modo F. Janela circular
+12 MiB mantém eventos prévios; na primeira queda observada na MESMA
+fila (0 ou 33, após >=50% de cor, <=10% atual), retém a janela e
+captura até dois frames posteriores, com drenagem até +4.
+A queda é gatilho, não certificado. Exporta imagens R32_UINT completas
+antes/depois (mesma fila), identidade/tick/versão/hash, amostras e
+população completa por draw de material, comandos e recursos ligados,
+queries originais por frame e replay read-only quando suportado,
+bridge de G-buffer/HDR, outras camadas/depth, tiles e dados bound
+antes/depois do mesmo dispatch; export raiz tem prioridade.
+Lacunas: replay de cobertura não é replay guest integral; shaders
+sem variante, efeitos laterais, buffers grandes, recursos ausentes,
+pixel esperado e pós-passes sem captura ficam explicitamente bloqueados.
+Snapshot síncrono pode alterar timing; registrar perturbação, não
+certificar sincronização de produção. Limites de export e pré-história
+evictada explícitos. Teste unitário verifica todos 16 caminhos de
+bisseção, BLOCKED, fila do gatilho e encerramento de janela.
+Nenhuma mudança semântica de renderização ou fix especulativo.
+Estado: G0/P8 BLOCKED, primeira divisão não selecionada.
+---
+# Histórico V2 e V1 (somente evidência)
 # Demon's Souls PPSA01341 — árvore operacional V2: bisseção causal
 **Normativa a partir de #738.** O histórico V1 abaixo é evidência, não autorização
 para escolher outro ramo. A árvore V1 misturou testemunhas W0/W1, expandiu folhas
