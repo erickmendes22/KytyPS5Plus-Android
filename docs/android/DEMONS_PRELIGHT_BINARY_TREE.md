@@ -1,3 +1,125 @@
+# Demon's Souls PPSA01341 — árvore operacional V2: bisseção causal
+**Normativa a partir de #738.** O histórico V1 abaixo é evidência, não autorização
+para escolher outro ramo. A árvore V1 misturou testemunhas W0/W1, expandiu folhas
+sem estabelecer causalidade global e não resolveu a raiz. Não repetir isso.
+
+## 0. Fixar o caso e os extremos ANTES de descer
+ZIP #737 20261126-102508, owner 0x287ae0000, layer0 mip0, 1600x900.
+Consumer q33 f311 submit8741 seq2729 version10716: 1440000 RGB não zero.
+Consumer q0 f312 submit8782 seq2730 version10900: 651 RGB não zero;
+q33 seq2732 confirma 651. f313 q33 seq3080: 672.
+É a primeira queda observada depois da janela de população plena f231–311,
+não uma prova de que todos esses pixels deveriam manter a cor entre frames.
+O frame 312 tem 45 guest_command, 38 draw_prepared, 38 draw_execute,
+mas nenhum draw_before/draw_after nessa captura. O journal termina com
+1792 eventos perdidos, 26 full samples perdidos; a fronteira não foi
+reconstituída. F348 já é posterior (zero), e W1 volta a produzir cobertura
+em f503 embora o problema global persista. W0 e W1 não qualificam como
+testemunha de causa global; manter seus resultados locais no histórico.
+
+G0 (pré-condição, não ramo causal): fixar uma amostra/primitive/objeto que
+contribui para a falha, versão da imagem, draw/ciclo guest, índices,
+instância, câmera, estado e inputs. Obter saída esperada para os mesmos
+dados via contrato guest/replay independente. Se a testemunha não estiver
+demonstrada, permanecer em G0; não selecionar outro nó por associação.
+A transição f311→312 é a âncora temporal para adquirir essa testemunha,
+não o oráculo de cor. Frames absolutos mudam por instrumentação. Usar
+mesmo save/configuração e evento guest de transição, registrar intervalo
+e dados reais; se não reproduzir, não comparar cenas diferentes.
+P06 e demais podas V1 valem apenas para as operações e inputs certificados.
+Se a expectativa de albedo falhar e o defeito estiver depois do G-buffer,
+G0 não autoriza declarar pré-iluminação provada. Uma nova árvore do domínio
+correto exige demonstrar essa fronteira, não seguir pistas alternativas.
+
+## 1. Espaço de busca fixo e predicado cumulativo
+C0 entrada/contrato certificado (PASS).
+C1 emissão/execução guest: visibilidade, comandos, argumentos, instâncias.
+C2 fetch/loads: índice, vértices, descritores e dados, produtores e versões.
+C3 saída VS/estágios geométricos: cálculo e export XYZW/clip.
+C4 montagem, clipping, viewport, culling, raster: cobertura esperada.
+C5 testes de fragmento: discard, depth, stencil, coverage e seus operandos.
+C6 valor de export material: ISA/PS e dados efetivamente lidos.
+C7 valor gravado: MRT, máscara, formato, blend, clear, store e escritores.
+C8 publicação/consumo: versão/alias/layout/barreira, bytes entregues à luz (FAIL).
+
+Cada classe cobre a primeira falha do contrato daquela fronteira para
+a mesma testemunha. Dependências fora da linha (ex.: stored depth,
+texturas) pertencem ao contrato da etapa que as consome; se a classe
+for selecionada, construir DAG de produtores, ordenar topologicamente
+as operações causais e bissectar o ancestral certificado da falha.
+Não confundir um valor final coincidente com prefixo correto: P(k)=
+todas as fronteiras C1..Ck relevantes certificadas com dados reais.
+P(k) é cumulativo e monotônico; testar apenas saída Ck pode esconder
+compensações, overwrite ou entradas erradas. Um mismatch upstream
+suficiente certifica FAIL; ausência de captura é BLOCKED, não FAIL.
+A prova de prefixo pode exigir replay e verificação de várias fronteiras,
+não prometer um único contador ou uma build por decisão.
+
+Estado imutável por testemunha: lo=último prefixo PASS, hi=primeiro prefixo
+FAIL certificado; iniciar [0,8] somente com G0 e C8 demonstrados.
+m=floor((lo+hi)/2). P(m)=PASS -> lo=m; P(m)=FAIL -> hi=m.
+P(m)=BLOCKED -> manter [lo,hi] e adquirir exatamente as entradas faltantes.
+Quando hi-lo=1, a classe hi está isolada; não abrir irmão. Três decisões
+suficientes para oito classes SE os predicados estiverem disponíveis;
+não é garantia de três compilações nem de uma causa única global.
+Se o primeiro erro não explica a falha final, não fabricar causalidade:
+testar regressão da mesma cadeia, manter a testemunha e registrar que
+o erro isolado não explica o sintoma; não reabrir irmãos por suspeita.
+
+```
+R [0,8] P(4): prefixo até cobertura raster correto?
+  N A [0,4] P(2): prefixo até fetch correto?
+    N A1 [0,2] P(1): emissão correta?
+      N C1 emissão / S C2 fetch
+    S A2 [2,4] P(3): saída VS correta?
+      N C3 VS / S C4 raster
+  S B [4,8] P(6): prefixo até export material correto?
+    N B1 [4,6] P(5): testes corretos?
+      N C5 testes / S C6 PS
+    S B2 [6,8] P(7): valor gravado correto?
+      N C7 store / S C8 publicação
+```
+
+## 2. Descida obrigatória após isolamento da classe
+Dividir o conjunto finito de operações relevantes da classe em duas
+metades por custo/evidência, ou número de operações quando equivalente.
+Fixar o mesmo input/estado e a ordem causal; certificar extremos e o
+prefixo intermediário. Ex.: classe C3: 64 operações relevantes no slice,
+intervalo [0,64], testar prefixo 32, depois 16 ou 48, etc. Se a falha
+for um load, o slice inclui endereço, bytes, versão e produtor; não
+trocar para uma malha de outro frame. Se várias entradas são necessárias,
+verificar prefixo topológico, não supor independência nem seguir um
+endereço por mero overlap. Repetir até uma operação concreta com
+entrada, semântica guest, resultado esperado e observado. Corrigir
+e verificar a mesma testemunha, e depois a falha global. Sem fix por
+NaN, alteração de constantes, luz artificial ou inferência de câmera.
+Não reabrir grupo eliminado salvo nova evidência contraditória,
+registrando exatamente qual certificado foi invalidado.
+
+## 3. Próximo passo e controle de custo
+ESTADO ATUAL: G0 BLOQUEADO; [0,8] apenas espaço potencial. N00 antigo não
+resolvido. Nenhuma classe global eliminada por W0/W1. #738 já disparada
+antes da revisão; pode fornecer evidência local, não define o próximo
+nó. Esta revisão é docs-only, sem nova build automática.
+Próxima aquisição, se necessária: ancorar no primeiro evento de queda
+do consumer layer0 depois de população plena, em vez de fase tardia.
+Manter buffer circular compacto de eventos reais (clear/load/store,
+draw/dispatch, cópia/publicação e versão); preservar a janela anterior
+à queda e o ciclo da queda, com snapshots de amostras e dados suficientes
+para estabelecer G0 e avaliar P(4) por replay. Capturar operandos de
+fronteiras dependentes na mesma execução quando disponíveis. O gatilho
+por população serve apenas para retenção, não prova de erro. Não usar
+budget consumido por logs W0/W1. Verificar completude e export antes
+de interpretar; se não houver referência, explicitar bloqueio e não
+criar build incremental por suspeita.
+Ledger obrigatório por decisão: ID testemunha, versão/recurso,
+intervalo antes, mid, PASS/FAIL/BLOCKED, prova e arquivo, intervalo
+depois, subárvore podada, custo e lacunas. Somente um intervalo ativo
+para essa testemunha. Nenhuma mudança de ramo por curiosidade.
+
+---
+
+# Histórico V1 (somente evidência; não usar como roteiro operacional)
 # Demon's Souls PPSA01341 — árvore binária causal pré-iluminação
 Versão 1.0, etapa 1: construção e poda por evidência. Não é uma correção
 de renderização e não autoriza uma build por hipótese. A árvore governa

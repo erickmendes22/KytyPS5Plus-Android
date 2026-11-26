@@ -515,3 +515,16 @@ XYZW both VS, already 7872/7872 NaN words in input XYZ; W1 57066
 finite 37358/37358 equal exports. Follow N32/L09 to producer, not
 repeat raster tests. Actual expected visibility not established.
 See DEMONS_PRELIGHT_BINARY_TREE.md for counts and next N70 split.
+
+
+## Revisão metodológica #737/#738 — V2
+A primeira queda observada após população plena no ZIP 102508 é f311 q33
+(1440000, version10716, seq2729) → f312 q0 (651, version10900, seq2730),
+owner 0x287ae0000 layer0 mip0. f312 não contém draw_before/draw_after.
+A causa global não está demonstrada. W0/W1 são replays locais, não oráculos
+absolutos nem prova de causalidade. Substituir o roteiro de hipóteses pela
+bisseção de prefixo cumulativo da árvore V2, com G0 antes de [0,8],
+P(4) primeiro, um intervalo ativo, BLOCKED sem descer, sem troca de ramo.
+As podas P01–P06 permanecem restritas ao escopo certificado. Não prometer
+três builds: são três decisões quando há evidência suficiente. #738 já
+existia; aproveitar somente evidência local. Nenhuma build nova por docs.

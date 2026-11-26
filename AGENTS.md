@@ -101,3 +101,18 @@ com divergência, manter ambas as trajetórias e ordenar os produtores.
 Atualizar a árvore com resultados de cada execução e só implementar fix
 na primeira operação divergente demonstrada. Construir a árvore, quando
 isso for a etapa explicitamente solicitada, não exige nova compilação.
+
+
+## V2 — regra de bisseção causal (prevalece sobre o roteiro V1)
+Fixar G0 e os extremos PASS/FAIL da mesma testemunha antes de descer.
+Usar a árvore V2 no início de DEMONS_PRELIGHT_BINARY_TREE.md; o histórico
+V1 não é roteiro. Avaliar prefixos cumulativos P(4), depois P(2) ou P(6),
+e o meio do intervalo restante; manter um único intervalo ativo por
+caso. PASS elimina o prefixo certificado; FAIL elimina a metade posterior
+como localização da primeira divergência; BLOCKED mantém o intervalo.
+Não saltar para outro galho ou outra testemunha por associação. Não
+expandir folhas sem causalidade até a falha alvo. Repetir a bisseção
+no slice causal da classe isolada até uma operação concreta. Corrigir
+e validar a mesma testemunha e o sintoma global. Não iniciar APK para
+alteração apenas metodológica/documental. A regra de entrega permanece
+para builds efetivamente solicitadas.
