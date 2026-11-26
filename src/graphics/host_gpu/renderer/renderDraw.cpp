@@ -3100,6 +3100,44 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			}
 		}
 	}
+    // Causal material census: every layer-0 attachment draw, not only
+    // the previously watched hashes. Record the actual before/after bytes
+    // on a bounded two-host-frame window (guest flips can split the pass).
+    static std::array<int32_t,4> chain_start{-1,-1,-1,-1};
+    static std::array<nlohmann::json,4> chain_rows{};
+    constexpr size_t chain_limit=96;
+    int chain_phase=-1;
+    RenderColorInfo chain_target{};
+    DsAlbedoSnapshot chain_before{};
+    std::optional<std::array<uint32_t,64>> chain_depth{};
+    uint64_t chain_version_before=0;
+    if(ds_gbuffer_enabled && Config::GetShaderDumpFolder().filename()=="ds-lighting-dumps"){
+        const auto colors=std::span{state.color_info,state.color_count};
+        const auto target=std::ranges::find_if(colors,[](const auto& c){
+            return c.image_id && c.desc.info.data.address==DemonsQueueProbe::GBufferAddress &&
+                c.desc.view_info.base_layer==0 && c.desc.view_info.base_level==0;
+        });
+        const auto& gate=DemonsAdaptiveCapture::Current();
+        const int phase=gate.PostTransitionDarkDue(ds_gbuffer_frame)?3:
+            gate.DarkOnsetDue(ds_gbuffer_frame)?1:gate.BrightBaselineDue(ds_gbuffer_frame)?0:
+            gate.CaptureDue(ds_gbuffer_frame)?2:-1;
+        if(target!=colors.end()){
+            if(phase>=0 && chain_start[phase]<0){
+                chain_start[phase]=ds_gbuffer_frame;
+                chain_rows[phase]=nlohmann::json::array();
+            }
+            for(int p=3;p>=0;--p){
+                if(chain_start[p]>=0 && ds_gbuffer_frame>=chain_start[p] &&
+                   ds_gbuffer_frame<=chain_start[p]+1 && chain_rows[p].size()<chain_limit){
+                    chain_phase=p;chain_target=*target;
+                    chain_version_before=m_context.GetTextureCache().GetImage(target->image_id).ContentVersion();
+                    chain_before=SnapshotDsAlbedo(m_context,chain_target);
+                    chain_depth=SnapshotDsMaterialDepthGrid(m_context,state.depth_info);
+                    break;
+                }
+            }
+        }
+    }
 	// Follow the first post-compute HDR writer and reader, then the compositor.
 	constexpr uint8_t DsHdrReader = 1, DsComposite = 2, DsHdrWriter = 4;
 	std::array<uint8_t, DemonsQueueProbe::Queues.size()> ds_draw_stage {};
@@ -4225,6 +4263,65 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		RecordDsMaterialPixels(*ds_material_trace, ds_albedo_before, after,
 		                       rendering.color_attachments[ds_gbuffer->target_slot].is_clear);
 	}
+    if(chain_phase>=0){
+        const auto after=SnapshotDsAlbedo(m_context,chain_target);
+        const auto diff=CompareMaterialFullFrame(chain_before.words,after.words,chain_before.width,chain_before.height);
+        const auto& img=m_context.GetTextureCache().GetImage(chain_target.image_id);
+        const auto* vs=state.vertex_info[0].stage.program;
+        const auto* ps=state.ps_active?state.ps_input_info.stage.program:nullptr;
+        uint64_t lost=0,gained=0,changed_nonzero=0;
+        nlohmann::json samples=nlohmann::json::array();
+        if(diff.valid && chain_before.words.size()==after.words.size()){
+            for(size_t i=0;i<after.words.size();++i){
+                const auto a=chain_before.words[i],b=after.words[i];
+                const bool ca=(a&0x00ffffffu)!=0,cb=(b&0x00ffffffu)!=0;
+                lost+=ca&&!cb;gained+=!ca&&cb;changed_nonzero+=ca&&cb&&a!=b;
+            }
+            for(uint32_t i=0;i<64;++i){
+                const auto x=(i%8u*2u+1u)*chain_before.width/16u;
+                const auto y=(i/8u*2u+1u)*chain_before.height/16u;
+                const auto k=size_t{y}*chain_before.width+x;
+                samples.push_back({x,y,chain_before.words[k],after.words[k]});
+            }
+        }
+        nlohmann::json inputs=nlohmann::json::object();
+        if(state.ps_active && state.ps_input_info.stage.resources){
+            const auto& snap=*state.ps_input_info.stage.resources;
+            inputs["srt"]=snap.flattened_srt;
+            inputs["images"]=nlohmann::json::array();
+            for(const auto& v:snap.images)inputs["images"].push_back(v.dwords);
+            inputs["buffers"]=nlohmann::json::array();
+            for(const auto& v:snap.buffers)inputs["buffers"].push_back(v.dwords);
+        }
+        const auto& regs=buffer.GetRegisters();
+        auto& rows=chain_rows[chain_phase];
+        rows.push_back({
+            {"ordinal",rows.size()},{"frame",ds_gbuffer_frame},{"submit",submit_id},
+            {"tick",m_context.GetCommandScheduler().CurrentTick()},
+            {"vs",fmt::format("{:016x}",vs?vs->shader_hash:0ull)},
+            {"ps",fmt::format("{:016x}",ps?ps->shader_hash:0ull)},
+            {"index_guest",index_source.address},{"index_bytes",index_source.size},
+            {"indices_or_records",draw.index_count},{"instances",draw.instance_count},
+            {"indirect",indirect!=nullptr},{"indirect_guest",indirect?indirect->args_addr:0ull},
+            {"owner",img.info.data.address},{"version_before",chain_version_before},
+            {"version_after",img.ContentVersion()},{"slot",chain_target.target_slot},
+            {"load_clear",rendering.color_attachments[chain_target.target_slot].is_clear},
+            {"write_mask",GuestColorWriteMask(regs.GetRenderTargetMask(),
+                regs.GetShaderRegisters().m_cbShaderMask,chain_target.target_slot)},
+            {"depth_compare",uint32_t(state.depth_info.depth_compare_op)},
+            {"depth_owner",state.depth_info.desc.info.data.address},
+            {"depth_grid_before",chain_depth?nlohmann::json(*chain_depth):nlohmann::json()},
+            {"valid",diff.valid},{"width",chain_before.width},{"height",chain_before.height},
+            {"colored_before",diff.colored_before},{"colored_after",diff.colored_after},
+            {"changed",diff.changed},{"lost",lost},{"gained",gained},{"changed_nonzero",changed_nonzero},
+            {"grid_xy_before_after",std::move(samples)},{"pixel_inputs",std::move(inputs)}});
+        const auto folder=Config::GetShaderDumpFolder()/"queue-state";
+        std::error_code ec;std::filesystem::create_directories(folder,ec);
+        const auto name=fmt::format("ds_albedo_chain_p{}.json",chain_phase);
+        std::ofstream out(folder/name,std::ios::trunc);
+        if(out)out<<nlohmann::json{{"phase",chain_phase},{"start_frame",chain_start[chain_phase]},
+            {"capacity_reached",rows.size()>=chain_limit},{"draws",rows}};
+    }
 	if (ds_depth_prepass_phase >= 0) {
 		const auto depth_full_after = ds_depth_full_before.bits.empty()
 		    ? DsDepthFullSnapshot {} : SnapshotDsDepthFull(m_context, ds_depth_prepass_target);

@@ -203,3 +203,30 @@ bounded readonly buffer prefixes; checks actual material pixels against
 each queue, exports exact guest code and native modules for all three.
 Never treat membership unavailable or no tile assignment as a failed store.
 No gameplay correction claimed: no PC capture of identical inputs exists.
+
+
+## Build #720 — F, ZIP 20261125-222007
+Core dec6528, matrix 8. Fourteen paired bridges: f166 q0 adds RGB mean
+0.03266060, q33 adds 0.03688316 (RGB arithmetic mean). f262 albedo
+0/64 before q0, other layers and depth 64/64, q0 covers 44/64, q33 covers
+64/64, both HDR zero. f278 q8 adds HDR at two covered colored points.
+f310 depth 0/64, albedo 4/64, q8/q33 cover none. f454/f478 layer0 only
+2/64 colored, other layers and depth 64/64; q33 covers all 64 and neither
+colored point changes in q33. f478 q0 changes one of two covered colored
+points. Do not infer missing stores solely from unchanged half floats.
+First widespread loss is already in G-buffer before lighting.
+Material f262 s7797: before afd933 853/1440000 colored, after 893;
+e31a after 926. f454 s13756: 53726 colored before afd933, 53833 after;
+full-screen 552d 58933->51119 (7814 lost), 1388873 depth-passed samples.
+Depth writer aff9c7 f453 s13755 fills 113071->1440000; corresponding
+fullscreen material executes. This is not proof the background is wrong.
+Geometry census f262 and f453 includes zero-sample indirect material draws;
+not proof of invalid counts or that these draws should be visible. Earlier
+capture samples only watched PS and first instance of each PS; the first
+loss/absence of expected material is not yet identified. Next revision:
+mode F capture every actual R32 layer0 attachment draw in bounded adjacent
+host-frame windows, before/after full-layer color counts, lost/gained,
+64 exact pixels, depth grid, image owner/version, shader and index/indirect
+identity, color mask, clear and bound guest pixel descriptors. Export first
+in ZIP. Compare ordered producer chain, distinguish clear, black overwrite,
+missing coverage and between-draw changes. Do not modify graphics semantics.

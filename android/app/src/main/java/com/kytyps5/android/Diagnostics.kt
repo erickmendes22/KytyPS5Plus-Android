@@ -271,6 +271,7 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_transition_edge_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_vertex_position_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_coverage_f[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_albedo_chain_p[0-3]\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_dominant_material_f[0-9]+_s[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_depth_prepass_f[0-9]+_s[0-9]+_p[0-9]+(_d[0-9]+)?\\.json")) ||
@@ -334,7 +335,8 @@ object Diagnostics {
                     val atlas = newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
                     val source = newest.filter { it.name.startsWith("cs_bcbcc6ba1e68c974_ray_hits_") ||
                         it.name.startsWith("cs_567d21ad45386c8d_radiance_") }
-                    val producer = (bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
+                    val albedoChain = newest.filter { it.name.startsWith("ds_albedo_chain_p") }.take(4)
+                    val producer = (albedoChain + coverage + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
                         prioritizedRays.take(8) + coverage + edges + visibility.take(4) + depthOwners + positions +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
