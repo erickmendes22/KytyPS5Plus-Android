@@ -4,6 +4,11 @@ References: Jetsku dd9f990 (#130 documents fog-transition crash), Chenxiao07
 
 ## Continuidade executável após #745 — 26/11/2026
 
+[Árvore atualizada: estado global, cortes locais e decisão da #746](DEMONS_PRELIGHT_BINARY_TREE.md#estado-atual).
+O nó global continua sendo **P(8), intervalo [0,16], sem metade eliminada**;
+os certificados locais da #745 permanecem válidos no seu escopo. A comparação
+CPU da #746 aguarda captura e não seleciona antecipadamente um ramo global.
+
 [Balanço obrigatório de eliminação por build](DEMONS_BUILD_ELIMINATION_LEDGER.md):
 registrar cortes efetivos, revalidações, motivo de nenhum corte e a correção
 concreta da deficiência antes da aquisição seguinte.
@@ -23,9 +28,12 @@ usam zero, com uma instância. O fallback existia nos dois extremos e não é
 por si só defeito. Não há fonte nativa/versão desses 60 bytes no ZIP.
 Comparar bytes realmente consumidos com a versão independente antes de
 investigar o produtor do zero; preservar ambos extremos e as transferências
-observadas. Leitura coincidente poda essa aresta local; leitura divergente
-com identidade/ordem válidas fixa publicação/decodificação. Não usar um
-espelho Vulkan CPU-dirty como autoridade nem um fault como último store.
+observadas. Referência, leitura e emissão coincidentes podam essa aresta local.
+Leitura divergente de bytes GPU autoritativos com identidade/ordem suficientes
+fixa publicação/transferência/leitura; referência e leitura iguais com tuple
+errado fixam decodificação/emissão. Diferença tardia em página CPU-dirty é
+UNSTABLE. Não usar um espelho Vulkan CPU-dirty como autoridade nem um fault
+como último store.
 [Aquisição, orçamento e controles de decisão](DEMONS_CP_INDIRECT_CAPTURE.md).
 
 Mesmo caso e ciclos correspondentes: #741 40367→40979; #744 39624→40091;

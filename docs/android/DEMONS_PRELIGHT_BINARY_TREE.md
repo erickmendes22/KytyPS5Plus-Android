@@ -1,5 +1,91 @@
 # V3 — investigação binária integral (normativa, substitui V2 e V1)
 
+## Estado atual
+
+Atualizado em **26/11/2026**, após analisar a captura **#745** e entregar o
+**APK #746 compilado, assinado e verificado**. A #746 ainda aguarda captura do
+aparelho. Este quadro é o estado operacional vigente; as seções posteriores
+preservam os contratos e o histórico que o fundamentam.
+
+**Nó global ativo: P(8). Intervalo: [0,16]. Metades globais eliminadas: 0.**
+A próxima comparação local é a leitura e emissão dos argumentos indiretos do
+mesmo episódio. Ela não representa uma seleção antecipada de C1–C8 ou C9–C16.
+
+### Árvore global e decisões ainda não visitadas
+
+As setas abaixo são **condicionais**, não decisões já obtidas. Ambos os lados
+de P(8) permanecem possíveis. Nenhum P(4), P(12) ou nó inferior foi selecionado.
+
+```mermaid
+flowchart TB
+    P8{"P(8): sem decisão"}
+    P8 -->|"Se FAIL comprovado"| P4["C1–C8: próximo P(4), não visitado"]
+    P8 -->|"Se PASS comprovado"| P12["C9–C16: próximo P(12), não visitado"]
+    P4 -->|"Se P(4) FAIL"| P2["C1–C4: próximo P(2), não visitado"]
+    P4 -->|"Se P(4) PASS"| P6["C5–C8: próximo P(6), não visitado"]
+    P12 -->|"Se P(12) FAIL"| P10["C9–C12: próximo P(10), não visitado"]
+    P12 -->|"Se P(12) PASS"| P14["C13–C16: próximo P(14), não visitado"]
+```
+
+C1–C8 cobrem a origem dos comandos e recursos até o G-buffer completo;
+C9–C16 cobrem iluminação, composição, pós-processamento e apresentação.
+As 16 classes e as divisões seguintes continuam definidas em
+**Auditoria de completude e invariantes** e **Árvore fixa**, abaixo.
+Um certificado local não se soma a outros como se cada um eliminasse uma
+metade dessa árvore.
+
+### O que foi cortado, o que continua aberto e por quê
+
+| Build | Operações retiradas como primeira divergência, no escopo comparado | Corte global | Lacuna e correção concreta |
+| --- | --- | --- | --- |
+| **#744** | Certificados do fundo e dos fixups preservados; dois VS do fundo reproduzidos offline. | **Nenhum.** | Faltavam inputs, índices e módulos do foreground. A #745 corrigiu seleção pelo clear executado, aquisição dos operandos e exportação obrigatória. |
+| **#745** | **45 draws / 73.580 vértices / 294.320 componentes POS0 iguais bit a bit.** Fetch/cálculo/export de posição dessas invocações não explicam uma diferença em relação à ISA com os mesmos inputs. | **Nenhum.** | Os três registros de argumentos CPU em `0x21de00078` não tinham seus **60 bytes e versão independente** capturados. A #746 preserva consumo original, referência por byte, emissão, extremos do episódio e produtores/transferências observados. |
+| **#746** | **Ainda nenhum resultado novo do aparelho.** O APK entregue contém o mecanismo de comparação validado antes da build. | **Nenhum registrado; aguarda captura.** | Aplicar a decisão abaixo ao diagnóstico. A ausência de captura não é um resultado negativo nem um corte previsto já obtido. |
+
+Os 45 draws da #745 incluem a **revalidação** dos VS do céu: não são 45 cortes
+inéditos. A máscara do céu (1.439.342 pixels alterados / 658 preservados), os
+**34 fixups** e as **32 operações cb3b** também foram revalidados. Não reabrir
+essas operações sem nova evidência que invalide o certificado no seu escopo.
+Os cinco draws sem comparação POS0 nativa completa têm classificação explícita
+nos [resultados da #745](DEMONS_APK_745_RESULTS.md); não foram contados como PASS.
+
+### Decisão local preparada na #746
+
+**Caso mantido:** o batch de três registros de 20 bytes observado em
+`0x21de00078`. Na #745, o filho0 usa 98.304 índices no pai **54823** e passa a
+zero nos pais **55986/56594**, antes da perda de albedo. Os números identificam
+a execução anterior; a #746 seleciona o episódio pela identidade e pela perda,
+sem exigir que endereços ou números de comandos se repitam.
+
+As duas perguntas binárias abaixo usam os valores consumidos originalmente,
+a referência da versão correspondente e o tuple efetivamente emitido. O ramo
+de leitura divergente exige bytes GPU autoritativos, identidade e ordem
+suficientes; uma diferença tardia em página CPU-dirty é **UNSTABLE**, não uma
+prova de leitura errada.
+
+```mermaid
+flowchart TB
+    READ{"Leituras coincidem com a referência válida?"}
+    READ -->|"Sim"| EMIT{"Emissão coincide com o contrato desses bytes?"}
+    READ -->|"Não, divergência comprovada"| READFAIL["Localizar a primeira publicação ou leitura divergente; corrigir"]
+    EMIT -->|"Sim"| MATCH["Cortar leitura, decodificação e emissão locais; seguir o produtor retido"]
+    EMIT -->|"Não"| EMITFAIL["Corrigir a decodificação ou emissão demonstrada"]
+```
+
+**INCOMPLETE ou UNSTABLE não escolhem um ramo causal.** Registrar o record,
+range, versão ou arquivo que faltou; manter os resultados válidos dos demais
+records; examinar primeiro os eventos já retidos. Se os dados não bastarem,
+corrigir a janela, associação ou aquisição específica e reproduzir a deficiência
+em fixture antes de outro APK. Se os extremos não estiverem ligados à perda, preservar
+o certificado local sem promovê-lo a causa do sintoma. O
+[contrato da #746](DEMONS_CP_INDIRECT_CAPTURE.md) e o
+[balanço por build](DEMONS_BUILD_ELIMINATION_LEDGER.md) detalham essas decisões.
+
+Quando houver MATCH, avançar pelos produtores já retidos no mesmo ZIP até a
+próxima comparação possível. Quando houver a primeira divergência comprovada,
+implementar sua correção. A aquisição dessa aresta não depende de já possuir
+uma resposta global de P(8), captura externa de PC ou trace CPU universal.
+
 ## Continuidade operacional — 26/11/2026
 
 **Balanço obrigatório por build:**
@@ -40,9 +126,10 @@ e sua versão nativa não estão no ZIP; f0c140 escreve outro recurso.
 
 | Comparação local | Consequência para a cadeia observada |
 | --- | --- |
-| Bytes consumidos diferem da versão independente, com identidade e ordem preservadas | Fixar publicação/leitura/decodificação; não culpar a produção guest de zero antes de resolver essa divergência. |
+| Leitura difere de bytes GPU autoritativos, com identidade e ordem suficientes | Fixar a primeira publicação/transferência/leitura divergente e corrigir; não culpar a produção guest de zero antes de resolver essa divergência. |
+| Leituras e referência coincidem, mas os argumentos emitidos violam o contrato | Fixar e corrigir a decodificação/emissão de count, índice, base/offset ou instância indicada pelo contraexemplo. |
 | Bytes consumidos e argumentos emitidos coincidem com a versão independente | Eliminar essa leitura/decodificação como primeira divergência no escopo comparado; seguir a origem real do registro já capturada, mantendo certificados de posição e raster. |
-| Captura truncada ou versão alterada durante a comparação | Reportar o range e o motivo; não fabricar igualdade nem impor veto global de aquisição. |
+| Captura truncada, versão alterada ou diferença tardia em página CPU-dirty | Reportar INCOMPLETE/UNSTABLE, o range e o motivo; reparar a aquisição específica, sem fabricar igualdade ou divergência nem impor veto global de aquisição. |
 
 Preservar último não zero e primeiro zero juntos, com token do comando pai,
 filhos, dirty/pending, publicações e bytes de escritores/transferências
