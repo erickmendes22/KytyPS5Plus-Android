@@ -3813,10 +3813,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                 for(const auto& w:m_context.GetBufferCache().RecentProbeRayTransfers(src.address,src.size))
                     if(w.path&&w.shader)DemonsPrelightTrace::WatchVertexShader(w.shader);
             }
-            static std::array<int32_t,4> last{-1,-1,-1,-1};
             const auto p=std::clamp(root_phase,0,3);
-            if(last[p]<0||ds_gbuffer_frame-last[p]>=32){
-                last[p]=ds_gbuffer_frame;
+            if(DemonsPrelightTrace::VertexConsumerFrame(bound.buffer_sources[2].address,ds_gbuffer_frame)){
                 nlohmann::json row={{"kind","vertex_consumer"},{"phase",p},{"frame",ds_gbuffer_frame},
                     {"submit",submit_id},{"draw",root_draw},{"index_guest",index_source.address},
                     {"shader",ds_vp->shader_hash},{"native_vs",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
@@ -3836,12 +3834,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                         if(adjust<=native.range&&src.size<=native.range-adjust){
                             auto words=DemonsPrelightTrace::ReadNativeWords(m_context,native.buffer,native.offset+adjust,uint32_t(src.size/4));
                             entry["nan_words"]=std::ranges::count_if(words,DemonsPrelightTrace::IsNanWord);
+                            entry["word_digest"]=DemonsPrelightTrace::VertexWordDigest(words);
+                            entry["captured_words"]=words.size();
                             entry["gpu_words"]=std::move(words);
                         }
                     }
                     row["sources"].push_back(std::move(entry));
                 }
-                DemonsPrelightTrace::Record(std::move(row));
+                DemonsPrelightTrace::RecordVertexConsumer(std::move(row));
             }
         }
     }

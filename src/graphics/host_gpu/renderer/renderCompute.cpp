@@ -3210,6 +3210,10 @@ static nlohmann::json DsVertexRangeWords(RenderContext& context,DemonsPrelightTr
         out["gpu_dirty"]=cache.HasGpuDirtyBytes(r.address,r.bytes);
         auto words=DemonsPrelightTrace::ReadNativeWords(context,b->Handle(),b->Offset(r.address),uint32_t(r.bytes/4));
         out["nan_words"]=std::ranges::count_if(words,DemonsPrelightTrace::IsNanWord);
+        out["word_digest"]=DemonsPrelightTrace::VertexWordDigest(words);
+        out["captured_words"]=words.size();
+        out["native_buffer"]=std::hash<VkBuffer>{}(static_cast<VkBuffer>(b->Handle()));
+        out["native_offset"]=b->Offset(r.address);
         out["gpu_words"]=std::move(words);
     }
     return out;
@@ -3229,16 +3233,20 @@ static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,cons
             const auto& b=bindings.buffer_sources[res.descriptor_index];
             if(DemonsPrelightPolicy::Overlaps(b.address,b.size,r.address,r.bytes))match=true;
         }
-        if(match||(learned&&r.confirmed))cap.targets.push_back(r);
+        // Only XYZ, not packed auxiliary words. Unconfirmed session seeds
+        // cannot consume the repeated capture budget.
+        if(r.confirmed&&r.bytes==31488&&(match||(learned&&prog.info.bda_writes)))cap.targets.push_back(r);
     }
     if(cap.targets.empty())return cap;
     static std::mutex capture_mutex;
-    static std::vector<std::pair<uint64_t,int>> taken;
+    static uint64_t taken=0;
     {
         std::scoped_lock lock(capture_mutex);
-        const std::pair key{prog.shader_hash,phase};
-        if(std::ranges::find(taken,key)!=taken.end()||taken.size()>=24){cap.targets.clear();return cap;}
-        taken.push_back(key);
+        if(taken>=512){
+            VertexRecord({{"kind","dispatch_capture_skipped"},{"reason","capture_budget"},{"frame",frame},{"submit",submit},{"shader",prog.shader_hash}});
+            cap.targets.clear();return cap;
+        }
+        ++taken;
     }
     const auto& snap=*bindings.runtime->resources;
     cap.report={{"frame",frame},{"submit",submit},{"phase",phase},{"shader",prog.shader_hash},
@@ -3270,6 +3278,36 @@ static void EndDsVertexProducer(RenderContext& context,DsVertexProducerCapture&&
     if(cap.report.is_null())return;
     for(auto r:cap.targets)cap.report["target_after"].push_back(DsVertexRangeWords(context,r));
     cap.report["tick_after"]=context.GetCommandScheduler().CurrentTick();
+    // Preserve every transition, but only the first unchanged dispatch per
+    // shader/target. Emit compact before/after observations for all captures.
+    static std::mutex retained_mutex;
+    static std::vector<std::pair<uint64_t,uint64_t>> retained;
+    bool keep=false,edge=false;
+    {
+        std::scoped_lock lock(retained_mutex);
+        const uint64_t shader=cap.report["shader"].get<uint64_t>();
+        for(size_t i=0;i<cap.targets.size();++i){
+            const auto& a=cap.report["target_before"][i];
+            const auto& b=cap.report["target_after"][i];
+            const auto expected=cap.targets[i].bytes/4;
+            const auto before=a.value("captured_words",0ull);
+            const auto after=b.value("captured_words",0ull);
+            if(before==expected&&after==expected&&
+                a.value("nan_words",0ull)!=b.value("nan_words",0ull))edge=true;
+            const std::pair key{shader,cap.targets[i].address};
+            if(retained.size()<24&&std::ranges::find(retained,key)==retained.end()){
+                retained.push_back(key);keep=true;
+            }
+        }
+    }
+    nlohmann::json summary=cap.report;
+    summary.erase("bindings");summary.erase("srt");summary.erase("user_data");
+    for(auto key:{"target_before","target_after"})for(auto& e:summary[key])e.erase("gpu_words");
+    summary["kind"]="dispatch_xyz";summary["nan_count_changed"]=edge;
+    summary["retained_full"]=keep||edge;
+    DemonsPrelightTrace::VertexRecord(std::move(summary));
+    if(!keep&&!edge)return;
+    cap.report["nan_count_changed"]=edge;
     const auto file=fmt::format("ds_vertex_producer_{}_f{}_s{}_t{}.json",
         cap.report["shader_hex"].get<std::string>(),cap.report["frame"].get<int32_t>(),
         cap.report["submit"].get<uint64_t>(),cap.report["tick_before"].get<uint64_t>());

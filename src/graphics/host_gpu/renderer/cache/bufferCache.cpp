@@ -515,6 +515,9 @@ void BufferCache::NoteProbeRayTransfer(uint64_t address,uint64_t size,const char
     if(!enabled||!size)return;
     address=Kernel::AddressFold::Fold(address);
     if(!GuestRange{address,size}.Valid())return;
+    if(DemonsPrelightTrace::VertexMatches(address,size))
+        DemonsPrelightTrace::VertexRecord({{"kind","transfer_candidate"},{"path",path},{"tick",m_scheduler.CurrentTick()},
+            {"address",address},{"bytes",size},{"source",source},{"shader",shader}});
     m_probe_ray_transfers[m_next_probe_ray_transfer]={path,m_scheduler.CurrentTick(),source,shader,address,address+size};
     m_next_probe_ray_transfer=(m_next_probe_ray_transfer+1)%m_probe_ray_transfers.size();
 }

@@ -93,6 +93,62 @@ inline bool VertexShader(uint64_t shader){
 inline bool IsNanWord(uint32_t w){return (w&0x7f800000u)==0x7f800000u&&(w&0x007fffffu)!=0;}
 std::vector<uint32_t> ReadNativeWords(RenderContext&,vk::Buffer,uint64_t,uint32_t);
 inline std::filesystem::path Folder(){return Config::GetShaderDumpFolder()/"queue-state";}
+// Independent bounded timeline: root draw census must not evict the XYZ edge.
+inline void VertexRecord(nlohmann::json event) {
+    if(!Enabled())return;
+    static std::mutex mutex;
+    static uint64_t seq=0,bytes=0,dropped=0;
+    static std::ofstream out;
+    std::scoped_lock lock(mutex);
+    event["vertex_seq"]=++seq;
+    const auto line=event.dump();
+    constexpr uint64_t budget=8u*1024u*1024u;
+    if(!out.is_open()&&seq==1){
+        std::error_code ec;std::filesystem::create_directories(Folder(),ec);
+        out.open(Folder()/"ds_vertex_producer_timeline.jsonl",std::ios::trunc);
+    }
+    if(!out||bytes+line.size()+1>budget)++dropped;
+    else {out<<line<<'\n';out.flush();if(out)bytes+=line.size()+1;else ++dropped;}
+    if(seq==1||seq%64==0||dropped){
+        std::ofstream status(Folder()/"ds_vertex_producer_timeline_status.json",std::ios::trunc);
+        if(status)status<<nlohmann::json{{"events",seq},{"bytes",bytes},{"dropped",dropped},{"scope","candidate writer and exact consumer ranges"}};
+    }
+}
+inline bool VertexConsumerFrame(uint64_t address,int32_t frame){
+    static std::mutex mutex;
+    static std::vector<std::pair<uint64_t,int32_t>> seen;
+    std::scoped_lock lock(mutex);
+    for(auto& e:seen)if(e.first==address){if(e.second==frame)return false;e.second=frame;return true;}
+    seen.emplace_back(address,frame);return true;
+}
+inline uint64_t VertexWordDigest(const std::vector<uint32_t>& words){
+    uint64_t hash=14695981039346656037ull;
+    for(uint32_t w:words){hash^=w;hash*=1099511628211ull;}
+    return hash;
+}
+inline int VertexNanClass(size_t n,size_t total){
+    if(!total)return -1;
+    return n==0?0:(n==total?2:1);
+}
+inline void RecordVertexConsumer(nlohmann::json row){
+    static std::mutex mutex;
+    static std::vector<std::pair<uint64_t,int>> seen;
+    std::scoped_lock lock(mutex);
+    bool edge=false;
+    for(auto& e:row["sources"]){
+        if(e.value("slot",0u)!=2u||!e.contains("gpu_words"))continue;
+        const auto& w=e["gpu_words"];const auto expected=e.value("bytes",0ull)/4;
+        const auto klass=VertexNanClass(e.value("nan_words",0ull),w.size());
+        if(w.size()!=expected||!expected)continue;
+        const uint64_t address=e.value("address",0ull);
+        auto it=std::ranges::find_if(seen,[&](const auto& v){return v.first==address;});
+        if(it==seen.end()){seen.emplace_back(address,klass);edge=true;}
+        else if(it->second!=klass){it->second=klass;edge=true;}
+    }
+    row["nan_class_edge"]=edge;
+    if(!edge)for(auto& e:row["sources"])e.erase("gpu_words");
+    VertexRecord(std::move(row));
+}
 inline void StatusLocked(const Journal& j) {
     std::ofstream out(Folder()/"ds_prelight_status.json",std::ios::trunc);
     if(out)out<<nlohmann::json{{"schema",3},{"node","N32/L09 vertex producer"},{"last_seq",j.seq},
@@ -139,13 +195,17 @@ inline void Cache(uint64_t tick,const Image& image,const char* operation,
         {"image",Identity(image)},{"source",source},{"detail",detail}});
 }
 inline void Range(uint64_t tick,const char* operation,uint64_t address,uint64_t bytes,uint64_t detail=0){
-    if(!Enabled()||!Matches(address,bytes))return;
+    if(!Enabled())return;
+    if(VertexMatches(address,bytes))VertexRecord({{"kind","range"},{"operation",operation},{"tick",tick},{"address",address},{"bytes",bytes},{"detail",detail}});
+    if(!Matches(address,bytes))return;
     Record({{"kind","range"},{"operation",operation},{"tick",tick},
         {"address",address},{"bytes",bytes},{"detail",detail}});
 }
 inline void BufferWriter(uint64_t tick,const char* op,uint64_t address,uint64_t bytes,
         uint64_t operand,const char* route,bool overflow=false){
-    if(!Enabled()||(!Matches(address,bytes)&&!VertexMatches(address,bytes)))return;
+    if(!Enabled())return;
+    if(VertexMatches(address,bytes))VertexRecord({{"kind","buffer_writer"},{"operation",op},{"tick",tick},{"address",address},{"bytes",bytes},{"operand",operand},{"route",route},{"overflow",overflow}});
+    if(!Matches(address,bytes))return;
     Record({{"kind","buffer_writer"},{"operation",op},{"tick",tick},
         {"address",address},{"bytes",bytes},{"operand",operand},{"route",route},{"overflow",overflow}});
 }
