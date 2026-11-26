@@ -33,6 +33,8 @@ val kytyJniLibsDir: File = layout.projectDirectory.dir("src/main/jniLibs/arm64-v
 // normal builds never ship it.
 val validationLayerName = "libVkLayer_khronos_validation.so"
 val validationLayer: File? = providers.gradleProperty("kytyValidationLayer").orNull?.let { file(it) }
+val p8LayerName = "libVkLayer_gfxreconstruct.so"
+val p8Layer: File? = providers.gradleProperty("kytyP8CaptureLayer").orNull?.let { file(it) }
 
 val syncKytyNativeLibs = tasks.register("syncKytyNativeLibs") {
     description = "Copies the emulator's native libraries into src/main/jniLibs/arm64-v8a (if present)."
@@ -43,7 +45,16 @@ val syncKytyNativeLibs = tasks.register("syncKytyNativeLibs") {
     inputs.property("kytyValidationLayer", validationLayer?.path ?: "")
     validationLayer?.let { inputs.file(it).withPropertyName("kytyValidationLayerFile") }
     outputs.file(kytyJniLibsDir.resolve(validationLayerName))
+    inputs.property("kytyP8CaptureLayer", p8Layer?.path ?: "")
+    p8Layer?.let { inputs.file(it).withPropertyName("kytyP8CaptureLayerFile") }
+    outputs.file(kytyJniLibsDir.resolve(p8LayerName))
     doLast {
+        val p8Staged = kytyJniLibsDir.resolve(p8LayerName)
+        if (p8Layer == null) p8Staged.delete() else {
+            require(p8Layer.isFile) { "Missing P8 capture layer" }
+            kytyJniLibsDir.mkdirs()
+            p8Layer.copyTo(p8Staged, overwrite = true)
+        }
         val layer = validationLayer
         val stagedLayer = kytyJniLibsDir.resolve(validationLayerName)
         if (layer == null) {

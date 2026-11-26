@@ -1,5 +1,6 @@
 #include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
+#include "graphics/host_gpu/renderer/demonsP8Reference.h"
 #include "graphics/host_gpu/renderer/demonsIndirectWitness.h"
 #include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
@@ -1817,6 +1818,7 @@ static void MonitorDsCompositeLight(RenderContext& context, const PreparedBindin
 		visible += lum >= 0.006;
 	}
 	const auto level = total / count;
+    DemonsP8Capture::Observe(frame,level,visible);
 	const auto state = DemonsAdaptiveCapture::Current().Observe(
 	    frame, level, visible, selected->desc.info.data.address);
 	Log::WriteToConsoleAndLog(fmt::format(
@@ -3879,7 +3881,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				ds_scene_inputs.push_back(std::move(entry));
 			}
 		}
-		if (composite) MonitorDsCompositeLight(m_context, *bindings.pixel, frame);
+		if (composite) {
+            // Close an active trim even when the legacy sampling cadence skips this frame.
+            if(DemonsP8Capture::target.load()>=0)DemonsP8Capture::Observe(frame,1.0,64);
+            MonitorDsCompositeLight(m_context, *bindings.pixel, frame);
+        }
         if(composite&&root_trace&&DemonsPrelightTrace::P8Frame(frame)){
             p8_composite={{"kind","compositor"},{"submit",submit_id},{"shader",shader},
                 {"tick_before",m_context.GetCommandScheduler().CurrentTick()},
@@ -5734,9 +5740,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         p8_composite["outputs"]=nlohmann::json::array();
         for(uint32_t i=0;i<state.color_count;++i){
             const auto& color=state.color_info[i];
-            p8_composite["outputs"].push_back({{"slot",color.target_slot},
-                {"guest",color.desc.info.data.address},
-                {"grid",SnapshotP8ColorGrid(m_context,color.image_id,color.desc.view_info)}});
+            nlohmann::json output={{"slot",color.target_slot},{"guest",color.desc.info.data.address},
+                {"grid",SnapshotP8ColorGrid(m_context,color.image_id,color.desc.view_info)}};
+            if(DemonsP8Capture::FullFrame(root_frame)&&color.image_id){
+                auto& image=m_context.GetTextureCache().GetImage(color.image_id);
+                output["full"]=DemonsP8Reference::Snapshot(m_context,image,
+                    color.desc.view_info.base_level,color.desc.view_info.base_layer,
+                    vk::ImageAspectFlagBits::eColor,root_frame,submit_id,"compositor");
+            }
+            p8_composite["outputs"].push_back(std::move(output));
         }
         p8_composite["tick_after"]=m_context.GetCommandScheduler().CurrentTick();
         DemonsPrelightTrace::RecordP8Boundary(root_frame,std::move(p8_composite));

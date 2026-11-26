@@ -17,6 +17,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/demonsP8Capture.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/host_gpu/vulkanDebugLabel.h"
 #include "graphics/presentation/presenter.h"
@@ -1247,12 +1248,25 @@ void WindowContext::CreateVulkan() {
 	inst_info.pApplicationInfo        = &app_info;
 	inst_info.enabledExtensionCount   = static_cast<uint32_t>(r.required_extensions.size());
 	inst_info.ppEnabledExtensionNames = r.required_extensions.data();
-	inst_info.enabledLayerCount =
-	    (r.enable_validation_layers ? static_cast<uint32_t>(r.required_layers.size()) : 0);
-	inst_info.ppEnabledLayerNames =
-	    (r.enable_validation_layers ? r.required_layers.data() : nullptr);
+    std::vector<const char*> active_layers;
+    if(r.enable_validation_layers)active_layers=r.required_layers;
+    const bool p8_layer=DemonsP8Capture::Configure(
+        HasLayer(r.available_layers,DemonsP8Capture::Layer),
+        HasExtension(r.required_extensions,VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
+    if(p8_layer)active_layers.push_back(DemonsP8Capture::Layer);
+    inst_info.enabledLayerCount=static_cast<uint32_t>(active_layers.size());
+    inst_info.ppEnabledLayerNames=active_layers.empty()?nullptr:active_layers.data();
 
 	vk::Result result = vk::createInstance(&inst_info, nullptr, &graphic_ctx.instance);
+	if (result != vk::Result::eSuccess && p8_layer) {
+        DemonsP8Capture::available.store(false);
+        DemonsP8Capture::Status("layer_instance_creation_failed");
+        // Keep the original driver rather than silently changing the experimental backend.
+        active_layers.pop_back();
+        inst_info.enabledLayerCount=static_cast<uint32_t>(active_layers.size());
+        inst_info.ppEnabledLayerNames=active_layers.empty()?nullptr:active_layers.data();
+        result=vk::createInstance(&inst_info,nullptr,&graphic_ctx.instance);
+    }
 	if (result != vk::Result::eSuccess) {
 		// A custom driver (--gpu-driver) that loads but cannot create an instance falls back to the
 		// system driver once, with the same instance parameters.

@@ -98,7 +98,6 @@ jobs:
           validate-wrappers: false
 
       - name: Android NDK
-        if: steps.native.outputs.reused != 'true'
         run: |
           # sdkmanager occasionally downloads an incomplete ZIP from Google's CDN.
           # Retry the package installation rather than failing an otherwise valid native build.
@@ -190,6 +189,20 @@ jobs:
           ls -la $ST $ST/3rdparty/SDL3 $ST/3rdparty/libadrenotools/src/hook
           python3 android/ci/native_cache.py seal
 
+      - name: Restore P8 replay capture layer
+        id: p8_layer_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/p8-layer
+          key: kyty-p8-gfxrecon-arm64-4401228-${{ env.NDK_VERSION }}-${{ hashFiles('scripts/android/build-p8-gfxreconstruct.sh') }}
+
+      - name: Build pinned P8 replay capture layer
+        if: steps.p8_layer_cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build
+          bash scripts/android/build-p8-gfxreconstruct.sh "$ANDROID_NDK" "$RUNNER_TEMP/p8-layer"
+
       - name: Version
         id: version
         run: |
@@ -263,6 +276,7 @@ jobs:
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
           ./gradlew --no-daemon testDebugUnitTest assembleRelease \
             -PkytyNativeDir="$RUNNER_TEMP/native" \
+            -PkytyP8CaptureLayer="$RUNNER_TEMP/p8-layer/libVkLayer_gfxreconstruct.so" \
             -PkytyVersionCode=${{ steps.version.outputs.code }} \
             -PkytyVersionName=${{ steps.version.outputs.name }}
           out=app/build/outputs/apk/release
@@ -273,6 +287,9 @@ jobs:
       - name: Audit packaged native dependencies
         run: |
           python3 scripts/android/audit-apk.py KytyPS5-Plus-*.apk
+          unzip -l KytyPS5-Plus-*.apk | grep lib/arm64-v8a/libVkLayer_gfxreconstruct.so
+          "$ANDROID_SDK_ROOT/build-tools/$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -1)/apksigner" verify --print-certs KytyPS5-Plus-*.apk
+          sha256sum KytyPS5-Plus-*.apk
           python3 android/ci/check_guest_pointer_abi.py KytyPS5-Plus-*.apk
 
       - name: Save audited native core for matching future builds

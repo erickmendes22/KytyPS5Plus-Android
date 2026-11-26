@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/pipeline/demonsCountArithmeticProbe.h"
 #include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
+#include "graphics/host_gpu/renderer/demonsP8Reference.h"
 #include "graphics/host_gpu/renderer/demonsIndirectWitness.h"
 #include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include "graphics/shader/demonsPcRenderParity.h"
@@ -4756,6 +4757,7 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	});
 	const auto hdr = find_image(HdrAddress, TextureCache::BindingType::Storage);
 	if (albedo == bindings.images.end() || hdr == bindings.images.end()) {
+        if(before&&DemonsP8Capture::FullFrame(frame))DemonsP8Reference::WriteEvent({{"kind","missing_consumer"},{"frame",frame},{"submit",submit},{"queue",queue},{"shader",shader}});
         if(root)DemonsPrelightTrace::Record({{"kind","light_bridge_missing_binding"},{"frame",frame},{"submit",submit},
             {"queue",queue},{"before",before},{"albedo_bound",albedo!=bindings.images.end()},{"hdr_bound",hdr!=bindings.images.end()}});
 		if (is_post_transition) {
@@ -4934,6 +4936,32 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 			}
 		}
 	}
+    if(DemonsP8Capture::FullFrame(frame)){
+        if(before){
+            nlohmann::json group={{"kind","consumer"},{"frame",frame},{"submit",submit},
+                {"queue",queue},{"shader",shader},{"snapshots",nlohmann::json::array()}};
+            if(albedo_view!=albedo_image.views.end()){
+                for(uint32_t layer=0;layer<4;++layer)
+                    group["snapshots"].push_back(DemonsP8Reference::Snapshot(context,albedo_image,
+                        albedo_view->info.base_level,albedo_view->info.base_layer+layer,
+                        vk::ImageAspectFlagBits::eColor,frame,submit,"gbuffer",queue));
+            }
+            if(depth_binding!=bindings.images.end()){
+                auto& image=textures.GetImage(depth_binding->image_id);
+                const auto view=std::ranges::find(image.views,depth_binding->image_view,&CachedImageView::view);
+                if(view!=image.views.end())
+                    group["snapshots"].push_back(DemonsP8Reference::Snapshot(context,image,
+                        view->info.base_level,view->info.base_layer,vk::ImageAspectFlagBits::eDepth,
+                        frame,submit,"depth",queue));
+            }
+            DemonsP8Reference::WriteEvent(group);
+        }else{
+            const auto view=std::ranges::find(hdr_image.views,hdr->image_view,&CachedImageView::view);
+            if(view!=hdr_image.views.end())
+                DemonsP8Reference::Snapshot(context,hdr_image,view->info.base_level,view->info.base_layer,
+                    vk::ImageAspectFlagBits::eColor,frame,submit,"hdr",queue);
+        }
+    }
     if(before){
         previous={};
         if(gbytes.size()!=256u||hbytes.size()!=512u)return;

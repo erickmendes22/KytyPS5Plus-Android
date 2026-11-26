@@ -124,6 +124,7 @@ object Diagnostics {
             count += CrashDiagnostics.export(context, zip)
             count += exportGtTessellationCapture(context, zip)
             count += exportDsLightingCapture(context, zip)
+            count += exportP8Reference(context, zip)
 
             if (files.isEmpty()) {
                 zip.putNextEntry(ZipEntry("HOW_TO_COLLECT.txt"))
@@ -139,6 +140,53 @@ object Diagnostics {
         return "Exported $count diagnostic file(s)"
     }
 
+
+    // The full GPU stream and raw images must not be silently truncated by
+    // the older 128 MiB optional-queue budget. Export current-launch files
+    // intact or explicitly reject an oversized capture.
+    private fun exportP8Reference(context: Context, zip: ZipOutputStream): Int {
+        val dir = File(context.filesDir, "ds-lighting-dumps/p8-reference")
+        val launchTime = File(context.filesDir, "logs/last-launch.txt").lastModified()
+        val files = dir.listFiles().orEmpty().filter {
+            it.isFile && it.lastModified() >= launchTime &&
+                (it.extension == "gfxr" || it.extension == "bin" || it.extension == "json" || it.extension == "jsonl")
+        }.sortedBy { it.name }
+        if (files.isEmpty()) return 0
+        val maxBytes = 1536L * 1024 * 1024
+        val total = files.sumOf { it.length() }
+        val manifest = org.json.JSONObject().put("schema",1).put("total",total)
+        val list = org.json.JSONArray()
+        var count = 0
+        val allowed = total <= maxBytes
+        for (file in files) {
+            val length = file.length()
+            val entry = org.json.JSONObject().put("file",file.name).put("bytes",length)
+            if (!allowed) entry.put("status","budget_exceeded")
+            else {
+                zip.putNextEntry(ZipEntry("p8-reference/"+file.name))
+                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                var copied = 0L
+                file.inputStream().use { input ->
+                    val buffer = ByteArray(1024*1024)
+                    while (copied < length) {
+                        val read = input.read(buffer,0,minOf(buffer.size.toLong(),length-copied).toInt())
+                        if (read < 0) break
+                        zip.write(buffer,0,read); digest.update(buffer,0,read); copied += read
+                    }
+                }
+                zip.closeEntry()
+                entry.put("copied",copied).put("sha256",digest.digest().joinToString("") { "%02x".format(it) })
+                entry.put("status",if (copied == length && file.length() == length) "complete" else "changed_during_export")
+                count++
+            }
+            list.put(entry)
+        }
+        manifest.put("files",list)
+        zip.putNextEntry(ZipEntry("p8-reference/export-manifest.json"))
+        zip.write(manifest.toString().toByteArray())
+        zip.closeEntry()
+        return count+1
+    }
 
     /**
      * Prefer the graphics pipeline that returned an error. Fall back to the last

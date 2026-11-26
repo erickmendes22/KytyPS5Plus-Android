@@ -1,5 +1,6 @@
 #pragma once
 #include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
+#include "graphics/host_gpu/renderer/demonsP8Capture.h"
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "graphics/host_gpu/renderer/demonsPrelightPolicy.h"
 #include "graphics/host_gpu/renderer/image/image.h"
@@ -116,8 +117,9 @@ std::vector<uint32_t> ReadNativeWords(RenderContext&,vk::Buffer,uint64_t,uint32_
 inline std::filesystem::path Folder(){return Config::GetShaderDumpFolder()/"queue-state";}
 // P8 evidence must not expire when the older layer-0 witness is sealed.
 // These are candidate windows, not an independent correctness oracle.
-inline constexpr bool P8Frame(int32_t frame) {
-    return frame >= 0 && frame % 24 == 1;
+inline bool P8Frame(int32_t frame) {
+    return DemonsP8Capture::FullFrame(frame) || DemonsP8Capture::FlipFrame(frame) ||
+        (frame >= 0 && frame % 24 == 1);
 }
 inline void RecordP8Boundary(int32_t frame, nlohmann::json event) {
     if (!Enabled() || !P8Frame(frame)) return;
