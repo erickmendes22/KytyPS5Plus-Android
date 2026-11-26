@@ -55,3 +55,37 @@ alteração artificial de luz, depth ou contagens. Cada divergência precisa
 de prova causal e teste de regressão antes de virar correção de produção.
 Build de isolamento, build de correção fundamentada, consolidação se
 necessária. Entregar cada APK conforme regra de continuidade acima.
+
+
+## Investigação causal sequencial (obrigatória, precede a escolha de sondas)
+
+Não usar uma sucessão de hipóteses independentes nem uma build por suspeita.
+Manter um caso-testemunha com identidade (frame/submit, endereço e conteúdo
+de índices, draw, shaders, instância, versões dos recursos, câmera/constantes)
+e uma saída observada. Selecionar caso que contribua para o sintoma, mais um
+controle positivo da mesma etapa; ausência de cobertura não prova que o
+objeto deveria estar visível. Não mudar o caso por mera correlação.
+
+Partir da primeira perda observável no albedo, rastrear o mesmo draw para
+trás: material -> prepass/depth e rasterização -> posição/clip de cada
+vértice -> cálculo do VS -> loads efetivos, endereços e dados -> produtor
+real desses bytes -> comando/asset guest. Para cada aresta, registrar
+entrada esperada/observada, operação guest e Android/PC, saída esperada/
+observada, versão e identidade do produtor/consumidor. Se a saída é
+compatível com a entrada, seguir imediatamente para a origem dessa entrada;
+se diverge, reduzir a primeira instrução/transferência divergente, corrigir
+e testar regressão. Se faltar evidência, registrar exatamente qual aresta
+está bloqueada e adquirir em uma única captura os operandos necessários
+dela e das próximas arestas possíveis. Não reabrir etapas já certificadas.
+Comparar bytes/SSA/valores reais; não usar apenas contagens agregadas, hashes
+de shader, frames com câmeras diferentes, ou PC sem a mesma entrada como
+oráculo. Não tratar zero de cobertura como defeito por si só.
+
+Antes de disparar nova build, esgotar o replay offline dos ZIPs e listar o
+resultado de cada aresta (validada, divergente, bloqueada). Uma nova build
+diagnóstica deve fechar a próxima aresta do caso fixo, com captura do
+produtor e consumidor, orçamento e validação do exportador, e não apenas
+adicionar medidores. Não disparar builds paralelas para testar suspeitas.
+Quando houver divergência comprovada, parar a expansão diagnóstica e
+implementar a correção fundamentada com teste de regressão. As regras
+de entrega de APK permanecem em vigor.
