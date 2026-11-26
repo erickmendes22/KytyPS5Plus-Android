@@ -236,3 +236,28 @@ Pair 7: f477 s14546 VS 34c51585c926a664 -> f477 s14548 VS f825a988127faeb4, same
 
 ## Build #721 — causal albedo chain
 Revision 121bc4a3b4ab96a76728c79e09bf079096d17087, run 45735376620, artifact 15078906403. Fast required tests, ARM64 build, APK unit tests, compatible signing-certificate check and packaged native dependency audit passed. Optional full native regressions skipped. Downloaded ZIP SHA-256 e3c6f4bb57cf9f8aa6188e8b20ed92da41245385e3d4bef4069122b609eca8b0 matches GitHub. Extracted APK SHA-256 d4e0a3b0a744a98a657899921d634d70b864cfc4166d73b10d1b74fa9c27cc16; embedded full revision verified in libmain.so; independently verified v2 RSA signature and signed content digest. APK is diagnostic only, no gameplay correction proven. Mode F capture capped at 96 layer-zero attachment draws per phase over adjacent host frames; readbacks may perturb timing. Gaps between draws are evidence to investigate, not a complete census of other image operations.
+
+
+## Build #721 — F, ZIP 20261125-223802
+141 valid layer0 draw comparisons, no capture capacity reached. Phase0
+f190-191 4 draws, 1440000 colored before and after each; phase1 f286-287
+41 draws, zero colored before/after, zero changed words, all 41 original
+occlusion queries zero; phase2 f334-335 73 draws, 345 gains and 3 losses;
+phase3 f477 23 draws, 568 gains and 472 losses. Within each phase consecutive
+color counts match. All 475 lost pixels attributed to 552d823d, too late
+and too few to explain onset. At f286 s8287 and f287 s8312 all 41 original
+scene-depth draws with depth write enabled preceding the material pass
+have zero passed samples (20 + 21). First prepass consumes a pending HTile
+load clear to 0, then fails to populate depth; zero at all 64 material grid
+points. f286 PS 3dce2bd7 raster/no discard 13, keep discard 0, no cull 30;
+895c9fe0 302/0/694. Both selected small meshes lose fragments, but neither
+proves an incorrect discard. Dominant VS 868546d85ce5090a, PS
+6254880342eb8db4 and 31e660625354d953 have never had this replay; these
+carry most of the direct indices. Next F revision extends existing validated
+no-attachment-write replay to the five additional measured scene-depth PS,
+one attempt per shader/phase. Record raw SRT, V#/T#/S# descriptors, VS/PS,
+submit/tick and explicit unavailable vs measured. Prioritize exact guest
+and native shader modules in export. Compare raster, discard survival and
+original depth/stencil query for same draw. Keep shader side-effect,
+alpha-to-mask, depth-export and other existing safety gates. Do not force
+production depth or change discard; no demonstrated semantic mismatch yet.

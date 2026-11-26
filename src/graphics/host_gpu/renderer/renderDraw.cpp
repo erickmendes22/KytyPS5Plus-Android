@@ -3696,7 +3696,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		int32_t phase = -1;
 		std::array<bool,4> completed {};
 		bool capacity_reached = false;
-		std::array<bool,2> replay_seen {};
+		std::array<bool,DemonsDominantGeometry::DepthProbeShaders.size()> replay_seen {};
 		nlohmann::json rows = nlohmann::json::array();
 	};
 	static DsGeometryFrame geometry;
@@ -3815,7 +3815,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			geometry.rows[geometry_query]["guest_cull_back"] = bool(capture_face.cull_back);
 			geometry.rows[geometry_query]["guest_face"] = uint32_t(capture_face.face);
 			// Isolate geometry/rasterization from fragment discard and
-			// depth/stencil for only the two measured zero-coverage PS.
+			// depth/stencil for the measured zero-coverage scene-depth PS.
 			const auto& depth = state.depth_info;
 			const auto& pixel = state.ps_input_info;
 			if (ps && DemonsDominantGeometry::ProbeDepthPs(ps->shader_hash) &&
@@ -3826,8 +3826,28 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    !pixel.ps_depth_export_enable && !pixel.ps_sample_mask_export_enable &&
 			    !hw.GetShaderRegisters().AlphaToMask() &&
 			    geometry.rows.size()+3 <= geometry_capacity) {
-				const uint32_t k = ps->shader_hash == 0x3dce2bd78d58db62ull ? 0u : 1u;
+				const auto k = DemonsDominantGeometry::DepthProbeSlot(ps->shader_hash);
 				if (!geometry.replay_seen[k]) {
+                    auto& original=geometry.rows[geometry_query];
+                    original["probe_slot"]=k;
+                    original["replay_status"]="unavailable";
+                    geometry.replay_seen[k]=true;
+                    original["tick"]=m_context.GetCommandScheduler().CurrentTick();
+                    auto encode=[](const auto& stage){
+                        nlohmann::json data=nlohmann::json::object();
+                        if(!stage.resources)return data;
+                        const auto& snap=*stage.resources;
+                        data["srt"]=snap.flattened_srt;data["user_data"]=snap.user_data;
+                        data["buffers"]=nlohmann::json::array();
+                        for(const auto& v:snap.buffers)data["buffers"].push_back(v.dwords);
+                        data["images"]=nlohmann::json::array();
+                        for(const auto& v:snap.images)data["images"].push_back(v.dwords);
+                        data["samplers"]=nlohmann::json::array();
+                        for(const auto& v:snap.samplers)data["samplers"].push_back(v.dwords);
+                        return data;
+                    };
+                    original["vertex_inputs"]=encode(state.vertex_info[0].stage);
+                    original["pixel_inputs"]=encode(state.ps_input_info.stage);
 					auto replay_programs = state.programs;
 					for (size_t i=0; i<geometry_replay.size(); ++i) {
 						const auto& replay = state.programs.pixel.material_coverage[i == 2 ? 0 : i];
@@ -3841,6 +3861,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					}
 					if (geometry_replay[0] && geometry_replay[1] && geometry_replay[2]) {
 						geometry.replay_seen[k] = true;
+                        geometry.rows[geometry_query]["replay_status"]="measured";
 						geometry_replay_first = static_cast<uint32_t>(geometry.rows.size());
 						for (const auto* kind: {"raster_no_discard","survive_discard","raster_no_discard_no_cull"}) {
 							auto row = geometry.rows[geometry_query];

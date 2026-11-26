@@ -354,10 +354,11 @@ object Diagnostics {
                         files.filter { it.name.contains("_bcbcc6ba1e68c974_") } else emptyList()
                     val sceneModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { f -> listOf("34c51585c926a664", "a7208481a1f2b760", "f825a988127faeb4", "74b55dea9562eda1").any { f.name.contains("_${it}_") } } else emptyList()
+                    val depthProbeModules = files.filter { f -> listOf("6254880342eb8db4","31e660625354d953","3cc41a5737b15e7f","9da9c10e59d6e38e","e1638ea46c70bc9c","868546d85ce5090a","0a472b34f593b99b").any { f.name.contains("_${it}_") } }
                     val firstLightModules = files.filter { f -> listOf("f0c482b0b355e9de","3dfe402653925fbf","e3daeb1e7426761b").any { f.name.contains("_${it}_") } }
                     val causalModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { it.name.contains("_fb18d110fab8234e_") || it.name.contains("_cb3b9c1ea64fe876_") } else emptyList()
-                    (firstLightModules + causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
+                    (depthProbeModules + firstLightModules + causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
                         "guest-shaders" -> 96
                         "spv" -> 48
                         else -> 24

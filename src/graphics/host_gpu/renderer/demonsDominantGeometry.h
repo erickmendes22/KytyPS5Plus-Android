@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstddef>
 #include <array>
 
 namespace Libs::Graphics::DemonsDominantGeometry {
@@ -34,16 +35,32 @@ constexpr bool CountInputOverlap(uint64_t address, uint64_t bytes) {
 }
 static_assert(CountSourceIndex(2,0)==44 && CountDestIndex(2,0)==337);
 static_assert(CountSourceIndex(63,20)<CountInputWords);
-constexpr bool ProbeDepthPs(uint64_t hash) {
-    return hash == 0x3dce2bd78d58db62ull || hash == 0x895c9fe037e704f5ull;
+// First actual scene-depth writers in #721, before all 41 zero-coverage
+// material draws. Retain the two earlier small-mesh controls.
+constexpr std::array<uint64_t,7> DepthProbeShaders{
+    0x3dce2bd78d58db62ull,0x895c9fe037e704f5ull,
+    0x6254880342eb8db4ull,0x31e660625354d953ull,
+    0x3cc41a5737b15e7full,0x9da9c10e59d6e38eull,0xe1638ea46c70bc9cull
+};
+constexpr std::size_t DepthProbeSlot(uint64_t hash) {
+    for(std::size_t i=0;i<DepthProbeShaders.size();++i)
+        if(DepthProbeShaders[i]==hash)return i;
+    return DepthProbeShaders.size();
 }
+constexpr bool ProbeDepthPs(uint64_t hash) {
+    return DepthProbeSlot(hash)<DepthProbeShaders.size();
+}
+static_assert(DepthProbeSlot(0x6254880342eb8db4ull)==2);
+static_assert(DepthProbeSlot(0x31e660625354d953ull)==3);
+static_assert(!ProbeDepthPs(0x651f53f5932d8794ull));
 constexpr bool WatchedIndirectVs(uint64_t hash) {
     return hash == 0x7b3be1892b062c73ull || hash == 0x6a9c615b413ad6bfull ||
            hash == 0xa9ef1305dc9f9047ull || hash == 0x04a68bcda1467ed2ull ||
            hash == 0x1b14b4883aece7ebull;
 }
 constexpr bool Watched(uint64_t hash) {
-    return hash == OccluderVs || hash == DepthPs || hash == DominantDepthVs ||
+    return ProbeDepthPs(hash) || hash == 0x868546d85ce5090aull || hash == 0x0a472b34f593b99bull ||
+           hash == OccluderVs || hash == DepthPs || hash == DominantDepthVs ||
            hash == MaterialVs || hash == MaterialPs ||
            // Actual zero-coverage depth/material geometry from the 213553 capture.
            hash == 0x34c51585c926a664ull || hash == 0xa7208481a1f2b760ull ||
