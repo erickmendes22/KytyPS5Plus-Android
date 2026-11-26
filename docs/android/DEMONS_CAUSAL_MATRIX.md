@@ -477,3 +477,17 @@ draw identities, not another mesh when capture is inconvenient.
    experiments absent an observed edge divergence.
 No new production fix established. #726 already underway; evaluate it
 against this chain, do not call a nonmatching capture progress.
+
+## Árvore binária pré-iluminação — etapa 1
+Por solicitação do usuário, a investigação agora usa a árvore canônica
+[DEMONS_PRELIGHT_BINARY_TREE.md](DEMONS_PRELIGHT_BINARY_TREE.md): 17 nós
+binários, 18 folhas, poda P01–P06 limitada aos casos já certificados.
+Releitura dos ZIPs #721–725: #721 f286–287, 41 material e 42 registros
+de depth-only no attachment, todos zero amostras aprovadas; #725 fase1
+1154->1252, 42 draws (329 ganhos, 231 perdas), início já esparso.
+N00 (albedo esperado chegou a existir antes da perda?) está bloqueado
+na transição não observada. Priorizar delimitação do primeiro ponto de
+perda/ausência e separar produção de retenção/publicação; não inferir
+visibilidade de W0. Não há folha causal comprovada. #726 foi disparada
+antes da nova árvore; somente usar dados que fecharem um nó. Nenhuma
+nova build solicitada/disparada pela construção da árvore.

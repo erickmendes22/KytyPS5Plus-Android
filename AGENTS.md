@@ -89,3 +89,15 @@ adicionar medidores. Não disparar builds paralelas para testar suspeitas.
 Quando houver divergência comprovada, parar a expansão diagnóstica e
 implementar a correção fundamentada com teste de regressão. As regras
 de entrega de APK permanecem em vigor.
+
+## Árvore binária pré-iluminação (obrigatória)
+Usar docs/android/DEMONS_PRELIGHT_BINARY_TREE.md como árvore operacional
+canônica antes de escolher nova investigação de Demon's Souls. Resolver
+N00 pela primeira divergência de albedo em um ciclo identificável; marcar
+cada nó S/N com prova de mesma entrada/saída ou BLOQUEADO. Não avançar
+por suposição, não retestar os nós podados P01–P06 sem nova evidência
+incompatível, não criar builds por suspeita. Se há mais de uma testemunha
+com divergência, manter ambas as trajetórias e ordenar os produtores.
+Atualizar a árvore com resultados de cada execução e só implementar fix
+na primeira operação divergente demonstrada. Construir a árvore, quando
+isso for a etapa explicitamente solicitada, não exige nova compilação.
