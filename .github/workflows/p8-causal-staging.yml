@@ -12,7 +12,7 @@ permissions:
 jobs:
   splice:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Verify causal experiment decision and negative controls
@@ -38,3 +38,13 @@ jobs:
           git -C /tmp/gfxr checkout --detach FETCH_HEAD
           python3 docs/android/tools/p8_patch_gfxr.py /tmp/gfxr
           git -C /tmp/gfxr diff --check
+
+      - name: Compile patched replay consumer against pinned upstream headers
+        run: |
+          sudo apt-get install -y libx11-xcb-dev libxcb-keysyms1-dev libwayland-dev libxrandr-dev zlib1g-dev liblz4-dev libzstd-dev libxcb-glx0-dev ninja-build
+          git -C /tmp/gfxr submodule update --init --recursive --depth=1
+          cmake -S /tmp/gfxr -B /tmp/gfxr-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGFXRECON_ENABLE_OPENXR=OFF -DGFXRECON_TOCPP_SUPPORT=OFF -DBUILD_TESTING=OFF
+          ninja -C /tmp/gfxr-build -t targets all > /tmp/gfxr-targets
+          target=$(grep 'generated_vulkan_replay_consumer.cpp.o:' /tmp/gfxr-targets | head -1 | cut -d: -f1)
+          test -n "$target"
+          ninja -C /tmp/gfxr-build -j2 "$target"

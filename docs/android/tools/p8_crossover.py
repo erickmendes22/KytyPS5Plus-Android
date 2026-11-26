@@ -130,24 +130,25 @@ def write_plan(out, mapping, payloads):
 
 def run_one(replayer, trace, plan, mapping, work, substitutions, extra):
     work.mkdir()
-    out=work/"rd.json"; dump=work/"images";dump.mkdir()
+    dump=work/"images";dump.mkdir()
+    out=dump/(trace.stem+"_rd.json")
     env=os.environ.copy()
     env.pop("KYTYP8_SPLICE_PLAN",None);env.pop("KYTYP8_SPLICE_AUDIT",None)
     if substitutions:
         audit=work/"splice.log";sp=work/"splice.txt"
         wanted=write_plan(sp,mapping,substitutions)
         env.update(KYTYP8_SPLICE_PLAN=str(sp),KYTYP8_SPLICE_AUDIT=str(audit))
-    # The exact GFXR invocation is supplied once; all three runs share it.
-    # Literal placeholders avoid accepting shell code or constructing shell commands.
-    argv=[str(replayer)]+[a.replace("@PLAN@",str(plan)).replace("@DUMP@",str(dump))
-                          .replace("@META@",str(out)).replace("@TRACE@",str(trace)) for a in extra]
-    require(all(any(k in a for a in extra) for k in ("@PLAN@","@DUMP@","@META@","@TRACE@")),
-            "replay arguments lack required placeholders")
+    # GFXR names its metadata after the input capture. Use its documented
+    # options directly; do not require a nonexistent metadata CLI flag.
+    require(not any(a.startswith("--dump-resources") for a in extra),"duplicate dump option")
+    argv=[str(Path(replayer).resolve()),*extra,"--dump-resources",str(plan),
+          "--dump-resources-dir",str(dump),str(trace)]
     with (work/"replay.log").open("wb") as log:
         subprocess.run(argv,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
     if substitutions:
         got=[tuple(map(int,l.split())) for l in audit.read_text().splitlines()]
         require(len(got)==len(wanted) and set(got)==wanted,"not all interventions executed exactly once")
+    require(out.is_file(),"GFXR did not emit the expected transfer metadata")
     return transfer_files(mapping,json.loads(out.read_text()),dump)
 
 def assess(mapping, cut, final, captured, reference, control, sham, crossed):
