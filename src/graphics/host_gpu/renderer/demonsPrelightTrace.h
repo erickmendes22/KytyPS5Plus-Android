@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <algorithm>
+#include <vector>
 
 namespace Libs::Graphics {
 class RenderContext;
@@ -50,16 +51,24 @@ struct Journal {
 };
 inline Journal& State(){static Journal j;return j;}
 inline constexpr size_t ChunkBytes=2u*1024u*1024u;
-inline constexpr unsigned MaxChunks=16;
+inline constexpr unsigned MaxChunks=8;
 inline thread_local uint64_t active_draw=0;
+inline thread_local uint64_t command_seq=0;
+inline thread_local bool command_prepared=false;
+inline thread_local DemonsPrelightPolicy::ProductionWindow production_window;
+inline int Phase(int32_t frame){return production_window.Phase(frame);}
+inline void ObservePopulation(int32_t frame,uint64_t colored,uint64_t area){
+    production_window.Observe(frame,colored,area);
+}
+std::vector<uint32_t> ReadNativeWords(RenderContext&,vk::Buffer,uint64_t,uint32_t);
 inline std::filesystem::path Folder(){return Config::GetShaderDumpFolder()/"queue-state";}
 inline void StatusLocked(const Journal& j) {
     std::ofstream out(Folder()/"ds_prelight_status.json",std::ios::trunc);
-    if(out)out<<nlohmann::json{{"schema",1},{"node","N00"},{"last_seq",j.seq},
+    if(out)out<<nlohmann::json{{"schema",2},{"node","N20/N30"},{"last_seq",j.seq},
         {"dropped_events",j.dropped},{"samples",j.samples},{"sample_dropped",j.sample_dropped},
         {"full_samples",j.full},{"full_dropped",j.full_dropped},{"chunks",j.chunk+(j.out.is_open()?1u:0u)},
         {"scope","observed target range; candidate cache events, not complete guest oracle"},
-        {"root_decision","blocked_until_expected_word_and_complete_same_cycle_history"}};
+        {"root_decision","production_branch_observed_after_zero_clear_expected_geometry_still_unproven"}};
 }
 inline uint64_t Record(nlohmann::json event) {
     if(!Enabled())return 0;
@@ -109,6 +118,21 @@ inline void BufferWriter(uint64_t tick,const char* op,uint64_t address,uint64_t 
     Record({{"kind","buffer_writer"},{"operation",op},{"tick",tick},
         {"address",address},{"bytes",bytes},{"operand",operand},{"route",route},{"overflow",overflow}});
 }
+// Distinguish guest draw admission from pipeline admission. Fallback is not a drop.
+struct CommandScope {
+    uint64_t old=command_seq;
+    bool old_prepared=command_prepared;
+    const char* outcome="returned_without_prepared";
+    explicit CommandScope(nlohmann::json data){
+        command_seq=data.is_null()?0:Record(std::move(data));
+        command_prepared=false;
+    }
+    ~CommandScope(){
+        if(command_seq)Record({{"kind","command_return"},{"command",command_seq},
+            {"prepared",command_prepared},{"outcome",command_prepared?"prepared":outcome}});
+        command_seq=old;command_prepared=old_prepared;
+    }
+};
 void ObserveCompute(RenderContext& context,const PreparedBindings& bindings,uint64_t submit,
                     bool after,bool indirect,uint64_t args_address=0);
 }

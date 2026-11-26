@@ -15,4 +15,10 @@ int main(){
     static_assert(Decide(true,true,true,true,true)==Root::Blocked);
     static_assert(Decide(true,true,true,true,false)==Root::Produced);
     static_assert(Decide(true,true,true,false,false)==Root::NotProduced);
+    ProductionWindow w;
+    w.Observe(5,0,1440000); assert(w.Phase(5)==-1);
+    w.Observe(6,1440000,1440000);w.Observe(7,655,1440000);assert(w.Phase(7)==1&&w.Phase(12)==1&&w.Phase(13)==-1);
+    w.Observe(7,1440000,1440000);w.Observe(8,0,1440000);assert(w.Phase(8)==1);
+    w.Observe(9,1359577,1440000);w.Observe(10,11301,1440000);assert(w.Phase(10)==2);
+    w.Observe(11,0,1440000);assert(w.Phase(15)==2&&w.Phase(16)==-1);
 }

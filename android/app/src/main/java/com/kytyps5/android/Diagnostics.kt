@@ -347,7 +347,7 @@ object Diagnostics {
                     val albedoChain = newest.filter { it.name.startsWith("ds_albedo_chain_p") }.take(4)
                     val activeDiscard = newest.filter { it.name.startsWith("ds_discard_active_") }.take(14)
                     val rootTrace = newest.filter { it.name.startsWith("ds_prelight_") }.sortedBy { if (it.name == "ds_prelight_status.json") -1 else it.name.removePrefix("ds_prelight_events_").substringBefore(".").toIntOrNull() ?: 999 }
-                    val producer = (rootTrace + positions + coverage + albedoChain + depthOwners + activeDiscard + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
+                    val producer = (coverage + positions + rootTrace + albedoChain + depthOwners + activeDiscard + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
                         prioritizedRays.take(8) + coverage + edges + visibility.take(4) + depthOwners + positions +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +

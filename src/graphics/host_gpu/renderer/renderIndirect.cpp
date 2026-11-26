@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
+#include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/renderIndirect.h"
 #include "graphics/host_gpu/renderer/demonsRollingProbe.h"
 
@@ -151,11 +152,26 @@ IndirectDrawFixup::Sources IndirectDrawFixup::AcquireSources(const IndirectDrawA
 	const auto [records, records_offset] = cache.ObtainBuffer(args.args_addr, size, false);
 	EXIT_IF(records == nullptr);
 	sources.args = records->BufferDeviceAddress() + records_offset;
+    using namespace DemonsPrelightTrace;
+    if(command_seq&&size<=4096&&size%4==0){
+        const auto words=ReadNativeWords(m_context,records->Handle(),records_offset,uint32_t(size/4));
+        const auto w=cache.LastGeometryCountWrite(args.args_addr);
+        DemonsPrelightTrace::Record({{"kind","indirect_source"},{"command",command_seq},{"args_guest",args.args_addr},
+            {"bda",sources.args},{"tick",m_context.GetCommandScheduler().CurrentTick()},
+            {"words",words},{"stride",args.stride},{"max_count",args.max_count},
+            {"index_limit",args.index_buffer_size},{"indexed",args.indexed},
+            {"producer_shader",w.shader},{"producer_tick",w.tick},{"producer_begin",w.begin},{"producer_end",w.end}});
+    }
 	if (args.count_addr != 0) {
 		const auto [count, count_offset] =
 		    cache.ObtainBuffer(args.count_addr, sizeof(uint32_t), false);
 		EXIT_IF(count == nullptr);
 		sources.count = count->BufferDeviceAddress() + count_offset;
+        if(command_seq){
+            const auto words=ReadNativeWords(m_context,count->Handle(),count_offset,1);
+            DemonsPrelightTrace::Record({{"kind","indirect_count"},{"command",command_seq},
+                {"address",args.count_addr},{"bda",sources.count},{"words",words}});
+        }
 	}
 	return sources;
 }
@@ -258,6 +274,14 @@ IndirectDrawFixup::Records IndirectDrawFixup::Record(CommandBuffer& buffer,
 			f.writer_end = writer.end;
 		}
 	}
+	if(DemonsPrelightTrace::command_seq&&uint64_t{record_bytes}*args.max_count<=4096){
+        const auto words=DemonsPrelightTrace::ReadNativeWords(m_context,output.buffer,output.offset,
+            record_bytes/4*args.max_count);
+        DemonsPrelightTrace::Record({{"kind","indirect_fixed"},{"command",DemonsPrelightTrace::command_seq},
+            {"args_guest",args.args_addr},{"source_bda",sources.args},{"count_bda",sources.count},
+            {"tick",m_context.GetCommandScheduler().CurrentTick()},{"words",words},
+            {"stride",record_bytes},{"max_count",args.max_count},{"index_limit",args.index_buffer_size}});
+    }
 	return {.buffer = output.buffer,
 	        .offset = output.offset,
 	        .stride = record_bytes,

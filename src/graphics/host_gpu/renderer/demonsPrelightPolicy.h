@@ -19,6 +19,26 @@ inline Delta Compare(std::span<const uint32_t> a,std::span<const uint32_t> b) {
 constexpr bool Overlaps(uint64_t a,uint64_t n,uint64_t b,uint64_t m){
     return n&&m&&(a<=b?b-a<n:a-b<m);
 }
+// Capture windows follow measured layer-0 loss, never fixed host frame numbers.
+// This is a scheduling criterion, NOT a claim about the expected scene.
+class ProductionWindow {
+public:
+    constexpr void Observe(int32_t frame,uint64_t colored,uint64_t area){
+        if(frame<0||!area||colored>area||frame==last_frame)return;
+        if(frame<last_frame)*this={};
+        last_frame=frame;
+        if(colored>=area/2){bright=true;return;}
+        if(bright&&colored<=area/10&&count<2){
+            ++count;start=frame;bright=false;
+        }
+    }
+    constexpr int Phase(int32_t frame)const {
+        return count&&frame>=start&&int64_t{frame}-start<=5?count:-1;
+    }
+private:
+    bool bright=false;
+    int32_t last_frame=-1,start=-1,count=0;
+};
 // No binary branch may be selected merely from a zero observation.
 // A verified expected word and a complete same-cycle history are required.
 enum class Root {Blocked,Produced,NotProduced};

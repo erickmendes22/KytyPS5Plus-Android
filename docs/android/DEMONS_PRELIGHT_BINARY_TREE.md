@@ -256,3 +256,47 @@ before/after matched prepass, native module names. Reduce duplicate
 claims, unrelated sampled compute, depth-only after records except
 background, expand journal 32MiB; full snapshots q0/q33, grids q8.
 No production graphics changes or proof of causal first divergence.
+
+
+## #729 — N00 physical split, ZIP 20261126-081531
+67,299 consecutive events, 24,152 prepared and 24,152 matched execute;
+358 frames (46..403) with 690 full consumer observations, 332 double
+reads and no differing digest within a host frame. Journal truncation
+28,028 events; no claim of continuous late gameplay. First collapse
+f211 (second cycle) -> f212 consumer 655 words, draw15574 PS552d 27
+indices, unchanged pre-acquire 64/64 colored, afterward 0/64; matched
+prepass15484 same 108 index bytes/addr 0x20fb00000, 63/64 stored depth
+zero before, all 64 nonzero after, exact same 64 depths at material.
+This background operation writes depth where prior scene geometry did
+not; no evidence of incorrect compare or export. Do not disable it.
+Second collapse f247 1,359,577 -> f248 11,301 -> f249/250 zero.
+381 clear_image_candidate commands, all value 0 size0x680000;
+1 CPU dma_fill zero. f248 seq23820..27 four layer clear candidates and
+invalidations; f248 draw23830 before61/64, acquired23834 all 64 EXACT
+zero, after all 64 zero. All eight dirty acquisitions exact zero
+before original draw and unchanged after that draw. This is consistent
+with requested zero fill, not corruption; only sampled words certified.
+After this clear, every material draw has corresponding prepass by
+index address, count, byte length in current frame: f249 11/11, f250
+7/7, including both indirect records (actual executed args unknown).
+Persistent W0 12765 indices, addr0x27466f2a0; W1 57066 indices,
+addr0x27b7c3a00, both PS31e6/e31a and VS8685/13f0, present f248-250.
+Addresses are session-specific. No evidence any prepared command
+was omitted; pre-prepare guest admission not recorded previously.
+N00 -> N20 is the operational path for post-clear cycles: sampled
+retention/publication and upload match observed command. Still no
+independent proof of expected visible geometry or absence outside
+sampled pixels. N20 split requires raw guest admission and native
+indirect args, N30 split needs original coverage/clip for same draws.
+Next F: phase windows triggered by full albedo population collapse
+(50%+ to <=10%, twice, NOT a causal conclusion), plus late adaptive
+window. Reduce prior root census to these windows. Record guest-facing
+command and return before preparation, link original draw/query,
+read actual indirect input and fixup output (bounded 4KiB) and count,
+producer range/tick. Original precise occlusion queries for all
+relevant draws in two host frames (4096 capacity), no old replay
+variants. Paired exact native index streams/position/descriptor
+captures only W0/W1 by count and same address/instance, no assumption
+that W0 is expected visible. Prioritize query and vertex exports ahead
+of capped 16MiB journal. Reuse existing readback instrumentation;
+readbacks may perturb timing. No production semantic change.

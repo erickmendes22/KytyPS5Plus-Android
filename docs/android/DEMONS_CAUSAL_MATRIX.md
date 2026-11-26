@@ -498,3 +498,13 @@ See DEMONS_PRELIGHT_BINARY_TREE.md. f239 physical overwrite by
 background or material shader. Trace exact buffer producer and
 post-acquisition bytes; background SRT/depth pair. Journal reached
 capacity f293; late gameplay not certified. No rendering fix yet.
+
+## Build #729 — F ZIP 20261126-081531
+Eight dirty attachment acquisitions return zero before actual material
+execution; all clear candidates specify zero. Physical N00 split
+points to production after clear in f249/f250; all 11/7 material draws
+have a same-frame prepass match by index identity, all prepared draws
+in journal have execute. Exact guest admission and indirect records
+not yet certified; native coverage/clip must be joined to same command.
+See DEMONS_PRELIGHT_BINARY_TREE.md for witnesses and capture policy.
+Do not reopen BC1, stencil, or compare absent conflicting evidence.

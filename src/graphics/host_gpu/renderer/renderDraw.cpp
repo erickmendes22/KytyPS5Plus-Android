@@ -1,5 +1,6 @@
 #include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
+#include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsVertexPositionProbe.h"
 #include "graphics/host_gpu/renderer/renderDraw.h"
@@ -1564,6 +1565,7 @@ void DemonsPrelightTrace::ObserveCompute(RenderContext& context,const PreparedBi
                     if(!full.words.empty()){
                         uint64_t hash=14695981039346656037ull,nonzero=0;
                         for(auto v:full.words){nonzero+=DemonsPrelightPolicy::Colored(v);hash=(hash^v)*1099511628211ull;}
+                        ObservePopulation(frame,nonzero,uint64_t{full.width}*full.height);
                         row["full"]={{"width",full.width},{"height",full.height},
                             {"rgb_nonzero",nonzero},{"hash_words",hash}};
                     }else row["full_status"]="unavailable";
@@ -2650,6 +2652,10 @@ static std::vector<uint32_t> ReadDsVertexIndices(RenderContext& context,const Pr
     return result;
 }
 
+std::vector<uint32_t> DemonsPrelightTrace::ReadNativeWords(RenderContext& context,vk::Buffer source,uint64_t offset,uint32_t count){
+    return ReadDsVertexIndices(context,PreparedIndexBuffer{source,offset,vk::IndexType::eUint32},count);
+}
+
 static void CommitVertexBuffers(vk::CommandBuffer            vk_buffer,
                                 const PreparedVertexBuffers& prepared) {
 	for (uint32_t i = 0; i < prepared.count; i++) {
@@ -2950,10 +2956,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         root_ps->shader_hash==DemonsDominantGeometry::DepthPs;
     const bool root_background_material=root_target!=root_colors.end()&&root_ps&&
         root_ps->shader_hash==DemonsDominantGeometry::MaterialPs;
-    if(root_trace&&(root_target!=root_colors.end()||root_depth)){
+    const auto& root_adaptive=DemonsAdaptiveCapture::Current();
+    const int root_phase=!root_trace?-1:DemonsPrelightTrace::Phase(root_frame)>=0?
+        DemonsPrelightTrace::Phase(root_frame):root_adaptive.PostTransitionDarkDue(root_frame)?3:-1;
+    if(root_trace&&command_seq)command_prepared=true;
+    if(root_phase>=0&&(root_target!=root_colors.end()||root_depth)){
         const auto* v=state.vertex_info[0].stage.program;
         const auto* p=state.ps_active?state.ps_input_info.stage.program:nullptr;
-        root_draw=Record({{"kind","draw_prepared"},{"frame",root_frame},{"submit",submit_id},
+        root_draw=Record({{"kind","draw_prepared"},{"command",command_seq},{"phase",root_phase},{"frame",root_frame},{"submit",submit_id},
             {"tick",m_context.GetCommandScheduler().CurrentTick()},{"vs",v?v->shader_hash:0ull},
             {"ps",p?p->shader_hash:0ull},{"index_guest",index_source.address},{"index_bytes",index_source.size},
             {"indices",draw.index_count},{"instances",draw.instance_count},{"base_vertex",emit.vertex_offset},
@@ -3370,7 +3380,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     RenderColorInfo root_color{};
     std::optional<std::array<uint32_t,64>> root_before;
     nlohmann::json root_identity;
-    if(root_draw&&(root_background_depth||root_background_material)){
+    if(root_draw&&root_background_material){
         nlohmann::json inputs={{"kind","background_inputs"},{"draw",root_draw},{"frame",root_frame},
             {"submit",submit_id},{"tick",m_context.GetCommandScheduler().CurrentTick()},
             {"vs_file",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
@@ -3796,7 +3806,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     if(ds_vp && VP::Watched(ds_vp->shader_hash) && ds_vp->ds_light_math_variant){
         const auto& gate=DemonsAdaptiveCapture::Current();
         const auto* ps=state.ps_active?state.ps_input_info.stage.program:nullptr;
-        const int phase=gate.PostTransitionDarkDue(ds_gbuffer_frame)?3:
+        const int phase=root_trace?std::max(root_phase,0):gate.PostTransitionDarkDue(ds_gbuffer_frame)?3:
             gate.DarkOnsetDue(ds_gbuffer_frame)?2:gate.BrightSceneActive(ds_gbuffer_frame)?1:0;
         static std::array<std::array<uint32_t,4>,VP::FocusPairCount> counts{};
         const uint32_t k=VP::FocusPair(ds_vp->shader_hash,ps?ps->shader_hash:0,draw.index_count);
@@ -3805,12 +3815,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         // Invalid category still binds disabled recorder, never indexes
         // outside the selected pair array.
         auto& pair=ds_vertex_pairs[matched?k:0];
-        const bool due=!root_trace && matched && (material ?
+        // Both persistent zero-cycle meshes were observed in prepass and
+        // material (#729 frames 249/250). Select them by exact index count
+        // AND pair identity, not the first occurrence of a shader.
+        const bool root_witness=root_phase>0&&(draw.index_count==12765||draw.index_count==57066);
+        const bool due=(!root_trace||root_witness) && matched && (material ?
             pair.serial && !pair.material_captured && ds_gbuffer_frame>=pair.frame &&
             int64_t{ds_gbuffer_frame}-pair.frame<=1 &&
             pair.address==index_source.address && pair.count==draw.index_count &&
             pair.base==emit.vertex_offset && pair.instance==emit.first_instance :
-            phase>=2 && counts[k][phase]<1u);
+            phase>=(root_trace?1:2) && counts[k][phase]<1u);
         if(matched && due && vertex_stages.size()==1 && !mesh_active && !mesh_emulated && !indirect &&
             draw.IsIndexed() && draw.instance_count==1 && !primitive_restart_enable &&
             topology==vk::PrimitiveTopology::eTriangleList && index_source.guest_element_size>=2 &&
@@ -4017,12 +4031,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         geometry_resources && !geometry_resources->images.empty() &&
         geometry_resources->images.front().dwords[0] &&
         state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress;
-    auto& geometry=(active_candidate && !active_geometry.completed[4])?active_geometry:regular_geometry;
-	constexpr uint32_t geometry_capacity = 512;
+    auto& geometry=(!root_trace&&active_candidate && !active_geometry.completed[4])?active_geometry:regular_geometry;
+	const uint32_t geometry_capacity = root_trace?4096u:512u;
 	uint32_t geometry_query = UINT32_MAX;
 	uint32_t geometry_replay_first = UINT32_MAX;
 	std::array<vk::Pipeline,3> geometry_replay {};
-	if (!root_trace && Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
+	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
 	    graphics.occlusion_query_precise_enabled) {
 		const auto drain_geometry=[&](DsGeometryFrame& geometry){
         const auto window=geometry.phase==4?8:1;
@@ -4070,7 +4084,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const bool active_window=&geometry==&active_geometry;
         const bool relevant = active_window ? active_candidate : (relevant_depth || gbuffer != colors.end());
 		const auto& geometry_gate = DemonsAdaptiveCapture::Current();
-		const int geometry_phase = active_window ? 4 : geometry_gate.PostTransitionDarkDue(ds_gbuffer_frame) ? 3
+		const int geometry_phase = root_trace?root_phase:active_window ? 4 : geometry_gate.PostTransitionDarkDue(ds_gbuffer_frame) ? 3
 		    : geometry_gate.DarkOnsetDue(ds_gbuffer_frame) ? 1
 		    : geometry_gate.BrightBaselineDue(ds_gbuffer_frame) ? 0
 		    : geometry_gate.CaptureDue(ds_gbuffer_frame) ? 2 : -1;
@@ -4135,6 +4149,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			        rendering.color_attachments[gbuffer->target_slot].is_clear : false},
 			    {"target_mask", target_mask}, {"shader_mask", shader_mask}});
 			geometry.rows[geometry_query]["kind"] = "original";
+            geometry.rows[geometry_query]["journal_draw"]=root_draw;
+            geometry.rows[geometry_query]["command"]=command_seq;
 			const auto& capture_face = hw.GetModeControl();
 			geometry.rows[geometry_query]["guest_cull_front"] = bool(capture_face.cull_front);
 			geometry.rows[geometry_query]["guest_cull_back"] = bool(capture_face.cull_back);
@@ -4143,7 +4159,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			// depth/stencil for the measured zero-coverage scene-depth PS.
 			const auto& depth = state.depth_info;
 			const auto& pixel = state.ps_input_info;
-			if (ps && DemonsDominantGeometry::ProbeDepthPs(ps->shader_hash) &&
+			if (!root_trace && ps && DemonsDominantGeometry::ProbeDepthPs(ps->shader_hash) &&
 			    relevant_depth && depth.depth_write_enable && draw.IsIndexed() &&
 			    indirect == nullptr && !mesh_active && !mesh_emulated &&
 			    !shader_write_stages && !image_side_effects &&
@@ -4652,7 +4668,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             {"tick",m_context.GetCommandScheduler().CurrentTick()},
             {"index_guest",index_source.address},{"base_vertex",emit.vertex_offset},
             {"first_instance",emit.first_instance},{"indices",ds_vertex_indices},{"missing",missing},
-            {"pair_id",ds_vertex_pair},{"material",VP::Material(ds_vp->shader_hash)},
+            {"pair_id",ds_vertex_pair},{"journal_draw",root_draw},{"command",command_seq},{"material",VP::Material(ds_vp->shader_hash)},
             {"pixel_shader",state.ps_input_info.stage.program?
                 fmt::format("{:016x}",state.ps_input_info.stage.program->shader_hash):std::string{}},
             {"transform_inputs_valid",VP::HasTransformInputs(ds_vp->shader_hash,ds_vp->ds_light_math_variant)},
@@ -5285,6 +5301,37 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 }
 
+// Record guest-facing registers/arguments before PrepareDrawRenderState can
+// reject the command, so "no prepared draw" is visible in the N20 ledger.
+static nlohmann::json DsGuestCommand(RenderContext& context,const CommandBuffer& buffer,
+    uint64_t submit,const char* kind,uint64_t address,uint32_t count,uint32_t instances,
+    uint64_t indirect_args=0,uint64_t count_addr=0,uint32_t stride=0,uint32_t index_limit=0){
+    using namespace DemonsPrelightTrace;
+    if(!Enabled())return nullptr;
+    const auto frame=context.GetGpu().GetFrameNum();
+    const auto phase=Phase(frame)>=0?Phase(frame):
+        DemonsAdaptiveCapture::Current().PostTransitionDarkDue(frame)?3:-1;
+    if(phase<0)return nullptr;
+    const auto& hw=buffer.GetRegisters();
+    const auto& depth=hw.GetDepthRenderTarget();
+    const auto zr=Kernel::AddressFold::Fold(depth.z_read_base_addr);
+    const auto zw=Kernel::AddressFold::Fold(depth.z_write_base_addr);
+    bool relevant=zr==DemonsDominantGeometry::DepthAddress||zw==DemonsDominantGeometry::DepthAddress;
+    nlohmann::json targets=nlohmann::json::array();
+    for(uint32_t slot=0;slot<RENDER_COLOR_ATTACHMENTS_MAX;++slot){
+        const auto a=Kernel::AddressFold::Fold(hw.GetRenderTarget(slot).base.addr);
+        if(a==DemonsQueueProbe::GBufferAddress)relevant=true;
+        targets.push_back(a);
+    }
+    if(!relevant)return nullptr;
+    return {{"kind","guest_command"},{"op",kind},{"frame",frame},{"phase",phase},
+        {"submit",submit},{"tick",context.GetCommandScheduler().CurrentTick()},
+        {"index_guest",address},{"count",count},{"instances",instances},{"indirect_guest",indirect_args},
+        {"count_guest",count_addr},{"stride",stride},{"index_limit",index_limit},
+        {"targets",std::move(targets)},{"depth_read",zr},{"depth_write",zw},
+        {"target_mask",hw.GetRenderTargetMask()},{"shader_mask",hw.GetShaderRegisters().m_cbShaderMask}};
+}
+
 void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
                                const DrawIndexArgs& args) {
 	KYTY_PROFILER_FUNCTION();
@@ -5300,18 +5347,22 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	                    reinterpret_cast<uint64_t>(args.index_addr));
 
 	Common::LockGuard lock(m_context.GetMutex());
+    DemonsPrelightTrace::CommandScope ds_cmd(DsGuestCommand(m_context,buffer,submit_id,"indexed",reinterpret_cast<uint64_t>(args.index_addr),args.index_count,args.instance_count));
 	if (args.index_count == 0 || args.instance_count == 0) {
+        ds_cmd.outcome="zero_count";
 		return;
 	}
 
 	if (ConsumeMetadataColorOperation(buffer, args.render_target_slice_offset) ||
 	    DepthStencilCopy(buffer) ||
 	    ResolveColorTargets(buffer, args.render_target_slice_offset)) {
+        ds_cmd.outcome="special_render_operation";
 		ResetBindings();
 		return;
 	}
 
 	if (!DrawHasValidVertexShader(sh_ctx)) {
+        ds_cmd.outcome="invalid_vertex_shader";
 		return;
 	}
 
@@ -5338,6 +5389,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 
 	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
 	if (!GetDrawTopology(ucfg, topology)) {
+        ds_cmd.outcome="unsupported_topology";
 		return;
 	}
 
@@ -5394,6 +5446,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 		    std::chrono::duration_cast<std::chrono::nanoseconds>(time2 - time1).count()));
 	}
 	if (!draw_ready) {
+        ds_cmd.outcome="prepare_rejected";
 		ResetBindings();
 		return;
 	}
@@ -5437,18 +5490,22 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 	                    args.first_instance);
 
 	Common::LockGuard lock(m_context.GetMutex());
+    DemonsPrelightTrace::CommandScope ds_cmd(DsGuestCommand(m_context,buffer,submit_id,"auto",0,args.vertex_count,args.instance_count));
 	if (args.vertex_count == 0 || args.instance_count == 0) {
+        ds_cmd.outcome="zero_count";
 		return;
 	}
 
 	if (ConsumeMetadataColorOperation(buffer, args.render_target_slice_offset) ||
 	    DepthStencilCopy(buffer) ||
 	    ResolveColorTargets(buffer, args.render_target_slice_offset)) {
+        ds_cmd.outcome="special_render_operation";
 		ResetBindings();
 		return;
 	}
 
 	if (!DrawHasValidVertexShader(sh_ctx)) {
+        ds_cmd.outcome="invalid_vertex_shader";
 		return;
 	}
 
@@ -5474,11 +5531,13 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 
 	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
 	if (!GetDrawTopology(ucfg, topology)) {
+        ds_cmd.outcome="unsupported_topology";
 		ResetBindings();
 		return;
 	}
 	auto& state = ReusableDrawRenderState();
 	if (!PrepareDrawRenderState(buffer, draw, args.render_target_slice_offset, state)) {
+        ds_cmd.outcome="prepare_rejected";
 		ResetBindings();
 		return;
 	}
@@ -5487,6 +5546,7 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 	if (rect_list && state.vertex_info[0].buffers_num == 0 &&
 	    state.vertex_info[0].stage.program->param_export_mask == 0 &&
 	    state.ps_input_info.input_num != 0) {
+        ds_cmd.outcome="rect_missing_exports";
 		if (graphics_debug_dump_enabled()) {
 			LOGF("DrawIndexAuto: skipping rect-list draw with no VS param exports and PS inputs: "
 			     "ps_inputs=%u ps=0x%016" PRIx64 " es=0x%016" PRIx64 " gs=0x%016" PRIx64 "\n",
@@ -5588,7 +5648,11 @@ bool RenderExecutor::DrawIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	KYTY_PROFILER_FUNCTION();
 
 	EXIT_IF(buffer.IsInvalid() || !args.sgprs.enabled);
+    DemonsPrelightTrace::CommandScope ds_cmd(DsGuestCommand(m_context,buffer,submit_id,
+        args.indexed?"indirect_indexed":"indirect_auto",args.index_base_addr,args.max_count,1,
+        args.args_addr,args.count_addr,args.stride,args.index_buffer_size));
 	if (const char* reason = IndirectDrawUnsupported(buffer, args); reason != nullptr) {
+        ds_cmd.outcome="cpu_fallback";
 		LogIndirectFallback(reason);
 		return false;
 	}
@@ -5601,12 +5665,14 @@ bool RenderExecutor::DrawIndirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	Common::LockGuard lock(m_context.GetMutex());
 	if (!DrawHasValidVertexShader(buffer.GetShaders())) {
+        ds_cmd.outcome="invalid_vertex_shader";
 		return true;
 	}
 	uc_check(ucfg);
 	hw_check(buffer);
 	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
 	if (!GetDrawTopology(ucfg, topology)) {
+        ds_cmd.outcome="unsupported_topology";
 		return true;
 	}
 
@@ -5628,6 +5694,7 @@ bool RenderExecutor::DrawIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	auto& state = ReusableDrawRenderState();
 	state.indirect = args.sgprs;
 	if (!PrepareDrawRenderState(buffer, draw, 0, state)) {
+        ds_cmd.outcome="prepare_rejected";
 		ResetBindings();
 		return true;
 	}
@@ -5642,6 +5709,7 @@ bool RenderExecutor::DrawIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		stage_reason = "emulated mesh stage without one indexed record";
 	}
 	if (stage_reason != nullptr) {
+        ds_cmd.outcome="cpu_fallback";
 		ResetBindings();
 		LogIndirectFallback(stage_reason);
 		return false;
