@@ -22,9 +22,11 @@ nem um oráculo externo de PC. Ver a prioridade operacional no início da árvor
 registrar cortes efetivos, revalidações, motivo de nenhum corte e a correção
 concreta da deficiência antes da aquisição seguinte.
 
-Entrega técnica atual: **#746 / `4e321c2`**, APK assinado com a identidade estável,
-versionCode 846, compilação e auditoria concluídas; aguarda captura do aparelho.
-[Registro de verificação](DEMONS_APK_746_VERIFICATION.md).
+Entrega histórica: **#746 / `4e321c2`**, APK assinado com a identidade estável,
+versionCode 846, compilação e auditoria concluídas. Diagnóstico real
+`20261126-144336` já analisado; #747 (`63ea76b`) foi candidato de replay
+nativo, não de decisão P8. Staging atual registrado no balanço de eliminação.
+[Registro de verificação da #746](DEMONS_APK_746_VERIFICATION.md).
 Gameplay #745 registrado no ZIP `20261126-132544`, modo F.
 [Resultado completo](DEMONS_APK_745_RESULTS.md): 375/375 arquivos obrigatórios,
 zero buffers declarados ausentes, 45/45 POS0 comparáveis iguais bit a bit

@@ -2,10 +2,11 @@
 
 ## Estado atual
 
-Atualizado em **26/11/2026**, após analisar a captura **#745** e entregar o
-**APK #746 compilado, assinado e verificado**. A #746 ainda aguarda captura do
-aparelho. Este quadro é o estado operacional vigente; as seções posteriores
-preservam os contratos e o histórico que o fundamentam.
+Atualizado em **26/11/2026**, após analisar a captura real **#746** e entregar
+**#747** como candidato de desenvolvimento, não como build de decisão P8.
+Staging após #747: execução guest independente em desenvolvimento. Este quadro
+é o estado operacional vigente; as seções posteriores preservam os contratos
+e o histórico que o fundamentam.
 
 **Nó global ativo: P(8). Intervalo: [0,16]. Metades globais eliminadas: 0.**
 A #746 prepara a comparação local da leitura e emissão dos argumentos indiretos

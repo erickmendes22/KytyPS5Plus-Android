@@ -246,7 +246,7 @@ produtores observados, para permitir avançar mais de um nível no mesmo
 diagnóstico quando esses dados forem suficientes. Não há promessa de que
 uma referência local certifique automaticamente todos os ancestrais.
 
-## #746 — decisão preparada, resultado ainda pendente
+## #746 — contrato local READ/EMIT antes da captura (histórico)
 
 Pergunta local: **a versão independente dos 60 bytes coincide com os valores
 efetivamente lidos e com os argumentos realmente emitidos pelo CP?** O

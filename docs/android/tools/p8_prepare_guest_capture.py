@@ -4,6 +4,7 @@
 This is a local backend calibration, not an authority for the P8 cut.
 """
 import argparse
+import hashlib
 import itertools
 import json
 import pathlib
@@ -107,6 +108,7 @@ def prepare(archive,out,seq):
             require(s['source']=='consumed_srt' and s['bytes']==4*len(s['words']),'scalar input incomplete')
             segments.append((s['address'],pack(s['words'])))
         segments=merge_segments(segments);code=z.read(prefix+i['guest_cs_file'])
+        require(hashlib.sha256(code).hexdigest()=='6378731ae866d8f6a0576252b5501c2fe826a3b8cb8bff102064c2bae1425985','guest code differs from audited instruction sequence')
         # Integer-only shader uses s[0:1], s2 (group X) and v0 (local X).
         require(i['user_data_base']==0 and len(i['user_data'])==2,'user SGPR ABI')
         sgpr=i['user_data']+[0]*104;vgpr=list(range(64))+[0]*(63*64)
