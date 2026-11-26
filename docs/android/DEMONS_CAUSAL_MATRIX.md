@@ -435,3 +435,45 @@ Other variants use validated structural discovery, no guessed transform
 operands. Prioritize paired position data and exact native modules.
 This distinguishes wrong positions from legitimate occlusion or missing
 upstream geometry; no rendering semantic change or root cause proven.
+
+
+## Fixed causal chain — user-directed methodological change
+Stop rotating suspected subsystems. Witness W0: f474 submits 14134/14137,
+same index address 0x27c3a7280, 25530 bytes, 12765 indices, instance 1,
+base vertex/first instance 0, prepass VS868546d85ce5090a/PS31e660625354d953,
+material VS13f07ce83dc1cc67/PSe31a5473e9ee7503. All 21 original records
+of this index identity in #725 have zero passing samples (including three
+prepass records with pending HTile clear). Not proof it should be visible.
+Positive witness W1: same VS/PS pair, f474 same submits, 0x27d9906c0,
+57066 indices, 29483 prepass / 13556 material samples. These counts
+are not a one-to-one pixel comparison; need same pixel/triangle evidence.
+W1 has a measurable contribution to scene coverage, so use it to
+check that W0 is not merely legitimately off-camera. Follow same
+draw identities, not another mesh when capture is inconvenient.
+
+1. Albedo contribution: material coverage zero W0; W1 partial coverage.
+   First incorrect value not yet proven.
+2. Prepass: W0 zero; exact W0 fixed-test replay unavailable because
+   previous selector takes first shader hash occurrence, not this draw.
+   #725 small-mesh CPU oracle validates those samples only, not W0/W1.
+3. VS export: #726 records exact paired index streams, clip XYZW and
+   clip-distance, vertex descriptors, SRT, available buffer bytes,
+   attachment regions and native module identity. Require W0/W1
+   index address AND count in analysis; reject nonmatching captures.
+   Full-screen draw and other pairs are context, not new suspect branches.
+4. Guest calculation: native 868546d8 code at guest offset 0x40 derives
+   instance/transform index from s10 low word and v8; scalar loads
+   0x48..0x9c resolve descriptors and constants. Actual buffer reads
+   0xa8 format_xyzw, 0xb0/0xb8/0xc0 transform data (offsets 32/16/0),
+   0xc8 format_xyz, 0xd0/0xd8 format_xy; position export 0x288.
+   LLVM gfx1030 fails to decode several PS5-specific instructions:
+   do not claim independent guest transform verified. Use project's
+   decoder and exact ISA semantics for those instructions, compare
+   actual load/format conversion, transform and clip export in that order.
+   If output matches, follow loads to resource producer or the actual
+   depth writer at the rejected sample. If not, fix first instruction.
+5. Producer: blocked until exact W0/W1 effective loads and producer
+   range/version are identified. No new texture, depth, or lighting
+   experiments absent an observed edge divergence.
+No new production fix established. #726 already underway; evaluate it
+against this chain, do not call a nonmatching capture progress.
