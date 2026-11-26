@@ -9,6 +9,7 @@
 #include "common/virtualMemory.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
+#include "graphics/host_gpu/renderer/demonsIndirectWitness.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "cpu/guestCpu.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
@@ -1049,8 +1050,11 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 }
 
 bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
-	return g_guest_address_space != nullptr &&
+	const bool result=g_guest_address_space != nullptr &&
 	       g_guest_address_space->TryWriteBacking(vaddr, data, size);
+	Graphics::DemonsIndirectWitness::Signal(Graphics::DemonsIndirectWitness::SignalKind::WriteBacking,
+	    Kernel::AddressFold::Fold(vaddr),size,result,0,data);
+	return result;
 }
 
 bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {

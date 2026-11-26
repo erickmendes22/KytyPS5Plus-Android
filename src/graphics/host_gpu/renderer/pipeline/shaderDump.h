@@ -29,7 +29,7 @@ void RecordDsProbeGuestCode(uint64_t hash, std::span<const uint32_t> code,
 
 // Writes the module's SPIR-V (once per distinct content) and remembers the file for `module`.
 void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t guest_hash,
-                  std::span<const uint32_t> spirv);
+                  std::span<const uint32_t> spirv, const std::string& original_file = {});
 // F retains the original executable before inserting the diagnostic stores.
 // This records bytes only; it never invents or registers a Vulkan module handle.
 std::string RecordUninstrumentedModule(const char* stage_name, uint64_t guest_hash,
@@ -40,6 +40,9 @@ void ForgetModule(vk::ShaderModule module);
 // The name remains available on an I/O/budget failure, which is recorded in
 // ds_prelight_shader_status.json; exporters must verify the file actually exists.
 std::string ModuleFile(vk::ShaderModule module);
+// Original executable paired with this exact bound permutation. An
+// uninstrumented module is its own original; a missing handle stays missing.
+std::string ModuleOriginalFile(vk::ShaderModule module);
 
 using LayoutState = PipelineRecord::LayoutState;
 

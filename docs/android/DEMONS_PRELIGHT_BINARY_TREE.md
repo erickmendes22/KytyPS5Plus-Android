@@ -2,12 +2,52 @@
 
 ## Continuidade operacional — 26/11/2026
 
-**APK #745 compilado, assinado e verificado**, revisão
+**APK #745 compilado, assinado, verificado e executado no aparelho**, revisão
 `4a94749e889ffd178418d347fcdd82ccc83ca73e`, versionCode 845.
 [Verificação do artefato](DEMONS_APK_745_VERIFICATION.md).
-A última execução de gameplay analisada continua sendo #744; #745 aguarda
-uma execução F no mesmo ponto. Não interpretar entrega do APK como correção
-visual comprovada ou decisão global de P8.
+A última execução analisada é o ZIP `20261126-132544`, modo F.
+[Resultados completos da #745](DEMONS_APK_745_RESULTS.md).
+Não interpretar entrega do APK ou matches locais como correção visual
+comprovada ou decisão global de P8.
+
+### Poda obtida com #745 e próxima comparação
+
+O ciclo 55824→56618 corresponde aos mesmos 50 draws de #744; operandos e
+posições foram recalculados para a execução nova. **45 draws / 73.580
+vértices / 294.320 componentes XYZW coincidem bit a bit com a ISA guest.**
+Os outros cinco têm referência-only ou zero invocações explicitamente
+classificados. Os buffers declarados estão completos e a exportação contém
+375/375 dependências obrigatórias. Não pedir novo teste para opcodes desse
+slice, VS2337 ou o céu.
+
+A máscara local do céu foi recalculada: 1.439.342 pixels de depth alterados
+e albedo preto; os 658 restantes são exatamente os pixels RGB não zero.
+Os 34 fixups indiretos e 32 operações cb3b registradas também coincidem.
+Esses certificados removem as respectivas operações como primeira
+divergência; não certificam automaticamente seus produtores anteriores.
+
+**A próxima aresta é o batch de cenário em `0x21de00078`: três records de
+20 bytes, lidos no fallback CPU.** O primeiro passa de 98.304 índices no
+comando 54823 para zero nos comandos 55986/56594, antes da perda pelo céu.
+O fallback já existia quando a contagem era não zero. Os 60 bytes da fonte
+e sua versão nativa não estão no ZIP; f0c140 escreve outro recurso.
+[Contrato da aquisição e validação prévia](DEMONS_CP_INDIRECT_CAPTURE.md).
+
+| Comparação local | Consequência para a cadeia observada |
+| --- | --- |
+| Bytes consumidos diferem da versão independente, com identidade e ordem preservadas | Fixar publicação/leitura/decodificação; não culpar a produção guest de zero antes de resolver essa divergência. |
+| Bytes consumidos e argumentos emitidos coincidem com a versão independente | Eliminar essa leitura/decodificação como primeira divergência no escopo comparado; seguir a origem real do registro já capturada, mantendo certificados de posição e raster. |
+| Captura truncada ou versão alterada durante a comparação | Reportar o range e o motivo; não fabricar igualdade nem impor veto global de aquisição. |
+
+Preservar último não zero e primeiro zero juntos, com token do comando pai,
+filhos, dirty/pending, publicações e bytes de escritores/transferências
+observados. Guardar valores efetivamente usados **antes** de qualquer
+readback diagnóstico. Congelar por registro e coletar somente depois dos
+três consumos; selar o par no trigger já existente de perda de albedo.
+Um velho espelho Vulkan de dados CPU-dirty não é
+referência autoritativa. Um descritor que cobre o range ou um fault de página
+é candidato; não equivale a último store comprovado. Nenhum rastreador CPU
+universal ou captura externa de PC é pré-condição para essa comparação.
 
 A falta de certificação integral de P8 não é uma proibição de adquirir os
 operandos de uma comparação concreta. O usuário corrigiu expressamente esse
@@ -15,7 +55,7 @@ bloqueio circular nesta sessão. Mantêm-se a testemunha #741/#744, as classes,
 os certificados locais e o intervalo global ainda não decidido. Não se exige
 uma captura de PC ou um emulador de referência completo para continuar.
 
-A aresta executável desta revisão é **bytes consumidos → posição guest →
+A comparação executada na #745 foi **bytes consumidos → posição guest →
 posição nativa**, nos draws do mesmo ciclo iniciado pelo clear executado e
 encerrado pela primeira perda. `tools/prelight_vertex_oracle.py` decodifica
 a ISA gfx1010 e avalia o slice de EXP POS0 com os buffers nativos e as leituras
@@ -46,8 +86,9 @@ posições de todos os VS estruturalmente suportados, ISA guest inclusive em
 cache hits, SPIR-V original e ligado, fecho obrigatório de exportação com
 SHA-256 e motivos explícitos de ausência. A captura guarda os operandos dos
 draws seguintes do mesmo ciclo, permitindo continuar offline sem uma build
-para cada shader ou hipótese. Gameplay e resultado visual serão conferidos
-no aparelho; não há alteração artificial de luz, albedo, contagens ou depth.
+para cada shader ou hipótese. O diagnóstico do aparelho confirmou a suficiência
+dessa captura para os 45 draws comparáveis; não demonstrou correção visual.
+Não há alteração artificial de luz, albedo, contagens ou depth.
 
 ## Auditoria de completude e invariantes
 V2 assumia falha pré-iluminação sem prova G0 e não cobria iluminação,
@@ -163,9 +204,11 @@ não certifica fetch/EXEC/precisão/visibilidade. Ambos mantêm P8 BLOCKED.
 A staging recebeu regressão adicional da retenção: primeiro reconhecer
 o clear executado/resetar o orçamento, depois admitir o payload capturado
 antes da aquisição. Um ciclo anterior cheio não pode expulsar o primeiro
-registro do novo ciclo. Correção de instrumentação, sem alteração da luz
-e sem nova build Android. Os filtros/caps de shaders, recursos ausentes e
-oráculo completo ainda impedem promover a staging a APK de decisão.
+registro do novo ciclo. Correção de instrumentação, sem alteração da luz.
+A limitação dos filtros/caps e dos operandos de posição foi posteriormente
+corrigida e validada no APK #745, conforme o início deste documento.
+A ausência de um oráculo integral não impede a comparação executável da
+próxima aresta.
 ---
 # Histórico V2 e V1 (somente evidência)
 # Demon's Souls PPSA01341 — árvore operacional V2: bisseção causal

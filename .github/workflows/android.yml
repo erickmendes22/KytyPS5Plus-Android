@@ -318,6 +318,7 @@ jobs:
             demons_color_write_mask_test
             demons_guest_color_targets_test
             demons_indirect_dispatch_test
+            demons_indirect_witness_test
             demons_lds_int64_storage_test
             demons_view_placement_test
             demons_rolling_probe_test
@@ -370,6 +371,7 @@ jobs:
           /usr/bin/python3 tests/manual/test_prelight_v3_gate.py
           /usr/bin/python3 tests/manual/prelight_sky_replay_test.py
           /usr/bin/python3 tests/manual/prelight_vertex_oracle_test.py
+          /usr/bin/python3 tests/manual/prelight_indirect_oracle_test.py
       - name: Regress exact Saros folded guest mappings and 4 GiB host headroom
         shell: bash
         run: |

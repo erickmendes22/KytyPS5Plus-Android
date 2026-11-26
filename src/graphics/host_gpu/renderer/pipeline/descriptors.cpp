@@ -42,10 +42,12 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <atomic>
 #include <bit>
 #include <cinttypes>
+#include <cstring>
 #include <fmt/format.h>
 #include <limits>
 #include <span>
@@ -720,6 +722,23 @@ static TextureDescEntry ComputeTextureDesc(const ShaderRecompiler::IR::ImageReso
 		desc.info.UpdateSize();
 	}
 	const auto alignment = desc.info.DataAlignment();
+	if (desc.info.data.size == 0 || alignment == 0 ||
+	    (address & (static_cast<uint64_t>(alignment) - 1u)) != 0) {
+		// #745 reached this existing guard after the causal capture had closed.
+		// Preserve the failing operands; do not replace the descriptor or relax
+		// the layout contract to hide a separate, unclassified failure.
+		std::array<uint32_t, 8> raw {};
+		std::memcpy(raw.data(), &descriptor, std::min(sizeof(raw), sizeof(descriptor)));
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "[TEXTURE_LAYOUT_FAILURE] address=0x{:x} bytes={} alignment={} "
+		    "extent={}x{}x{} levels={} physical_levels={} layers={} "
+		    "format={} type={} tile={} samples={} storage={} "
+		    "descriptor={:08x}/{:08x}/{:08x}/{:08x}/{:08x}/{:08x}/{:08x}/{:08x}\n",
+		    address, desc.info.data.size, alignment, width, height, depth,
+		    levels, physical_levels, image_layers, static_cast<uint32_t>(format),
+		    static_cast<uint32_t>(type), static_cast<uint32_t>(tile), samples, storage,
+		    raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]));
+	}
 	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
 	                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
 	if (storage) {

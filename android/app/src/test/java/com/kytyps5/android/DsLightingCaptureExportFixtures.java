@@ -98,6 +98,9 @@ public final class DsLightingCaptureExportFixtures {
         budgetAndIntegrityErrorsRemainIncomplete();
         pipelineVariantsHaveNoCountCap();
         shaderFailuresPreserveExactMissingPath();
+        indirectGenerationsSurviveOutsideDrawWindow();
+        indirectMissingOrTruncatedManifestIsIncomplete();
+        indirectMissingOrTruncatedBlobIsIncomplete();
         System.out.println("DsLightingCaptureExport fixtures: " + assertions + " assertions passed");
     }
     private static void completeMinimalCapture() throws Exception {
@@ -296,12 +299,88 @@ public final class DsLightingCaptureExportFixtures {
         }
     }
 
+    private static void indirectGenerationsSurviveOutsideDrawWindow() throws Exception {
+        try (Fixture f = new Fixture()) {
+            String cpManifest = "queue-state/ds_prelight_cp_args_manifest.json";
+            String current = "queue-state/ds_prelight_cp_args_current_1_compute.bin";
+            String positive = "queue-state/ds_prelight_cp_args_last_nonzero_1_compute.bin";
+            String zero = "queue-state/ds_prelight_cp_args_first_zero_1_compute.bin";
+            String events = "queue-state/ds_prelight_cp_args_events.jsonl";
+            String beforeBatch = "queue-state/ds_prelight_cp_args_last_nonzero_1_batch.json";
+            String afterBatch = "queue-state/ds_prelight_cp_args_first_zero_1_batch.json";
+            String original = "spv/cs_1122334455667788_0000000000000001.spv";
+            String bound = "spv/cs_1122334455667788_0000000000000002.spv";
+            f.write(original, "original"); f.write(bound, "bound");
+            f.write("guest-shaders/cs_1122334455667788_probe.bin", "guest");
+            f.sized(current, 8 * MIB); f.sized(positive, 8 * MIB); f.sized(zero, 8 * MIB);
+            String anchors = "queue-state/ds_prelight_witness_existing.bin";
+            f.sized(anchors, 54 * MIB); f.required(anchors, 54 * MIB);
+            // The producer predates the root journal. Its two immutable
+            // generations survive even when the current slot has advanced.
+            f.write(events, "{\"seq\":2,\"kind\":\"producer\",\"phase\":\"before\"}\n");
+            JSONObject producer = new JSONObject().put("before_seq", 2).put("stream_id", 1)
+                    .put("original_cs_file", original).put("native_cs_file", bound)
+                    .put("operand_blob", new JSONObject().put("artifact_name", current).put("bytes", 1024));
+            for (String[] pair : new String[][]{{beforeBatch, positive}, {afterBatch, zero}}) {
+                JSONObject batch = new JSONObject().put("last_observed_producer", producer)
+                        .put("records", new JSONArray().put(new JSONObject().put("index_count", pair[1].equals(zero) ? 0 : 98304)))
+                        .put("pinned_producer_files", new JSONArray().put(new JSONObject()
+                                .put("file", pair[1]).put("source_name", current).put("bytes", 8 * MIB)));
+                f.write(pair[0], batch.toString());
+            }
+            JSONArray required = new JSONArray();
+            for (String path : new String[]{current, positive, zero, events, beforeBatch, afterBatch, original, bound})
+                required.put(new JSONObject().put("file", path).put("bytes", new File(f.root, path).length()));
+            f.write(cpManifest, new JSONObject().put("schema", 1).put("required_files", required).toString());
+            List<File> optional = new ArrayList<>();
+            for (int index = 0; index < 20; ++index) optional.add(f.sized("buffers/cp_optional_" + index + ".bin", 8 * MIB));
+            DsLightingCaptureExport.Selection result = DsLightingCaptureExport.select(f.plan(), optional);
+            check(result.getRequiredComplete(), "CP transport complete outside root draw window");
+            check(paths(result).containsAll(Arrays.asList(current, positive, zero, original, bound)), "current and both pinned generations plus exact CS retained");
+            check(paths(result).contains("guest-shaders/cs_1122334455667788_probe.bin"), "producer guest included through module closure");
+            check(!problem(result, "CONFLICTING_REQUIRED_LENGTH", current), "old artifact provenance is not current file length");
+            check(result.queueBytes <= DsLightingCaptureExport.QUEUE_BUDGET && result.totalBytes <= DsLightingCaptureExport.TOTAL_BUDGET,
+                    "24 MiB producer generations plus54 MiB witness fit before optional data");
+            check(problem(result, "OPTIONAL_BUDGET_EXCEEDED", null), "optional payload yields to mandatory generations");
+        }
+    }
+    private static void indirectMissingOrTruncatedManifestIsIncomplete() throws Exception {
+        try (Fixture f = new Fixture()) {
+            String manifest = "queue-state/ds_prelight_cp_args_manifest.json";
+            f.write("queue-state/ds_prelight_cp_args_events.jsonl", "{\"kind\":\"cp_batch\"}\n");
+            DsLightingCaptureExport.Selection result = f.select();
+            check(problem(result, "REQUIRED_FILE_MISSING", manifest), "CP events require their own manifest");
+            check(!result.getRequiredComplete(), "CP missing manifest is incomplete");
+            f.write(manifest, "{\"required_files\":[");
+            result = f.select();
+            check(problem(result, "REQUIRED_JSON_PARSE_ERROR", manifest), "CP truncated manifest explicit");
+            check(!result.getRequiredComplete(), "CP truncated manifest is incomplete");
+        }
+    }
+    private static void indirectMissingOrTruncatedBlobIsIncomplete() throws Exception {
+        try (Fixture f = new Fixture()) {
+            String blob = "queue-state/ds_prelight_cp_args_first_zero_1_compute.bin";
+            JSONArray required = new JSONArray().put(new JSONObject().put("file", blob).put("bytes", 60));
+            f.write("queue-state/ds_prelight_cp_args_manifest.json", new JSONObject().put("required_files", required).toString());
+            DsLightingCaptureExport.Selection result = f.select();
+            check(problem(result, "REQUIRED_FILE_MISSING", blob), "exact pinned operand missing");
+            check(!result.getRequiredComplete(), "missing pinned operand is incomplete");
+            f.sized(blob, 20);
+            result = f.select();
+            check(problem(result, "REQUIRED_LENGTH_MISMATCH", blob), "truncated60byte operand explicit");
+            check(!result.getRequiredComplete(), "truncated pinned operand is incomplete");
+            f.sized(blob, 60);
+            result = f.select();
+            check(result.getRequiredComplete(), "a complete zero-capable operand is valid transport");
+        }
+    }
+
     private static void auditRealCapture(File root) throws Exception {
         DsLightingCaptureExport.Plan plan = DsLightingCaptureExport.discover(root, 0);
         DsLightingCaptureExport.Selection result = DsLightingCaptureExport.select(plan, Collections.emptyList());
-        check(!result.getRequiredComplete(), "known incomplete capture must remain incomplete");
         check(plan.firstDraw != null && plan.lossDraw != null, "historical cycle recovered");
         if (plan.firstDraw == 39624) {
+            check(!result.getRequiredComplete(), "#744 remains incomplete");
             check(plan.lossDraw == 40091, "#744 fixed witness end");
             Set<String> missing = new LinkedHashSet<>();
             for (DsLightingCaptureExport.Problem issue : result.problems)
@@ -312,7 +391,14 @@ public final class DsLightingCaptureExportFixtures {
                     "spv/vs_2337192397a30339_264e0ec02c0e9232.spv", "spv/vs_a7208481a1f2b760_a338dff0ce2abb1a.spv"));
             check(missing.equals(expected), "exact six missing #744 native modules");
             check(problem(result, "REQUIRED_FILE_MISSING", "guest-shaders/vs_557d65da5b786842_probe.bin"), "#744 main foreground VS source missing");
-        } else if (plan.firstDraw == 40367) check(plan.lossDraw == 40979, "#741 fixed witness end");
+        } else if (plan.firstDraw == 40367) {
+            check(!result.getRequiredComplete(), "#741 remains incomplete");
+            check(plan.lossDraw == 40979, "#741 fixed witness end");
+        } else if (plan.firstDraw == 55824) {
+            check(plan.lossDraw == 56618, "#745 fixed witness end");
+            check(result.getRequiredComplete(), "#745375-file transport is complete without implying an oracle verdict");
+            check(result.requiredPaths.size() == 375, "#745 retains all375 required files");
+        }
         else throw new AssertionError("unexpected historical cycle " + plan.firstDraw + " in " + root);
         System.out.println(DsLightingCaptureExport.summary(plan, result).toString(2));
     }

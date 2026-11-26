@@ -15,6 +15,7 @@
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/pipeline/walkReader.h"
+#include "graphics/host_gpu/renderer/demonsIndirectWitnessPolicy.h"
 
 #include <atomic>
 #include <map>
@@ -25,6 +26,7 @@
 #include <span>
 #include <utility>
 #include <vector>
+#include <nlohmann/json_fwd.hpp>
 
 namespace Libs::Graphics {
 
@@ -86,6 +88,20 @@ public:
 	[[nodiscard]] uint32_t MakeResident(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
     [[nodiscard]] Buffer* PeekVertexProducerBuffer(uint64_t address,uint64_t size);
+    // F-only diagnostics. Both state and reference use existing owners only;
+    // no FindBuffer/ObtainBuffer/upload/publication is initiated by the query.
+    [[nodiscard]] nlohmann::json IndirectWitnessState(uint64_t address,uint64_t bytes);
+    [[nodiscard]] nlohmann::json IndirectWitnessReference(uint64_t address,uint64_t bytes);
+    struct IndirectWitnessReadback {
+        std::unique_ptr<Buffer> download;
+        DemonsIndirectWitnessPolicy::CollectionBarrier barrier;
+        std::array<bool,3> native{};
+    };
+    [[nodiscard]] nlohmann::json QueueIndirectWitnessReference(uint64_t address,uint64_t bytes,
+        IndirectWitnessReadback& readback,uint32_t child);
+    void CollectIndirectWitnessReferences(IndirectWitnessReadback& readback,nlohmann::json& records);
+    void IndirectWitnessTransfer(const char* path,const char* phase,uint64_t destination,
+        uint64_t source,uint64_t bytes,uint64_t value=0);
 	// For an opted-in shader storage write that aliases a GPU-authored image,
 	// preserve its existing texels on the GPU before the writer takes ownership.
 	// Returns false when no safe full-copy path exists, retaining legacy handling.

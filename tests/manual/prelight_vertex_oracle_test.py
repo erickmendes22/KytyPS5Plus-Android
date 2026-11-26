@@ -306,6 +306,103 @@ class VertexOracleTest(unittest.TestCase):
         with self.assertRaisesRegex(oracle.Unsupported, '0x40.*unsupported instruction'):
             evaluator.position(program)
 
+    def expression(self, op, values, record=None):
+        record = record or fixture()
+        evaluator = oracle.Evaluator(MemoryCapture(), record, {}, oracle.position_rows(record), True)
+        expr = oracle.node(op, *(oracle.node('const', v) for v in values), pc=0x1234)
+        return evaluator.eval(expr), evaluator
+
+    def test_sdwa_comparison_explicit_destination_preserves_vcc_jitter(self):
+        # Actual #745 a720 instruction writes S16; the reference must never
+        # replace VCC with that unrelated normal/handedness comparison mask.
+        program = oracle.Program([(0x40, 8, 's_mov_b32 vcc_lo, 0x3f800000'),
+                                  (0x48, 8, 'v_cmp_lt_f32_sdwa s16, 0.5, v17 src0_sel:DWORD src1_sel:DWORD'),
+                                  (0x50, 4, 'v_mov_b32_e32 v0, vcc_lo'),
+                                  (0x54, 8, 'exp pos0 v0, v0, v0, v0 done')], {}, [])
+        evaluator = oracle.Evaluator(MemoryCapture(), fixture(), {}, oracle.position_rows(fixture()), True)
+        self.assertTrue(np.all(evaluator.position(program) == fwords([1])[0]))
+
+    def test_lshl_or_uses_low_five_shift_bits_and_uint32_result(self):
+        value, _ = self.expression('ulshl_or', [0x80000001, 40, 0x23])
+        self.assertEqual(int(value), 0x123)
+        value, _ = self.expression('ulshlrev', [33, 0x80000003])
+        self.assertEqual(int(value), 6)
+
+    def test_float_to_uint_is_saturating_truncation_with_nan_zero(self):
+        for source, expected in [(3.75, 3), (-3.75, 0), (float('inf'), 0xffffffff),
+                                 (-float('inf'), 0), (float('nan'), 0), (4294967296.0, 0xffffffff)]:
+            value, _ = self.expression('fcvt_u32', fwords([source]))
+            self.assertEqual(int(value), expected)
+
+    def test_integer_to_float_uses_signed_source(self):
+        value, _ = self.expression('icvt_f32', [0xffffffff])
+        self.assertEqual(int(value), fwords([-1.0])[0])
+
+    def test_omod_scales_whole_mac_not_only_product(self):
+        record = fixture()
+        record.update(vs_float_mode=192, vs_ieee_mode=False)
+        program = oracle.Program([(0x40, 4, 'v_mov_b32_e32 v0, 4.0'),
+                                  (0x44, 8, 'v_mac_f32_e64 v0, 1.5, 2.0 mul:2'),
+                                  (0x4c, 8, 'exp pos0 v0, v0, v0, v0 done')], {}, [])
+        evaluator = oracle.Evaluator(MemoryCapture(), record, {}, oracle.position_rows(record), True)
+        self.assertTrue(np.all(evaluator.position(program) == fwords([14])[0]))
+        self.assertEqual(evaluator.numeric_events['output_modifiers_applied'], 1)
+
+    def test_omod_ignored_with_ieee_or_output_denorms(self):
+        for mode, ieee in [(192, True), (0x20, False), (0x30, False)]:
+            record = fixture()
+            record.update(vs_float_mode=mode, vs_ieee_mode=ieee)
+            value, evaluator = self.expression('fomod', [1, fwords([2])[0]], record)
+            self.assertEqual(int(value), 1)  # no re-flushing after a disabled modifier
+            self.assertEqual(evaluator.numeric_events['output_modifiers_ignored'], 1)
+
+    def test_captured_fp32_mode_flushes_ordinary_denormals(self):
+        record = fixture()
+        record.update(vs_float_mode=192, vs_ieee_mode=False)
+        value, evaluator = self.expression('fmul', [1, fwords([2 ** 126])[0]], record)
+        self.assertEqual(int(value), 0)
+        self.assertEqual(evaluator.numeric_events['flushed_input_subnormals'], 1)
+
+    def test_mad_flushes_denormals_even_with_allow_mode(self):
+        record = fixture()
+        record.update(vs_float_mode=0x30, vs_ieee_mode=False)
+        value, evaluator = self.expression('fmad', [1, fwords([2 ** 126])[0], 0], record)
+        self.assertEqual(int(value), 0)
+        self.assertEqual(evaluator.numeric_events['flushed_input_subnormals'], 1)
+
+    def test_skipped_conditional_value_cannot_become_position_proof(self):
+        program = oracle.Program([(0x90, 4, 'v_mov_b32_e32 v0, 1.0'),
+                                  (0xc4, 8, 'exp pos0 v0, v0, v0, v0 done')],
+                                 {'conditional': (0x90, 0xc4)}, [])
+        evaluator = oracle.Evaluator(MemoryCapture(), fixture(), {}, oracle.position_rows(fixture()), True)
+        with self.assertRaisesRegex(oracle.Unsupported, 'conditional branch value'):
+            evaluator.position(program)
+
+    def test_reference_only_never_manufactures_native_observation(self):
+        inputs = fixture()
+        inputs.update(draw=inputs.pop('journal_draw'), vs_hash=inputs.pop('shader'), index_words=inputs.pop('indices'))
+        inputs.pop('rows')
+        inputs.pop('columns')
+        result = oracle.reference_without_native_position(MemoryCapture(), inputs, self.decoder)
+        self.assertEqual(result['status'], 'POSITION_REFERENCE_ONLY', result)
+        self.assertFalse(result['native_position_compared'])
+        self.assertNotIn('observed_bits', result['position_samples'][0])
+
+    def test_zero_indirect_arguments_do_not_require_native_positions(self):
+        inputs = {'draw': 10, 'vs_hash': SHADER, 'indexed': True, 'indirect': True}
+        events = [dict(kind='draw_prepared', seq=10, command=9, vs=int(SHADER, 16)),
+                  dict(kind='indirect_source', seq=11, command=9, bda=0x1000, indexed=True,
+                       max_count=1, words=[8907, 0, 0, 0, 0]),
+                  dict(kind='indirect_fixed', seq=12, command=9, source_bda=0x1000, count_bda=0,
+                       max_count=1, words=[8907, 0, 0, 0, 0]),
+                  dict(kind='draw_execute', seq=13, draw=10)]
+        result = oracle.zero_argument_reference(inputs, events)
+        self.assertEqual(result['status'], 'ZERO_EXECUTED_INVOCATIONS')
+        self.assertFalse(result['native_position_compared'])
+        self.assertFalse(result['p8_certificate'])
+        events[1]['words'][1] = events[2]['words'][1] = 1
+        self.assertIsNone(oracle.zero_argument_reference(inputs, events))
+
     def test_zip_api_retains_good_draw_when_another_draw_is_missing(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'capture.zip'

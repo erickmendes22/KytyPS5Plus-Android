@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/pipeline/demonsCountArithmeticProbe.h"
 #include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
+#include "graphics/host_gpu/renderer/demonsIndirectWitness.h"
 #include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
@@ -1353,7 +1354,8 @@ GpuPipeline::Prefetch RenderExecutor::PrefetchDispatchDirect(
 }
 
 static bool ReadDsGpuWordRanges(RenderContext& context, vk::Buffer source,
-                               std::span<vk::BufferCopy> copies, std::span<uint32_t> words) {
+                               std::span<vk::BufferCopy> copies, std::span<uint32_t> words,
+                               bool preserve_bindings = false) {
 	if (!source || copies.empty() || words.empty()) return false;
 	auto& scheduler = context.GetCommandScheduler();
 	auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
@@ -1377,7 +1379,12 @@ static bool ReadDsGpuWordRanges(RenderContext& context, vk::Buffer source,
 	command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
 	                        vk::PipelineStageFlagBits::eHost, {}, 1, &after,
 	                        0, nullptr, 0, nullptr);
-	scheduler.Finish();
+	// The CP producer capture runs inside a prepared dispatch. Finish also
+	// executes deferred fault/cache callbacks, which can replace its bound
+	// buffers. Wait completes the copy and keeps cleanup at the next GPU
+	// operation boundary; legacy diagnostic callers retain their behavior.
+	if (preserve_bindings) scheduler.Wait(scheduler.CurrentTick());
+	else scheduler.Finish();
 	download.Invalidate(dest, size);
 	auto* output = reinterpret_cast<uint8_t*>(words.data());
 	for (auto& copy: copies) {
@@ -1388,9 +1395,9 @@ static bool ReadDsGpuWordRanges(RenderContext& context, vk::Buffer source,
 }
 
 static bool ReadDsGpuWords(RenderContext& context, vk::Buffer source, uint64_t offset,
-                           std::span<uint32_t> words) {
+                           std::span<uint32_t> words, bool preserve_bindings = false) {
 	vk::BufferCopy copy {offset, 0, words.size_bytes()};
-	return ReadDsGpuWordRanges(context, source, std::span {&copy, 1}, words);
+	return ReadDsGpuWordRanges(context, source, std::span {&copy, 1}, words, preserve_bindings);
 }
 
 static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
@@ -3193,6 +3200,348 @@ static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
 	std::vector<uint32_t> words(count);
 	if (!ReadDsGpuWords(context, native.buffer, native.offset + adjustment, words)) words.clear();
 	return words;
+}
+
+// This acquisition follows the actual indexed-indirect stream learned by the
+// CP. A writable descriptor is a candidate, never a certificate of a store.
+// Keep its consumed scalar inputs and native buffer operands before dispatch;
+// only a retained producer generation owns a persistent operand blob.
+struct DsIndirectProducerCapture {
+    struct Stream {
+        DemonsIndirectWitness::Target target;
+        vk::Buffer native {};
+        uint64_t offset = 0;
+        nlohmann::json before;
+        uint64_t before_seq = 0;
+    };
+    std::vector<Stream> streams;
+    nlohmann::json inputs;
+    std::vector<uint8_t> operand_bytes;
+};
+
+static nlohmann::json DsIndirectProducerTarget(RenderContext& context,
+    DemonsIndirectWitness::Target target, vk::Buffer native, uint64_t offset) {
+    auto& cache = context.GetBufferCache();
+    nlohmann::json out = {{"address", target.address}, {"bytes", target.bytes},
+        {"stream_id", target.stream_id}, {"epoch_before", DemonsIndirectWitness::Epoch(target.stream_id)},
+        {"tick_before", context.GetCommandScheduler().CurrentTick()},
+        {"mapping_epoch_before", cache.UnregisterEpoch()},
+        {"gpu_dirty_generation_before", cache.GpuDirtyGeneration()},
+        {"gpu_dirty", cache.HasGpuDirtyBytes(target.address, target.bytes)},
+        {"pending_publication", cache.HasPendingBackingPublication(target.address, target.bytes)},
+        {"cpu_modified", cache.IsRegionCpuModified(target.address, target.bytes)},
+        {"gpu_modified", cache.IsRegionGpuModified(target.address, target.bytes)},
+        {"capture_status", "native_buffer_missing"}, {"readback_wait", false}};
+    // No ObtainBuffer/ReadMemory here: a diagnostic must not manufacture a
+    // publication while trying to observe the producer's existing allocation.
+    if (target.bytes == DemonsIndirectWitness::BatchBytes) {
+        std::array<uint32_t, 15> backing {};
+        const bool backing_ok = LibKernel::Memory::TryReadBacking(target.address, backing.data(), target.bytes);
+        out["backing_read_ok"] = backing_ok;
+        if (backing_ok) out["backing_words"] = backing;
+        out["native_source"] = native ? "bound_writer_descriptor" : "existing_cache_allocation";
+        if (!native) if (auto* source = cache.PeekVertexProducerBuffer(target.address, target.bytes)) {
+            native = source->Handle();
+            offset = source->Offset(target.address);
+        }
+        if (native) {
+            out["native_buffer"] = std::hash<VkBuffer>{}(static_cast<VkBuffer>(native));
+            out["native_offset"] = offset;
+            std::array<uint32_t, 15> words {};
+            const bool ok = !(offset & 3u) && ReadDsGpuWords(context, native, offset, words, true);
+            out["readback_wait"] = !(offset & 3u);
+            out["capture_status"] = ok ? "complete" : "native_read_failed_or_unaligned";
+            if (ok) out["native_words"] = words;
+        }
+    } else {
+        out["capture_status"] = "unexpected_target_size";
+    }
+    out["epoch_after"] = DemonsIndirectWitness::Epoch(target.stream_id);
+    out["mapping_epoch_after"] = cache.UnregisterEpoch();
+    out["gpu_dirty_generation_after"] = cache.GpuDirtyGeneration();
+    out["tick_after"] = context.GetCommandScheduler().CurrentTick();
+    return out;
+}
+
+struct DsIndirectOperandSlice {
+    vk::Buffer buffer {};
+    uint64_t offset = 0, copy_bytes = 0, skip = 0, bytes = 0;
+    size_t binding = 0;
+};
+
+static bool ReadDsIndirectOperandSlices(RenderContext& context,
+    std::span<const DsIndirectOperandSlice> slices, std::vector<uint8_t>& result) {
+    if (slices.empty()) return true;
+    uint64_t total = 0, payload = 0;
+    for (const auto& slice : slices) {
+        if (!slice.buffer || !slice.copy_bytes || (slice.offset & 3u) || (slice.copy_bytes & 3u) ||
+            slice.skip + slice.bytes > slice.copy_bytes ||
+            slice.copy_bytes > DemonsIndirectWitness::GenerationBudget + 4096u - total) return false;
+        total += slice.copy_bytes;
+        payload += slice.bytes;
+    }
+    auto& scheduler = context.GetCommandScheduler();
+    auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+    auto [mapped, destination] = download.Map(total, 16u, true);
+    if (!mapped) return false;
+    download.Commit();
+    scheduler.EndRendering(PassEnd::Buffer);
+    const auto command = scheduler.Current().Handle();
+    vk::MemoryBarrier before {};
+    before.srcAccessMask = vk::AccessFlagBits::eMemoryWrite;
+    before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer,
+        {}, 1, &before, 0, nullptr, 0, nullptr);
+    uint64_t offset = 0;
+    for (const auto& slice : slices) {
+        const vk::BufferCopy copy {slice.offset, destination + offset, slice.copy_bytes};
+        command.copyBuffer(slice.buffer, download.Handle(), 1, &copy);
+        offset += slice.copy_bytes;
+    }
+    vk::MemoryBarrier after {};
+    after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+    after.dstAccessMask = vk::AccessFlagBits::eHostRead;
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost,
+        {}, 1, &after, 0, nullptr, 0, nullptr);
+    scheduler.Wait(scheduler.CurrentTick());
+    download.Invalidate(destination, total);
+    result.reserve(payload);
+    offset = 0;
+    for (const auto& slice : slices) {
+        const auto* first = static_cast<const uint8_t*>(mapped) + offset + slice.skip;
+        result.insert(result.end(), first, first + slice.bytes);
+        offset += slice.copy_bytes;
+    }
+    return true;
+}
+
+static DsIndirectProducerCapture BeginDsIndirectProducer(RenderContext& context,
+    const PreparedBindings& bindings, const ShaderComputeInputInfo& input, uint64_t submit,
+    vk::ShaderModule module, std::array<uint32_t, 3> groups, bool indirect = false,
+    uint64_t args_address = 0, vk::Buffer args_buffer = {}, uint64_t args_offset = 0) {
+    namespace Witness = DemonsIndirectWitness;
+    DsIndirectProducerCapture cap;
+    if (!Witness::Enabled() || !bindings.runtime || !bindings.runtime->program || !bindings.runtime->resources)
+        return cap;
+    const auto& program = *bindings.runtime->program;
+    const auto& snapshot = *bindings.runtime->resources;
+    const auto targets = Witness::TargetRanges();
+    for (const auto target : targets) {
+        bool candidate = false;
+        vk::Buffer target_native {};
+        uint64_t target_offset = 0;
+        for (const auto& resource : program.info.buffers) {
+            if (!resource.written || resource.descriptor_index >= bindings.buffer_sources.size()) continue;
+            const auto slot = resource.descriptor_index;
+            const auto& source = bindings.buffer_sources[slot];
+            if (!DemonsIndirectWitnessPolicy::Overlap(source.address, source.size, target.address, target.bytes)) continue;
+            candidate = true;
+            const uint64_t word = uint64_t{program.bindings.memory_offset_dword} + slot / 4u;
+            if (target_native || slot >= bindings.buffers.size() || word >= bindings.shader_data.size() ||
+                target.address < source.address || target.address - source.address > source.size ||
+                target.bytes > source.size - (target.address - source.address)) continue;
+            const auto& native = bindings.buffers[slot];
+            const uint64_t adjustment = (bindings.shader_data[word] >> ((slot % 4u) * 8u)) & 255u;
+            const uint64_t relative = target.address - source.address;
+            if (!native.buffer || native.range == VK_WHOLE_SIZE || adjustment > native.range ||
+                relative > native.range - adjustment || target.bytes > native.range - adjustment - relative ||
+                native.offset > UINT64_MAX - native.range) continue;
+            target_native = native.buffer;
+            target_offset = native.offset + adjustment + relative;
+        }
+        if (candidate) cap.streams.push_back({target, target_native, target_offset, {}, 0});
+    }
+    if (cap.streams.empty()) {
+        // BDA can compute an address absent from every bound descriptor. This
+        // is an explicit limitation, not a reason to read unrelated resources.
+        static std::vector<std::pair<uint64_t, uint64_t>> unresolved;
+        if (program.info.bda_writes) for (const auto target : targets) {
+            const std::pair key {program.shader_hash, target.stream_id};
+            if (std::ranges::find(unresolved, key) != unresolved.end()) continue;
+            unresolved.push_back(key);
+            Witness::Record({{"kind", "producer_unresolved"}, {"path", "compute_bda"},
+                {"stream_id", target.stream_id}, {"address", target.address}, {"bytes", target.bytes},
+                {"shader", program.shader_hash}, {"submit", submit},
+                {"tick", context.GetCommandScheduler().CurrentTick()},
+                {"reason", "bda_target_not_proven_no_readback"}, {"candidate_only", true}});
+        }
+        return cap;
+    }
+    const auto bound = ShaderDump::ModuleFile(module);
+    const auto original = ShaderDump::ModuleOriginalFile(module);
+    const auto guest = fmt::format("guest-shaders/cs_{:016x}_probe.bin", program.shader_hash);
+    Witness::RegisterRequired(bound);
+    Witness::RegisterRequired(original);
+    Witness::RegisterRequired(guest);
+    const auto recorded_groups = groups;
+    bool groups_valid = true;
+    if (args_buffer) groups_valid = ReadDsGpuWords(context, args_buffer, args_offset, groups, true);
+    auto dispatch_groups = groups;
+    if (!indirect) dispatch_groups[0] /= std::max(program.info.group_pack, 1u);
+    cap.inputs = {{"shader", program.shader_hash}, {"shader_hex", fmt::format("{:016x}", program.shader_hash)},
+        {"native_cs_file", bound}, {"original_cs_file", original}, {"guest_cs_file", guest},
+        {"module_identity_complete", !bound.empty() && !original.empty()},
+        {"frame", context.GetGpu().GetFrameNum()}, {"submit", submit},
+        {"groups", groups}, {"groups_valid", groups_valid}, {"group_pack", program.info.group_pack},
+        {"recorded_groups", recorded_groups}, {"dispatch_groups", dispatch_groups},
+        {"groups_domain", indirect ? "native_dispatch" : "guest_before_group_pack"},
+        {"threads", std::array{input.threads_num[0], input.threads_num[1], input.threads_num[2]}},
+        {"dispatch_threads", std::array{input.dispatch_threads_num[0], input.dispatch_threads_num[1], input.dispatch_threads_num[2]}},
+        {"wave_size", input.wave_size}, {"host_subgroup_size", input.host_subgroup_size},
+        {"lds_size_dwords", input.lds_size_dwords}, {"scratch_size_dwords", input.scratch_size_dwords},
+        {"float_mode", input.float_mode}, {"indirect", indirect}, {"args_guest", args_address},
+        {"args_native_buffer", std::hash<VkBuffer>{}(static_cast<VkBuffer>(args_buffer))},
+        {"args_native_offset", args_offset}, {"args_source", args_buffer ? "native_indirect" : "recorded_cpu_groups"},
+        {"bda_writes", program.info.bda_writes}, {"uses_dma", program.info.uses_dma},
+        {"bda_operands_complete", !program.info.uses_dma && !program.info.bda_writes},
+        {"gds_operands_complete", !program.info.uses_gds},
+        {"image_operands_complete", program.info.images.empty()},
+        {"user_data", snapshot.user_data}, {"srt", snapshot.flattened_srt}, {"shader_data", bindings.shader_data},
+        {"scalar_capture_complete", snapshot.diagnostic_scalar_complete},
+        {"user_data_base", snapshot.diagnostic_user_data_base},
+        {"scalar_regions", nlohmann::json::array()}, {"bindings", nlohmann::json::array()},
+        {"images", nlohmann::json::array()}, {"samplers", nlohmann::json::array()},
+        {"buffers_complete", true}, {"operand_tick_before", context.GetCommandScheduler().CurrentTick()},
+        {"operand_mapping_epoch_before", context.GetBufferCache().UnregisterEpoch()},
+        {"operand_gpu_dirty_generation_before", context.GetBufferCache().GpuDirtyGeneration()}};
+    for (const auto& read : snapshot.diagnostic_scalar_reads)
+        cap.inputs["scalar_regions"].push_back({{"address", read.address}, {"bytes", read.words.size() * 4u},
+            {"read_kind", read.kind == 0 ? "host" : read.kind == 1 ? "specialization" : read.kind == 4 ? "ordinary" : "branch"},
+            {"source", "consumed_srt"}, {"words", read.words}});
+    for (const auto& descriptor : snapshot.images) cap.inputs["images"].push_back(descriptor.dwords);
+    for (const auto& descriptor : snapshot.samplers) cap.inputs["samplers"].push_back(descriptor.dwords);
+
+    uint64_t budget = Witness::GenerationBudget;
+    for (auto& stream : cap.streams) {
+        budget = std::min(budget, Witness::ProducerBlobCapacity(stream.target.stream_id));
+        stream.before = DsIndirectProducerTarget(context, stream.target, stream.native, stream.offset);
+    }
+    cap.inputs["operand_budget_bytes"] = budget;
+    std::vector<DsIndirectOperandSlice> slices;
+    uint64_t used = 0;
+    for (uint32_t slot = 0; slot < bindings.buffer_sources.size(); ++slot) {
+        const auto& source = bindings.buffer_sources[slot];
+        bool read = false, written = false, atomic = false;
+        uint32_t resource_index = UINT32_MAX;
+        for (uint32_t ordinal = 0; ordinal < program.info.buffers.size(); ++ordinal) {
+            const auto& resource = program.info.buffers[ordinal];
+            if (resource.descriptor_index != slot) continue;
+            read |= resource.read; written |= resource.written; atomic |= resource.atomic;
+            resource_index = ordinal;
+        }
+        nlohmann::json entry = {{"slot", slot}, {"address", source.address}, {"bytes", source.size},
+            {"read", read}, {"written", written}, {"atomic", atomic}, {"captured_bytes", 0},
+            {"capture_status", "not_read_by_shader"}};
+        // Snapshot order is guest resource order, while native descriptor
+        // slots place storage/chunks before UBOs and omit dead resources.
+        if (resource_index < snapshot.buffers.size()) {
+            entry["resource_index"] = resource_index;
+            entry["descriptor"] = snapshot.buffers[resource_index].dwords;
+        }
+        if (slot < bindings.buffers.size()) {
+            const auto& native = bindings.buffers[slot];
+            entry["native_buffer"] = std::hash<VkBuffer>{}(static_cast<VkBuffer>(native.buffer));
+            entry["native_offset"] = native.offset;
+            entry["native_range"] = native.range;
+            const uint64_t word = uint64_t{program.bindings.memory_offset_dword} + slot / 4u;
+            if (word < bindings.shader_data.size())
+                entry["byte_adjustment"] = (bindings.shader_data[word] >> ((slot % 4u) * 8u)) & 255u;
+        }
+        if ((read || atomic) && source.size) {
+            entry["capture_status"] = "native_binding_missing";
+            if (slot < bindings.buffers.size()) {
+                const auto& native = bindings.buffers[slot];
+                const uint64_t offset_word = uint64_t{program.bindings.memory_offset_dword} + slot / 4u;
+                if (native.buffer && native.range != VK_WHOLE_SIZE && offset_word < bindings.shader_data.size()) {
+                    const auto adjustment = (bindings.shader_data[offset_word] >> ((slot % 4u) * 8u)) & 255u;
+                    entry["native_buffer"] = std::hash<VkBuffer>{}(static_cast<VkBuffer>(native.buffer));
+                    entry["native_offset"] = native.offset;
+                    entry["native_range"] = native.range;
+                    entry["byte_adjustment"] = adjustment;
+                    entry["capture_status"] = "native_bounds_or_alignment";
+                    if (adjustment <= native.range && source.size <= native.range - adjustment &&
+                        native.offset <= UINT64_MAX - native.range && source.size <= UINT64_MAX - 6u) {
+                        const uint64_t start = native.offset + adjustment;
+                        const uint64_t skip = start & 3u;
+                        const uint64_t length = (skip + source.size + 3u) & ~uint64_t{3};
+                        if ((start & ~uint64_t{3}) >= native.offset && length <= native.range - adjustment + skip) {
+                            if (source.size > budget - used) entry["capture_status"] = "generation_budget_exceeded";
+                            else {
+                                entry["capture_status"] = "pending_batch";
+                                entry["offset_bytes"] = used;
+                                slices.push_back({native.buffer, start & ~uint64_t{3}, length, skip, source.size,
+                                    cap.inputs["bindings"].size()});
+                                used += source.size;
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (!source.size) entry["capture_status"] = "empty";
+        cap.inputs["bindings"].push_back(std::move(entry));
+    }
+    const bool read_ok = ReadDsIndirectOperandSlices(context, slices, cap.operand_bytes);
+    for (const auto& slice : slices) {
+        auto& entry = cap.inputs["bindings"][slice.binding];
+        entry["capture_status"] = read_ok ? "complete" : "native_read_failed";
+        entry["captured_bytes"] = read_ok ? slice.bytes : 0;
+    }
+    for (const auto& entry : cap.inputs["bindings"])
+        if ((entry["read"].get<bool>() || entry["atomic"].get<bool>()) && entry["bytes"].get<uint64_t>() &&
+            entry["capture_status"] != "complete") cap.inputs["buffers_complete"] = false;
+    cap.inputs["operand_tick_after"] = context.GetCommandScheduler().CurrentTick();
+    cap.inputs["operand_mapping_epoch_after"] = context.GetBufferCache().UnregisterEpoch();
+    cap.inputs["operand_gpu_dirty_generation_after"] = context.GetBufferCache().GpuDirtyGeneration();
+    cap.inputs["operand_blob_bytes"] = cap.operand_bytes.size();
+    cap.inputs["operand_blob_fnv1a64"] = Witness::Digest(cap.operand_bytes);
+    for (auto& stream : cap.streams) {
+        auto event = cap.inputs;
+        event["kind"] = "producer"; event["phase"] = "before";
+        event["path"] = "compute_descriptor_candidate"; event["candidate_only"] = true;
+        event["stream_id"] = stream.target.stream_id;
+        event["epoch"] = Witness::Epoch(stream.target.stream_id);
+        event["target"] = stream.before;
+        stream.before_seq = Witness::Record(std::move(event));
+        Witness::Mutation(stream.target.address, stream.target.bytes, "compute_descriptor_candidate");
+    }
+    return cap;
+}
+
+static void EndDsIndirectProducer(RenderContext& context, DsIndirectProducerCapture&& cap) {
+    namespace Witness = DemonsIndirectWitness;
+    static std::vector<uint64_t> retained_streams;
+    for (const auto& stream : cap.streams) {
+        auto after = DsIndirectProducerTarget(context, stream.target, stream.native, stream.offset);
+        const bool complete = stream.before.contains("native_words") && after.contains("native_words");
+        const bool changed = complete && stream.before["native_words"] != after["native_words"];
+        const bool first = std::ranges::find(retained_streams, stream.target.stream_id) == retained_streams.end();
+        bool retained = false;
+        nlohmann::json artifact = {{"status", "not_retained_unchanged"}};
+        if (changed || first) {
+            Witness::BeginProducer(stream.target.stream_id);
+            const auto name = fmt::format("ds_prelight_cp_args_current_{}_compute.bin", stream.target.stream_id);
+            retained = cap.operand_bytes.empty() || Witness::SaveBlob(name, cap.operand_bytes);
+            artifact = {{"status", retained ? "retained" : "blob_budget_or_io_error"},
+                {"bytes", cap.operand_bytes.size()}, {"fnv1a64", Witness::Digest(cap.operand_bytes)}};
+            // A current name is mutable provenance. Only the header's pinned
+            // files/required manifest are file dependencies with exact length.
+            if (!cap.operand_bytes.empty()) artifact["artifact_name"] = "queue-state/" + name;
+            if (retained && first) retained_streams.push_back(stream.target.stream_id);
+        }
+        const bool same_mapping = complete && stream.before["native_buffer"] == after["native_buffer"] &&
+            stream.before["native_offset"] == after["native_offset"] &&
+            stream.before["mapping_epoch_after"] == after["mapping_epoch_before"];
+        Witness::Record({{"kind", "producer"}, {"phase", "after"},
+            {"path", "compute_descriptor_candidate"}, {"candidate_only", true},
+            {"stream_id", stream.target.stream_id}, {"before_seq", stream.before_seq},
+            {"epoch", Witness::Epoch(stream.target.stream_id)},
+            {"shader", cap.inputs["shader"]}, {"submit", cap.inputs["submit"]},
+            {"frame", cap.inputs["frame"]}, {"target_before", stream.before}, {"target_after", after},
+            {"target_bytes_comparable", complete}, {"target_bytes_changed", changed},
+            {"same_native_mapping", same_mapping}, {"retained", retained}, {"operand_blob", artifact},
+            {"inputs", retained ? cap.inputs : nlohmann::json{}},
+            {"scope", "observed before/after dispatch; descriptor overlap alone does not prove a store or last writer"}});
+    }
 }
 
 struct DsVertexProducerCapture{
@@ -5155,6 +5504,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
     DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,false);
     if(DemonsPrelightTrace::Enabled()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
         CaptureDsLightBridge(m_context,bindings,submit_id,{thread_group_x,thread_group_y,thread_group_z},true,true);
+	auto indirect_producer = BeginDsIndirectProducer(m_context, bindings, input_info, submit_id,
+	    compute_program.module, {thread_group_x, thread_group_y, thread_group_z});
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
@@ -5257,6 +5608,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// Record the shader barriers and diagnostics before the BDA settle submits the
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+    EndDsIndirectProducer(m_context, std::move(indirect_producer));
 	EndDsCountProducer(m_context,bindings,std::move(count_producer_trace),
 	                   {thread_group_x,thread_group_y,thread_group_z});
     SaveDsRelightTrace(m_context,bindings,submit_id,relight_trace);
@@ -5677,6 +6029,9 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
     DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,true,args_addr);
     if(DemonsCausalMatrix::Evidence()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
         CaptureDsLightBridge(m_context,bindings,submit_id,{1,1,1},true,true);
+	auto indirect_producer = BeginDsIndirectProducer(m_context, bindings, input_info, submit_id,
+	    compute_program.module, {args.x, args.y, args.z}, true, args_addr,
+	    split_on_cpu ? vk::Buffer{} : indirect_buffer, indirect_offset);
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
 	const auto vk_buffer = buffer.Handle();
@@ -5731,8 +6086,11 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		host_read.dstAccessMask = vk::AccessFlagBits::eHostRead;
 		vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
 		                          vk::PipelineStageFlagBits::eHost, {}, 1, &host_read, 0, nullptr, 0, nullptr);
-		ReadDsLightMath(*queue_capture, submit_id, bindings);
 	}
+    EndDsIndirectProducer(m_context, std::move(indirect_producer));
+	// Keep the exact producer bindings alive until their after snapshot;
+	// the older light-math Finish() may run deferred cache callbacks.
+	if (light_math_sample) ReadDsLightMath(*queue_capture, submit_id, bindings);
 	EndDsCountProducer(m_context,bindings,std::move(count_producer_trace),{args.x,args.y,args.z},
 	                   split_on_cpu ? vk::Buffer {} : indirect_buffer,indirect_offset);
     SaveDsRelightTrace(m_context,bindings,submit_id,relight_trace);

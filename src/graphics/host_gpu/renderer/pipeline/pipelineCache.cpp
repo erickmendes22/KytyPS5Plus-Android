@@ -595,6 +595,13 @@ struct PipelineCache::ProgramCache {
 			}
 		}
 		auto program = std::move(result.program).TakeCompiledInfo();
+		// Pair every captured compute/vertex permutation with the executable
+		// that existed before diagnostic stores were inserted. The producer
+		// witness uses the bound handle to recover this exact original.
+		const auto original_file = ShaderDump::DsDecisionCapture() &&
+		    (options.stage == ShaderType::Compute || options.stage == ShaderType::Vertex)
+		    ? ShaderDump::RecordUninstrumentedModule(stage_name, options.shader_hash, result.spirv)
+		    : std::string{};
 		const auto* trace = std::getenv("KYTY_DS_COLOR_PROBE_TARGETED");
 		if ((options.shader_hash == DemonsLightMathProbe::Shader || options.shader_hash == DemonsCountExecProbe::Shader) && trace && trace[0] == '1' &&
 		    trace[1] == '\0') {
@@ -675,8 +682,6 @@ struct PipelineCache::ProgramCache {
 		const bool legacy_vertex = !ShaderDump::DsDecisionCapture() &&
 		    DemonsVertexPositionProbe::Watched(options.shader_hash);
 		if ((decision_vertex || legacy_vertex) && trace && std::strcmp(trace,"1")==0) {
-            if (decision_vertex)
-                ShaderDump::RecordUninstrumentedModule("vs", options.shader_hash, result.spirv);
             constexpr auto kind=ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
             constexpr auto slot=static_cast<size_t>(kind);
             const auto fp=XXH3_64bits(result.spirv.data(),result.spirv.size()*sizeof(uint32_t));
@@ -725,7 +730,7 @@ struct PipelineCache::ProgramCache {
 				}
 			}
 		}
-		ShaderDump::RecordModule(module, stage_name, options.shader_hash, result.spirv);
+		ShaderDump::RecordModule(module, stage_name, options.shader_hash, result.spirv, original_file);
 		if (options.dump_ir) {
 			LOGF("%s SPIR-V words=%" PRIu64 " wave_size=%u\n", options.dump_label,
 			     static_cast<uint64_t>(result.spirv.size()), options.wave_size);

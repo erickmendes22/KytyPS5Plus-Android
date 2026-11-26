@@ -2,26 +2,44 @@
 References: Jetsku dd9f990 (#130 documents fog-transition crash), Chenxiao07
 66cdb39 (v20261016 family reports gameplay, no identical GPU capture).
 
-## Continuidade executável após #744 — 26/11/2026
+## Continuidade executável após #745 — 26/11/2026
 
 Entrega técnica: **#745 / `4a94749`**, APK assinado com a identidade estável,
 versionCode 845, compilação e auditoria concluídas.
 [Registro de verificação](DEMONS_APK_745_VERIFICATION.md).
-Gameplay #745 ainda não observado; a última evidência no aparelho é #744.
+Gameplay #745 registrado no ZIP `20261126-132544`, modo F.
+[Resultado completo](DEMONS_APK_745_RESULTS.md): 375/375 arquivos obrigatórios,
+zero buffers declarados ausentes, 45/45 POS0 comparáveis iguais bit a bit
+(73.580 vértices / 294.320 componentes). A máscara de perda pelo céu também
+foi reproduzida com os operandos novos: 1.439.342 pixels e 658 preservados.
 
-Mesmo caso e mesmo ciclo: #741 40367→40979; #744 39624→40091.
+Próxima fronteira da mesma cadeia: batch CPU `0x21de00078`, três records de
+20 bytes. Comando 54823 usa 98.304 índices no primeiro record; 55986/56594
+usam zero, com uma instância. O fallback existia nos dois extremos e não é
+por si só defeito. Não há fonte nativa/versão desses 60 bytes no ZIP.
+Comparar bytes realmente consumidos com a versão independente antes de
+investigar o produtor do zero; preservar ambos extremos e as transferências
+observadas. Leitura coincidente poda essa aresta local; leitura divergente
+com identidade/ordem válidas fixa publicação/decodificação. Não usar um
+espelho Vulkan CPU-dirty como autoridade nem um fault como último store.
+[Aquisição, orçamento e controles de decisão](DEMONS_CP_INDIRECT_CAPTURE.md).
+
+Mesmo caso e ciclos correspondentes: #741 40367→40979; #744 39624→40091;
+#745 55824→56618, recalculado com os operandos dessa execução.
 A autorização de aquisição não depende de já conhecer a resposta global.
 Foi removido do auditor o veto constante à compilação, preservando os estados
 de evidência: ainda não há uma divisão global P8 demonstrada nem uma correção
 de iluminação comprovada.
 
-| Aresta | Resultado reutilizável | Ação desta revisão |
+### Aquisição implementada na #745 e verificada com o diagnóstico novo
+
+| Aresta | Lacuna anterior | Resultado da #745 |
 | --- | --- | --- |
-| Clear executado → retenção do primeiro input | O clear aparece após AcquireRenderTargets em ambos os ZIPs; o seletor anterior perdia o início. | Admitir o input pendente depois de zerar o orçamento do ciclo anterior; contar JSON e bytes binários juntos. |
-| ISA guest → POS0 nativo do céu | Referência numérica independente: 152/152 componentes bit a bit na #744, com o contrato de ligação legado explicitado. | Preservar certificado local; expandir a mesma comparação aos draws anteriores do mesmo ciclo com endereços SRT reais. |
-| POS0 do céu → D32/material | Replay integral da máscara já validado, sem divergência de cobertura. | Reutilizar posições e snapshots; não pedir outra build só para confirmar o céu. |
-| Operandos foreground → POS0 | Os bytes/índices e vários shaders não foram exportados na #744. | Capturar buffers ligados em lote, SRT consumida, índices completos e POS0 por draw. Comparador retorna MATCH/DIVERGENCE/UNSUPPORTED por operação. |
-| Captura local → ZIP | Limites take48/take96/take24 podiam remover dependências; allowlist omitira VS557d e materiais usados. | Fechar dependências obrigatórias antes dos opcionais, registrar tamanho/SHA-256/ausência e verificar o exportador real com os ZIPs existentes. |
+| Clear executado → retenção do primeiro input | O seletor anterior perdia o primeiro input após o clear. | Ciclo completo com 50 inputs, incluindo o primeiro após o clear executado. |
+| ISA guest → POS0 nativo do céu | A #744 certificava 152 componentes; os novos operandos exigiam recálculo. | Comparação bit a bit repetida com os dados da #745, integrada aos 45 draws certificados. |
+| POS0 do céu → D32/material | A máscara da #744 não pode substituir a da execução seguinte. | 1.439.342 pixels de depth alterados, complemento exato dos 658 pixels RGB não zero. |
+| Operandos foreground → POS0 | Bytes/índices e vários shaders não foram exportados na #744. | 45 draws / 73.580 vértices / 294.320 componentes coincidem; os outros cinco têm classificação explícita. |
+| Captura local → ZIP | Seleção e limites antigos removiam dependências. | 375/375 dependências obrigatórias; 608/608 arquivos com tamanho e SHA-256 conferidos. |
 
 O log SRT observa o retorno dos callbacks originais, incluindo o leitor
 ordinário usado pelo caminho Android; não relê a memória depois do consumo.

@@ -1,5 +1,6 @@
 #include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
+#include "graphics/host_gpu/renderer/demonsIndirectWitness.h"
 #include "kernel/addressFold.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsVertexPositionProbe.h"
@@ -1579,6 +1580,7 @@ void DemonsPrelightTrace::ObserveCompute(RenderContext& context,const PreparedBi
                         meta["image_after_sample"]=Identity(image);
                         const bool edge=ObservePopulation(frame,queue,nonzero,uint64_t{full.width}*full.height);
                         if(edge){
+                            DemonsIndirectWitness::SealAtLoss(frame,queue);
                             std::error_code ec;std::filesystem::create_directories(Folder(),ec);
                             const auto save=[](const char* name,const std::vector<uint32_t>& words){
                                 if(words.empty())return false;
@@ -6121,6 +6123,9 @@ bool RenderExecutor::DrawIndirect(uint64_t submit_id, CommandBuffer& buffer,
         args.args_addr,args.count_addr,args.stride,args.index_buffer_size));
 	if (const char* reason = IndirectDrawUnsupported(buffer, args); reason != nullptr) {
         ds_cmd.outcome="cpu_fallback";
+        DemonsIndirectWitness::NoteFallback(args.args_addr, reason,
+            DemonsPrelightTrace::command_seq, submit_id,
+            m_context.GetCommandScheduler().CurrentTick());
 		LogIndirectFallback(reason);
 		return false;
 	}
@@ -6178,6 +6183,9 @@ bool RenderExecutor::DrawIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	if (stage_reason != nullptr) {
         ds_cmd.outcome="cpu_fallback";
+        DemonsIndirectWitness::NoteFallback(args.args_addr, stage_reason,
+            DemonsPrelightTrace::command_seq, submit_id,
+            m_context.GetCommandScheduler().CurrentTick());
 		ResetBindings();
 		LogIndirectFallback(stage_reason);
 		return false;

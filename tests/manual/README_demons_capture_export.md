@@ -39,8 +39,18 @@ The budget fixture contains 40 MiB representing existing queue evidence,
 fit before optional files consume the remaining 160 MiB total/128 MiB queue
 budgets.
 
+The indirect-stream fixtures retain the current producer plus the last nonzero
+and first zero generations (24 MiB total), even when the producer precedes the
+root journal's draw window. Their own CP manifest closes native/original/guest
+shader files and pinned binary operands. Missing or truncated CP manifests and
+operands remain incomplete. A mutable producer `artifact_name`/`source_name`
+records provenance; immutable `file` entries and their exact sizes define the
+export dependencies. A zero command remains valid input.
+
 Historical assertions preserve the #741 cycle 40367→40979 and #744 cycle
 39624→40091. #744 must report the six known native SPIR-V omissions and the
 missing `vs_557d65da5b786842` guest source. Neither historical capture can be
-reported as complete. The local script does not download dependencies, alter
+reported as complete. The additional #745 case is 55824→56618 and must retain
+all375 required files with complete transport, without claiming P8. The local
+script does not download dependencies, alter
 evidence, launch gameplay, build an APK or assert a rendering-oracle result.

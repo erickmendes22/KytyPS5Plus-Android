@@ -27,6 +27,7 @@ namespace {
 
 struct DumpedModule {
 	std::string file;
+	std::string original_file;
 	uint64_t    guest_hash = 0;
 };
 
@@ -260,7 +261,7 @@ void RecordDsProbeGuestCode(uint64_t hash, std::span<const uint32_t> code, const
 }
 
 void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t guest_hash,
-                  std::span<const uint32_t> spirv) {
+                  std::span<const uint32_t> spirv, const std::string& original_file) {
 	if (!Enabled() || module == nullptr ||
 	    (DsLightingCapture() && !DsDecisionCapture() && !DsLightingShader(guest_hash) &&
 	     !DemonsDominantGeometry::Watched(guest_hash) &&
@@ -275,7 +276,9 @@ void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t gues
 	const auto file = WriteModule(state, stage_name, guest_hash, spirv);
 	// Retain the identity even on failure so a required dependency cannot
 	// disappear as an empty filename in the witness or export inventory.
-	state.modules[static_cast<VkShaderModule>(module)] = {.file = file, .guest_hash = guest_hash};
+	state.modules[static_cast<VkShaderModule>(module)] = {
+	    .file = file, .original_file = original_file.empty() ? file : original_file,
+	    .guest_hash = guest_hash};
 }
 
 std::string RecordUninstrumentedModule(const char* stage_name, uint64_t guest_hash,
@@ -292,6 +295,14 @@ std::string ModuleFile(vk::ShaderModule module) {
     std::scoped_lock lock(state.mutex);
     const auto it=state.modules.find(static_cast<VkShaderModule>(module));
     return it==state.modules.end()?std::string{}:it->second.file;
+}
+
+std::string ModuleOriginalFile(vk::ShaderModule module) {
+    if (!Enabled() || !module) return {};
+    auto& state = GetState();
+    std::scoped_lock lock(state.mutex);
+    const auto it = state.modules.find(static_cast<VkShaderModule>(module));
+    return it == state.modules.end() ? std::string{} : it->second.original_file;
 }
 
 void ForgetModule(vk::ShaderModule module) {

@@ -2,6 +2,7 @@
 #include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/host_gpu/renderer/ufcPerf.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
+#include "graphics/host_gpu/renderer/demonsIndirectWitness.h"
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
@@ -73,12 +74,15 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 	// resolve its page; guessing a width can cross the end of a valid guest mapping.
 	constexpr uint64_t fault_size = 1;
 	if (!IsMapped(fault_vaddr, fault_size)) {
+		DemonsIndirectWitness::Signal(access==PageFaultAccess::Write?DemonsIndirectWitness::SignalKind::FaultWrite:
+		    DemonsIndirectWitness::SignalKind::FaultRead,fault_vaddr,fault_size,false);
 		return false;
 	}
 	// KYTY_GPU_PIPELINE: a fault the front takes (its SRT walk read GPU-written memory) is handled
 	// with the record thread drained, like every other renderer access of the front.
 	GpuPipeline::DrainForFront();
 	if (access == PageFaultAccess::Write) {
+		DemonsIndirectWitness::Signal(DemonsIndirectWitness::SignalKind::FaultWrite,fault_vaddr,fault_size,true);
 		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemWriteFault);
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
 		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size, RefreshCause::ForFault());
@@ -113,6 +117,7 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 	} else {
 		const Common::PerfStats::ScopedWaitSite site(Common::PerfStats::Wait::SemReadFault);
 		m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
+		DemonsIndirectWitness::Signal(DemonsIndirectWitness::SignalKind::FaultRead,fault_vaddr,fault_size,true);
 	}
 	return true;
 }

@@ -7,6 +7,9 @@
 #include "graphics/host_gpu/renderer/pipelineProbe.h"
 #include "graphics/host_gpu/renderer/cache/streamDefaults.h"
 #include "graphics/host_gpu/renderer/ufcPerf.h"
+#include "graphics/host_gpu/renderer/demonsIndirectWitness.h"
+#include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
+#include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 
 #include "common/assert.h"
 #include "common/guestTrace.h"
@@ -505,7 +508,15 @@ void CommandProcessor::WriteConstRam(uint32_t offset, const uint32_t* src, uint3
 }
 
 void CommandProcessor::DumpConstRam(uint32_t* dst, uint32_t offset, uint32_t dw_num) {
+	const auto address=Kernel::AddressFold::Fold(reinterpret_cast<uint64_t>(dst));
+	const uint64_t bytes=static_cast<uint64_t>(dw_num)*4;
+	if(DemonsIndirectWitness::Matches(address,bytes)){
+		DemonsIndirectWitness::Mutation(address,bytes,"dump_const_ram");
+		DemonsIndirectWitness::Record({{"kind","producer"},{"phase","before"},{"path","dump_const_ram"},
+		    {"address",address},{"bytes",bytes},{"const_offset",offset},{"submit",m_submit_id}});
+	}
 	memcpy(dst, m_const_ram + offset / 4, static_cast<size_t>(dw_num) * 4);
+	DemonsIndirectWitness::Signal(DemonsIndirectWitness::SignalKind::WriteBacking,address,bytes,true,0,m_const_ram+offset/4);
 }
 
 bool TestWaitRegMemValue(uint64_t value, uint64_t ref, uint64_t mask, uint32_t func) {
@@ -561,11 +572,20 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 	}
 
 	// Completion labels can be reused immediately; memcpy may write a destination twice.
+	const auto ds_address=Kernel::AddressFold::Fold(reinterpret_cast<uint64_t>(dst));
+	const uint64_t ds_bytes=write_one_address?4:static_cast<uint64_t>(dw_num)*4;
+	const bool ds_write=DemonsIndirectWitness::Matches(ds_address,ds_bytes);
+	if(ds_write)DemonsIndirectWitness::Mutation(ds_address,ds_bytes,"write_data");
 	auto* output = static_cast<volatile uint32_t*>(dst);
 	for (uint32_t i = 0; i < dw_num; i++) {
-		*output = src[i];
+		const auto value=src[i];
+		*output = value;
+		if(ds_write)DemonsIndirectWitness::Signal(DemonsIndirectWitness::SignalKind::WriteBacking,
+		    Kernel::AddressFold::Fold(reinterpret_cast<uint64_t>(output)),4,true,i,&value);
 		output += !write_one_address;
 	}
+	if(ds_write)DemonsIndirectWitness::Record({{"kind","producer"},{"phase","after"},{"path","write_data"},
+	    {"address",ds_address},{"bytes",ds_bytes},{"dwords",dw_num},{"write_one_address",write_one_address},{"submit",m_submit_id}});
 }
 
 void CommandProcessor::WriteReferenceClock(uint64_t dst_address, uint32_t num_bytes) {
@@ -1517,6 +1537,37 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		}
 	}
 
+	DemonsIndirectWitness::Target ds_target{};
+	BufferCache::IndirectWitnessReadback ds_readback;
+	const bool ds_capture_serial=!m_pipe_on&&!m_fan_on&&GuestGpu::IsGpuThread();
+	nlohmann::json ds_batch;
+	if(DemonsIndirectWitness::Enabled()){
+		const auto& depth=m_ctx.GetDepthRenderTarget();
+		const auto zr=Kernel::AddressFold::Fold(depth.z_read_base_addr);
+		const auto zw=Kernel::AddressFold::Fold(depth.z_write_base_addr);
+		nlohmann::json targets=nlohmann::json::array();
+		bool relevant=zr==DemonsDominantGeometry::DepthAddress||zw==DemonsDominantGeometry::DepthAddress;
+		for(uint32_t slot=0;slot<RENDER_COLOR_ATTACHMENTS_MAX;++slot){
+			const auto address=Kernel::AddressFold::Fold(m_ctx.GetRenderTarget(slot).base.addr);
+			relevant|=address==DemonsQueueProbe::GBufferAddress;targets.push_back(address);
+		}
+		if(count_addr==nullptr&&DemonsIndirectWitnessPolicy::Shape(indexed,draw_count,stride_in_bytes,
+		    m_index_type_and_size,m_index_buffer_size,relevant))ds_target=DemonsIndirectWitness::Watch(Kernel::AddressFold::Fold(record));
+		if(ds_target.stream_id){
+			DemonsIndirectWitness::BeginBatch(ds_target.stream_id);
+			const auto& fallback=DemonsIndirectWitness::last_fallback;
+			const bool fallback_matches=fallback.address==record&&fallback.submit==m_submit_id;
+			ds_batch={{"args_guest",ds_target.address},{"count",draw_count},{"stride",stride_in_bytes},
+			    {"index_base",m_index_base_addr},{"index_limit",m_index_buffer_size},{"index_type",m_index_type_and_size},
+			    {"index_element_bytes",index_size},{"frame",m_renderer.GetGpu().GetFrameNum()},{"submit",m_submit_id},
+			    {"tick",GetScheduler().CurrentTick()},{"parent_command",fallback_matches?fallback.command:0},
+			    {"fallback_reason",fallback_matches?fallback.reason:"not_observed_in_renderer"},
+			    {"stream_id",ds_target.stream_id},{"depth_read",zr},{"depth_write",zw},{"targets",targets},
+			    {"pipeline_on",m_pipe_on},{"fan_on",m_fan_on},{"native_state_supported",ds_capture_serial},
+			    {"records",nlohmann::json::array()},{"cpu_store_coverage","observed hooks and fault candidates; not universal"}};
+		}
+	}
+
 	for (uint32_t i = 0; i < draw_count; i++) {
 		const auto args_addr = m_draw_indirect_args_base_addr + data_offset +
 		                       static_cast<uint64_t>(i) * stride_in_bytes;
@@ -1544,6 +1595,18 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		if (DemonsCausalMatrix::Mode()==DemonsCausalMatrix::CpCoherent) {
 		    coherent=DemonsMatrixCpRead::Read<DrawIndexedIndirectArgs>(m_renderer,args_addr); args=&coherent;
 		}
+		DemonsIndirectWitnessPolicy::Uses ds_uses;
+		nlohmann::json ds_record;
+		if(ds_target.stream_id){
+			ds_record={{"child",i},{"address",Kernel::AddressFold::Fold(args_addr)},{"bytes",20},
+			    {"observation_seq_before",DemonsIndirectWitness::order.load(std::memory_order_acquire)},
+			    {"mutation_epoch_before",DemonsIndirectWitness::Epoch(ds_target.stream_id)},
+			    {"state_before",ds_capture_serial?m_renderer.GetBufferCache().IndirectWitnessState(args_addr,20):
+			        nlohmann::json{{"valid",false},{"failure","pipeline_or_front_thread_unsupported"}}}};
+		}
+		const auto load=[&](const uint32_t& value,uint8_t field,uint8_t phase){
+			return ds_target.stream_id?ds_uses.Add(field,phase,value):value;
+		};
 		{
 			static std::atomic<uint32_t> log_count {0};
 			const auto n = log_count.fetch_add(1, std::memory_order_relaxed);
@@ -1551,41 +1614,68 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 				LOGF("DrawIndexIndirect (CPU args) #%u: record %u/%u stride=%u indices=%u "
 				     "instances=%u first_index=%u base_vertex=%d first_instance=%u "
 				     "INDEX_BUFFER_SIZE=%u index_type=%u\n",
-				     n, i, draw_count, stride_in_bytes, args->index_count_per_instance,
-				     args->instance_count, args->start_index_location,
-				     static_cast<int32_t>(args->base_vertex_location),
-				     args->start_instance_location, m_index_buffer_size, m_index_type_and_size);
+				     n, i, draw_count, stride_in_bytes, load(args->index_count_per_instance,0,0),
+				     load(args->instance_count,1,0), load(args->start_index_location,2,0),
+				     static_cast<int32_t>(load(args->base_vertex_location,3,0)),
+				     load(args->start_instance_location,4,0), m_index_buffer_size, m_index_type_and_size);
 			}
 		}
-		PatchIndirectDrawOffsets(*this, registers, args->base_vertex_location,
-		                         args->start_instance_location, args->start_index_location, i);
+		PatchIndirectDrawOffsets(*this, registers, load(args->base_vertex_location,3,1),
+		                         load(args->start_instance_location,4,1), load(args->start_index_location,2,1), i);
 
 		auto* index_addr = reinterpret_cast<const void*>(
-		    m_index_base_addr + static_cast<uint64_t>(args->start_index_location) * index_size);
+		    m_index_base_addr + static_cast<uint64_t>(load(args->start_index_location,2,2)) * index_size);
 
 		const uint32_t index_count =
 		    (m_index_buffer_size != 0
-		         ? std::min(args->index_count_per_instance, m_index_buffer_size)
-		         : args->index_count_per_instance);
-		if (GraphicsRunDebugDumpEnabled() && index_count != args->index_count_per_instance) {
+		         ? std::min(load(args->index_count_per_instance,0,3), m_index_buffer_size)
+		         : load(args->index_count_per_instance,0,3));
+		if (GraphicsRunDebugDumpEnabled() && index_count != load(args->index_count_per_instance,0,0)) {
 			static std::atomic<uint32_t> log_count {0};
 			if (log_count.fetch_add(1, std::memory_order_relaxed) < 64) {
 				LOGF("\t DrawIndexIndirectMulti: clamped index_count from %" PRIu32 " to %" PRIu32
 				     " using INDEX_BUFFER_SIZE\n",
-				     args->index_count_per_instance, index_count);
+				     load(args->index_count_per_instance,0,0), index_count);
 			}
 		}
 
-		m_num_instances = args->instance_count;
-		empty &= index_count == 0 || args->instance_count == 0;
-		DrawIndex({.index_count    = index_count,
+		m_num_instances = load(args->instance_count,1,4);
+		empty &= index_count == 0 || load(args->instance_count,1,5) == 0;
+		const DrawIndexArgs emitted{.index_count    = index_count,
 		           .index_addr     = index_addr,
-		           .instance_count = args->instance_count,
-		           .base_vertex    = static_cast<int32_t>(args->base_vertex_location),
-		           .first_instance = args->start_instance_location,
-		           .offset_source  = DrawOffsetSource::IndirectArgs});
+		           .instance_count = load(args->instance_count,1,6),
+		           .base_vertex    = static_cast<int32_t>(load(args->base_vertex_location,3,6)),
+		           .first_instance = load(args->start_instance_location,4,6),
+		           .offset_source  = DrawOffsetSource::IndirectArgs};
+		if(ds_target.stream_id){
+			// All original guest loads feeding this child have completed. The
+			// diagnostic never replaces them, and repeated accesses remain in uses.
+			ds_record["consumed_words"]=ds_uses.words;ds_record["uses"]=DemonsIndirectWitness::UsesJson(ds_uses);
+			ds_record["uses_complete"]=ds_uses.Complete();
+			ds_record["emitted"]={{"index_count",emitted.index_count},{"instance_count",emitted.instance_count},
+			    {"first_index",ds_uses.words[2]},{"base_vertex",emitted.base_vertex},{"first_instance",emitted.first_instance},
+			    {"index_addr",reinterpret_cast<uint64_t>(emitted.index_addr)}};
+			ds_record["mutation_epoch_after"]=DemonsIndirectWitness::Epoch(ds_target.stream_id);
+			ds_record["observation_seq_consumed"]=DemonsIndirectWitness::order.load(std::memory_order_acquire);
+			ds_record["state_after"]=ds_capture_serial?m_renderer.GetBufferCache().IndirectWitnessState(args_addr,20):
+			    nlohmann::json{{"valid",false},{"failure","pipeline_or_front_thread_unsupported"}};
+			auto reference=ds_capture_serial?m_renderer.GetBufferCache().QueueIndirectWitnessReference(args_addr,20,ds_readback,i):
+			    nlohmann::json{{"ok",false},{"failure","pipeline_or_front_thread_unsupported"}};
+			reference["queued_after_consumption"]=true;reference["before_next_child"]=true;
+			ds_record["backing_after"]=reference.value("backing",nlohmann::json::object());
+			ds_record["state_reference_after"]=reference.value("state_at_copy",ds_record["state_after"]);
+			ds_record["mutation_epoch_reference_after"]=reference.value("mutation_epoch_at_copy",ds_record["mutation_epoch_after"]);
+			ds_record["observation_seq_reference"]=reference.value("observation_seq_at_copy",ds_record["observation_seq_consumed"]);
+			ds_record["reference"]=std::move(reference);
+			ds_batch["records"].push_back(std::move(ds_record));
+		}
+		DrawIndex(emitted);
 	}
 	note();
+	if(ds_target.stream_id){
+		if(ds_capture_serial)m_renderer.GetBufferCache().CollectIndirectWitnessReferences(ds_readback,ds_batch["records"]);
+		DemonsIndirectWitness::SaveBatch(std::move(ds_batch));
+	}
 }
 
 void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_group_y,

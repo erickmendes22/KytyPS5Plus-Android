@@ -3,7 +3,7 @@
 
 Needs a JDK and either org.json:json:20180813.jar or its checked-out Java sources.
 No downloads or APK builds occur. Optional --capture directories run assertions
-against the extracted #741/#744 historical evidence and print the transport
+against the extracted #741/#744/#745 historical evidence and print the transport
 inventory, including exact missing files. This test is not a rendering oracle.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ def main() -> None:
     dependency.add_argument("--json-sources", type=Path,
                             help="JSON-java checkout containing JSONObject.java")
     parser.add_argument("--capture", type=Path, action="append", default=[],
-                        help="extracted ds-lighting-capture directory (#741/#744)")
+                        help="extracted ds-lighting-capture directory (#741/#744/#745)")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[2]
     source = repo / "android/app/src/main/java/com/kytyps5/android/DsLightingCaptureExport.java"

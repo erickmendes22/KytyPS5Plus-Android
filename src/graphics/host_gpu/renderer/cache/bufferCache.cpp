@@ -1,5 +1,6 @@
 #include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
+#include "graphics/host_gpu/renderer/demonsIndirectWitness.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/cache/bufferUploadPolicy.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
@@ -366,7 +367,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 			const char* value = std::getenv("KYTY_DS_GPU_ZERO_INDIRECT");
 			return value != nullptr && value[0] == '1' && value[1] == '\0';
 		}();
-		if (track_publications) {
+        if (track_publications || DemonsIndirectWitness::Enabled()) {
 			BackingPublication publication;
 			publication.ranges.reserve(copies.size());
 			for (const auto& copy: copies) {
@@ -375,6 +376,8 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 			const std::scoped_lock lock(m_pending_publication_mutex);
 			publication.token = ++m_next_publication_token;
 			publication_token = publication.token;
+			for(const auto& range:publication.ranges)DemonsIndirectWitness::Signal(
+			    DemonsIndirectWitness::SignalKind::PublicationQueued,range.address,range.size,true,publication.token);
 			m_pending_publications.push_back(std::move(publication));
 		}
 	}
@@ -385,6 +388,8 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 			Libs::LibKernel::Memory::WriteBacking(buffer_address + copy.srcOffset,
 			                                      mapped + (copy.dstOffset - offset), copy.size);
 			WalkFan::NoteBackingWrite(Kernel::AddressFold::Fold(buffer_address + copy.srcOffset), copy.size);
+			DemonsIndirectWitness::Signal(DemonsIndirectWitness::SignalKind::PublicationDone,
+			    buffer_address+copy.srcOffset,copy.size,true,publication_token.value_or(0));
 		}
 		if (publication_token) {
 			const std::scoped_lock lock(m_pending_publication_mutex);
@@ -1010,6 +1015,8 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		}
 
 		const bool downloaded = DownloadBufferMemory<false>(buffer, vaddr, size);
+		DemonsIndirectWitness::Signal(DemonsIndirectWitness::SignalKind::ReadMemory,
+		    vaddr,size,true,(downloaded?1ull:0ull)|(is_write?2ull:0ull));
 		if (diff) {
 			std::array<uint8_t, 64> after {};
 			(void)LibKernel::Memory::TryReadSparseBacking(diff_base, after.data(), after.size());
@@ -1397,6 +1404,8 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 				EXIT("BufferCache: failed to read sparse guest buffer memory\n");
 			}
             DemonsPrelightTrace::NoteVertexUpload(m_scheduler.CurrentTick(),address,mapped+copy.srcOffset,copy.size);
+			DemonsIndirectWitness::Signal(DemonsIndirectWitness::SignalKind::Upload,address,copy.size,true,
+			    m_scheduler.CurrentTick(),mapped+copy.srcOffset);
 			copy.srcOffset += base_offset;
 		}
 	});
@@ -1583,6 +1592,11 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	if (vaddr == 0) {
 		EXIT("BufferCache: invalid fill memory address\n");
 	}
+	const bool ds_capture=DemonsIndirectWitness::Matches(vaddr,size);
+	if(ds_capture){
+		IndirectWitnessTransfer("dma_fill","before",vaddr,0,size,value);
+		DemonsIndirectWitness::Mutation(vaddr,size,"dma_fill");
+	}
 	NoteProbeRayWrite(vaddr, size, "dma_fill", value);
 	if(DemonsPcRenderParity::Enabled()) {
 		(void)m_texture_cache.ClearMetaRange(vaddr,size,value,true,"dma_fill");
@@ -1601,6 +1615,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 		// can miss IsRegionCpuModified and serve a stale slot-buffer copy (e.g. a
 		// 0xFFFFFFFF slot-queue reset never reaching its consumer, #1072).
 		m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
+		if(ds_capture)IndirectWitnessTransfer("dma_fill_cpu","after",vaddr,0,size,value);
 		return;
 	}
 
@@ -1608,6 +1623,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
 	auto [dst, dst_offset] = ObtainBuffer(vaddr, size, true, true);
 	dst->Fill(dst_offset, size, value);
+	if(ds_capture)IndirectWitnessTransfer("dma_fill_gpu","after",vaddr,0,size,value);
 }
 
 void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t size, bool dst_gds,
@@ -1624,6 +1640,11 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 		     src_vaddr, dst_vaddr, size, static_cast<int>(src_gds), static_cast<int>(dst_gds));
 	}
 	if (dst_memory) NoteProbeRayWrite(dst_vaddr, size, src_memory ? "dma_copy" : "gds_copy", src_vaddr);
+	const bool ds_capture=dst_memory&&DemonsIndirectWitness::Matches(dst_vaddr,size);
+	if(ds_capture){
+		IndirectWitnessTransfer(src_memory?"dma_copy":"gds_copy","before",dst_vaddr,src_memory?src_vaddr:0,size);
+		DemonsIndirectWitness::Mutation(dst_vaddr,size,src_memory?"dma_copy":"gds_copy");
+	}
 	if(DemonsPcRenderParity::Enabled()) {
 		if(src_memory)(void)m_texture_cache.PublishGpuImagesForBufferAccess(src_vaddr,size);
 		if(dst_memory)(void)m_texture_cache.PublishGpuImagesForBufferAccess(dst_vaddr,size);
@@ -1637,6 +1658,7 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 			            size);
 		}
 		m_memory_tracker.MarkRegionAsCpuModified(dst_vaddr, size);
+		if(ds_capture)IndirectWitnessTransfer("dma_copy_cpu","after",dst_vaddr,src_vaddr,size);
 		return;
 	}
 
@@ -1652,6 +1674,7 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	auto [dst, dst_offset] = dst_memory ? ObtainBuffer(dst_vaddr, size, true, true, dst_id)
 	                                    : std::pair {&m_gds_buffer, dst_vaddr};
 	dst->CopyFrom(command, *src, src_offset, dst_offset, size);
+	if(ds_capture)IndirectWitnessTransfer(src_memory?"dma_copy_gpu":"gds_copy_gpu","after",dst_vaddr,src_memory?src_vaddr:0,size);
 }
 
 bool BufferCache::IsRegionRegistered(uint64_t vaddr, uint64_t size) {
@@ -1701,6 +1724,155 @@ bool BufferCache::HasPendingBackingPublication(uint64_t vaddr, uint64_t size) co
 			return range.address < end && vaddr < range.address + range.size;
 		});
 	});
+}
+
+nlohmann::json BufferCache::IndirectWitnessState(uint64_t address,uint64_t bytes){
+    address=Kernel::AddressFold::Fold(address);
+    if(!GuestRange{address,bytes}.Valid())return {{"valid",false}};
+    nlohmann::json ranges=nlohmann::json::array(),pending=nlohmann::json::array();
+    {
+        const std::shared_lock lock(m_gpu_modified_mutex);
+        m_gpu_modified_ranges.ForEachInRange(address,bytes,[&](uint64_t begin,uint64_t end){
+            ranges.push_back({{"address",begin},{"bytes",end-begin}});
+        });
+    }
+    {
+        const std::scoped_lock lock(m_pending_publication_mutex);
+        for(const auto& publication:m_pending_publications){
+            nlohmann::json overlaps=nlohmann::json::array();
+            for(const auto& range:publication.ranges)if(DemonsIndirectWitnessPolicy::Overlap(address,bytes,range.address,range.size))
+                overlaps.push_back({{"address",range.address},{"bytes",range.size}});
+            if(!overlaps.empty())pending.push_back({{"token",publication.token},{"ranges",overlaps}});
+        }
+    }
+    auto* buffer=PeekVertexProducerBuffer(address,bytes);
+    return {{"valid",true},{"address",address},{"bytes",bytes},{"gpu_dirty",!ranges.empty()},
+        {"gpu_dirty_ranges",ranges},{"pending_publication",!pending.empty()},{"pending_tokens",pending},
+        {"cpu_modified",IsRegionCpuModified(address,bytes)},{"gpu_modified",IsRegionGpuModified(address,bytes)},
+        {"tracker_granularity","page"},{"image_gpu_dirty",m_texture_cache.IsRegionGpuModified(address,bytes)},
+        {"registered",IsRegionRegistered(address,bytes)},{"gpu_generation",GpuDirtyGeneration()},
+        {"unregister_epoch",UnregisterEpoch()},{"buffer_guest",buffer?buffer->CpuAddress():0},
+        {"buffer_size",buffer?buffer->Size():0},{"native",buffer?std::hash<VkBuffer>{}(static_cast<VkBuffer>(buffer->Handle())):0}};
+}
+
+nlohmann::json BufferCache::IndirectWitnessReference(uint64_t address,uint64_t bytes){
+    IndirectWitnessReadback readback;readback.barrier.required=1;
+    auto records=nlohmann::json::array({{{"address",address},{"bytes",bytes},
+        {"reference",QueueIndirectWitnessReference(address,bytes,readback,0)}}});
+    CollectIndirectWitnessReferences(readback,records);
+    return std::move(records[0]["reference"]);
+}
+
+nlohmann::json BufferCache::QueueIndirectWitnessReference(uint64_t address,uint64_t bytes,
+    IndirectWitnessReadback& readback,uint32_t child){
+    readback.barrier.Consumed(child);
+    address=Kernel::AddressFold::Fold(address);
+    nlohmann::json result={{"ok",false},{"address",address},{"bytes",bytes}};
+    if(child>=readback.native.size()||bytes==0||bytes>60||bytes%4||!GuestRange{address,bytes}.Valid()){
+        result["failure"]="unsupported_reference_range";return result;
+    }
+    std::vector<uint32_t> backing(bytes/4);
+    const bool backing_ok=LibKernel::Memory::TryReadBacking(address,backing.data(),bytes);
+    result["backing"]={{"ok",backing_ok},{"words",backing_ok?backing:std::vector<uint32_t>{}},
+        {"path","TryReadBacking separate alias; no synchronization"}};
+    const auto state=IndirectWitnessState(address,bytes);
+    const bool gpu_authority=state.value("gpu_dirty",false)||state.value("pending_publication",false);
+    result["kind"]=gpu_authority?"gpu_native":"cpu_backing";
+    if(!gpu_authority){
+        result["ok"]=backing_ok;result["words"]=backing_ok?backing:std::vector<uint32_t>{};
+        result["tick_before"]=m_scheduler.CurrentTick();result["tick_after"]=m_scheduler.CurrentTick();
+        result["mirror_skipped_cpu_authority"]=true;
+        result["state_at_copy"]=state;
+        result["observation_seq_at_copy"]=DemonsIndirectWitness::order.load(std::memory_order_acquire);
+        for(const auto& target:DemonsIndirectWitness::TargetRanges())if(DemonsIndirectWitnessPolicy::Overlap(address,bytes,target.address,target.bytes))
+            result["mutation_epoch_at_copy"]=DemonsIndirectWitness::Epoch(target.stream_id);
+        return result;
+    }
+    auto* existing=PeekVertexProducerBuffer(address,bytes);
+    if(!existing){result["failure"]="native_owner_absent";return result;}
+    // Copy identity before Finish: deferred callbacks can invalidate cache slots.
+    const auto handle=existing->Handle();const auto offset=existing->Offset(address);
+    result["buffer_guest"]=existing->CpuAddress();result["buffer_size"]=existing->Size();
+    result["native"]=std::hash<VkBuffer>{}(static_cast<VkBuffer>(handle));result["offset"]=offset;
+    result["tick_before"]=m_scheduler.CurrentTick();
+    if(!readback.download)readback.download=std::make_unique<Buffer>(m_graphics,m_scheduler,
+        MemoryUsage::Download,0,vk::BufferUsageFlagBits::eTransferDst,192);
+    const uint64_t destination=uint64_t{child}*64;
+    m_scheduler.EndRendering(PassEnd::Buffer);
+    const auto command=m_scheduler.Current().Handle();
+    vk::MemoryBarrier before{};before.srcAccessMask=vk::AccessFlagBits::eMemoryWrite;
+    before.dstAccessMask=vk::AccessFlagBits::eTransferRead;
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,
+        {},1,&before,0,nullptr,0,nullptr);
+    const vk::BufferCopy copy{offset,destination,bytes};
+    command.copyBuffer(handle,readback.download->Handle(),1,&copy);
+    vk::MemoryBarrier after{};after.srcAccessMask=vk::AccessFlagBits::eTransferWrite;
+    after.dstAccessMask=vk::AccessFlagBits::eHostRead;
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eHost,
+        {},1,&after,0,nullptr,0,nullptr);
+    result["state_at_copy"]=IndirectWitnessState(address,bytes);
+    result["observation_seq_at_copy"]=DemonsIndirectWitness::order.load(std::memory_order_acquire);
+    for(const auto& target:DemonsIndirectWitness::TargetRanges())if(DemonsIndirectWitnessPolicy::Overlap(address,bytes,target.address,target.bytes))
+        result["mutation_epoch_at_copy"]=DemonsIndirectWitness::Epoch(target.stream_id);
+    readback.native[child]=true;result["native_pending"]=true;
+    return result;
+}
+
+void BufferCache::CollectIndirectWitnessReferences(IndirectWitnessReadback& readback,nlohmann::json& records){
+    if(!readback.barrier.Ready()){
+        for(auto& record:records)record["reference"]["failure"]="collection_before_all_consumers_rejected";
+        if(readback.download){
+            std::shared_ptr<Buffer> owner(std::move(readback.download));
+            m_scheduler.DeferOperation([owner=std::move(owner)]{});
+        }
+        return;
+    }
+    // No diagnostic Finish occurs between original CP children. Each native
+    // source was frozen in command order, using this separately owned staging
+    // buffer, which cannot be recycled by intervening ordinary draw readbacks.
+    if(readback.download){m_scheduler.Finish();readback.download->Invalidate(0,192);}
+    for(size_t child=0;child<records.size()&&child<readback.native.size();++child){
+        auto& record=records[child];auto& reference=record["reference"];
+        if(!readback.native[child])continue;
+        const auto bytes=record.value("bytes",uint64_t{20});
+        std::vector<uint32_t> words(bytes/4);
+        std::memcpy(words.data(),readback.download->Mapped().data()+child*64,bytes);
+        reference["words"]=words;reference["ok"]=true;reference["native_pending"]=false;
+        reference["tick_after"]=m_scheduler.CurrentTick();
+        reference["collection_after_all_original_reads"]=true;
+        reference["observation_seq_collected"]=DemonsIndirectWitness::order.load(std::memory_order_acquire);
+        reference["state_after_collection"]=IndirectWitnessState(record.value("address",uint64_t{0}),bytes);
+    }
+}
+
+void BufferCache::IndirectWitnessTransfer(const char* path,const char* phase,uint64_t destination,
+    uint64_t source,uint64_t bytes,uint64_t value){
+    if(!DemonsIndirectWitness::Matches(destination,bytes))return;
+    for(const auto& target:DemonsIndirectWitness::TargetRanges()){
+        if(!DemonsIndirectWitnessPolicy::Overlap(destination,bytes,target.address,target.bytes))continue;
+        const bool after=std::string_view(phase)=="after";
+        const auto observation=[&](uint64_t address,uint64_t length){
+            // Never submit/wait before the real transfer chooses its CPU/GPU
+            // route. Its original authority checks and operation stay intact.
+            if(after)return IndirectWitnessReference(address,length);
+            std::vector<uint8_t> data(length);
+            const bool ok=LibKernel::Memory::TryReadBacking(address,data.data(),length);
+            return nlohmann::json{{"kind","backing_observation_only"},{"ok",ok},
+                {"address",address},{"bytes",length},{"raw_bytes",ok?data:std::vector<uint8_t>{}}};
+        };
+        auto row=nlohmann::json{{"kind","producer"},{"phase",phase},{"path",path},{"stream_id",target.stream_id},
+            {"address",destination},{"bytes",bytes},{"source",source},{"value",value},
+            {"tick",m_scheduler.CurrentTick()},{"epoch",DemonsIndirectWitness::Epoch(target.stream_id)},
+            {"target",{{"address",target.address},{"bytes",target.bytes}}},
+            {"state",IndirectWitnessState(target.address,target.bytes)},
+            {"target_reference",observation(target.address,target.bytes)},
+            {"retained",after},{"candidate_only",false}};
+        if(source&&DemonsIndirectWitnessPolicy::ValidRange(source,bytes)){
+            const auto begin=std::max(destination,target.address),end=std::min(destination+bytes,target.address+target.bytes);
+            row["source_overlap"]=observation(source+(begin-destination),end-begin);
+        }
+        DemonsIndirectWitness::Record(std::move(row));
+    }
 }
 
 bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {

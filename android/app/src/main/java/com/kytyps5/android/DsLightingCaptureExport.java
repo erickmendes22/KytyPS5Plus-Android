@@ -299,11 +299,18 @@ public final class DsLightingCaptureExport {
         }
         void run() {
             List<File> journals = new ArrayList<>();
+            boolean indirectWitnessPresent = false;
             for (File file : files(new File(root, "queue-state"))) {
                 if (!file.isFile() || (launchTime != 0 && file.lastModified() < launchTime)) continue;
                 if (file.getName().startsWith("ds_prelight_")) require("queue-state/" + file.getName(), "fixed witness capture");
+                indirectWitnessPresent |= file.getName().startsWith("ds_prelight_cp_args_");
                 if (JOURNAL.matcher(file.getName()).matches()) journals.add(file);
             }
+            // Producer generations can precede the retained 50-draw window.
+            // Their own manifest closes every pinned blob/module dependency;
+            // an event file alone must never claim a complete acquisition.
+            if (indirectWitnessPresent)
+                require("queue-state/ds_prelight_cp_args_manifest.json", "indirect producer/consumer closure");
             if (new File(root, "device.json").isFile()) require("device.json", "capture device");
             String manifestPath = "queue-state/ds_prelight_witness_foreground_manifest.json";
             require(manifestPath, "fixed witness manifest");

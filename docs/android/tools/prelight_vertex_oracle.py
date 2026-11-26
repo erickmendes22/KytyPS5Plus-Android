@@ -14,9 +14,12 @@ IR, SPIR-V arithmetic, PC renderer or expected visibility is used as reference.
 
 The scope is an already-admitted vertex invocation. NGG/EXEC admission, original
 buffer production, complete shader equivalence and P8 are NOT certified.
-Numerics use separate IEEE binary32 multiply/add, round-to-nearest, preserving
-subnormals; a mismatch is an edge-local candidate, not an automatic production
-fix. NaN payload differences and signed zero are reported separately.
+Numerics use separate IEEE binary32 multiply/add, round-to-nearest. Captured
+FP32 denormal/IEEE controls govern ordinary operations and output modifiers;
+MAD/MAC flush denormals as specified by RDNA1. An old capture without controls
+retains an explicit ordinary-operation denormal premise. A mismatch is an
+edge-local candidate, not an automatic production fix. NaN payload differences
+and signed zero are reported separately.
 
 Old captures have no scalar address log. For four exact guest binaries only,
 the documented legacy flattened-SRT map may be used, with its weaker binding
@@ -24,9 +27,10 @@ premise clearly reported. --require-scalar-regions disables that compatibility.
 New captures always use vs_scalar_regions when that key is present and never
 silently fall back to a legacy map after a missing/ambiguous scalar read.
 
-Exit 0: every selected draw compared and matched. Exit 2: one or more draws
-unsupported/incomplete, without a mismatch. Exit 3: a position mismatch exists.
-Other draws' results are retained in every case; no integral replay gate.
+Exit 0: every selected native-position comparison matched; additional input-only
+statuses remain explicit. Exit 2: one or more comparisons unsupported/incomplete,
+without a mismatch. Exit 3: a position mismatch exists. Other draws' results are
+retained in every case; no integral replay gate.
 """
 from __future__ import annotations
 
@@ -181,11 +185,31 @@ PROFILES = {
     '2337192397a30339': {
         'sha256': 'fc4e429120a33e327860c80e7df15feb20ddaafe08f8d05b2b7968f3c49f0774',
         'flat': {}, 'descriptors': {}},
+    # #745: same saved-EXEC/restore skeleton as c96. The conditional region
+    # only supplies a material parameter, never POS0. Taint its writes and
+    # retain the ordinary backward dependency check; do not assume its data.
+    '557d65da5b786842': {
+        'sha256': '4a3745aa5d46a387f210e2000a00717cc8e2c217fa6ffea1469914d85eeea230',
+        'flat': {}, 'descriptors': {}, 'conditional': (0x90, 0xc4)},
 }
 
 NGG_PREFIX = bytes.fromhex(
     '0300a0bf03ffeb930800080003ff0087ff0000006b8c6a8f006a7c88000080bf'
     '090090bfc06bea81c16afe90410900f800000000c000ea810fff8cbfc16afe90')
+
+
+def check_guest(guest, shader, profile):
+    from prelight_sky_replay import xxh3
+    require(xxh3(guest) == shader, 'guest bytes do not match the recorded shader hash')
+    # The S_INST_PREFETCH immediate only supplies a cache hint; the subsequent
+    # admission/register convention must still match every byte. The tiny
+    # #745 auxiliary VS uses prefetch 1 instead of prefetch 3.
+    require(len(guest) >= 0x40 and guest[2:0x40] == NGG_PREFIX[2:0x40],
+            'unsupported NGG admission prologue / initial register convention')
+    digest = hashlib.sha256(guest).hexdigest()
+    if 'sha256' in profile:
+        require(digest == profile['sha256'], 'guest bytes differ from the supported full fingerprint')
+    return digest
 
 
 @dataclass(eq=False)
@@ -307,7 +331,14 @@ class Program:
             # reaches position, the unknown value fails that draw explicitly.
             require(not opcode.startswith('v_cmpx') or conditional is not None,
                     f'unsupported EXEC modification at {self.pc:#x}')
-            self.reg['s106'] = node('unknown', 'wave comparison/EXEC mask', pc=self.pc)
+            # SDWA/VOP3 comparisons can name an arbitrary SGPR destination.
+            # a720's PC 0x1a0 writes S16, not VCC: clobbering VCC here wrongly
+            # destroys the independent projection-jitter operands at 0x280.
+            explicit = registers(args[0]) if len(args) >= 3 else []
+            destinations = (['s126', 's127'] if opcode.startswith('v_cmpx') else
+                            explicit if explicit and all(r.startswith('s') for r in explicit) else ['s106', 's107'])
+            for reg in destinations:
+                self.reg[reg] = node('unknown', 'wave comparison/EXEC mask', pc=self.pc)
             return
         dest = registers(args[0]) if args else []
         if not dest:
@@ -329,15 +360,27 @@ class Program:
         elif op == 'v_subrev_f32' and len(operands) == 2:
             value = node('fsub', operands[1], operands[0], pc=self.pc)
         elif op in ('v_mad_f32', 'v_madmk_f32') and len(operands) == 3:
-            value = node('fadd', node('fmul', *operands[:2], pc=self.pc), operands[2], pc=self.pc)
+            value = node('fmad', *operands, pc=self.pc)
         elif op == 'v_mac_f32' and len(operands) == 2:
-            value = node('fadd', node('fmul', *operands, pc=self.pc), self.source(args[0]), pc=self.pc)
+            value = node('fmad', *operands, self.source(args[0]), pc=self.pc)
+        elif op == 'v_lshl_or_b32' and len(operands) == 3:
+            value = node('ulshl_or', *operands, pc=self.pc)
+        elif op == 'v_cvt_u32_f32' and len(operands) == 1:
+            value = node('fcvt_u32', *operands, pc=self.pc)
+        elif op == 'v_cvt_f32_i32' and len(operands) == 1:
+            value = node('icvt_f32', *operands, pc=self.pc)
+        elif op == 'v_lshlrev_b32' and len(operands) == 2:
+            value = node('ulshlrev', *operands, pc=self.pc)
         elif op == 'v_mov_b32' and len(operands) == 1:
             value = operands[0]
         else:
             value = node('unknown', 'unsupported instruction ' + text, pc=self.pc)
-        if re.search(r'\b(clamp|mul:|div:)', text):
-            value = node('unknown', 'unsupported output modifier ' + text, pc=self.pc)
+        modifier = re.search(r'\b(mul|div):(2|4)\b', text)
+        if modifier:
+            factor = float(modifier[2]) if modifier[1] == 'mul' else 1.0 / float(modifier[2])
+            value = node('fomod', value, node('const', struct.unpack('<I', struct.pack('<f', factor))[0]), pc=self.pc)
+        if re.search(r'\bclamp\b', text):
+            value = node('fclamp', value, pc=self.pc)
         for reg in dest:
             self.reg[reg] = value
 
@@ -349,6 +392,10 @@ class Evaluator:
         self.descriptors = record.get('vs_buffers', record.get('descriptors', []))
         self.sources = record.get('vs_bound', record.get('vertex_sources', []))
         self.scalar_mode = 'consumed_scalar_regions' if 'vs_scalar_regions' in record else 'legacy_flattened_srt_binding_premise'
+        self.float_mode = record.get('vs_float_mode')
+        self.denorm_mode = ((self.float_mode >> 4) & 3) if type(self.float_mode) is int else 3
+        self.numeric_events = {'flushed_input_subnormals': 0, 'flushed_output_subnormals': 0,
+                               'output_modifiers_applied': 0, 'output_modifiers_ignored': 0}
         require(not require_regions or self.scalar_mode == 'consumed_scalar_regions', 'consumed scalar regions required for this draw')
         self.scalar_words, self.scalar_conflicts = {}, set()
         for region in record.get('vs_scalar_regions', []):
@@ -507,7 +554,38 @@ class Evaluator:
                 result = a[0] & np.uint32(0x7fffffff)
             elif op in ('uadd', 'uand'):
                 result = (a[0] + a[1]) if op == 'uadd' else (a[0] & a[1])
+            elif op == 'ulshl_or':
+                result = (a[0] << (a[1] & np.uint32(31))) | a[2]
+            elif op == 'ulshlrev':
+                result = a[1] << (a[0] & np.uint32(31))
+            elif op == 'icvt_f32':
+                require(self.float_mode is None or (self.float_mode & 3) == 0,
+                        f'{value.pc:#x}: non-RNE integer to FP32 rounding mode is not implemented')
+                result = a[0].view('<i4').astype('<f4').view('<u4')
+            elif op == 'fomod':
+                require(self.float_mode is not None and type(self.record.get('vs_ieee_mode')) is bool,
+                        f'{value.pc:#x}: output modifier needs captured FP32/IEEE mode')
+                ignored = self.denorm_mode in (2, 3) or self.record['vs_ieee_mode']
+                self.numeric_events['output_modifiers_ignored' if ignored else 'output_modifiers_applied'] += 1
+                if ignored:
+                    result = a[0]  # An ignored modifier must not re-flush its input.
+                else:
+                    require((self.float_mode & 3) == 0, f'{value.pc:#x}: non-RNE OMOD is not implemented')
+                    with np.errstate(all='ignore'):
+                        out = np.multiply(a[0].view('<f4'), a[1].view('<f4'), dtype=np.float32)
+                    result = self.flush_subnormals(np.asarray(out, dtype='<f4').view('<u4'),
+                                                  'flushed_output_subnormals')
+                    # RDNA1 section 6.2.2: active OMOD converts -0 to +0.
+                    result = np.where((result & np.uint32(0x7fffffff)) == 0, np.uint32(0), result).astype('<u4')
             else:
+                require(self.float_mode is None or (self.float_mode & 3) == 0,
+                        f'{value.pc:#x}: non-RNE FP32 rounding mode is not implemented')
+                # RDNA1 ISA, sections 3.5, 6.2.2, 12.8 and 12.12. The flags
+                # are consumed from the capture, never selected to fit XYZW.
+                flush_input = op == 'fmad' or (self.float_mode is not None and self.denorm_mode in (0, 2))
+                flush_output = op == 'fmad' or (self.float_mode is not None and self.denorm_mode in (0, 1))
+                if flush_input:
+                    a = [self.flush_subnormals(x, 'flushed_input_subnormals') for x in a]
                 f = [x.view('<f4') for x in a]
                 with np.errstate(all='ignore'):
                     if op == 'fadd':
@@ -518,11 +596,33 @@ class Evaluator:
                         out = np.multiply(f[0], f[1], dtype=np.float32)
                     elif op == 'fsqrt':
                         out = np.sqrt(f[0], dtype=np.float32)
+                    elif op == 'fmad':
+                        product = np.multiply(f[0], f[1], dtype=np.float32)
+                        product = self.flush_subnormals(np.asarray(product, dtype='<f4').view('<u4'),
+                                                        'flushed_output_subnormals').view('<f4')
+                        out = np.add(product, f[2], dtype=np.float32)
+                    elif op == 'fcvt_u32':
+                        finite = np.nan_to_num(f[0].astype(np.float64), nan=0.0,
+                                                posinf=float(0xffffffff), neginf=0.0)
+                        result = np.trunc(np.clip(finite, 0.0, float(0xffffffff))).astype('<u4')
+                        self.cache[value] = result
+                        return result
+                    elif op == 'fclamp':
+                        out = np.clip(f[0], np.float32(0), np.float32(1))
+                        if self.record.get('vs_dx10_clamp') is True:
+                            out = np.where(np.isnan(out), np.float32(0), out)
                     else:
                         raise Unsupported(f'{value.pc:#x}: unknown evaluator node {op}')
                 result = np.asarray(out, dtype='<f4').view('<u4')
+                if flush_output:
+                    result = self.flush_subnormals(result, 'flushed_output_subnormals')
         self.cache[value] = result
         return result
+
+    def flush_subnormals(self, bits, event):
+        subnormal = ((bits & np.uint32(0x7f800000)) == 0) & ((bits & np.uint32(0x007fffff)) != 0)
+        self.numeric_events[event] += int(np.count_nonzero(subnormal))
+        return np.where(subnormal, bits & np.uint32(0x80000000), bits).astype('<u4')
 
     def position(self, program):
         return np.stack([np.broadcast_to(self.eval(x), (len(self.rows),)) for x in program.output], axis=-1)
@@ -593,7 +693,7 @@ def position_rows(record):
 def draw_identity(record):
     return {'draw': record.get('journal_draw', record.get('draw')), 'frame': record.get('frame'),
             'submit': record.get('submit'), 'shader': record.get('shader', record.get('vs_hash')),
-            'native_vs_file': record.get('native_vs_file'), 'original_fingerprint': record.get('fingerprint'),
+            'native_vs_file': record.get('native_vs_file', record.get('vs_file')), 'original_fingerprint': record.get('fingerprint'),
             'base_vertex': record.get('base_vertex'), 'first_instance': record.get('first_instance')}
 
 
@@ -696,12 +796,7 @@ def replay_draw(capture, record, decoder, require_regions=False, max_ulp=0):
                        (f'vs_{shader}_probe.bin', f'vs_{shader}.bin')]
         require(len(guest_names) == 1, 'missing/ambiguous guest instruction bytes for ' + shader)
         guest = capture.read(guest_names[0])
-        digest = hashlib.sha256(guest).hexdigest()
-        from prelight_sky_replay import xxh3
-        require(xxh3(guest) == shader, 'guest bytes do not match the recorded shader hash')
-        require(guest[:0x40] == NGG_PREFIX, 'unsupported NGG admission prologue / initial register convention')
-        if 'sha256' in profile:
-            require(digest == profile['sha256'], 'guest bytes differ from the supported full fingerprint')
+        digest = check_guest(guest, shader, profile)
         report['guest'] = {'file': guest_names[0], 'sha256': digest, 'decoder': decoder.library, 'target': 'gfx1010'}
         # The independent guest reference never consumes native module arithmetic.
         # Verify the recorded bound module's filename/content identity if present.
@@ -713,7 +808,6 @@ def replay_draw(capture, record, decoder, require_regions=False, max_ulp=0):
             report['native_module_identity_verified'] = True
         rows = position_rows(record)
         user_data = words(record.get('vs_user_data', record.get('user_data')), 'VS user data')
-        require(len(user_data) >= 2, 'missing initial S8:S9 user data')
         program = Program(decoder.decode(guest), profile, user_data, record.get('vs_user_data_base', 8))
         evaluator = Evaluator(capture, record, profile, rows, require_regions)
         expected = evaluator.position(program)
@@ -748,6 +842,7 @@ def replay_draw(capture, record, decoder, require_regions=False, max_ulp=0):
     if evaluator is not None:
         report['scalar_binding_mode'] = evaluator.scalar_mode
         report['consumed_loads_on_position_slice'] = sorted(evaluator.loads, key=lambda x: int(x['pc'], 16))
+        report['numeric_events'] = evaluator.numeric_events
     return report
 
 
@@ -779,10 +874,143 @@ def merge_inputs(capture, record):
     return {**record, **{k: v for k, v in source.items() if k.startswith('vs_') or k in fields}}
 
 
+def reference_without_native_position(capture, inputs, decoder):
+    """Compute only the guest result for a direct draw missing a recorder.
+
+    No observed XYZW is synthesized, compared or inferred from a query. This
+    can close the independent reference calculation while the native export
+    observation remains unavailable, as for VS2337 in capture #745.
+    """
+    shader = inputs.get('vs_hash')
+    report = {'identity': draw_identity(inputs), 'status': 'NATIVE_POSITION_UNAVAILABLE',
+              'native_position_compared': False, 'p8_certificate': False}
+    evaluator = None
+    try:
+        require(not inputs.get('indirect') and not inputs.get('mesh'),
+                'no captured native positions; indirect/mesh invocation identities need their actual executed arguments')
+        indices = words(inputs.get('index_words'), 'direct draw index words')
+        count, first = inputs.get('instances'), inputs.get('first_instance', 0)
+        require(type(count) is int and 0 < count <= 65536 and type(first) is int and first >= 0,
+                'missing/unsupported direct instance range')
+        base = inputs.get('base_vertex', 0) if inputs.get('indexed', True) else inputs.get('first_vertex', 0)
+        require(type(base) is int, 'missing/invalid base vertex')
+        vertices = np.unique((indices.astype(np.int64) + base) & 0xffffffff)
+        require(0 < len(vertices) * count <= 1048576, 'unsupported direct invocation count')
+        # Only identity columns are required by the reference evaluator.
+        identities = np.asarray([(v, instance) for instance in range(first, first + count) for v in vertices], dtype='<u4')
+        require(isinstance(shader, str) and re.fullmatch('[0-9a-f]{16}', shader), 'invalid guest shader hash')
+        profile = PROFILES.get(shader, {'flat': {}, 'descriptors': {}})
+        names = [n for n in capture.names if PurePosixPath(n).name == f'vs_{shader}_probe.bin']
+        require(len(names) == 1, 'missing/ambiguous guest shader')
+        guest = capture.read(names[0])
+        digest = check_guest(guest, shader, profile)
+        program = Program(decoder.decode(guest), profile, words(inputs.get('vs_user_data'), 'VS user data'),
+                          inputs.get('vs_user_data_base', 8))
+        evaluator = Evaluator(capture, inputs, profile, identities, True)
+        expected = evaluator.position(program)
+        code_values, code_counts = np.unique(clip_codes(expected, True), return_counts=True)
+        report.update(status='POSITION_REFERENCE_ONLY', vertices=len(identities), export_pc=hex(program.export_pc),
+                      guest={'file': names[0], 'sha256': digest, 'decoder': decoder.library, 'target': 'gfx1010'},
+                      expected_position_sha256=hashlib.sha256(expected.astype('<u4').tobytes()).hexdigest(),
+                      expected_finite_components=int(np.isfinite(expected.view('<f4')).sum()),
+                      expected_zero_components=[int(np.count_nonzero(expected[:, j].view('<f4') == 0)) for j in range(4)],
+                      expected_dx_clip_code_histogram={str(int(k)): int(v) for k, v in zip(code_values, code_counts)},
+                      position_samples=[{'vertex': int(identities[i, 0]), 'instance': int(identities[i, 1]),
+                                         'expected_bits': [int(x) for x in expected[i]]}
+                                        for i in range(min(8, len(identities)))],
+                      reason='Independent guest positions computed from captured operands. No native export observation exists; this is not POSITION_MATCH or POSITION_DIVERGENCE.')
+    except (Unsupported, OSError, KeyError, TypeError, ValueError, struct.error) as error:
+        report['reason'] = str(error)
+    if evaluator is not None:
+        report['scalar_binding_mode'] = evaluator.scalar_mode
+        report['consumed_loads_on_position_slice'] = sorted(evaluator.loads, key=lambda x: int(x['pc'], 16))
+        report['numeric_events'] = evaluator.numeric_events
+    return report
+
+
+def inventory_unobserved_draws(capture, compared, decoder):
+    manifest_name = 'queue-state/ds_prelight_witness_foreground_manifest.json'
+    if manifest_name not in capture.names:
+        return []
+    manifest = capture.json(manifest_name)
+    require(isinstance(manifest, dict) and isinstance(manifest.get('inputs'), list), 'invalid foreground manifest')
+    done = {d.get('identity', {}).get('draw') for d in compared}
+    pending = [item for item in manifest['inputs'] if isinstance(item, dict) and item.get('draw') not in done]
+    if not pending:
+        return []
+    capture_statuses, events = {}, []
+    needed = {item.get('draw') for item in pending}
+    for name in capture.names:
+        if re.fullmatch(r'queue-state/ds_prelight_events_\d+\.jsonl', name):
+            for line in capture.read(name).splitlines():
+                event = json.loads(line)
+                require(isinstance(event, dict), 'invalid journal object during input-only inventory')
+                events.append(event)
+                if event.get('kind') == 'witness_vertex_capture' and event.get('draw') in needed:
+                    capture_statuses.setdefault(event['draw'], []).append(event)
+    result = []
+    for item in pending:
+        try:
+            require(type(item.get('draw')) is int and isinstance(item.get('file'), str), 'invalid foreground input entry')
+            name = 'queue-state/' + item['file']
+            inputs = capture.json(name)
+            require(isinstance(inputs, dict) and inputs.get('draw') == item['draw'], 'input-only draw identity mismatch')
+            report = zero_argument_reference(inputs, events) or reference_without_native_position(capture, inputs, decoder)
+            report['input_record'] = name
+            report['native_capture_events'] = capture_statuses.get(item['draw'], [])
+        except (Unsupported, KeyError, TypeError, ValueError, OSError) as error:
+            report = {'identity': {'draw': item.get('draw')}, 'status': 'NATIVE_POSITION_UNAVAILABLE',
+                      'reason': str(error), 'native_position_compared': False, 'p8_certificate': False}
+        result.append(report)
+    return sorted(result, key=lambda d: d.get('identity', {}).get('draw') or 0)
+
+
+def zero_argument_reference(inputs, events):
+    """Account for an observed zero indirect workload without inventing VS rows.
+
+    This only certifies the consequence of the captured source/fixed argument
+    vector. It explicitly leaves the correctness of its producer upstream.
+    """
+    if not inputs.get('indirect'):
+        return None
+    try:
+        prepared = [e for e in events if e.get('seq') == inputs.get('draw') and e.get('kind') == 'draw_prepared']
+        require(len(prepared) == 1, 'ambiguous indirect prepared record')
+        prepared = prepared[0]
+        require(prepared.get('vs') == int(inputs['vs_hash'], 16), 'indirect shader identity mismatch')
+        command = prepared['command']
+        source = [e for e in events if e.get('command') == command and e.get('kind') == 'indirect_source']
+        fixed = [e for e in events if e.get('command') == command and e.get('kind') == 'indirect_fixed']
+        executed = [e for e in events if e.get('draw') == inputs['draw'] and e.get('kind') == 'draw_execute']
+        require(len(source) == len(fixed) == len(executed) == 1, 'ambiguous indirect arguments/execution')
+        source, fixed, executed = source[0], fixed[0], executed[0]
+        require(prepared['seq'] < source['seq'] < fixed['seq'] < executed['seq'], 'indirect arguments outside execution order')
+        require(source.get('indexed') == inputs.get('indexed') and fixed.get('count_bda') == 0,
+                'unsupported indirect indexing/count-buffer form')
+        require(source.get('bda') and source['bda'] == fixed.get('source_bda'), 'indirect source BDA mismatch')
+        require(source.get('max_count') == fixed.get('max_count') and type(fixed.get('max_count')) is int
+                and fixed['max_count'] > 0, 'indirect count mismatch')
+        before, after = words(source.get('words'), 'indirect source words'), words(fixed.get('words'), 'indirect fixed words')
+        width = 5 if inputs['indexed'] else 4
+        require(len(before) == len(after) == fixed['max_count'] * width and np.array_equal(before, after),
+                'indirect source/fixed argument evidence differs or is incomplete')
+        zero = np.all((after[::width] == 0) | (after[1::width] == 0))
+        require(zero, 'indirect arguments contain nonzero invocations')
+        return {'identity': draw_identity(inputs), 'status': 'ZERO_EXECUTED_INVOCATIONS',
+                'native_position_compared': False, 'p8_certificate': False,
+                'argument_evidence': {'command': command, 'source_seq': source['seq'], 'fixed_seq': fixed['seq'],
+                                      'execute_seq': executed['seq'], 'source_bda': source['bda'],
+                                      'words': after.tolist(), 'indexed': inputs['indexed'],
+                                      'max_count': fixed['max_count'], 'same_source_and_fixed_words': True},
+                'reason': 'The observed source/fixed arguments imply zero vertex invocations. No position rows are required for this workload; correctness of the upstream argument producer is not certified.'}
+    except (Unsupported, ValueError, KeyError, TypeError):
+        return None
+
+
 def run(path, record_pattern=None, require_regions=False, max_ulp=0, llvm_library=None):
     report = {'schema': 'demons-independent-vertex-oracle-v1', 'tree_effect': 'LOCAL_EDGE_RESULTS_ONLY',
               'p8_certificate': False, 'draws': [],
-              'numeric_model': 'IEEE binary32 RNE; separate multiply/add; preserved subnormals; NaN class and signed-zero numeric equality',
+              'numeric_model': 'binary32 RNE; separate MAD multiply/add with denormal flush; captured ordinary FP32 denormal and OMOD/IEEE controls; NaN class and signed-zero numeric equality',
               'excluded': ['NGG/EXEC invocation admission', 'upstream production/version correctness',
                            'complete VS/PS or G-buffer equivalence', 'hardware rounding/FTZ conformance',
                            'expected visibility and final image']}
@@ -816,6 +1044,9 @@ def run(path, record_pattern=None, require_regions=False, max_ulp=0, llvm_librar
             report['draws'].append(complete)
             if PurePosixPath(name).name.startswith('ds_prelight_witness_vertex_') and complete.get('identity', {}).get('draw') is not None:
                 general[complete['identity']['draw']] = complete
+        # An explicit record filter is a scoped comparison, not an assertion
+        # that all other native files disappeared from the capture.
+        report['unobserved_draws'] = [] if record_pattern else inventory_unobserved_draws(capture, report['draws'], decoder)
     except (Unsupported, OSError, ValueError, zipfile.BadZipFile) as error:
         report['capture_error'] = str(error)
     finally:
@@ -831,7 +1062,15 @@ def run(path, record_pattern=None, require_regions=False, max_ulp=0, llvm_librar
         report['first_local_divergence'] = {'identity': first['identity'], **first['first_local_divergence']}
     report['analysis_state'] = ('LOCAL_DIVERGENCE' if divergences else
                                 'PARTIAL_WITH_GAPS' if report.get('capture_error') or report['counts']['UNSUPPORTED_DRAW']
+                                else 'POSITION_EDGES_MATCH_WITH_UNOBSERVED_DRAWS' if report.get('unobserved_draws')
                                 else 'SELECTED_POSITION_EDGES_MATCH')
+    report['draw_classification'] = sorted(
+        [{'draw': d.get('identity', {}).get('draw'), 'shader': d.get('identity', {}).get('shader'),
+          'status': d['status'], 'vertices': d.get('vertices'), 'native_position_compared': d['status'] != 'UNSUPPORTED_DRAW'}
+         for d in report['draws']] +
+        [{'draw': d.get('identity', {}).get('draw'), 'shader': d.get('identity', {}).get('shader'),
+          'status': d['status'], 'vertices': d.get('vertices'), 'native_position_compared': False}
+         for d in report.get('unobserved_draws', [])], key=lambda d: d['draw'] or 0)
     return report
 
 
