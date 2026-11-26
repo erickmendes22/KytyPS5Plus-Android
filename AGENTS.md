@@ -84,6 +84,33 @@ o próximo trabalho deve reparar a lacuna identificada, sem alternar o galho.
 Isso não exige oráculo integral de P8, PC idêntico ou rastreador universal CPU
 como pré-condição para uma aresta local decidível.
 
+## Prioridade corrigida pelo usuário: decidir P(8)
+
+Enquanto P(8) estiver aberto, o objetivo da próxima build diagnóstica é decidir
+essa divisão, não apenas encerrar outra comparação local. Os certificados
+locais existentes são provas reutilizáveis; não substituem o corte do nó ativo.
+Uma sonda local só integra essa build quando seu resultado e as demais evidências
+adquiridas alimentam um mecanismo concreto de decisão de P(8).
+
+Antes de compilar, verificar separadamente os dois desfechos: FAIL precisa de
+contraexemplo independente em C1..C8 com efeito demonstrável no cone do sintoma;
+PASS precisa certificar o prefixo relevante até C8, conservando a divergência
+posterior da mesma testemunha. Igualdade de uma leitura, POS0 ou saída isolada
+não certifica esse prefixo. Registrar quais bytes, versões, operações e vínculos
+o mecanismo usa, e exercitar os caminhos PASS/FAIL e as falhas de aquisição.
+
+Isso exige construir e validar o instrumento antes da aquisição, não conhecer
+antecipadamente a resposta do aparelho. Restringir o trabalho às dependências
+da testemunha; não exigir captura externa de PC, emulação integral do jogo ou
+trace CPU universal. Um auditor com P8 constante em BLOCKED não satisfaz esse
+mecanismo. Não mascarar a falta do comparador como simples espera por outro ZIP.
+
+A #746 foi entregue com comparação local READ/EMIT; não tem dois desfechos
+executáveis que decidam P(8). Aproveitar seus dados quando disponíveis, sem
+apresentá-la como garantia da primeira divisão nem repetir esse critério de
+preparo em outra build. Ao encontrar divergência comprovada, implementar a
+correção, preservando a distinção entre corrigir a operação e resolver o sintoma.
+
 
 ## Investigação causal sequencial (obrigatória, precede a escolha de sondas)
 

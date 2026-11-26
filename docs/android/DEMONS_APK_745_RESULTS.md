@@ -100,6 +100,32 @@ O intervalo global G0/P8 continua sem certificado integral. Esse estado
 não veta a aquisição da aresta concreta acima e não reabre os certificados
 de posição, máscara, count-transfer, BC1 ou stencil já obtidos.
 
+## Auditoria posterior: ligação entre a perda e o sintoma final
+
+A perda local de albedo no frame **202** e o fechamento do journal no **207**
+não identificam automaticamente a transição final da cena. No mesmo ZIP,
+`logs/session.log`, as linhas `DS_GAMEPLAY_LIGHT_MONITOR` para
+`scene=0x281a80000` registram:
+
+| Frame host | Versão da cena | Amostras iluminadas | Level registrado | Estado do monitor |
+| --- | --- | --- | --- | --- |
+| 209 | 22832 | 64/64 | 0.0467234 | `scouting`, `low_streak=0` |
+| 233 | 28074 | 1/64 | 0.0001736 | `scouting`, `low_streak=1` |
+| 281 | 40004 | 2/64 | 0.0062383 | `bright_to_dark`, `low_streak=3` |
+
+São amostras da cena, não uma imagem esperada independente nem garantia de
+iluminação correta. Os números também não provam que a perda de albedo e a
+queda posterior sejam independentes: pode haver passes, outras contribuições
+e versões intermediárias. A lacuna é a cadeia de identidade/versão/pixel
+que demonstre como a diferença retida alcança o sintoma final.
+
+A #746 adicionou a comparação dos argumentos indiretos, mas não fechou essa
+cadeia downstream nem um verificador bilateral de P(8). Um MATCH local não
+decide a primeira divisão. Uma divergência local será aproveitada e corrigida
+no seu escopo; sua promoção a causa do sintoma exige o vínculo acima. Essa
+constatação corrige a prioridade metodológica e preserva todos os certificados
+anteriores, sem selecionar outro episódio por associação.
+
 ## Encerramento da sessão
 
 Depois do frame 490 houve um `Fatal Error` no guard de `ComputeTextureDesc`

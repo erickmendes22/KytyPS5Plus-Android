@@ -9,6 +9,15 @@ O nó global continua sendo **P(8), intervalo [0,16], sem metade eliminada**;
 os certificados locais da #745 permanecem válidos no seu escopo. A comparação
 CPU da #746 aguarda captura e não seleciona antecipadamente um ramo global.
 
+**Prioridade corrigida: decidir P(8).** A #746 valida READ/EMIT, mas MATCH
+não certifica C1..C8 e DIVERGENCE ainda precisa demonstrar efeito no sintoma
+do mesmo episódio. O auditor `tools/prelight_v3_gate.py` mantém P8 BLOCKED
+sem caminho executável para PASS/FAIL; integridade do ZIP não supre esse
+comparador. A próxima build diagnóstica deve ter aquisição e verificador
+capazes de decidir os dois lados de P(8), usando o cone necessário da
+testemunha e as provas já obtidas. Isso não exige a resposta antes da captura
+nem um oráculo externo de PC. Ver a prioridade operacional no início da árvore.
+
 [Balanço obrigatório de eliminação por build](DEMONS_BUILD_ELIMINATION_LEDGER.md):
 registrar cortes efetivos, revalidações, motivo de nenhum corte e a correção
 concreta da deficiência antes da aquisição seguinte.

@@ -11,6 +11,33 @@ não decidida**. Os resultados locais abaixo reduzem operações concretas da
 mesma testemunha; não podem ser somados e apresentados como metades globais
 eliminadas.
 
+## Deficiência metodológica identificada após a entrega da #746
+
+O preparo validou um comparador local de leitura/emissão, mas não um mecanismo
+capaz de decidir os dois resultados de **P(8)**. MATCH dos 60 bytes deixa o
+produtor aberto. DIVERGENCE pode provar um erro pré-iluminação, mas só decide a
+localização causal do sintoma quando seu efeito no mesmo episódio é demonstrado.
+O vínculo de batch/targets/ordem existe; cobertura esperada do cenário com as
+entradas do ciclo zerado ainda não foi demonstrada.
+
+A [auditoria posterior da #745](DEMONS_APK_745_RESULTS.md) também distingue a
+perda de albedo no frame 202 da amostragem final da cena: 64/64 pontos iluminados
+no frame 209, queda para 1/64 no 233 e trigger no 281. A cadeia de versões e
+contribuições entre esses eventos não está fechada. Isso é lacuna de vínculo,
+não prova de que se trata de outro defeito nem autorização para trocar o caso.
+
+Além disso, `tools/prelight_v3_gate.py` inicializa e conserva P8=BLOCKED; não
+implementa o comparador global. **A falta de corte não pode ser atribuída somente
+à espera pelo próximo ZIP.** O programa audita a captura e anexa provas locais.
+Não basta reclassificar seus resultados, tornar arquivos obrigatórios ou remover
+uma mensagem de lacuna para implementar P(8).
+
+Correção de foco: a próxima build diagnóstica deve fornecer aquisição e
+verificador executável dos dois desfechos do nó ativo. Isso é um requisito do
+instrumento a construir, não a exigência circular de já possuir a resposta do
+aparelho. Reutilizar os certificados e analisar os dados da #746 quando
+disponíveis; não contabilizar a captura local como uma decisão global.
+
 ## Como registrar um corte
 
 | Tipo | O que a evidência permite afirmar |
@@ -30,7 +57,7 @@ não autoriza trocar de testemunha ou reabrir operações certificadas.
 | --- | --- | --- | --- | --- |
 | **#744**, ZIP `20261126-115532`, núcleo `470b589f276d8e721ebe09a4136d62ab05c6dc14` | Certificados locais do fundo e dos fixups reaproveitados; posição do fundo reproduzida offline. A fórmula simbólica de VS8685 tem escopo limitado aos mesmos valores já carregados. | **Nenhum.** | A captura não continha os operandos/índices/módulos necessários para comparar numericamente as posições do foreground. Um replay do mesmo SPIR-V e uma fórmula simbólica não supriam esses inputs. | A #745 corrigiu seleção pelo clear executado, captura dos inputs realmente consumidos, posições e fecho de exportação. O resultado dessa correção foi verificado no ZIP seguinte. |
 | **#745**, ZIP `20261126-132544`, núcleo `4a94749e889ffd178418d347fcdd82ccc83ca73e` | **45 POS0 reais comparáveis** coincidem com a execução independente da ISA guest: 73.580 vértices / 294.320 componentes bit a bit. O slice de posição dessas invocações foi retirado do conjunto de operações divergentes. | **Nenhum.** | A fronteira seguinte é o batch CPU de três registros em `0x21de00078`. Seus **60 bytes e sua versão independente no instante do consumo não foram adquiridos**. O journal demonstra a mudança de count, mas não decide leitura correta versus bytes de outra versão. | A #746 implementa comparação por byte entre consumo preservado e referência independente, emissão separada, retenção dos extremos ligada à perda e cópias GPU coletadas depois dos três consumos. |
-| **#746**, commit `4e321c2dbedcab17085c1af6ecf0d0f4f8345afe`, run `45866254600` | **Nenhum resultado de gameplay/captura ainda.** Há mecanismo de aquisição e decisão implementado e testado antes da build. | **Nenhum registrado.** | Estado deste registro: **COMPILADO, ASSINADO E VERIFICADO / AGUARDA_CAPTURA**. Ausência de resultado não equivale a resultado negativo do comparador. | Analisar a captura F do mesmo episódio. Aplicar a tabela de decisão abaixo; preencher o corte observado, sem antecipá-lo. |
+| **#746**, commit `4e321c2dbedcab17085c1af6ecf0d0f4f8345afe`, run `45866254600` | **Nenhum resultado de gameplay/captura ainda.** Há mecanismo local READ/EMIT implementado e testado antes da build. | **Nenhum registrado.** | **COMPILADO, ASSINADO E VERIFICADO / AGUARDA_CAPTURA**. Além da captura pendente, o preparo não fechou um comparador bilateral de P(8); um MATCH local não elimina uma metade global. | Aproveitar o diagnóstico quando disponível e registrar seu alcance. Antes de outra build diagnóstica, completar o contrato de aquisição e o verificador executável de P(8), com os dois desfechos e o vínculo ao sintoma. |
 
 Run da #746: [GitHub Actions 45866254600](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45866254600).
 A compilação e as verificações do APK terminaram com sucesso:

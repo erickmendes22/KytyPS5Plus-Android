@@ -8,8 +8,63 @@ aparelho. Este quadro é o estado operacional vigente; as seções posteriores
 preservam os contratos e o histórico que o fundamentam.
 
 **Nó global ativo: P(8). Intervalo: [0,16]. Metades globais eliminadas: 0.**
-A próxima comparação local é a leitura e emissão dos argumentos indiretos do
-mesmo episódio. Ela não representa uma seleção antecipada de C1–C8 ou C9–C16.
+A #746 prepara a comparação local da leitura e emissão dos argumentos indiretos
+do episódio observado. Ela não representa uma seleção de C1–C8 ou C9–C16.
+
+### Prioridade operacional: decidir P(8)
+
+**Correção de foco solicitada pelo usuário em 26/11/2026:** fechar comparações
+locais não basta para cumprir a primeira divisão. O objetivo da próxima build
+diagnóstica é produzir uma decisão de **P(8)**. As provas locais permanecem
+válidas, mas só justificam instrumentação adicional quando entram em um caminho
+concreto que decide esse nó; seguir indefinidamente mais um produtor não é uma
+bisseção global.
+
+A auditoria da #746 mostrou a deficiência do preparo: os controles verificaram
+READ/EMIT, não os dois desfechos de P(8). **MATCH dos 60 bytes não certifica
+C1..C8.** Uma divergência de leitura/emissão pode provar um erro antes da
+iluminação, mas sua contribuição para o sintoma ainda precisa ser demonstrada
+na cadeia de versões do mesmo episódio. O batch, os targets e a ordem estão
+vinculados; os 98.304 índices
+da execução anterior não são uma referência de cobertura com as entradas do
+ciclo zerado. Portanto, **#746 é aquisição local, não uma decisão bilateral de
+P(8)**; preservar o APK e aproveitar a captura sem antecipar esse alcance.
+
+Há também uma deficiência executável concreta:
+[`prelight_v3_gate.py`](tools/prelight_v3_gate.py) inicializa G0/P8 como BLOCKED
+e não contém transição para PASS/FAIL. O oráculo de vértices só anexa decisões
+locais. O script audita transporte e lacunas; outro ZIP íntegro não cria o
+comparador global ausente. Não substituir esse mecanismo por flags declaradas.
+
+O vínculo com a saída final também tem uma lacuna concreta na #745: a perda
+de albedo ocorre no frame 202 e a janela fecha no 207, mas o monitor da cena
+`0x281a80000` registra 64/64 amostras iluminadas no frame 209, 1/64 no 233 e
+aciona `bright_to_dark` no 281. Não são certificados da imagem inteira nem
+prova de independência entre os eventos; mostram que a identidade temporal,
+de versões e de contribuição entre a perda retida e o sintoma final ainda
+precisa ser estabelecida. Preservar o caso e verificar essa ligação antes de
+promover um erro local a causa. Ver [evidência da #745](DEMONS_APK_745_RESULTS.md).
+
+| Resultado necessário em P(8) | Prova que deve decidir o ramo | Evidência atual que não basta |
+| --- | --- | --- |
+| **FAIL → [0,8]** | Contraexemplo independente em C1..C8, com os mesmos inputs/versões e efeito demonstrado na contribuição da testemunha ao sintoma. | Count0 antes da perda, pixels pretos ou uma diferença de leitura sem demonstrar o efeito no mesmo episódio. |
+| **PASS → [8,16]** | Certificado do prefixo relevante até C8, incluindo comandos que determinam quais invocações existem, produtores e versões, preservando a divergência posterior da mesma testemunha contra referência independente. | MATCH dos 45 POS0, dos 60 bytes ou de uma saída isolada; isso não certifica produtores, invocações omitidas ou operações não comparadas. |
+
+Um FAIL local ligado ao sintoma elimina C9–C16 como localização da **primeira**
+divergência dessa testemunha; não certifica ausência de erros posteriores.
+O vínculo pode ser demonstrado por propagação/replay ou intervenção mínima
+validada, sem exigir restaurar toda a imagem para aproveitar o contraexemplo.
+
+Antes de outra build, o preparo deve apresentar o verificador executável e o
+contrato de aquisição dos operandos, versões e vínculos a obter para **ambos**
+os resultados, com os pontos de captura e verificação, exercitando
+PASS, FAIL e falhas de aquisição. Usar primeiro os dados já disponíveis e
+completar somente o cone necessário da mesma testemunha. Registrar o mapa de
+cada dado necessário para seu ponto de aquisição e sua verificação. A análise atual ainda
+não contém esse verificador global; documentar a meta não equivale a implementá-lo.
+Não se exige obter a resposta antes de capturar, um PC idêntico ou um rastreador
+CPU universal. Se uma aquisição falhar, reparar sua deficiência concreta; se
+surgir divergência comprovada, corrigir a operação sem abrir novos galhos.
 
 ### Árvore global e decisões ainda não visitadas
 
@@ -40,7 +95,7 @@ metade dessa árvore.
 | --- | --- | --- | --- |
 | **#744** | Certificados do fundo e dos fixups preservados; dois VS do fundo reproduzidos offline. | **Nenhum.** | Faltavam inputs, índices e módulos do foreground. A #745 corrigiu seleção pelo clear executado, aquisição dos operandos e exportação obrigatória. |
 | **#745** | **45 draws / 73.580 vértices / 294.320 componentes POS0 iguais bit a bit.** Fetch/cálculo/export de posição dessas invocações não explicam uma diferença em relação à ISA com os mesmos inputs. | **Nenhum.** | Os três registros de argumentos CPU em `0x21de00078` não tinham seus **60 bytes e versão independente** capturados. A #746 preserva consumo original, referência por byte, emissão, extremos do episódio e produtores/transferências observados. |
-| **#746** | **Ainda nenhum resultado novo do aparelho.** O APK entregue contém o mecanismo de comparação validado antes da build. | **Nenhum registrado; aguarda captura.** | Aplicar a decisão abaixo ao diagnóstico. A ausência de captura não é um resultado negativo nem um corte previsto já obtido. |
+| **#746** | **Ainda nenhum resultado novo do aparelho.** O APK entregue contém a comparação local READ/EMIT validada antes da build. | **Nenhum registrado; aguarda captura.** | Além da captura pendente, o preparo não fechou um mecanismo bilateral de P(8). Aproveitar os resultados locais; construir a decisão do nó ativo antes de outra build diagnóstica. |
 
 Os 45 draws da #745 incluem a **revalidação** dos VS do céu: não são 45 cortes
 inéditos. A máscara do céu (1.439.342 pixels alterados / 658 preservados), os
