@@ -54,6 +54,8 @@ struct Journal {
     uint64_t event_bytes=0,evicted=0,dropped=0,blob_dropped=0,io_errors=0;
     std::map<std::string,Blob> files;
     std::map<uint64_t,Json> producers;
+    std::map<uint64_t,Json> producer_chains;
+    std::map<uint64_t,uint64_t> chain_omitted;
     std::map<uint64_t,Retention> retention;
     std::map<uint64_t,Json> last_seen;
     std::map<uint64_t,uint32_t> inflight;
@@ -90,6 +92,13 @@ inline void BeginProducer(uint64_t stream){
     for(const auto& [name,blob]:j.files)if(blob.current&&blob.stream==stream)names.push_back(name);
     for(const auto& name:names)RemoveLocked(j,name);
     j.producers.erase(stream);
+    j.producer_chains.erase(stream);
+    j.chain_omitted.erase(stream);
+}
+inline size_t ProducerChainSize(uint64_t stream){
+    auto& j=State();std::scoped_lock lock(j.mutex);
+    const auto it=j.producer_chains.find(stream);
+    return it==j.producer_chains.end()?0:it->second.size();
 }
 inline bool SaveBlob(const std::string& name,std::span<const uint8_t> data){
     if(!Enabled()||!NameOk(name))return false;
@@ -125,9 +134,15 @@ inline uint64_t Record(Json event){
     const auto seq=order.fetch_add(1,std::memory_order_acq_rel)+1;
     event["seq"]=seq;
     auto& j=State();std::scoped_lock lock(j.mutex);
-    if(event.value("kind",std::string{})=="producer"&&event.value("phase",std::string{})=="after"&&event.value("retained",false)){
+    if(event.value("kind",std::string{})=="producer"&&event.value("phase",std::string{})=="after"){
         const auto stream=event.value("stream_id",uint64_t{0});
-        if(stream)j.producers[stream]=event;
+        if(stream){
+            if(event.value("retained",false)&&!j.producers.contains(stream))j.producers[stream]=event;
+            auto& chain=j.producer_chains[stream];
+            if(chain.is_null())chain=Json::array();
+            if(chain.size()<ProducerChainLimit)chain.push_back(event);
+            else ++j.chain_omitted[stream];
+        }
     }
     auto line=event.dump();
     if(line.size()>512u*1024u){++j.dropped;return seq;}
@@ -311,9 +326,12 @@ inline void SaveBatch(Json batch){
         }
         batch["pinned_producer_files"]=pinned;
         if(j.producers.contains(stream))batch["last_observed_producer"]=j.producers[stream];
+        if(j.producer_chains.contains(stream))batch["producer_chain"]=j.producer_chains[stream];
+        batch["producer_chain_omitted"]=j.chain_omitted[stream];
         batch["retention_slot"]=slot;
         if(batch.dump().size()>512u*1024u){
             batch.erase("last_observed_producer");
+            batch.erase("producer_chain");
             batch["producer_capture_failure"]="attached_producer_metadata_exceeds_retained_limit";
             ++j.blob_dropped;
         }

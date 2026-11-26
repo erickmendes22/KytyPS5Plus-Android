@@ -3517,10 +3517,13 @@ static void EndDsIndirectProducer(RenderContext& context, DsIndirectProducerCapt
         const bool changed = complete && stream.before["native_words"] != after["native_words"];
         const bool first = std::ranges::find(retained_streams, stream.target.stream_id) == retained_streams.end();
         bool retained = false;
-        nlohmann::json artifact = {{"status", "not_retained_unchanged"}};
-        if (changed || first) {
-            Witness::BeginProducer(stream.target.stream_id);
-            const auto name = fmt::format("ds_prelight_cp_args_current_{}_compute.bin", stream.target.stream_id);
+        const bool restart = changed || first;
+        if (restart) Witness::BeginProducer(stream.target.stream_id);
+        nlohmann::json artifact = {{"status", "producer_chain_limit"}};
+        // A dispatch that erroneously writes nothing is precisely the case
+        // that must not discard its independent-reference operands.
+        if (Witness::RetainCandidate(restart, Witness::ProducerChainSize(stream.target.stream_id))) {
+            const auto name = fmt::format("ds_prelight_cp_args_current_{}_compute_{}.bin", stream.target.stream_id, stream.before_seq);
             retained = cap.operand_bytes.empty() || Witness::SaveBlob(name, cap.operand_bytes);
             artifact = {{"status", retained ? "retained" : "blob_budget_or_io_error"},
                 {"bytes", cap.operand_bytes.size()}, {"fnv1a64", Witness::Digest(cap.operand_bytes)}};
@@ -3540,6 +3543,7 @@ static void EndDsIndirectProducer(RenderContext& context, DsIndirectProducerCapt
             {"frame", cap.inputs["frame"]}, {"target_before", stream.before}, {"target_after", after},
             {"target_bytes_comparable", complete}, {"target_bytes_changed", changed},
             {"same_native_mapping", same_mapping}, {"retained", retained}, {"operand_blob", artifact},
+            {"chain_restart", restart},
             {"inputs", retained ? cap.inputs : nlohmann::json{}},
             {"scope", "observed before/after dispatch; descriptor overlap alone does not prove a store or last writer"}});
     }

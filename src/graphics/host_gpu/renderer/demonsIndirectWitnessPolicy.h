@@ -10,6 +10,10 @@ constexpr uint64_t BlobBudget = 24ull << 20;
 constexpr uint64_t GenerationBudget = 8ull << 20;
 constexpr uint64_t RecordBytes = 20;
 constexpr uint64_t BatchBytes = 60;
+// Retain the changed producer and its next seven candidates even when the
+// target is unchanged. Budget exhaustion is explicit, not evidence of a match.
+constexpr size_t ProducerChainLimit = 8;
+constexpr bool RetainCandidate(bool restart,size_t chain_size){return restart||chain_size<ProducerChainLimit;}
 constexpr uint64_t ReplacementCapacity(uint64_t total,uint64_t old){
     if(old>total||total-old>BlobBudget)return 0;
     const auto free=BlobBudget-(total-old);return free<GenerationBudget?free:GenerationBudget;

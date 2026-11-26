@@ -73,6 +73,35 @@ causal e a referência independente da tradução guest continuam pendentes.
 **Corte global: nenhum; P8 permanece aberto.** Não promover staging ao
 branch de APK enquanto esses requisitos de decisão não forem satisfeitos.
 
+## Reanálise offline #746 — inicialização dos argumentos indiretos
+
+Binário guest CS 71e0e2994d683e35, SHA-256
+09267e1f60812eb432c306a9e3fc6bb2f5c451f8fe8958404152579873a213af.
+A decodificação LLVM gfx1010 dos PCs 00a4, 0650, 065c e 06f0..0798,
+com SRT consumido, blob de operandos preservado (917504 bytes, FNV1a64
+3120090459754847557), grupos [1,1,1] e dois lanes ativos, reproduz os
+índices de registros 1 e 4. As três estruturas de draw em 0x21de00078
+são inicializadas independentemente da expressão de visibilidade: todos
+os 15 DWORDs coincidem com a observação imediatamente após o dispatch
+e com o consumo posterior. O contador dinâmico de dispatch (offset +0
+do registro) não está incluído nesse certificado.
+
+A inicialização não prova que os argumentos deveriam permanecer zerados.
+Os produtores seguintes, seq 4923 (b213157ad251f2c7), 4932
+(7d5ad40fca3137e2) e 4941 (ea2e66ea6ad76baf), mantiveram a janela nativa
+de 60 bytes sem alteração. Seus operandos não foram retidos precisamente
+por não terem alterado o destino. Isso inviabiliza verificar a ausência
+de uma escrita esperada. A publicação seq 4949 e o batch seq 4954
+preservam os mesmos 60 bytes; não se atribui ao reset a causa do sintoma.
+Correção de aquisição: manter uma cadeia limitada por versão, incluindo
+candidatos sem alteração, com blob individual e omissões explícitas.
+A cadeia continua subordinada à fronteira P8; não autoriza uma build
+isolada de CP nem um corte global. A referência completa ainda falta.
+
+**Corte global: nenhum.** CI do exportador no commit eceefeb:
+run 45891061642 concluído com sucesso. A captura por consumidor torna
+obrigatórios os arquivos guest antes descartados pelo limite opcional.
+
 ## Como registrar um corte
 
 | Tipo | O que a evidência permite afirmar |

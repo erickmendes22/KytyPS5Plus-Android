@@ -58,6 +58,10 @@ int main(){
     for(unsigned i=0;i<64;++i)uses.Add(0,3,i);
     assert(uses.overflow&&!uses.Complete());
 
+    static_assert(RetainCandidate(false,1));
+    static_assert(RetainCandidate(false,ProducerChainLimit-1));
+    static_assert(!RetainCandidate(false,ProducerChainLimit));
+    static_assert(RetainCandidate(true,ProducerChainLimit));
     static_assert(ReplacementCapacity(24ull<<20,8ull<<20)==(8ull<<20));
     static_assert(ReplacementCapacity(24ull<<20,0)==0);
     static_assert(ReplacementCapacity(0,1)==0);
