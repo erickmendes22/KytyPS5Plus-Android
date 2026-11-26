@@ -102,6 +102,22 @@ isolada de CP nem um corte global. A referência completa ainda falta.
 run 45891061642 concluído com sucesso. A captura por consumidor torna
 obrigatórios os arquivos guest antes descartados pelo limite opcional.
 
+## Staging — transferência distinta para cada uso da fronteira P8
+
+O verificador causal rejeitava a reutilização de snapshots de outro submit,
+enquanto o capturador deduplicava a própria transferência. Corrigido o
+contrato: cada uso recebe uma cópia Vulkan marcada e observada; apenas o
+arquivo de bytes realmente iguais pode ser compartilhado, após comparação
+exata, com orçamento separado de cópias e armazenamento. O verificador
+vincula o marcador de consumo à ordem real da captura, rejeita transfers
+reutilizados e nomeia a referência independente pelo marcador (não pelo
+arquivo Android deduplicado). Testes exercitam dois submits com bytes
+iguais, referências distintas, marcador ausente/tardio, reutilização
+inválida, orçamento e corrupção do arquivo deduplicado.
+
+O ajuste evita uma incompatibilidade entre aquisição e replay. Ainda não
+é uma referência guest para o G-buffer completo. **P8 continua aberto.**
+
 ## Como registrar um corte
 
 | Tipo | O que a evidência permite afirmar |

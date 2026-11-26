@@ -23,7 +23,7 @@ from p8_native_replay import read_jsonl, sha, require, native_plan, transfer_ent
 
 def identity(s):
     return tuple(s.get(k) for k in
-                 ("owner","native","version","format","extent","mip","layer","aspect"))
+                 ("owner","object","native","version","write_order","format","extent","mip","layer","aspect"))
 
 def file_path(root, name):
     require(isinstance(name,str) and Path(name).name==name,"unsafe payload name")
@@ -76,12 +76,38 @@ def command_rows(events, commands):
         require(a==s["aspect"],"capture aspect mismatch "+marker)
         require(r.get("imageOffset")=={"x":0,"y":0,"z":0},"not a full image copy "+marker)
         item["image"]=src
+    verify_use_markers(events,commands,mapping)
     return plan,mapping
+
+def reference_name(marker):
+    require(isinstance(marker,str) and re.fullmatch(r"P8_FULL_[A-Za-z0-9_]+",marker),
+            "invalid reference marker")
+    return marker+".bin"
+
+def verify_use_markers(events,commands,mapping):
+    labels={}
+    for entry in commands:
+        f=entry.get("function") or {}
+        if f.get("name")!="vkCmdInsertDebugUtilsLabelEXT":continue
+        label=((f.get("args") or {}).get("pLabelInfo") or {}).get("pLabelName")
+        if isinstance(label,str) and label.startswith("P8_USE_"):
+            require(label not in labels,"duplicate replay use marker "+label)
+            labels[label]=entry["index"]
+    for use in (e for e in events if e.get("kind")=="cut_use"):
+        marker=use.get("marker")
+        require(marker in labels,"consumer marker absent in native trace")
+        for stage in use.get("stages",[]):
+            for b in stage.get("images",[]):
+                for snap in b.get("snapshots",[]):
+                    m=snap["marker"]
+                    require(m in mapping and mapping[m]["command"]<labels[marker]
+                            and mapping[m]["submit_index"]<labels[marker],
+                            "snapshot transfer not completed before actual use "+m)
 
 def cut_and_final(events,mapping):
     # Keep every captured use's version, not just the first 0/8/33 queue.
     # Reused observations cannot establish a later replay read's state.
-    use_count=0;cut=set()
+    use_count=0;cut=set();used_transfers=set()
     uses=[e for e in events if e.get("kind")=="cut_use"]
     require(uses,"no actual cut-use census")
     for use in uses:
@@ -100,7 +126,8 @@ def cut_and_final(events,mapping):
                     # Retaining a copy from an earlier command is not an
                     # observation at this consumer. Refuse instead of assuming.
                     require(s.get("submit")==use.get("submit"),"cut read reused from another submit")
-                    cut.add(m)
+                    require(m not in used_transfers,"transfer reused for multiple cut reads")
+                    used_transfers.add(m);cut.add(m)
     require(cut and use_count,"empty cut")
     flips=[x for x in events if x.get("kind")=="flip"]
     def fid(s):return tuple(s.get(k) for k in ("owner","native","version","format","width","height"))
@@ -174,7 +201,7 @@ def assess(mapping, cut, final, captured, reference, control, sham, crossed):
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("capture",type=Path);p.add_argument("commands",type=Path)
-    p.add_argument("reference",type=Path,help="exact raw reference files named by snapshot file")
+    p.add_argument("reference",type=Path,help="exact raw reference files named by unique transfer marker plus .bin")
     p.add_argument("replayer",type=Path);p.add_argument("work",type=Path)
     p.add_argument("replay_args",nargs=argparse.REMAINDER)
     a=p.parse_args()
@@ -183,7 +210,9 @@ def main():
         plan,mapping=command_rows(events,read_jsonl(a.commands))
         cut,final=cut_and_final(events,mapping)
         captured={m:file_path(a.capture,mapping[m]["snapshot"]["file"]) for m in mapping}
-        reference={m:file_path(a.reference,mapping[m]["snapshot"]["file"]) for m in [*cut,final]}
+        # Android payloads may be deduplicated. Reference payloads are always
+        # named by the unique transfer marker, not by the Android file alias.
+        reference={m:file_path(a.reference,reference_name(m)) for m in [*cut,final]}
         for m in reference:
             require(reference[m].stat().st_size==captured[m].stat().st_size,"reference length "+m)
         a.work=a.work.resolve();a.work.mkdir(exist_ok=False)
