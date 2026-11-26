@@ -1,0 +1,37 @@
+name: P8 causal replay staging (no APK)
+on:
+  push:
+    branches: [ staging/ds-v3-decision-gate-20261126 ]
+    paths:
+      - 'docs/android/tools/p8_*'
+      - 'tests/manual/p8_*'
+      - '.github/workflows/p8-causal-staging.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  splice:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify causal experiment decision and negative controls
+        run: |
+          python3 tests/manual/p8_crossover_test.py
+          python3 docs/android/tools/p8_native_replay.py selftest
+      - name: Install host Vulkan
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers
+      - name: Actual Vulkan transfer regression (Lavapipe)
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Idocs/android/tools tests/manual/p8_splice_vk_test.cpp -lvulkan -o /tmp/p8-splice
+          VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json /tmp/p8-splice
+      - name: Check pinned generated replay anchors
+        run: |
+          git init /tmp/gfxr
+          git -C /tmp/gfxr remote add origin https://github.com/LunarG/gfxreconstruct.git
+          git -C /tmp/gfxr fetch --depth=1 origin 4401228c791b11fb7ea15b93795cbd1e938307c0
+          git -C /tmp/gfxr checkout --detach FETCH_HEAD
+          python3 docs/android/tools/p8_patch_gfxr.py /tmp/gfxr
+          git -C /tmp/gfxr diff --check
