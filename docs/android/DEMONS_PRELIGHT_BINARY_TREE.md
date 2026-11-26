@@ -766,3 +766,18 @@ loss, exports exact native shader files/guest binaries, depth grid
 before/after and actual dynamic viewport/scissor/compare/bias. Unknown
 or unsupported paths remain BLOCKED. No semantic fix. #742 superseded
 before device testing to avoid redundant confirmation-only round.
+
+
+## Staging only: #744 capture defect, not a decision APK
+Actual #741/#744 journals contain 50 draws each (27 depth writers, 22 material,
+one auxiliary, two indirect). #744 boundary 39624, loss 40091; #741
+40367/40979. Preparation clear false, execution clear true in both. Missing
+native buffer bytes 3304608 in each. The old manifest was empty because
+capture gated on the wrong flag. Staged selector captures every relevant
+prepared draw, includes materials, and truncates prior inputs at the actual
+executed clear, retaining the already-captured current draw. Bounded errors
+are recorded rather than used as evidence. No new APK authorized by this
+change alone: independent same-witness guest oracle for G-buffer, actual
+indirect args, images/versions and complete output remains unimplemented.
+Do not claim P8 or ship this staged capture as a decision build. No changes
+in semantic rendering or in canonical tree.

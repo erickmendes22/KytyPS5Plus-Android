@@ -2991,21 +2991,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     static uint64_t root_witness_pre_serial=0;
     static DsDepthFullSnapshot root_witness_pre_before,root_witness_pre_after;
     bool root_witness_loss=false;
-    // One prepass cycle anchored at the actual first load-clear of the
-    // #741 foreground census, which crossed the host frame boundary.
-    // Retain complete native inputs for its draws, not W0/W1 samples.
+    // Capture before target acquisition; select the cycle on the actual
+    // execute event. Never gate on a prepared load-clear flag or a shader.
     struct RootDepthCycle {
-        bool active=false;
+        DemonsPrelightPolicy::ExecutedCycle boundary;
         int32_t frame=-1;
-        uint64_t first_draw=0,first_submit=0,bytes=0,dropped=0;
+        uint64_t first_submit=0,bytes=0,dropped=0;
         std::vector<std::pair<uint64_t,std::string>> inputs;
     };
     static RootDepthCycle root_cycle;
     bool root_capture_inputs=false;
-    const bool root_occluder=root_trace&&root_depth&&root_vs&&root_ps&&
-        root_vs->shader_hash==DemonsDominantGeometry::OccluderVs&&
-        root_ps->shader_hash==DemonsDominantGeometry::DepthPs&&
-        (draw.index_count==7296||draw.index_count==192);
     const int root_phase=root_trace?DemonsPrelightTrace::Phase(root_frame):-1;
     if(root_trace&&command_seq)command_prepared=true;
     if(root_phase>=0&&(root_target!=root_colors.end()||root_depth)){
@@ -3439,19 +3434,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         return data;
     };
     if(root_draw){
-        if(root_trace&&!root_witness_latched&&root_depth&&state.depth_info.depth_write_enable&&
-           state.depth_info.depth_load_clear_enable){
-            root_cycle={};
-            if(root_vs&&root_ps&&root_vs->shader_hash==0x868546d85ce5090aull&&
-               root_ps->shader_hash==0x6254880342eb8db4ull&&draw.index_count==11118){
-                root_cycle.active=true;root_cycle.frame=root_frame;
-                root_cycle.first_draw=root_draw;root_cycle.first_submit=submit_id;
-                Record({{"kind","witness_depth_cycle_begin"},{"frame",root_frame},{"draw",root_draw},
-                    {"submit",submit_id},{"scope","actual matched first depth clear; cross-frame cycle"}});
-            }
-        }
-        root_capture_inputs=root_cycle.active&&!root_witness_latched&&root_depth&&
-            state.depth_info.depth_write_enable&&!root_background_depth&&!root_occluder;
+        root_capture_inputs=root_trace&&!root_witness_latched&&
+            (root_depth||root_target!=root_colors.end());
         nlohmann::json inputs={{"kind","background_inputs"},{"draw",root_draw},{"frame",root_frame},
             {"submit",submit_id},{"tick",m_context.GetCommandScheduler().CurrentTick()},
             {"vs_file",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
@@ -3521,7 +3505,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         inputs["vs_bound"]=encode_bound(bindings.vertex[0],root_vs);
         if(bindings.pixel&&root_ps)inputs["ps_bound"]=encode_bound(*bindings.pixel,root_ps);
         if(root_capture_inputs){
-            inputs["witness_cycle_first_draw"]=root_cycle.first_draw;
+            inputs["witness_cycle_first_draw"]=root_cycle.boundary.first;
             inputs["indexed"]=draw.IsIndexed();
             inputs["indirect"]=indirect!=nullptr;
             inputs["mesh"]=mesh_active;
@@ -3535,8 +3519,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                 for(const auto& v:snap.samplers)inputs["ps_samplers"].push_back(v.dwords);
             }
             auto line=inputs.dump();
-            constexpr uint64_t cycle_budget=12u*1024u*1024u;
-            if(line.size()<=2u*1024u*1024u&&line.size()<=cycle_budget-root_cycle.bytes&&root_cycle.inputs.size()<96){
+            constexpr uint64_t cycle_budget=48u*1024u*1024u;
+            // Before the first confirmed boundary, retain only a bounded
+            // rolling prefix. Once confirmed, do not silently evict its draws.
+            if(!root_cycle.boundary.first){
+                while(!root_cycle.inputs.empty()&&
+                      (line.size()>cycle_budget-root_cycle.bytes||root_cycle.inputs.size()>=192)){
+                    root_cycle.bytes-=root_cycle.inputs.front().second.size();
+                    root_cycle.inputs.erase(root_cycle.inputs.begin());
+                }
+            }
+            if(line.size()<=4u*1024u*1024u&&line.size()<=cycle_budget-root_cycle.bytes&&root_cycle.inputs.size()<192){
                 root_cycle.bytes+=line.size();
                 root_cycle.inputs.emplace_back(root_draw,std::move(line));
                 inputs["witness_input_retained"]=true;
@@ -4429,6 +4422,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             event["write_mask"]=GuestColorWriteMask(regs.GetRenderTargetMask(),
                 regs.GetShaderRegisters().m_cbShaderMask,root_color.target_slot);
         }
+        if(root_capture_inputs&&root_cycle.boundary.Observe(root_draw,root_depth,state.depth_info.depth_load_clear_enable)){
+            // The current draw's input was already captured, before the
+            // render-target acquisition made the clear visible. Keep it.
+            auto& v=root_cycle.inputs;
+            const auto it=std::find_if(v.begin(),v.end(),[&](const auto& entry){return entry.first==root_draw;});
+            const bool found=it!=v.end();
+            if(found){
+                v.erase(v.begin(),it);
+                root_cycle.bytes=0;for(const auto& entry:v)root_cycle.bytes+=entry.second.size();
+                root_cycle.dropped=0;
+            }else{
+                v.clear();root_cycle.bytes=0;root_cycle.dropped=1;
+            }
+            root_cycle.frame=root_frame;root_cycle.first_submit=submit_id;
+            Record({{"kind","witness_depth_cycle_begin"},{"frame",root_frame},{"draw",root_draw},
+                {"submit",submit_id},{"first_input_retained",found},{"scope","executed clear, inputs captured before acquisition"}});
+        }
         Record(std::move(event));
     }
 	LogDrawPhase(draw.Name(), "BeginRendering");
@@ -4944,8 +4954,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             saved.push_back({{"draw",id},{"file",name},{"saved",out.good()}});
         }
         std::ofstream meta(folder/"ds_prelight_witness_foreground_manifest.json",std::ios::trunc);
-        if(meta)meta<<nlohmann::json{{"active",root_cycle.active},{"first_frame",root_cycle.frame},
-            {"first_draw",root_cycle.first_draw},{"first_submit",root_cycle.first_submit},
+        if(meta)meta<<nlohmann::json{{"active",root_cycle.boundary.first!=0},{"first_frame",root_cycle.frame},
+            {"first_draw",root_cycle.boundary.first},{"first_submit",root_cycle.first_submit},
             {"loss_frame",root_frame},{"loss_draw",root_draw},{"bytes",root_cycle.bytes},
             {"dropped",root_cycle.dropped},{"inputs",saved},
             {"scope","same prepass cycle native buffers; unsupported and uncaptured operands remain BLOCKED"}};

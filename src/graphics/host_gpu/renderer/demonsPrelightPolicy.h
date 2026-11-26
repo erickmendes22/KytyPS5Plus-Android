@@ -74,6 +74,18 @@ private:
     int32_t edge=-1;
     uint32_t edge_queue=UINT32_MAX;
 };
+// A draw is retained before render-target acquisition. Only the executed
+// clear is authoritative for the cycle boundary (#741/#744: false -> true).
+struct ExecutedCycle {
+    uint64_t first=0;
+    constexpr bool Observe(uint64_t draw,bool depth_target,bool executed_clear){
+        if(!draw||!depth_target||!executed_clear)return false;
+        first=draw;return true;
+    }
+    constexpr bool Includes(uint64_t draw,uint64_t loss) const {
+        return first&&draw>=first&&draw<=loss;
+    }
+};
 enum class Certificate {Blocked,Pass,Fail};
 struct Interval {
     unsigned lo=0,hi=16;

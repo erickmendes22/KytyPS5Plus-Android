@@ -24,6 +24,16 @@ int main(){
     static_assert(Decide(true,true,true,true,true)==Root::Blocked);
     static_assert(Decide(true,true,true,true,false)==Root::Produced);
     static_assert(Decide(true,true,true,false,false)==Root::NotProduced);
+    // Actual first-cycle boundaries from #741 and #744. The preparation
+    // flag was false in both; only the executed flag was true.
+    for(auto ids: {std::array<uint64_t,2>{40367,40979},std::array<uint64_t,2>{39624,40091}}){
+        ExecutedCycle c;
+        assert(!c.Observe(ids[0],true,false)&&!c.first);
+        assert(c.Observe(ids[0],true,true)&&c.first==ids[0]);
+        assert(!c.Observe(ids[1]-1,false,true)&&c.first==ids[0]);
+        assert(c.Includes(ids[0],ids[1])&&c.Includes(ids[1],ids[1]));
+        assert(!c.Includes(ids[0]-1,ids[1])&&!c.Includes(ids[1]+1,ids[1]));
+    }
     BisectionWindow root;
     assert(root.Phase(10)==-1);
     assert(!root.Observe(10,0,1440000,1440000)&&root.Phase(11)==0);
