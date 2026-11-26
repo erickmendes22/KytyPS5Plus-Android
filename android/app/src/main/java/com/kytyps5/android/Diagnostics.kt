@@ -260,7 +260,7 @@ object Diagnostics {
             // with the current session's identical frame numbers.
             val launchTime = File(context.filesDir, "logs/last-launch.txt").lastModified()
             val exactDepthFiles = File(dump, "queue-state").listFiles().orEmpty()
-                .filter { it.name.startsWith("ds_geometry_coverage_f") && it.extension == "json" &&
+                .filter { (it.name.startsWith("ds_geometry_coverage_f") || it.name.startsWith("ds_discard_active_")) && it.extension == "json" &&
                     (launchTime == 0L || it.lastModified() >= launchTime) && it.length() <= 8L*1024L*1024L }
                 .flatMap { f -> Regex("spv/[a-z]+_[0-9a-f]{16}_[0-9a-f]{16}\\.spv").findAll(f.readText()).map { it.value.substringAfter("/") }.toList() }
                 .toSet()
@@ -277,6 +277,7 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_transition_edge_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_vertex_position_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_coverage_f[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_discard_active_[0-9a-f]{16}_n[01]\\.json")) ||
                                      file.name.matches(Regex("ds_albedo_chain_p[0-3]\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_dominant_material_f[0-9]+_s[0-9]+\\.json")) ||
@@ -342,7 +343,8 @@ object Diagnostics {
                     val source = newest.filter { it.name.startsWith("cs_bcbcc6ba1e68c974_ray_hits_") ||
                         it.name.startsWith("cs_567d21ad45386c8d_radiance_") }
                     val albedoChain = newest.filter { it.name.startsWith("ds_albedo_chain_p") }.take(4)
-                    val producer = (albedoChain + coverage + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
+                    val activeDiscard = newest.filter { it.name.startsWith("ds_discard_active_") }.take(14)
+                    val producer = (activeDiscard + coverage + albedoChain + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
                         prioritizedRays.take(8) + coverage + edges + visibility.take(4) + depthOwners + positions +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +

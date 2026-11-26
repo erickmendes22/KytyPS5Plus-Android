@@ -2960,6 +2960,34 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	uint64_t ds_gbuffer_shader = 0;
 	const int32_t ds_gbuffer_frame = m_context.GetGpu().GetFrameNum();
 	TraceDsMaterialDrawPopulation(draw, state, indirect != nullptr, ds_gbuffer_frame);
+    if(ds_gbuffer_enabled && state.ps_active && bindings.pixel &&
+       state.ps_input_info.stage.program && state.ps_input_info.stage.resources &&
+       Config::GetShaderDumpFolder().filename()=="ds-lighting-dumps"){
+        const auto hash=state.ps_input_info.stage.program->shader_hash;
+        const auto slot=DemonsDominantGeometry::DepthProbeSlot(hash);
+        const auto& snap=*state.ps_input_info.stage.resources;
+        static std::array<uint32_t,DemonsDominantGeometry::DepthProbeShaders.size()> active_captures{};
+        if(slot<active_captures.size() && active_captures[slot]<2 && !snap.images.empty() &&
+           snap.images.front().dwords[0] && state.depth_info.image_id &&
+           state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress){
+            const auto index=active_captures[slot]++;
+            const auto evidence=SnapshotDsDiscardImage(m_context,*bindings.pixel,snap.images.front().dwords);
+            const auto folder=Config::GetShaderDumpFolder()/"queue-state";
+            std::error_code ec;std::filesystem::create_directories(folder,ec);
+            const auto name=fmt::format("ds_discard_active_{:016x}_n{}.json",hash,index);
+            std::ofstream file(folder/name,std::ios::trunc);
+            nlohmann::json samplers=nlohmann::json::array();
+            for(const auto& s:snap.samplers)samplers.push_back(s.dwords);
+            if(file)file<<nlohmann::json{{"frame",ds_gbuffer_frame},{"submit",submit_id},
+                {"tick",m_context.GetCommandScheduler().CurrentTick()},
+                {"ps",fmt::format("{:016x}",hash)},
+                {"native_ps_file",ShaderDump::ModuleFile(state.programs.pixel.module)},
+                {"srt",snap.flattened_srt},{"samplers",std::move(samplers)},
+                {"indices",draw.index_count},{"discard_input",evidence}};
+            Log::WriteToConsoleAndLog(fmt::format("[DS_DISCARD_ACTIVE] frame={} shader={:016x} file={} saved={}\n",
+                ds_gbuffer_frame,hash,name,file.good()));
+        }
+    }
 	DemonsQueueProbe::MaterialTrace* ds_material_trace = nullptr;
 	DsAlbedoSnapshot ds_albedo_before;
 	DsAlbedoSnapshot ds_live_material_full_before {};
@@ -3912,7 +3940,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    !depth.depth_bounds_test_enable && depth.desc.info.samples == 1 &&
 			    !pixel.ps_depth_export_enable && !pixel.ps_sample_mask_export_enable &&
 			    !hw.GetShaderRegisters().AlphaToMask() &&
-			    geometry.rows.size()+3 <= geometry_capacity) {
+			    geometry.rows.size()+6 <= geometry_capacity) {
 				const auto k = DemonsDominantGeometry::DepthProbeSlot(ps->shader_hash);
 				if (!geometry.replay_seen[k]) {
                     auto& original=geometry.rows[geometry_query];
@@ -3959,15 +3987,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 						geometry.replay_seen[k] = true;
                         geometry.rows[geometry_query]["replay_status"]="measured";
 						geometry_replay_first = static_cast<uint32_t>(geometry.rows.size());
-						for (const auto* kind: {"raster_no_discard","survive_discard","raster_no_discard_no_cull"}) {
+						for (const auto* kind: {"raster_no_discard","survive_discard","raster_no_discard_no_cull",
+                                "survive_depth_only","survive_stencil_only","survive_both_readonly"}) {
 							auto row = geometry.rows[geometry_query];
 							row["kind"] = kind;
 							row["original_query"] = geometry_query;
                             row.erase("discard_input");
-							row["depth_test"] = false;
-							row["depth_write"] = false;
-							row["stencil_test"] = false;
-							row["cull_disabled"] = geometry.rows.size() == geometry_replay_first + 2;
+							const auto q=geometry.rows.size()-geometry_replay_first;
+                            row["depth_test"] = (q==3 || q==5) && depth.depth_test_enable;
+                            row["depth_write"] = false;
+                            row["stencil_test"] = (q==4 || q==5) && depth.stencil_test_enable;
+                            row["stencil_write_mask"]=0;
+                            row["cull_disabled"] = q==2;
 							geometry.rows.push_back(std::move(row));
 						}
 					}
@@ -4133,6 +4164,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				vk_buffer.endQuery(geometry.pool,geometry_replay_first+i);
 			}
 			if (ds_per_face_bias) vk_buffer.setCullMode(base_cull);
+            // Same keep-discard module, with independent late tests, never
+            // modifying depth, stencil or color. Restore all dynamic state.
+            vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics,geometry_replay[1]);
+            vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFrontAndBack,0);
+            for(uint32_t q=3;q<6;++q){
+                vk_buffer.setDepthTestEnable((q==3 || q==5) && state.depth_info.depth_test_enable);
+                vk_buffer.setStencilTestEnable((q==4 || q==5) && state.depth_info.stencil_test_enable);
+                vk_buffer.beginQuery(geometry.pool,geometry_replay_first+q,vk::QueryControlFlagBits::ePrecise);
+                issue_draw();
+                vk_buffer.endQuery(geometry.pool,geometry_replay_first+q);
+            }
+            vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFront,dynamic_state.stencil_front_write_mask);
+            vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eBack,dynamic_state.stencil_back_write_mask);
 			vk_buffer.setDepthWriteEnable(state.depth_info.depth_write_enable);
 			vk_buffer.setDepthTestEnable(state.depth_info.depth_test_enable);
 			vk_buffer.setStencilTestEnable(state.depth_info.stencil_test_enable);

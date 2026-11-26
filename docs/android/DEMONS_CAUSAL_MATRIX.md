@@ -328,3 +328,26 @@ and signed content digest independently verified; certificate identical to
 in this revision; exact native module and resource bytes required before
 fingerprinted instrumentation or semantic correction. Address-specific
 writer log may miss a dynamically relocated allocation.
+
+
+## Build #723 — F, ZIP 20261125-230251
+Exact SPIR-V exported for all seven measured PS hashes. f283 500/500/387,
+f331 237/237/104, f474 12003/12003/4583 raster/keep-discard/original;
+all 19 selected original draws have null descriptor 0, depth and stencil
+tests enabled, compare 6. No discard loss in this launch's selected
+windows, despite persistent sparse albedo. #722 f359 discard is not a
+necessary condition of darkness. f283 layer0 chain 1280->1479, f475-476
+41239->42101 (boundary counts, not net draw-only changes). Two CPU-dirty
+64 KiB uploads at guest 0x208a30000, no matching GPU-write log. No active
+input snapshot in the selected windows. Native e1638ea4 57f8a300c64ea876:
+SPIR-V word offset 2205 OpImageSampleImplicitLod result 304; red bits
+307; bitcast float 317; threshold 316; word 2267 OpFOrdGreaterThan
+318 = 317 > 316; logical NOT 319 and ballot 320. Thus first comparison
+is not simply reversed. This does not establish operand correctness.
+Next capture live nonzero ordinal-zero descriptor independent of adaptive
+frame windows (up to two per watched shader), export exact module and
+bound image evidence first. Split existing read-only replay into depth-only,
+stencil-only and both tests, preserving masks and all original writes.
+Compare same-draw queries, not different frames; original may differ from
+read-only replay if depth writes within a draw cause self-occlusion.
+No graphics semantics changed.
