@@ -4489,7 +4489,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         Record({{"kind","witness_dynamic_state"},{"frame",root_frame},{"draw",root_draw},
             {"submit",submit_id},{"viewport",{vp.x,vp.y,vp.width,vp.height,vp.minDepth,vp.maxDepth}},
             {"scissor",{sc.offset.x,sc.offset.y,sc.extent.width,sc.extent.height}},
-            {"viewport_count",dynamic_state.viewport_count},
+            {"viewport_count",dynamic_state.num_viewports},
             {"dx_clip_space",bool(buffer.GetRegisters().GetClipControl().dx_clip_space)},
             {"depth_compare",uint32_t(material_depth_compare)},
             {"depth_bias",dynamic_state.depth_bias_enabled},
