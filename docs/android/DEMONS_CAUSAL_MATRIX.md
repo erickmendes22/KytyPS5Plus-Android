@@ -160,3 +160,46 @@ failure persists (frame 280 only 2922 passed samples in the collected
 layer-0 draw records, even with dominant fullscreen material absent;
 collected records span adjacent guest frame boundaries, not whole PC pass
 census). No causal connection between that loss and sparse rays is proven.
+
+
+## Build #719 — F, ZIP 20261125-220255: retract the false count divergence
+Revision 4f12aa1. Actual AMDGPU load/limit order confirmed by 32 instrumented
+dispatches: secondary limit flattened SRT[14], index SRT[15], not reversed.
+Frame 503 n55: secondary[55]=81, limit 100, primary[66]=12 limit 200,
+expected [16,1,1,972,81], matches actual stores and GPU bytes. Old oracle
+reads secondary[100]=0. Corrected replay all 32/32; across all 12 archived
+ZIPs with counts, 204/204 captures, 184/184 unique JSON digests. Original
+#717 mismatch is false positive. Do not treat it as coherence evidence.
+Correct sampling gate and use shared ReplayCount helper plus regression
+fixture with distinct index and limit and secondary index zero.
+Ten scatter dispatches: 62,375 rows (including repeated updates), every
+source GPU row equals backing and destination at capture; all 16 consumer
+digests match certified producer. No file read candidates; CPU write faults
+are only overlapping candidates (one inside row, RIP 0x910004142). Baked
+source correctness not certified, no transport defect shown. F no longer
+repeats full row history; E retains it.
+Four mask edges f315/339/405/503: light counts 28/38/87/29, 961 rows.
+Guest acce uses ceil(light_count/32), loops two groups at a time. Active
+mask bits, population count, probe ID, group indicator all match. At f503
+254 rows have residual unused groups beyond the written pair, correctly
+excluded by group indicator. f315 176 same-position probes lose group1
+because guest supplies only 28 lights, not proof of wrong mask arithmetic.
+Descriptor active/null and group1 presence are independent (f405/f503).
+Do not reopen these eliminated operations without new evidence.
+
+## Remaining discriminating path — first HDR contribution
+f529 material afd9334e8581cda2, draw submit 15589, light submit 15597:
+five preserved nonzero albedo samples, same image/words, HDR zero before
+and after f0c482 (queue 0, 19383 groups), 3dfe4026 (queue 8, 1590 groups),
+e3daeb (queue 33, 22593 groups). Queue 8 explicitly excludes these pixels;
+queue 0/33 exact membership was not measured for this material trace.
+At f256 HDR mean before queue 33 .03578788 after .07561704; f496,520,544
+already near zero before queue 33, unchanged after, while 9 covered colored
+samples exist (8 unlit). Need isolate first HDR contributor and actual
+pixel tile membership, not re-investigate scatter or count arithmetic.
+Next diagnostic revision collects same-dispatch before/after fixed grid
+for queues 0,8,33, exact bound tile range/count, resource descriptors and
+bounded readonly buffer prefixes; checks actual material pixels against
+each queue, exports exact guest code and native modules for all three.
+Never treat membership unavailable or no tile assignment as a failed store.
+No gameplay correction claimed: no PC capture of identical inputs exists.

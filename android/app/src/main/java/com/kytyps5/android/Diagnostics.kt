@@ -275,7 +275,7 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_dominant_material_f[0-9]+_s[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_depth_prepass_f[0-9]+_s[0-9]+_p[0-9]+(_d[0-9]+)?\\.json")) ||
                                      file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
-                                     file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark|post_transition)_f[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark|post_transition)_f[0-9]+(_q(0|8|33))?\\.json")) ||
                                      file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark|post_transition)_f[0-9]+_s[0-9]+(_ps[0-9a-f]{16})?\\.json")))) ||
                                 watched.any { hash -> file.name.contains("_${hash}_") }) &&
                             (when (subdir) {
@@ -322,7 +322,7 @@ object Diagnostics {
                     val prioritizedRays = (rayTargets.takeLast(10) + rayTargets.take(20)).distinct()
                     val relightTraces = newest.filter { it.name.startsWith("ds_relight_trace_") }.take(18)
                     // These were omitted entirely in 100133 because the old producer list exceeded 96.
-                    val bridge = newest.filter { it.name.startsWith("ds_light_bridge_") }.take(8) +
+                    val bridge = newest.filter { it.name.startsWith("ds_light_bridge_") }.take(18) +
                         newest.filter { it.name.startsWith("ds_gbuffer_material_") }.take(12) +
                         newest.filter { it.name.startsWith("ds_scene_writer_f") }.take(4)
                     val edges = newest.filter { it.name.startsWith("ds_transition_edge_") }.take(8)
@@ -352,9 +352,10 @@ object Diagnostics {
                         files.filter { it.name.contains("_bcbcc6ba1e68c974_") } else emptyList()
                     val sceneModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { f -> listOf("34c51585c926a664", "a7208481a1f2b760", "f825a988127faeb4", "74b55dea9562eda1").any { f.name.contains("_${it}_") } } else emptyList()
+                    val firstLightModules = files.filter { f -> listOf("f0c482b0b355e9de","3dfe402653925fbf","e3daeb1e7426761b").any { f.name.contains("_${it}_") } }
                     val causalModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { it.name.contains("_fb18d110fab8234e_") || it.name.contains("_cb3b9c1ea64fe876_") } else emptyList()
-                    (causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
+                    (firstLightModules + causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
                         "guest-shaders" -> 96
                         "spv" -> 48
                         else -> 24
