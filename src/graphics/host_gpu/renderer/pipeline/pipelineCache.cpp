@@ -289,6 +289,14 @@ void ReconcileDsMaterialScalars(const ShaderRecompiler::IR::ResourcePlan& plan,
             flat[i+6] = word;
         }
     }
+    if(DemonsPrelightTrace::Enabled()){
+        // Existing reconciliation already reads the real coherent scalar
+        // chain. Log that result without another read or change to it.
+        DemonsPrelightTrace::Record({{"kind","witness_material_scalar"},{"root",root},
+            {"source",second_ptr+0x10},{"roots",roots},{"screen_ok",screen_ok},{"layout",layout},
+            {"source_ok",source_ok},{"backing_ok",backing_ok},{"fields",fields},
+            {"old",previous},{"raw",raw},{"backing",backing},{"flat",flat},{"changed",changed}});
+    }
     if (report || changed) PipelineCacheLog(
         "[DS_MATERIAL_SCALAR] n={} root=0x{:x} source=0x{:x} roots={} screen={} layout={} "
         "source_ok={} backing_ok={} fields={},{},{},{} old={:08x},{:08x},{:08x},{:08x} "
@@ -664,7 +672,9 @@ struct PipelineCache::ProgramCache {
 		// The earlier vertex experiment is retained for reproducing its
 		// evidence, but not active in this relight-specific diagnostic.
 		if (DemonsVertexPositionProbe::Watched(options.shader_hash) && trace && std::strcmp(trace,"1")==0 &&
-            DemonsCausalMatrix::Mode()!=DemonsCausalMatrix::Trace) {
+            (DemonsCausalMatrix::Mode()!=DemonsCausalMatrix::Trace||
+             options.shader_hash==0xaff9c7ef505c6253ull||
+             options.shader_hash==0xc96f3fcde8141266ull)) {
             constexpr auto kind=ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
             constexpr auto slot=static_cast<size_t>(kind);
             const auto fp=XXH3_64bits(result.spirv.data(),result.spirv.size()*sizeof(uint32_t));

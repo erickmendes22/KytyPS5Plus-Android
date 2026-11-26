@@ -532,3 +532,7 @@ existia; aproveitar somente evidência local. Nenhuma build nova por docs.
 
 ## V3 — auditoria antes da #739
 A árvore integral C1..C16 substitui a premissa pré-iluminação. P8 divide G-buffer completo de iluminação e apresentação. #738 falhou no native; substituída por aquisição circular na fronteira observada, com dados de cobertura e bridge no mesmo ciclo. Sem certificado G0/P8 ainda. Ver árvore canônica V3.
+
+
+## #741 113031
+First loss f233 draw40979 552d823d, 1439989->658, identical full hash to q0/q33, prepass40809 same exact index digest/1439331 samples. Prior 40780/40785 actual depth coverage high but only 1/64 nonzero stored before next draw; no proof of invalid incoming depth. PS RGB input zero, actual write consistent. G0/P8 BLOCKED pending same-cycle independent foreground/sky oracle. Preserve V3 and acquire exact fixed witness inputs and depth history; no W0/W1 detour.

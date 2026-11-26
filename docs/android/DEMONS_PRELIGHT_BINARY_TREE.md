@@ -691,3 +691,40 @@ semantic changes. N31 upstream provenance open, N00 still open.
 
 ## #740 runtime regression (ZIP 110818) — V3 interval unchanged
 Core 264c911, mode F, frame230 abort rangeSet.h:107, exit65. New encode_bound called HasGpuDirtyBytes without checking descriptor address/size; RangeSet::End aborts on zero/wrapping length. Guard both guest and folded range, explicitly report null/unavailable rather than clean; validate native readback offset/size, test zero/overflow/null. This is a diagnostic regression, not a lighting branch. Status had 20096 seq, 13561 evicted, no trigger, hence RAM-only ring was lost; persist bounded recent checkpoint. Previous session had separate guest VA reservation error at 0x6f61c00000 size0x10ec000, no errno; not proven same cause. Add errno and bounded EEXIST recovery via fresh maps only, preserve occupied host spans, never force mapping or hide other failures. G0/P8 still BLOCKED. No lighting semantics changed.
+
+
+## #741 (ZIP 113031) — first destructive draw captured; G0/P8 remains active
+Core 3913fab; session reached f589, no previous instrumentation abort.
+Retained seq32323..42888 (10566 consecutive; zero drops), edge f233 q0.
+Same native G-buffer owner 0x287ae0000, f232 q0 1440000 nonzero,
+f233 q0 658, both raw full anchors present. Actual draw 40979/s6640
+VS c96f3fcde8141266 PS 552d823dcfcf2dee 27 indices, native index digest
+14500988350177708856, index address 0x20fb00000, same as prepass
+40809/s6636 VS aff9c7ef505c6253 PS 651f53f5932d8794. Material before
+1439989 nonzero, acquired grid unchanged, no load clear, after 658;
+all 64 observed points ff000000. Full hash 13258164644348433546 identical
+at q0 and q33. Real material query 1439331; no-discard 1440000,
+keep-discard 1440000, depth-only/EQUAL 1439331, less 669, greater 0.
+Prepass real 1439331. Prepass before grid 1/64 nonzero, after 64/64;
+material incoming depth grid identical to prepass after. Earlier same
+cycle 40780/40785, VS2337192397a30339 PS651f53f5932d8794, 7296/192
+indices, 1162199/428597 passed, before each grid only 1/64 nonzero.
+Not proof of bad depth writes: actual incoming depth may be zero.
+PS has no sampled resources; flat[6..9]=0, prior existing coherent
+scalar logs raw RGB/flag zero, backing agrees. Native store at output0
+is packed color with 0xff000000 base. Black export consistent with
+these inputs, not proof intended foreground geometry absent. q33 bridge
+f232 64 colored, HDR mean .06515746548, 55 covered colored, zero unlit;
+f233 all 64 zero RGB, HDR mean0, auxiliary 3 layers 64/64 and depth64/64.
+The observed loss is before lighting, but no independent oracle for
+foreground expected yet. Do not mark P8 FAIL from black pixels alone,
+no global branch removed. Keep fixed witness: same background draw and
+causal predecessor depth, not later W0/W1. Next build captures exact
+complete occluder inputs and modules, before/after depth grid for every
+relevant actual depth writer, only the known sky VS pair exports (prior
+validated recorder), full prepass depth before/after and material depth
+before, dedup identical, freezes at first same material population loss.
+Scalar chain logged from existing coherent read. Capture gaps explicit;
+no new render behavior or forced colors/depth. Need replay guest inputs
+and expected coverage/depth to certify G0/P8; if sky correct, do not
+blame sky. Keep original 16-class tree and interval unchanged.

@@ -2982,6 +2982,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     const bool root_background_depth=root_depth&&root_vs&&root_ps&&
         root_vs->shader_hash==DemonsDominantGeometry::DominantDepthVs&&
         root_ps->shader_hash==DemonsDominantGeometry::DepthPs;
+    const bool root_sky_material=root_target!=root_colors.end()&&root_vs&&root_ps&&
+        root_vs->shader_hash==DemonsDominantGeometry::MaterialVs&&
+        root_ps->shader_hash==DemonsDominantGeometry::MaterialPs;
+    // The #741 witness is one matched prepass/material pair, not W0/W1.
+    // Keep only the latest actual operands until this draw removes the color.
+    static bool root_witness_latched=false;
+    static uint64_t root_witness_pre_serial=0;
+    static DsDepthFullSnapshot root_witness_pre_before,root_witness_pre_after;
+    bool root_witness_loss=false;
+    const bool root_occluder=root_trace&&root_depth&&root_vs&&root_ps&&
+        root_vs->shader_hash==DemonsDominantGeometry::OccluderVs&&
+        root_ps->shader_hash==DemonsDominantGeometry::DepthPs&&
+        (draw.index_count==7296||draw.index_count==192);
     const int root_phase=root_trace?DemonsPrelightTrace::Phase(root_frame):-1;
     if(root_trace&&command_seq)command_prepared=true;
     if(root_phase>=0&&(root_target!=root_colors.end()||root_depth)){
@@ -3448,7 +3461,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             inputs["index_words_captured"]=raw.size();
             inputs["index_digest"]=DemonsPrelightTrace::VertexWordDigest(raw);
             // Retain complete short index arrays; longer streams are not certified by digest alone.
-            if(raw.size()<=4096)inputs["index_words"]=raw;
+            if(raw.size()<=4096||root_occluder)inputs["index_words"]=raw;
         }
         const auto encode_bound=[&](const PreparedBindings& bound,const auto* program){
             auto out=nlohmann::json::array();
@@ -3468,7 +3481,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                 }
                 item["gpu_dirty"]=m_context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size);
                 const auto word=program->bindings.memory_offset_dword+slot/4u;
-                if(word<bound.shader_data.size()&&native.buffer&&src.size<=1024){
+                if(word<bound.shader_data.size()&&native.buffer&&
+                   src.size<=(root_occluder&&!root_witness_latched?262144u:1024u)){
                     const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
                     if(DemonsPrelightPolicy::DiagnosticSlice(native.offset,native.range,adjust,src.size)){
                         auto captured=DemonsPrelightTrace::ReadNativeWords(m_context,native.buffer,native.offset+adjust,uint32_t(src.size/4));
@@ -3482,6 +3496,26 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         };
         inputs["vs_bound"]=encode_bound(bindings.vertex[0],root_vs);
         if(bindings.pixel&&root_ps)inputs["ps_bound"]=encode_bound(*bindings.pixel,root_ps);
+        if(root_occluder&&!root_witness_latched){
+            // Complete inputs of the two draws directly preceding the
+            // witnessed background depth write, not an inferred mesh.
+            const auto folder=DemonsPrelightTrace::Folder();
+            std::error_code ec;std::filesystem::create_directories(folder,ec);
+            const auto name=fmt::format("ds_prelight_witness_occluder_{}.json",draw.index_count);
+            std::ofstream out(folder/name,std::ios::trunc);
+            if(out)out<<inputs;
+            out.close();
+            inputs["witness_input_file"]=name;
+            inputs["witness_input_saved"]=out.good();
+            for(auto& entry:inputs["vs_bound"]){
+                if(entry.contains("gpu_words")&&entry["gpu_words"].size()>256){
+                    const auto words=entry["gpu_words"].get<std::vector<uint32_t>>();
+                    entry["gpu_digest"]=DemonsPrelightTrace::VertexWordDigest(words);
+                    entry.erase("gpu_words");
+                }
+            }
+            if(inputs.contains("index_words")&&inputs["index_words"].size()>4096)inputs.erase("index_words");
+        }
         Record(std::move(inputs));
     }
     if(root_draw && root_target!=root_colors.end()){
@@ -3897,15 +3931,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         // Both persistent zero-cycle meshes were observed in prepass and
         // material (#729 frames 249/250). Select them by exact index count
         // AND pair identity, not the first occurrence of a shader.
-        const bool root_witness=(root_phase==2&&(draw.index_count==12765||draw.index_count==57066))||
-            (!material&&(root_phase==1||root_phase==3)&&
-             (draw.index_count==12765||draw.index_count==19956||draw.index_count==57066));
+        const bool root_witness=root_trace&&root_phase>=0&&k==4&&
+            !root_witness_latched&&draw.index_count>0&&draw.index_count<=64;
         const bool due=(!root_trace||root_witness) && matched && (material ?
             pair.serial && !pair.material_captured && ds_gbuffer_frame>=pair.frame &&
             int64_t{ds_gbuffer_frame}-pair.frame<=1 &&
             pair.address==index_source.address && pair.count==draw.index_count &&
             pair.base==emit.vertex_offset && pair.instance==emit.first_instance :
-            phase>=(root_trace?1:2) && counts[k][phase]<1u);
+            (root_trace?root_witness:(phase>=2&&counts[k][phase]<1u)));
         if(matched && due && vertex_stages.size()==1 && !mesh_active && !mesh_emulated && !indirect &&
             draw.IsIndexed() && draw.instance_count==1 && !primitive_restart_enable &&
             topology==vk::PrimitiveTopology::eTriangleList && index_source.guest_element_size>=2 &&
@@ -3926,7 +3959,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                         ds_vertex_pair=++ds_vertex_serial;
                         pair={ds_gbuffer_frame,phase,ds_vertex_pair,index_source.address,
                             draw.index_count,emit.first_instance,emit.vertex_offset,false};
-                        ++counts[k][phase];
+                        if(!root_trace)++counts[k][phase];
                     }
                     // This read is before the current draw, including before
                     // any pending attachment load clear. Record that clear
@@ -3941,11 +3974,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                         const auto& native=bound.buffers[slot];
                         nlohmann::json entry={{"slot",slot},{"address",source.address},{"bytes",source.size}};
                         const auto word=ds_vp->bindings.memory_offset_dword+slot/4u;
-                        if(word<bound.shader_data.size() && native.buffer &&
-                           native.range!=VK_WHOLE_SIZE && source.size && source.size%4==0 &&
+                        uint64_t folded=0;
+                        const bool valid_source=DemonsPrelightPolicy::DiagnosticRange(source.address,source.size)&&
+                            Kernel::AddressFold::FoldSpan(source.address,source.size,&folded)&&
+                            DemonsPrelightPolicy::DiagnosticRange(folded,source.size);
+                        if(valid_source&&word<bound.shader_data.size() && native.buffer &&
                            source.size<=262144u){
                             const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
-                            if(adjust<=native.range && source.size<=native.range-adjust){
+                            if(DemonsPrelightPolicy::DiagnosticSlice(native.offset,native.range,adjust,source.size)){
                                 auto words=ReadDsVertexIndices(m_context,
                                     PreparedIndexBuffer{native.buffer,native.offset+adjust,vk::IndexType::eUint32},
                                     static_cast<uint32_t>(source.size/4));
@@ -4608,7 +4644,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 	}
 
-	if(root_draw&&(root_color.image_id||root_background_depth)){
+	if(root_draw&&(root_color.image_id||root_background_depth||
+        (root_depth&&state.depth_info.depth_write_enable))){
         nlohmann::json event={{"kind","draw_after"},{"draw",root_draw},{"frame",root_frame},
             {"submit",submit_id},{"tick",m_context.GetCommandScheduler().CurrentTick()}};
         if(root_color.image_id){
@@ -4617,6 +4654,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             if(AllowSample()){
                 sample=SnapshotDsGBufferGrid(m_context,root_color);
                 event["full"]=root_population(root_color);
+                if(root_sky_material&&!root_witness_latched&&root_full_before.is_object()&&
+                   event["full"].is_object()){
+                    const auto area=uint64_t{event["full"].value("width",0u)}*event["full"].value("height",0u);
+                    root_witness_loss=area&&root_full_before.value("rgb_nonzero",uint64_t{0})>=area/2&&
+                        event["full"].value("rgb_nonzero",uint64_t{0})<=area/10;
+                    if(root_witness_loss)event["witness_first_material_loss"]=true;
+                }
             }
             event["image"]=Identity(im);
             event["grid"]=sample?nlohmann::json(*sample):nlohmann::json();
@@ -4626,7 +4670,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                     {"rgb_before",d.before},{"rgb_after",d.after}};
             }
         }
-        if(root_background_depth&&AllowSample()){
+        if((root_background_depth||(root_depth&&state.depth_info.depth_write_enable))&&AllowSample()){
             const auto depth=SnapshotDsMaterialDepthGrid(m_context,state.depth_info);
             event["depth_grid"]=depth?nlohmann::json(*depth):nlohmann::json();
             event["depth_image"]=Identity(m_context.GetTextureCache().GetImage(state.depth_info.image_id));
@@ -4693,7 +4737,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         // previous 64-point grid missed these ~12x8-pixel meshes entirely.
         // Restrict exported regions to at most 65536 pixels, but keep the
         // actual projected bounds and a reason if a region is unavailable.
-        const auto depth_after=SnapshotDsDepthFull(m_context,state.depth_info);
+        auto depth_after=SnapshotDsDepthFull(m_context,state.depth_info);
         nlohmann::json depth_region={{"status","unavailable"}};
         double minx=std::numeric_limits<double>::infinity(),miny=minx;
         double maxx=-minx,maxy=-minx;
@@ -4758,8 +4802,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         for(const auto& desc:snap.buffers)descriptors.push_back(desc.dwords);
         const auto folder=Config::GetShaderDumpFolder()/"queue-state";
         std::error_code ec;std::filesystem::create_directories(folder,ec);
-        const auto name=fmt::format("ds_vertex_position_{:016x}_f{}_s{}_p{}_pair{}.json",
-            ds_vp->shader_hash,ds_gbuffer_frame,submit_id,ds_vertex_phase,ds_vertex_pair);
+        const auto name=root_trace?
+            std::string(VP::Material(ds_vp->shader_hash)?"ds_prelight_witness_sky_material.json":"ds_prelight_witness_sky_prepass.json"):
+            fmt::format("ds_vertex_position_{:016x}_f{}_s{}_p{}_pair{}.json",
+                ds_vp->shader_hash,ds_gbuffer_frame,submit_id,ds_vertex_phase,ds_vertex_pair);
         std::ofstream file(folder/name,std::ios::trunc);
         if(file)file<<nlohmann::json{{"frame",ds_gbuffer_frame},{"submit",submit_id},
             {"phase",ds_vertex_phase},{"shader",fmt::format("{:016x}",ds_vp->shader_hash)},
@@ -4795,8 +4841,43 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                 "input_x","input_y","input_z","m00","m01","m02","m03","m10","m11","m12","m13","m20","m21","m22","m23"}},
             {"rows",std::move(rows)}};
         file.close();
+        if(root_trace&&!VP::Material(ds_vp->shader_hash)){
+            root_witness_pre_serial=ds_vertex_pair;
+            root_witness_pre_before=std::move(ds_vertex_depth_before);
+            root_witness_pre_after=std::move(depth_after);
+        }else if(root_trace&&root_witness_loss){
+            const auto write_depth=[&](const char* filename,const DsDepthFullSnapshot& depth){
+                if(depth.bits.empty())return false;
+                std::ofstream out(folder/filename,std::ios::binary|std::ios::trunc);
+                if(!out)return false;
+                out.write(reinterpret_cast<const char*>(depth.bits.data()),depth.bits.size()*sizeof(uint32_t));
+                out.close();return out.good();
+            };
+            const bool same_pair=root_witness_pre_serial==ds_vertex_pair;
+            const bool before_ok=same_pair&&write_depth("ds_prelight_witness_depth_pre_before.bin",root_witness_pre_before);
+            const bool after_ok=same_pair&&write_depth("ds_prelight_witness_depth_pre_after.bin",root_witness_pre_after);
+            const bool equal=same_pair&&!root_witness_pre_after.bits.empty()&&
+                root_witness_pre_after.width==ds_vertex_depth_before.width&&
+                root_witness_pre_after.height==ds_vertex_depth_before.height&&
+                root_witness_pre_after.bits==ds_vertex_depth_before.bits;
+            const bool material_ok=equal||write_depth("ds_prelight_witness_depth_material_before.bin",ds_vertex_depth_before);
+            std::ofstream meta(folder/"ds_prelight_witness_depth.json",std::ios::trunc);
+            if(meta)meta<<nlohmann::json{{"frame",ds_gbuffer_frame},{"draw",root_draw},{"pair",ds_vertex_pair},
+                {"same_pair_serial",same_pair},{"pre_before_saved",before_ok},{"pre_after_saved",after_ok},
+                {"material_before_saved",material_ok},{"material_before_equals_pre_after",equal},
+                {"material_width",ds_vertex_depth_before.width},{"material_height",ds_vertex_depth_before.height},
+                {"pre_width",root_witness_pre_before.width},{"pre_height",root_witness_pre_before.height},
+                {"material_indices",ds_vertex_indices},{"material_position_saved",file.good()}};
+            root_witness_pre_before={};root_witness_pre_after={};
+        }
         Log::WriteToConsoleAndLog(fmt::format("[DS_VERTEX_POSITION] frame={} shader={:016x} vertices={} missing={} file={} saved={}\n",
             ds_gbuffer_frame,ds_vp->shader_hash,unique.size(),missing,name,file.good()));
+    }
+    if(root_witness_loss){
+        root_witness_latched=true;
+        Record({{"kind","witness_latched"},{"frame",root_frame},{"draw",root_draw},
+            {"position_captured",ds_vertex_phase>=0},{"pair",ds_vertex_pair},
+            {"scope","same draw caused population loss; expected guest output not yet certified"}});
     }
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x600u);

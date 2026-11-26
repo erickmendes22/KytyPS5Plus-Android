@@ -260,7 +260,7 @@ object Diagnostics {
             // with the current session's identical frame numbers.
             val launchTime = File(context.filesDir, "logs/last-launch.txt").lastModified()
             val exactDepthFiles = File(dump, "queue-state").listFiles().orEmpty()
-                .filter { (it.name.startsWith("ds_geometry_coverage_f") || it.name.startsWith("ds_discard_active_") || it.name.startsWith("ds_vertex_position_") || it.name.startsWith("ds_vertex_producer_")) && it.extension == "json" &&
+                .filter { (it.name.startsWith("ds_geometry_coverage_f") || it.name.startsWith("ds_discard_active_") || it.name.startsWith("ds_vertex_position_") || it.name.startsWith("ds_vertex_producer_") || it.name.startsWith("ds_prelight_witness_")) && it.extension == "json" &&
                     (launchTime == 0L || it.lastModified() >= launchTime) && it.length() <= 8L*1024L*1024L }
                 .flatMap { f -> Regex("spv/[a-z]+_[0-9a-f]{16}_[0-9a-f]{16}\\.spv").findAll(f.readText()).map { it.value.substringAfter("/") }.toList() }
                 .toSet()
@@ -283,6 +283,7 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_prelight_events_[0-9]+\\.jsonl")) ||
                                      file.name.startsWith("ds_vertex_producer_") ||
                                      file.name.startsWith("ds_prelight_anchor") ||
+                                     file.name.startsWith("ds_prelight_witness_") ||
                                      file.name == "ds_prelight_recent.jsonl" ||
                                      file.name == "ds_prelight_status.json" ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
@@ -351,7 +352,10 @@ object Diagnostics {
                     val albedoChain = newest.filter { it.name.startsWith("ds_albedo_chain_p") }.take(4)
                     val activeDiscard = newest.filter { it.name.startsWith("ds_discard_active_") }.take(14)
                     val rootTrace = newest.filter { it.name.startsWith("ds_prelight_") }.sortedBy { when {
-                        it.name == "ds_prelight_status.json" -> -4
+                        it.name == "ds_prelight_status.json" -> -8
+                        it.name == "ds_prelight_witness_depth.json" -> -7
+                        it.name.startsWith("ds_prelight_witness_") && it.extension=="json" -> -6
+                        it.name.startsWith("ds_prelight_witness_") -> -5
                         it.name == "ds_prelight_anchor.json" -> -3
                         it.name == "ds_prelight_recent.jsonl" -> -2
                         it.name == "ds_prelight_anchor_before.bin" -> -2
@@ -397,7 +401,7 @@ object Diagnostics {
                 selected.map { subdir to it }
             }
             var count = 0
-            var budget = 56L * 1024L * 1024L
+            var budget = 80L * 1024L * 1024L
             val info = "PPSA01341 lighting shaders and GPU buffer capture. " +
                 "The session.log entries [DS_GPU_BUFFER_CAPTURE] contain native Vulkan " +
                 "buffer summaries; buffers/*.bin contain the actual bytes. " +
@@ -454,7 +458,7 @@ object Diagnostics {
             }
             // Reserve space for matching shader modules and pipeline JSON.
             val inventory = StringBuilder()
-            var queueBudget = 48L * 1024L * 1024L
+            var queueBudget = 64L * 1024L * 1024L
             for ((subdir, file) in candidates) {
                 if (file.length() > 8L * 1024L * 1024L || file.length() > budget ||
                     (subdir == "queue-state" && file.length() > queueBudget)) {
