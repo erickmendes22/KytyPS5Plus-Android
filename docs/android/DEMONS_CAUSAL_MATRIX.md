@@ -94,3 +94,6 @@ proceed to B1 as planned, same scene and visual outcome with ZIP.
 
 ### D2 visual outcome confirmed by tester
 Lighting exactly unchanged. Negative for the selected compute-completion intervention; does not rule out all synchronization/coherence defects. Do not repeat D2 without new evidence. Next: B1 independently disables index culling, same scene/save/driver, record visual outcome and ZIP. Existing APK #717; no rebuild requested or required.
+
+## Build #717 — B1, ZIP 20261125-211809
+Core 53d8085, KYTY_DS_MATRIX=1, same title 01.007.000 and Turnip driver/720p output. Frame 555 reached; exit reason 1/status 0. Tester reports unchanged lighting. Last indirect feedback 14336 records, 7898 nonempty, 6438 empty (cumulative sampled feedback, not all draws). Queue 33 valid at frames 241 and 481. GPU argument path and f0c140 producer remain active. Launcher selected B1, but no guest confirmation of actual convar consumption in ZIP; negative for configured intervention only, not proof that all culling is correct. Next C2, since actual GPU indirect path is present in logs and prior cb3b discrepancy concerns actual GPU/backing values. C1 CPU fallback lower priority; B2 shadow index culling lower priority without evidence linking it to albedo loss. Use same save/camera/config and record visual outcome. No new build required.
