@@ -140,3 +140,23 @@ Previous export consumed its budget in queue-state before atlas/radiance
 and SPIR-V. Prioritize live-secondary and relight/atlas/ray evidence;
 reserve 8 MiB for other subdirs, include inventory. No speculative
 rendering change or confirmed correction.
+
+### Additional independent replay of 214449
+All ten captured scatter maps have consecutive producer_dispatches_seen 1..10.
+Replaying the wrapped map address identifies one candidate source row for
+all 16 consumed relight probes (strict earlier frame/submit); raw source
+bytes for those exact rows were not in the old export. At position
+(256,-464,-16,16), probe 14409 f232 maps to source row 2392 of dispatch 2
+(f180), and probe 22449 f448 maps to row 2392 of dispatch 8 (f305).
+All 256 raw ray pairs match bit-for-bit despite different IDs and buffers.
+255/256 final RGB and all four RGB terms match bit-for-bit; max difference
+in the remaining RGB output is 1.878e-12. Both maxima 7.0932634e-7. This
+reproduces the low radiance for the same position, not a new loss of ray
+data between those frames. Across eight relight captures (4096 rays),
+float32 evaluation of (A+B)+(C+D) matches all exported RGB words exactly.
+Do not infer that sparse baked ray records themselves are incorrect absent
+an expected asset/guest writer reference. Separate material coverage
+failure persists (frame 280 only 2922 passed samples in the collected
+layer-0 draw records, even with dominant fullscreen material absent;
+collected records span adjacent guest frame boundaries, not whole PC pass
+census). No causal connection between that loss and sparse rays is proven.
