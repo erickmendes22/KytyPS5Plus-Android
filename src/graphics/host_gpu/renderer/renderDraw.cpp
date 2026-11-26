@@ -1,4 +1,5 @@
 #include "graphics/shader/demonsPcRenderParity.h"
+#include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsVertexPositionProbe.h"
 #include "graphics/host_gpu/renderer/renderDraw.h"
@@ -1496,6 +1497,67 @@ static std::optional<std::array<uint32_t, 64>> SnapshotDsGBufferGrid(
 	return words;
 }
 
+// Continuous pre-light boundary samples, independent of HDR-triggered windows.
+// Full population is recorded at each first queue/host-frame boundary;
+// exact 64 words accompany every sampled material draw/consumer.
+void DemonsPrelightTrace::ObserveCompute(RenderContext& context,const PreparedBindings& bindings,
+        uint64_t submit,bool after,bool indirect,uint64_t args_address){
+    if(!Enabled()||!bindings.runtime||!bindings.runtime->program)return;
+    const auto shader=bindings.runtime->program->shader_hash;
+    const auto queue=DemonsCausalMatrix::LightingQueue(shader);
+    const auto frame=context.GetGpu().GetFrameNum();
+    bool matched=false;
+    for(size_t slot=0;slot<bindings.images.size();++slot){
+        const auto& b=bindings.images[slot];
+        if(!b.image_id||b.placeholder||!Matches(b.desc.info.data.address,b.desc.info.data.size))continue;
+        const bool storage=b.desc.type==TextureCache::BindingType::Storage;
+        if(after&&!storage)continue;
+        auto& image=context.GetTextureCache().GetImage(b.image_id);
+        Watch(image.info.data.address,image.info.data.size);
+        const auto view=std::ranges::find(image.views,b.image_view,&CachedImageView::view);
+        const bool exact=view!=image.views.end()&&image.info.data.address==DemonsQueueProbe::GBufferAddress&&
+            view->info.base_layer==0&&view->info.base_level==0;
+        matched|=exact;
+        const bool consumer=!after&&queue!=UINT32_MAX&&!storage;
+        nlohmann::json row={{"kind",consumer?"consumer":after?"compute_after":"compute_before"},
+            {"frame",frame},{"submit",submit},{"tick",context.GetCommandScheduler().CurrentTick()},
+            {"shader",shader},{"queue",queue},{"slot",slot},{"storage_binding",storage},
+            {"indirect",indirect},{"args_guest",args_address},{"descriptor_guest",b.desc.info.data.address},
+            {"exact_layer0",exact},{"image",Identity(image)}};
+        if(view!=image.views.end()){
+            row["view"]={{"mip",view->info.base_level},{"layer",view->info.base_layer},
+                {"layers",view->info.layer_count},{"format",uint32_t(view->info.format)}};
+        }
+        if(exact&&(consumer||storage)){
+            RenderColorInfo color{};color.image_id=b.image_id;color.desc.view_info=view->info;
+            if(AllowSample()){
+                auto sample=SnapshotDsGBufferGrid(context,color);
+                row["grid"]=sample?nlohmann::json(*sample):nlohmann::json();
+            }else row["sample_status"]="budget";
+            static std::array<int32_t,3> last_full{-1,-1,-1};
+            if(consumer){
+                const auto q=queue==0?0u:queue==8?1u:2u;
+                if(last_full[q]!=frame&&AllowSample(true)){
+                    last_full[q]=frame;
+                    const auto full=SnapshotDsAlbedo(context,color);
+                    if(!full.words.empty()){
+                        uint64_t hash=14695981039346656037ull,nonzero=0;
+                        for(auto v:full.words){nonzero+=DemonsPrelightPolicy::Colored(v);hash=(hash^v)*1099511628211ull;}
+                        row["full"]={{"width",full.width},{"height",full.height},
+                            {"rgb_nonzero",nonzero},{"hash_words",hash}};
+                    }else row["full_status"]="unavailable";
+                }
+            }
+        }
+        row["tick_after_sample"]=context.GetCommandScheduler().CurrentTick();
+        row["image_after_sample"]=Identity(image);
+        Record(std::move(row));
+    }
+    if(!after&&queue!=UINT32_MAX&&!matched)
+        Record({{"kind","consumer_missing_exact_layer0"},{"frame",frame},{"submit",submit},
+            {"tick",context.GetCommandScheduler().CurrentTick()},{"shader",shader},{"queue",queue}});
+}
+
 // Read the actual D32 depth content used by a G-buffer material's EQUAL
 // test at the same coordinates as its R32_UINT output. No test override.
 static std::optional<std::array<uint32_t, 64>> SnapshotDsMaterialDepthGrid(
@@ -2850,8 +2912,30 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	                                     bool primitive_restart_enable,
 	                                     const IndirectDrawArgs* indirect) {
 	const PipelineProbe::ScopedRecordPhase record_phase;
+    using namespace DemonsPrelightTrace;
+    const bool root_trace=DemonsPrelightTrace::Enabled();
+    const auto root_frame=m_context.GetGpu().GetFrameNum();
+    const auto root_colors=std::span{state.color_info,state.color_count};
+    const auto root_target=std::ranges::find_if(root_colors,[](const auto& c){
+        return c.image_id && c.desc.info.data.address==DemonsQueueProbe::GBufferAddress &&
+               c.desc.view_info.base_layer==0 && c.desc.view_info.base_level==0;
+    });
+    const bool root_depth=state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress;
+    uint64_t root_draw=0;
+    if(root_trace&&(root_target!=root_colors.end()||root_depth)){
+        const auto* v=state.vertex_info[0].stage.program;
+        const auto* p=state.ps_active?state.ps_input_info.stage.program:nullptr;
+        root_draw=Record({{"kind","draw_prepared"},{"frame",root_frame},{"submit",submit_id},
+            {"tick",m_context.GetCommandScheduler().CurrentTick()},{"vs",v?v->shader_hash:0ull},
+            {"ps",p?p->shader_hash:0ull},{"index_guest",index_source.address},{"index_bytes",index_source.size},
+            {"indices",draw.index_count},{"instances",draw.instance_count},{"base_vertex",emit.vertex_offset},
+            {"first_instance",emit.first_instance},{"indirect",indirect!=nullptr},
+            {"indirect_guest",indirect?indirect->args_addr:0ull},{"topology",uint32_t(topology)},
+            {"target_layer0",root_target!=root_colors.end()},{"depth_target",root_depth}});
+    }
 	auto& ucfg = buffer.GetUserConfig();
 	if (CopyDepthToColor(buffer, draw, emit, state)) {
+        if(root_draw)Record({{"kind","draw_copy_depth_color"},{"draw",root_draw},{"tick",m_context.GetCommandScheduler().CurrentTick()}});
 		return;
 	}
 	const auto vertex_stages =
@@ -2971,6 +3055,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		pipeline_ptr = nullptr;
 	}
 	if (pipeline_ptr == nullptr) {
+        if(root_draw)Record({{"kind","draw_skipped_pipeline"},{"draw",root_draw},{"tick",m_context.GetCommandScheduler().CurrentTick()}});
 		TraceDsGraphicsOutcome(true, false, state.color_count,
 		                      static_cast<bool>(state.depth_info.image_id), state.ps_active);
 		// --async-shaders: the pipeline is being created on a worker. Nothing recorded so far
@@ -2980,6 +3065,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		return;
 	}
 	if (SkipDrawForLiveKnobs(state, vertex_stages)) {
+        if(root_draw)Record({{"kind","draw_skipped_live_knob"},{"draw",root_draw}});
 		// KYTY_LIVE_KNOBS skip=: dropped at the same point as a pipeline that is not ready.
 		return;
 	}
@@ -2996,7 +3082,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	uint64_t ds_gbuffer_shader = 0;
 	const int32_t ds_gbuffer_frame = m_context.GetGpu().GetFrameNum();
 	TraceDsMaterialDrawPopulation(draw, state, indirect != nullptr, ds_gbuffer_frame);
-    if(ds_gbuffer_enabled && state.ps_active && bindings.pixel &&
+    if(!root_trace && ds_gbuffer_enabled && state.ps_active && bindings.pixel &&
        state.ps_input_info.stage.program && state.ps_input_info.stage.resources &&
        Config::GetShaderDumpFolder().filename()=="ds-lighting-dumps"){
         const auto hash=state.ps_input_info.stage.program->shader_hash;
@@ -3251,6 +3337,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			}
 		}
 	}
+    // Take the before image before AcquireRenderTargets materializes loadOp.
+    // Every prepared target draw gets an explicit sample or missing marker.
+    RenderColorInfo root_color{};
+    std::optional<std::array<uint32_t,64>> root_before;
+    nlohmann::json root_identity;
+    if(root_draw && root_target!=root_colors.end()){
+        root_color=*root_target;
+        auto& im=m_context.GetTextureCache().GetImage(root_color.image_id);
+        Watch(im.info.data.address,im.info.data.size);
+        root_identity=Identity(im);
+        if(AllowSample())root_before=SnapshotDsGBufferGrid(m_context,root_color);
+        Record({{"kind","draw_before"},{"draw",root_draw},{"frame",root_frame},{"submit",submit_id},
+            {"tick",m_context.GetCommandScheduler().CurrentTick()},{"image_before_sample",root_identity},
+            {"image",Identity(im)},{"grid",root_before?nlohmann::json(*root_before):nlohmann::json()},
+            {"mip",root_color.desc.view_info.base_level},{"layer",root_color.desc.view_info.base_layer},
+            {"slot",root_color.target_slot}});
+    }
     // Causal material census: every layer-0 attachment draw, not only
     // the previously watched hashes. Record the actual before/after bytes
     // on a bounded two-host-frame window (guest flips can split the pass).
@@ -3262,7 +3365,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     DsAlbedoSnapshot chain_before{};
     std::optional<std::array<uint32_t,64>> chain_depth{};
     uint64_t chain_version_before=0;
-    if(ds_gbuffer_enabled && Config::GetShaderDumpFolder().filename()=="ds-lighting-dumps"){
+    if(!root_trace && ds_gbuffer_enabled && Config::GetShaderDumpFolder().filename()=="ds-lighting-dumps"){
         const auto colors=std::span{state.color_info,state.color_count};
         const auto target=std::ranges::find_if(colors,[](const auto& c){
             return c.image_id && c.desc.info.data.address==DemonsQueueProbe::GBufferAddress &&
@@ -3644,7 +3747,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         // Invalid category still binds disabled recorder, never indexes
         // outside the selected pair array.
         auto& pair=ds_vertex_pairs[matched?k:0];
-        const bool due=matched && (material ?
+        const bool due=!root_trace && matched && (material ?
             pair.serial && !pair.material_captured && ds_gbuffer_frame>=pair.frame &&
             int64_t{ds_gbuffer_frame}-pair.frame<=1 &&
             pair.address==index_source.address && pair.count==draw.index_count &&
@@ -3861,7 +3964,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	uint32_t geometry_query = UINT32_MAX;
 	uint32_t geometry_replay_first = UINT32_MAX;
 	std::array<vk::Pipeline,3> geometry_replay {};
-	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
+	if (!root_trace && Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
 	    graphics.occlusion_query_precise_enabled) {
 		const auto drain_geometry=[&](DsGeometryFrame& geometry){
         const auto window=geometry.phase==4?8:1;
@@ -4067,6 +4170,22 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			}
 		}
 	}
+	if(root_draw){
+        const auto& regs=buffer.GetRegisters();
+        nlohmann::json event={{"kind","draw_execute"},{"draw",root_draw},{"frame",root_frame},
+            {"submit",submit_id},{"tick",m_context.GetCommandScheduler().CurrentTick()},
+            {"depth_test",state.depth_info.depth_test_enable},{"depth_write",state.depth_info.depth_write_enable},
+            {"depth_compare",uint32_t(state.depth_info.depth_compare_op)},
+            {"depth_clear",state.depth_info.depth_load_clear_enable},
+            {"htile_pending",state.depth_info.trace_meta_pending}};
+        if(root_color.image_id){
+            event["image"]=Identity(m_context.GetTextureCache().GetImage(root_color.image_id));
+            event["load_clear"]=rendering.color_attachments[root_color.target_slot].is_clear;
+            event["write_mask"]=GuestColorWriteMask(regs.GetRenderTargetMask(),
+                regs.GetShaderRegisters().m_cbShaderMask,root_color.target_slot);
+        }
+        Record(std::move(event));
+    }
 	LogDrawPhase(draw.Name(), "BeginRendering");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
@@ -4323,6 +4442,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 	}
 
+	if(root_draw){
+        nlohmann::json event={{"kind","draw_after"},{"draw",root_draw},{"frame",root_frame},
+            {"submit",submit_id},{"tick",m_context.GetCommandScheduler().CurrentTick()}};
+        if(root_color.image_id){
+            auto& im=m_context.GetTextureCache().GetImage(root_color.image_id);
+            std::optional<std::array<uint32_t,64>> sample;
+            if(AllowSample())sample=SnapshotDsGBufferGrid(m_context,root_color);
+            event["image"]=Identity(im);
+            event["grid"]=sample?nlohmann::json(*sample):nlohmann::json();
+            if(root_before&&sample){
+                const auto d=DemonsPrelightPolicy::Compare(*root_before,*sample);
+                event["sample_delta"]={{"changed",d.changed},{"lost",d.lost},{"gained",d.gained},
+                    {"rgb_before",d.before},{"rgb_after",d.after}};
+            }
+        }
+        event["tick_after_sample"]=m_context.GetCommandScheduler().CurrentTick();
+        Record(std::move(event));
+    }
 	if (draw_marks) {
 		MarkDrawForLiveKnobs(buffer, state, vertex_stages, rendering, mesh_emulated,
 		                     mesh_emulated ? uint64_t {emulated_mesh.index_count}

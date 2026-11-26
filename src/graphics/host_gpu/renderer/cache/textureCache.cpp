@@ -1,4 +1,5 @@
 #include "graphics/shader/demonsPcRenderParity.h"
+#include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/sampleHtileClearPolicy.h"
 #include "graphics/host_gpu/renderer/demonsRadianceTrace.h"
@@ -61,6 +62,7 @@ thread_local uint32_t t_null_compare_funcs = 0;
 
 void NoteDsRadianceCache(uint64_t tick, const Image& image, const char* action,
                          uint64_t source = 0, uint64_t detail = 0) {
+	DemonsPrelightTrace::Cache(tick,image,action,source,detail);
 	const auto& range = image.info.data;
 	if (!DemonsRadianceTrace::Enabled() || !DemonsRadianceTrace::Data(range.address, range.size))
 		return;
@@ -1691,6 +1693,7 @@ static void RetainGpuArraySlices(std::vector<vk::BufferImageCopy>& copies,
 }
 
 void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_offset) {
+    DemonsPrelightTrace::Cache(m_scheduler.CurrentTick(),image,"upload_record",source_offset);
     if(Config::GetShaderDumpFolder().filename()=="ds-lighting-dumps" &&
        image.info.data.address==0x208a30000ull){
         Log::WriteToConsoleAndLog(fmt::format("[DS_DISCARD_UPLOAD] guest=0x{:x} bytes={} version={} cpu_dirty={} buffer_modified={} source_offset={}\n",
@@ -2576,6 +2579,7 @@ void TextureCache::CommitGpuWrite(Image& image) {
 	}
 	image.MarkGpuModified();
 	image.gpu_write_order = ++m_gpu_image_write_order;
+    DemonsPrelightTrace::Cache(m_scheduler.CurrentTick(),image,"commit_gpu_write_claim");
     if(Config::GetShaderDumpFolder().filename()=="ds-lighting-dumps" &&
        image.info.data.address==0x208a30000ull){
         Log::WriteToConsoleAndLog(fmt::format("[DS_DISCARD_GPU_WRITE] guest=0x{:x} bytes={} version={} order={}\n",
@@ -2721,6 +2725,12 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 	auto& image = m_slot_images[id];
 	NoteDsRadianceCache(m_scheduler.CurrentTick(), image, "clear", range.baseMipLevel,
 	                    range.baseArrayLayer);
+    if(DemonsPrelightTrace::Enabled()&&DemonsPrelightTrace::Matches(image.info.data.address,image.info.data.size))
+        DemonsPrelightTrace::Record({{"kind","explicit_clear"},{"tick",m_scheduler.CurrentTick()},
+            {"image",DemonsPrelightTrace::Identity(image)},{"mip",range.baseMipLevel},
+            {"levels",range.levelCount},{"layer",range.baseArrayLayer},{"layers",range.layerCount},
+            {"format",uint32_t(format)},{"raw_color",std::array<uint32_t,4>{clear.color.uint32[0],
+                clear.color.uint32[1],clear.color.uint32[2],clear.color.uint32[3]}}});
 	const auto aspects = image.info.IsDepth() ? ImageViewOps::DepthAspectMask(image.backing.format)
 	                                          : vk::ImageAspectFlagBits::eColor;
 	EXIT_IF(range.baseMipLevel >= image.info.resources.levels);
@@ -3193,7 +3203,8 @@ bool TextureCache::PublishGpuImagesForBufferAccess(uint64_t address,uint64_t siz
 
 void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size,
                                            RefreshCause::Source source) {
-	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
+	address = Kernel::AddressFold::Fold(address);
+    DemonsPrelightTrace::Range(m_scheduler.CurrentTick(),"gpu_invalidate",address,size,uint64_t(source)); // guest -> host (kernel/addressFold.h)
 	if (!GuestRange {address, size}.Valid()) {
 		return;
 	}
@@ -3235,7 +3246,8 @@ static bool DsColorAtlasFullLayerUpdate(const ImageInfo& info, uint64_t addr, ui
 
 void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size,
                                         RefreshCause::Source source) {
-	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
+	address = Kernel::AddressFold::Fold(address);
+    DemonsPrelightTrace::Range(m_scheduler.CurrentTick(),"cpu_invalidate",address,size,uint64_t(source)); // guest -> host (kernel/addressFold.h)
 	// Demon’s Souls streams CPU data into individual shadow-array slices while
 	// the GPU owns the other rendered slices. The old whole-image dirty flag
 	// uploaded stale guest data over all layers on next use. The opt-in below

@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/rpStats.h"
 
@@ -202,6 +203,7 @@ Image::FoldScope::~FoldScope() {
 
 // Records the folded clear where the guest's clear would have run relative to this use.
 void Image::FlushFoldedClear() {
+    if(rp_fold.Pending())DemonsPrelightTrace::Cache(m_scheduler.CurrentTick(),*this,"folded_clear_flush");
 	if (!rp_fold.Pending() || t_fold_flushing) {
 		return;
 	}
@@ -511,6 +513,7 @@ std::pair<uint32_t, uint32_t> Image::SanitizeCopyLayers(const Image& source,
 }
 
 void Image::CopyImage(Image& source, bool stencil) {
+    DemonsPrelightTrace::Cache(m_scheduler.CurrentTick(),*this,"native_copy",source.info.data.address,source.ContentVersion());
 	EXIT_IF(source.backing.samples != backing.samples);
 	EXIT_IF(stencil &&
 	        (!(FullAspectMask(source.backing.format) & vk::ImageAspectFlagBits::eStencil) ||
@@ -679,6 +682,7 @@ uint32_t Image::CopyRows(uint64_t row_size, uint32_t rows, uint64_t capacity) no
 }
 
 void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tiler) {
+    DemonsPrelightTrace::Cache(m_scheduler.CurrentTick(),*this,"native_buffer_copy",source.info.data.address,source.ContentVersion());
 	EXIT_IF(buffer.Handle() == nullptr || source.backing.samples != 1 || backing.samples != 1);
 	m_scheduler.EndRendering(PassEnd::ImageCopy);
 	const uint32_t levels = std::min(source.backing.mip_levels, backing.mip_levels);
@@ -789,6 +793,7 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 }
 
 void Image::CopyMip(Image& source, uint32_t mip, uint32_t layer) {
+    DemonsPrelightTrace::Cache(m_scheduler.CurrentTick(),*this,"native_mip_copy",source.info.data.address,(uint64_t{mip}<<32)|layer);
 	EXIT_IF(source.backing.samples != backing.samples || mip >= backing.mip_levels ||
 	        layer >= backing.layers);
 	m_scheduler.EndRendering(PassEnd::ImageCopy);
@@ -1090,6 +1095,7 @@ static void MoveVulkanImage(VulkanImage& into, VulkanImage& from) {
 
 // Exchanges the active backing (and its views) with the alternate one.
 void Image::SwapBackings() {
+    DemonsPrelightTrace::Cache(m_scheduler.CurrentTick(),*this,"swap_backing_before");
 	VulkanImage held;
 	MoveVulkanImage(held, backing);
 	MoveVulkanImage(backing, m_alternate_backing);

@@ -203,3 +203,23 @@ entre resultado esperado e observado com entrada real, causalidade
 até albedo, e teste de regressão com a mesma testemunha. A correção
 deve restaurar a saída prevista sem forçar cor, depth, contagens ou
 luz. A árvore é a etapa 1; não é pedido de novo APK por si só.
+
+
+## Etapa 2: implementação N00 no modo F
+Histórico contínuo a partir do primeiro uso da faixa conhecida, não do
+trigger de HDR: draw preparado/executado/omitido e amostras de 64 palavras
+antes/depois de cada draw layer0, identificadores de objeto/backing/versão,
+load clear e máscara, depth e comandos de prepass; leitores reais das
+filas 0/8/33 antes de dispatch direto/indireto, full digest/população uma
+vez por fila/frame e grid, storage bindings antes/depois; journal de
+registro, upload, clear, alias/invalidação, copy e claims de cache. Claims
+são registros de intenção/ownership, não prova de escrita GPU. Eventos
+por sequência, submit/tick, com 12 chunks de 2 MiB, orçamento de amostras
+e status explícito de truncamento. Grid não prova ausência fora das 64
+coordenadas. Readbacks são síncronos e podem perturbar timing. Não há
+oráculo guest completo; N00 permanece bloqueado quando falta palavra
+esperada ou histórico completo. Teste unitário garante que o classificador
+não decide apenas com zero/contagem, lacuna ou identidade distinta.
+Retirar recaptura de BC1, replay antigo de depth/stencil e coleta de
+vértices direcionada no modo F enquanto N00 estiver aberto; manter demais
+mecanismos e modo E. Prioridade de exportação dos chunks no ZIP.

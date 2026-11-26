@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/demonsCountArithmeticProbe.h"
+#include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
@@ -4860,6 +4861,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (count_producer_trace) BindDsCountExec(bindings,true);
     const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{thread_group_x,thread_group_y,thread_group_z},submit_id);
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
+    DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,false);
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
@@ -4991,6 +4993,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
+	DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,true,false);
 	ResetBindings();
 }
 
@@ -5376,6 +5379,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
     if(DemonsCausalMatrix::Evidence()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
         CaptureDsLightBridge(m_context,bindings,submit_id,{1,1,1},true,true);
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
+    DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,true,args_addr);
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
 	const auto vk_buffer = buffer.Handle();
@@ -5487,6 +5491,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
+	DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,true,true,args_addr);
 	ResetBindings();
 	if (two_pass) {
 		DispatchRetracePass(buffer, cs_regs, pass2_input, args_addr, *retrace);

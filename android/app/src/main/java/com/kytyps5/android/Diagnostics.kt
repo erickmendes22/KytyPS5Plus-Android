@@ -279,6 +279,8 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_geometry_coverage_f[0-9]+(_active)?\\.json")) ||
                                      file.name.matches(Regex("ds_discard_active_[0-9a-f]{16}_n[01]\\.json")) ||
                                      file.name.matches(Regex("ds_albedo_chain_p[0-3]\\.json")) ||
+                                     file.name.matches(Regex("ds_prelight_events_[0-9]+\\.jsonl")) ||
+                                     file.name == "ds_prelight_status.json" ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_dominant_material_f[0-9]+_s[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_depth_prepass_f[0-9]+_s[0-9]+_p[0-9]+(_d[0-9]+)?\\.json")) ||
@@ -290,7 +292,7 @@ object Diagnostics {
                                 "spv" -> file.extension == "spv"
                                 "pipelines" -> file.extension == "json"
                                 "buffers" -> file.extension == "bin"
-                                "queue-state" -> file.extension == "json" || file.extension == "bin"
+                                "queue-state" -> file.extension == "json" || file.extension == "bin" || file.extension == "jsonl"
                                 "guest-shaders" -> file.name.matches(Regex("(cs|vs|ps|ms|ls|hs|ds)_[0-9a-f]{16}_probe\\.bin"))
                                 else -> false
                             })
@@ -344,7 +346,8 @@ object Diagnostics {
                         it.name.startsWith("cs_567d21ad45386c8d_radiance_") }
                     val albedoChain = newest.filter { it.name.startsWith("ds_albedo_chain_p") }.take(4)
                     val activeDiscard = newest.filter { it.name.startsWith("ds_discard_active_") }.take(14)
-                    val producer = (positions + coverage + albedoChain + depthOwners + activeDiscard + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
+                    val rootTrace = newest.filter { it.name.startsWith("ds_prelight_") }.sortedBy { if (it.name == "ds_prelight_status.json") -1 else it.name.removePrefix("ds_prelight_events_").substringBefore(".").toIntOrNull() ?: 999 }
+                    val producer = (rootTrace + positions + coverage + albedoChain + depthOwners + activeDiscard + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
                         prioritizedRays.take(8) + coverage + edges + visibility.take(4) + depthOwners + positions +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
