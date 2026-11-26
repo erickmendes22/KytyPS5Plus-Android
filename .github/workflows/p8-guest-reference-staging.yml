@@ -1,0 +1,44 @@
+name: P8 independent guest ISA host runner
+on:
+  push:
+    branches: [staging/ds-v3-decision-gate-20261126]
+    paths:
+      - 'docs/android/tools/p8_guest_ref.cpp'
+      - 'docs/android/tools/test_p8_guest_ref.py'
+      - '.github/workflows/p8-guest-reference-staging.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  independent-guest-isa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout independent AMD ISA implementation (pinned)
+        run: |
+          git init /tmp/rocm-systems
+          git -C /tmp/rocm-systems remote add origin https://github.com/ROCm/rocm-systems.git
+          git -C /tmp/rocm-systems config core.sparseCheckout true
+          printf '/*\n!/*/\n/emulation/rocjitsu/\n/runtimes/api-headers/\n' > /tmp/rocm-systems/.git/info/sparse-checkout
+          git -C /tmp/rocm-systems fetch --depth=1 --filter=blob:none origin 431f58f7841a88b705992a91d9d71fd972345beb
+          git -C /tmp/rocm-systems checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/rocm-systems rev-parse HEAD)" = 431f58f7841a88b705992a91d9d71fd972345beb
+          cp docs/android/tools/p8_guest_ref.cpp /tmp/rocm-systems/emulation/rocjitsu/tests/kyty_p8_guest_ref.cpp
+          cat >> /tmp/rocm-systems/emulation/rocjitsu/tests/CMakeLists.txt <<'EOF'
+          add_executable(kyty_p8_guest_ref kyty_p8_guest_ref.cpp)
+          target_link_libraries(kyty_p8_guest_ref PRIVATE ${RJ_OBJECT_LIBS} rocjitsu_kmd util flatbuffers Threads::Threads)
+          target_include_directories(kyty_p8_guest_ref PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+          rj_configure_target(kyty_p8_guest_ref TEST)
+          EOF
+      - name: Build independent host runner
+        run: |
+          cmake -S /tmp/rocm-systems/emulation/rocjitsu -B /tmp/p8-isa-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DROCJITSU_ENABLE_INTERPOSER=OFF -DRJ_ENABLE_HOST_FAULT_RECOVERY=OFF
+          cmake --build /tmp/p8-isa-build --target kyty_p8_guest_ref -j 2
+      - name: Execute guest equality, divergence and missing memory controls
+        run: python3 docs/android/tools/test_p8_guest_ref.py /tmp/p8-isa-build/tests/kyty_p8_guest_ref
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p8-independent-guest-isa
+          path: /tmp/p8-isa-build/tests/kyty_p8_guest_ref
+          if-no-files-found: error
