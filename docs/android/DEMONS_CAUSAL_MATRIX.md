@@ -74,3 +74,20 @@ checks selected compute completion before bindings; negative visual result
 cannot rule out all coherence errors or certify cb3b replay. B1 only if D2
 negative: independent original index-culling path, not fb18 object gate.
 No new APK necessary for these modes, no rendering fix claimed.
+
+## Build #717 — D2, ZIP 20261125-211345
+Core 53d8085, launch 21:07:04 GMT-3, KYTY_DS_MATRIX=6, same driver,
+resolution and title/version. Frame 1464 reached, exit reason 1/status 0.
+128 capped DS_MATRIX_ORDER records: cb3b 64; c03a 13; e3da 13;
+acce 13; 567d 13; bcbc 12. No fb18 or f0c140 in the capped records;
+absence is not proof those shaders were never serialized. D2 completion
+runs after SRT specialization, before binding; does not serialize all
+queues. Queue 33 valid GPU dispatches match tile counts at frames
+241/481/721/961/1201/1441 (22598/22600/22579/22579/22579/22579).
+Five deliberately selected colored albedo samples at each of these frames
+are not a measure of full-screen coverage or illumination. Last 5-second
+present intervals report 40–41 completed flips. Pixel probes disabled;
+no HDR or count replay in this ZIP. Visual result unknown until tester
+reports it. Cannot determine whether prior frame-307 DWORD discrepancy
+resolved, nor rule out coherence/ordering in general. If still dark,
+proceed to B1 as planned, same scene and visual outcome with ZIP.
