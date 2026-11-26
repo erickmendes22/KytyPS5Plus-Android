@@ -44,6 +44,7 @@
 #include "graphics/host_gpu/renderer/pipeline/demonsLightingMemoryPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -3194,6 +3195,91 @@ static std::vector<uint32_t> ReadDsBoundWords(RenderContext& context,
 	return words;
 }
 
+struct DsVertexProducerCapture{
+    nlohmann::json report;
+    std::vector<DemonsPrelightTrace::VertexRange> targets;
+};
+static nlohmann::json DsVertexRangeWords(RenderContext& context,DemonsPrelightTrace::VertexRange r){
+    nlohmann::json out={{"address",r.address},{"bytes",r.bytes},{"confirmed",r.confirmed}};
+    auto& cache=context.GetBufferCache();
+    out["writers"]=nlohmann::json::array();
+    for(const auto& w:cache.RecentProbeRayTransfers(r.address,r.bytes))if(w.path)
+        out["writers"].push_back({{"path",w.path},{"tick",w.tick},{"shader",w.shader},{"begin",w.begin},{"end",w.end},{"source",w.source}});
+    auto* b=cache.PeekVertexProducerBuffer(r.address,r.bytes);
+    if(b&&r.bytes%4==0&&r.bytes<=65536){
+        out["gpu_dirty"]=cache.HasGpuDirtyBytes(r.address,r.bytes);
+        auto words=DemonsPrelightTrace::ReadNativeWords(context,b->Handle(),b->Offset(r.address),uint32_t(r.bytes/4));
+        out["nan_words"]=std::ranges::count_if(words,DemonsPrelightTrace::IsNanWord);
+        out["gpu_words"]=std::move(words);
+    }
+    return out;
+}
+static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,const PreparedBindings& bindings,
+    uint64_t submit,vk::ShaderModule module,std::array<uint32_t,3> groups,bool indirect,uint64_t args_addr){
+    using namespace DemonsPrelightTrace;
+    DsVertexProducerCapture cap;
+    if(!Enabled()||!bindings.runtime||!bindings.runtime->program||!bindings.runtime->resources)return cap;
+    const auto& prog=*bindings.runtime->program;
+    const auto frame=context.GetGpu().GetFrameNum();
+    const int phase=std::clamp(Phase(frame),0,3);
+    const bool learned=VertexShader(prog.shader_hash);
+    for(auto r:VertexRanges()){
+        bool match=false;
+        for(const auto& res:prog.info.buffers)if(res.written&&res.descriptor_index<bindings.buffer_sources.size()){
+            const auto& b=bindings.buffer_sources[res.descriptor_index];
+            if(DemonsPrelightPolicy::Overlaps(b.address,b.size,r.address,r.bytes))match=true;
+        }
+        if(match||(learned&&r.confirmed))cap.targets.push_back(r);
+    }
+    if(cap.targets.empty())return cap;
+    static std::mutex capture_mutex;
+    static std::vector<std::pair<uint64_t,int>> taken;
+    {
+        std::scoped_lock lock(capture_mutex);
+        const std::pair key{prog.shader_hash,phase};
+        if(std::ranges::find(taken,key)!=taken.end()||taken.size()>=24){cap.targets.clear();return cap;}
+        taken.push_back(key);
+    }
+    const auto& snap=*bindings.runtime->resources;
+    cap.report={{"frame",frame},{"submit",submit},{"phase",phase},{"shader",prog.shader_hash},
+        {"shader_hex",fmt::format("{:016x}",prog.shader_hash)},{"native_cs_file",ShaderDump::ModuleFile(module)},
+        {"groups",groups},{"indirect",indirect},{"args_guest",args_addr},
+        {"tick_before",context.GetCommandScheduler().CurrentTick()},{"srt",snap.flattened_srt},
+        {"user_data",snap.user_data},{"learned_writer",learned},{"bindings",nlohmann::json::array()},
+        {"target_before",nlohmann::json::array()},{"target_after",nlohmann::json::array()}};
+    size_t remaining=32768;
+    for(uint32_t slot=0;slot<bindings.buffer_sources.size()&&slot<bindings.buffers.size();++slot){
+        const auto& b=bindings.buffer_sources[slot];
+        bool written=false;
+        for(const auto& res:prog.info.buffers)if(res.descriptor_index==slot)written|=res.written;
+        nlohmann::json entry={{"slot",slot},{"address",b.address},{"bytes",b.size},{"written",written}};
+        if(slot<snap.buffers.size())entry["descriptor"]=snap.buffers[slot].dwords;
+        const auto n=std::min<size_t>({size_t(b.size/4),size_t(8192),remaining});
+        if(n){
+            auto words=ReadDsBoundWords(context,bindings,slot,n);
+            remaining-=std::min(remaining,words.size());
+            entry["captured_words"]=words.size();entry["complete"]=words.size()*4==b.size;
+            entry["gpu_words"]=std::move(words);
+        }
+        cap.report["bindings"].push_back(std::move(entry));
+    }
+    for(auto r:cap.targets)cap.report["target_before"].push_back(DsVertexRangeWords(context,r));
+    return cap;
+}
+static void EndDsVertexProducer(RenderContext& context,DsVertexProducerCapture&& cap){
+    if(cap.report.is_null())return;
+    for(auto r:cap.targets)cap.report["target_after"].push_back(DsVertexRangeWords(context,r));
+    cap.report["tick_after"]=context.GetCommandScheduler().CurrentTick();
+    const auto file=fmt::format("ds_vertex_producer_{}_f{}_s{}_t{}.json",
+        cap.report["shader_hex"].get<std::string>(),cap.report["frame"].get<int32_t>(),
+        cap.report["submit"].get<uint64_t>(),cap.report["tick_before"].get<uint64_t>());
+    const auto folder=DemonsPrelightTrace::Folder();std::error_code ec;std::filesystem::create_directories(folder,ec);
+    std::ofstream out(folder/file,std::ios::trunc);if(out)out<<cap.report;
+    out.close();
+    DemonsPrelightTrace::Record({{"kind","vertex_producer_capture"},{"file",file},{"shader",cap.report["shader"]},
+        {"frame",cap.report["frame"]},{"submit",cap.report["submit"]},{"saved",out.good()}});
+}
+
 // The guest binaries for these two writers contain a typed count load at
 // 0x28, per-object flag checks, then buffer_atomic_add into the count table.
 // Capture real inputs BEFORE execution and output AFTER the same dispatch.
@@ -4861,6 +4947,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (count_producer_trace) BindDsCountExec(bindings,true);
     const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{thread_group_x,thread_group_y,thread_group_z},submit_id);
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
+    auto vertex_producer=BeginDsVertexProducer(m_context,bindings,submit_id,compute_program.module,{thread_group_x,thread_group_y,thread_group_z},false,0);
     DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,false);
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
@@ -4993,6 +5080,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
+	EndDsVertexProducer(m_context,std::move(vertex_producer));
 	DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,true,false);
 	ResetBindings();
 }
@@ -5379,6 +5467,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
     if(DemonsCausalMatrix::Evidence()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
         CaptureDsLightBridge(m_context,bindings,submit_id,{1,1,1},true,true);
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
+    auto vertex_producer=BeginDsVertexProducer(m_context,bindings,submit_id,compute_program.module,{args.x,args.y,args.z},true,args_addr);
     DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,true,args_addr);
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});
@@ -5491,6 +5580,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
+	EndDsVertexProducer(m_context,std::move(vertex_producer));
 	DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,true,true,args_addr);
 	ResetBindings();
 	if (two_pass) {

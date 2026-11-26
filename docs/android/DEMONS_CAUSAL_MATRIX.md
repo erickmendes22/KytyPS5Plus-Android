@@ -508,3 +508,10 @@ in journal have execute. Exact guest admission and indirect records
 not yet certified; native coverage/clip must be joined to same command.
 See DEMONS_PRELIGHT_BINARY_TREE.md for witnesses and capture policy.
 Do not reopen BC1, stencil, or compare absent conflicting evidence.
+
+## #730 F — 083233
+N20 native fixup 134/134 matches. W0 12765 has 2624/2624 NaN
+XYZW both VS, already 7872/7872 NaN words in input XYZ; W1 57066
+finite 37358/37358 equal exports. Follow N32/L09 to producer, not
+repeat raster tests. Actual expected visibility not established.
+See DEMONS_PRELIGHT_BINARY_TREE.md for counts and next N70 split.

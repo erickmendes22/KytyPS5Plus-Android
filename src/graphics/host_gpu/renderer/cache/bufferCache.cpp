@@ -1086,6 +1086,15 @@ uint32_t BufferCache::MakeResident(uint64_t vaddr, uint64_t size) {
 	return added;
 }
 
+Buffer* BufferCache::PeekVertexProducerBuffer(uint64_t address,uint64_t size){
+    address=Kernel::AddressFold::Fold(address);
+    if(!GuestRange{address,size}.Valid())return nullptr;
+    const auto* owner=m_page_table.Find(address >> PageTable::kPageBits);
+    if(!owner||!*owner)return nullptr;
+    auto& b=m_slot_buffers[*owner];
+    return b.IsInBounds(address,size)?&b:nullptr;
+}
+
 BufferId BufferCache::FindBuffer(uint64_t vaddr, uint64_t size) {
 	vaddr = Kernel::AddressFold::Fold(vaddr); // guest -> host (kernel/addressFold.h)
 	if (vaddr == 0) {

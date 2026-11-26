@@ -260,10 +260,11 @@ object Diagnostics {
             // with the current session's identical frame numbers.
             val launchTime = File(context.filesDir, "logs/last-launch.txt").lastModified()
             val exactDepthFiles = File(dump, "queue-state").listFiles().orEmpty()
-                .filter { (it.name.startsWith("ds_geometry_coverage_f") || it.name.startsWith("ds_discard_active_") || it.name.startsWith("ds_vertex_position_")) && it.extension == "json" &&
+                .filter { (it.name.startsWith("ds_geometry_coverage_f") || it.name.startsWith("ds_discard_active_") || it.name.startsWith("ds_vertex_position_") || it.name.startsWith("ds_vertex_producer_")) && it.extension == "json" &&
                     (launchTime == 0L || it.lastModified() >= launchTime) && it.length() <= 8L*1024L*1024L }
                 .flatMap { f -> Regex("spv/[a-z]+_[0-9a-f]{16}_[0-9a-f]{16}\\.spv").findAll(f.readText()).map { it.value.substringAfter("/") }.toList() }
                 .toSet()
+            val vertexProducerHashes = File(dump, "queue-state").listFiles().orEmpty().filter { it.name.startsWith("ds_vertex_producer_") && (launchTime == 0L || it.lastModified() >= launchTime) }.mapNotNull { Regex("ds_vertex_producer_([0-9a-f]{16})_").find(it.name)?.groupValues?.get(1) }.toSet()
             val candidates = listOf("queue-state", "guest-shaders", "spv", "pipelines", "buffers").flatMap { subdir ->
                 val files = File(dump, subdir).listFiles().orEmpty()
                     .filter { file ->
@@ -280,6 +281,7 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_discard_active_[0-9a-f]{16}_n[01]\\.json")) ||
                                      file.name.matches(Regex("ds_albedo_chain_p[0-3]\\.json")) ||
                                      file.name.matches(Regex("ds_prelight_events_[0-9]+\\.jsonl")) ||
+                                     file.name.startsWith("ds_vertex_producer_") ||
                                      file.name == "ds_prelight_status.json" ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_dominant_material_f[0-9]+_s[0-9]+\\.json")) ||
@@ -287,7 +289,7 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark|post_transition)_f[0-9]+(_q(0|8|33))?\\.json")) ||
                                      file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark|post_transition)_f[0-9]+_s[0-9]+(_ps[0-9a-f]{16})?\\.json")))) ||
-                                watched.any { hash -> file.name.contains("_${hash}_") }) &&
+                                (watched + vertexProducerHashes).any { hash -> file.name.contains("_${hash}_") }) &&
                             (when (subdir) {
                                 "spv" -> file.extension == "spv"
                                 "pipelines" -> file.extension == "json"
@@ -347,7 +349,8 @@ object Diagnostics {
                     val albedoChain = newest.filter { it.name.startsWith("ds_albedo_chain_p") }.take(4)
                     val activeDiscard = newest.filter { it.name.startsWith("ds_discard_active_") }.take(14)
                     val rootTrace = newest.filter { it.name.startsWith("ds_prelight_") }.sortedBy { if (it.name == "ds_prelight_status.json") -1 else it.name.removePrefix("ds_prelight_events_").substringBefore(".").toIntOrNull() ?: 999 }
-                    val producer = (coverage + positions + rootTrace + albedoChain + depthOwners + activeDiscard + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
+                    val vertexProducers = newest.filter { it.name.startsWith("ds_vertex_producer_") }
+                    val producer = (vertexProducers + rootTrace + coverage + positions + albedoChain + depthOwners + activeDiscard + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
                         prioritizedRays.take(8) + coverage + edges + visibility.take(4) + depthOwners + positions +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
@@ -369,7 +372,7 @@ object Diagnostics {
                     val firstLightModules = files.filter { f -> listOf("f0c482b0b355e9de","3dfe402653925fbf","e3daeb1e7426761b").any { f.name.contains("_${it}_") } }
                     val causalModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { it.name.contains("_fb18d110fab8234e_") || it.name.contains("_cb3b9c1ea64fe876_") } else emptyList()
-                    (files.filter { it.name in exactDepthFiles } + depthProbeModules + firstLightModules + causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
+                    (files.filter { it.name in exactDepthFiles } + files.filter { f -> vertexProducerHashes.any { f.name.contains("_${it}_") } } + depthProbeModules + firstLightModules + causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
                         "guest-shaders" -> 96
                         "spv" -> 48
                         else -> 24

@@ -3803,6 +3803,48 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     static std::array<DsVertexPair,VP::FocusPairCount> ds_vertex_pairs{};
     static uint64_t ds_vertex_serial=0;
     const auto* ds_vp=state.vertex_info[0].stage.program;
+    if(root_trace&&ds_vp&&ds_vp->shader_hash==0x868546d85ce5090aull&&
+        draw.IsIndexed()&&!indirect&&draw.index_count==12765){
+        const auto& bound=bindings.vertex[0];
+        if(bound.buffer_sources.size()>2){
+            for(auto slot:{0u,2u}){
+                const auto& src=bound.buffer_sources[slot];
+                DemonsPrelightTrace::WatchVertex(src.address,src.size);
+                for(const auto& w:m_context.GetBufferCache().RecentProbeRayTransfers(src.address,src.size))
+                    if(w.path&&w.shader)DemonsPrelightTrace::WatchVertexShader(w.shader);
+            }
+            static std::array<int32_t,4> last{-1,-1,-1,-1};
+            const auto p=std::clamp(root_phase,0,3);
+            if(last[p]<0||ds_gbuffer_frame-last[p]>=32){
+                last[p]=ds_gbuffer_frame;
+                nlohmann::json row={{"kind","vertex_consumer"},{"phase",p},{"frame",ds_gbuffer_frame},
+                    {"submit",submit_id},{"draw",root_draw},{"index_guest",index_source.address},
+                    {"shader",ds_vp->shader_hash},{"native_vs",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
+                    {"tick",m_context.GetCommandScheduler().CurrentTick()},{"sources",nlohmann::json::array()}};
+                for(auto slot:{0u,1u,2u}){
+                    if(slot>=bound.buffers.size())continue;
+                    const auto& src=bound.buffer_sources[slot];const auto& native=bound.buffers[slot];
+                    nlohmann::json entry={{"slot",slot},{"address",src.address},{"bytes",src.size},
+                        {"gpu_dirty",m_context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size)},
+                        {"writers",nlohmann::json::array()}};
+                    for(const auto& w:m_context.GetBufferCache().RecentProbeRayTransfers(src.address,src.size))
+                        if(w.path)entry["writers"].push_back({{"path",w.path},{"tick",w.tick},{"shader",w.shader},
+                            {"begin",w.begin},{"end",w.end},{"source",w.source}});
+                    const auto word=ds_vp->bindings.memory_offset_dword+slot/4u;
+                    if(word<bound.shader_data.size()&&native.buffer&&native.range!=VK_WHOLE_SIZE&&src.size&&src.size%4==0&&src.size<=65536){
+                        const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
+                        if(adjust<=native.range&&src.size<=native.range-adjust){
+                            auto words=DemonsPrelightTrace::ReadNativeWords(m_context,native.buffer,native.offset+adjust,uint32_t(src.size/4));
+                            entry["nan_words"]=std::ranges::count_if(words,DemonsPrelightTrace::IsNanWord);
+                            entry["gpu_words"]=std::move(words);
+                        }
+                    }
+                    row["sources"].push_back(std::move(entry));
+                }
+                DemonsPrelightTrace::Record(std::move(row));
+            }
+        }
+    }
     if(ds_vp && VP::Watched(ds_vp->shader_hash) && ds_vp->ds_light_math_variant){
         const auto& gate=DemonsAdaptiveCapture::Current();
         const auto* ps=state.ps_active?state.ps_input_info.stage.program:nullptr;
@@ -3818,7 +3860,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         // Both persistent zero-cycle meshes were observed in prepass and
         // material (#729 frames 249/250). Select them by exact index count
         // AND pair identity, not the first occurrence of a shader.
-        const bool root_witness=root_phase>0&&(draw.index_count==12765||draw.index_count==57066);
+        const bool root_witness=root_phase==2&&(draw.index_count==12765||draw.index_count==57066);
         const bool due=(!root_trace||root_witness) && matched && (material ?
             pair.serial && !pair.material_captured && ds_gbuffer_frame>=pair.frame &&
             int64_t{ds_gbuffer_frame}-pair.frame<=1 &&

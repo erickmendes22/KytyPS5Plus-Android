@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
+#include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/demonsQueueProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
@@ -13,6 +14,7 @@
 #include <fmt/format.h>
 #include <fstream>
 #include <mutex>
+#include <string_view>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
 #include <unordered_set>
@@ -31,6 +33,7 @@ struct State {
 	std::mutex                                     mutex;
 	std::unordered_map<VkShaderModule, DumpedModule> modules;
 	std::unordered_set<uint64_t>                   ds_probe_guest_code;
+    uint64_t extra_cs_bytes=0;
 	bool                                           device_written = false;
 	bool                                           failed         = false;
 };
@@ -146,7 +149,7 @@ void RecordDsProbeGuestCode(uint64_t hash, std::span<const uint32_t> code, const
 	if (code.empty() || code.size_bytes() > 1024u * 1024u) return;
 	auto& state = GetState();
 	std::scoped_lock lock(state.mutex);
-	if (state.ds_probe_guest_code.size() >= 96 || state.ds_probe_guest_code.contains(hash)) return;
+	if (state.ds_probe_guest_code.size() >= (DemonsCausalMatrix::Mode()==DemonsCausalMatrix::Trace?512u:96u) || state.ds_probe_guest_code.contains(hash)) return;
 	const auto file = Root() / "guest-shaders" / fmt::format("{}_{:016x}_probe.bin", stage_name, hash);
 	if (WriteFile(file, code.data(), code.size_bytes())) state.ds_probe_guest_code.insert(hash);
 	else ReportFailure(state, fmt::format("cannot write {}", file.filename().string()));
@@ -155,7 +158,7 @@ void RecordDsProbeGuestCode(uint64_t hash, std::span<const uint32_t> code, const
 void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t guest_hash,
                   std::span<const uint32_t> spirv) {
 	if (!Enabled() || module == nullptr ||
-	    (DsLightingCapture() && !DsLightingShader(guest_hash) &&
+	    (DsLightingCapture() && !(DemonsCausalMatrix::Mode()==DemonsCausalMatrix::Trace && std::string_view(stage_name)=="cs") && !DsLightingShader(guest_hash) &&
 	     !DemonsDominantGeometry::Watched(guest_hash) &&
 	     std::ranges::find(DemonsQueueProbe::PostShaders, guest_hash) ==
 	         DemonsQueueProbe::PostShaders.end() &&
@@ -168,7 +171,10 @@ void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t gues
 	const auto file    = fmt::format("spv/{}_{:016x}_{:016x}.spv", stage_name, guest_hash, content);
 	std::scoped_lock lock(state.mutex);
 	std::error_code  ec;
-	if (!std::filesystem::exists(Root() / file, ec) &&
+    const bool extra=DsLightingCapture()&&std::string_view(stage_name)=="cs"&&!DsLightingShader(guest_hash);
+    const bool exists=std::filesystem::exists(Root()/file,ec);
+    if(extra&&!exists){if(state.extra_cs_bytes+spirv.size_bytes()>96ull*1024*1024)return;state.extra_cs_bytes+=spirv.size_bytes();}
+	if (!exists &&
 	    !WriteFile(Root() / file, spirv.data(), spirv.size_bytes())) {
 		ReportFailure(state, fmt::format("cannot write {}", file));
 		return;

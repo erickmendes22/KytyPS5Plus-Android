@@ -40,6 +40,7 @@
 #include "graphics/host_gpu/renderer/pipeline/laneBranchDefaults.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
+#include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/walkFan.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -2238,6 +2239,7 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
 	// The dispatch's results feed the game: it waits for its program.
 	const auto program = m_program_cache->Get(params, input_info, push_data_cursor, false);
 	if (program && ShaderDump::DsLightingCapture()) {
+        if(DemonsPrelightTrace::Enabled())ShaderDump::RecordDsProbeGuestCode(params.hash,params.code);
 		if (params.hash == 0xf0c482b0b355e9deull || params.hash == 0x3dfe402653925fbfull ||
             params.hash == 0xe3daeb1e7426761bull || params.hash == 0xcb3b9c1ea64fe876ull || params.hash == 0xc387ee3c610ed66bull ||
 		    params.hash == 0xb89a7139ba15ee52ull || params.hash == DemonsRadianceTrace::MaskWriter ||

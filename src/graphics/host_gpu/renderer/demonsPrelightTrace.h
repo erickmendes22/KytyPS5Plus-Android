@@ -55,16 +55,47 @@ inline constexpr unsigned MaxChunks=8;
 inline thread_local uint64_t active_draw=0;
 inline thread_local uint64_t command_seq=0;
 inline thread_local bool command_prepared=false;
-inline thread_local DemonsPrelightPolicy::ProductionWindow production_window;
-inline int Phase(int32_t frame){return production_window.Phase(frame);}
+inline std::mutex phase_mutex;
+inline DemonsPrelightPolicy::ProductionWindow production_window;
+inline int Phase(int32_t frame){std::scoped_lock lock(phase_mutex);return production_window.Phase(frame);}
 inline void ObservePopulation(int32_t frame,uint64_t colored,uint64_t area){
-    production_window.Observe(frame,colored,area);
+    std::scoped_lock lock(phase_mutex);production_window.Observe(frame,colored,area);
 }
+struct VertexRange{uint64_t address=0,bytes=0;bool confirmed=false;};
+// Prior addresses are candidate seeds only; live VS descriptors certify identity.
+inline std::mutex vertex_mutex;
+inline std::vector<VertexRange> vertex_ranges{{0x20cca0e40ull,31488,false},{0x20cca8940ull,10496,false},{0x20ccab240ull,31488,false}};
+inline std::vector<uint64_t> vertex_shaders;
+inline void WatchVertex(uint64_t address,uint64_t bytes){
+    if(!Enabled()||!address||!bytes||bytes>65536)return;
+    std::scoped_lock lock(vertex_mutex);
+    for(auto& x:vertex_ranges)if(x.address==address&&x.bytes==bytes){x.confirmed=true;return;}
+    if(vertex_ranges.size()<20)vertex_ranges.push_back({address,bytes,true});
+}
+inline bool VertexMatches(uint64_t address,uint64_t bytes){
+    if(!Enabled())return false;
+    std::scoped_lock lock(vertex_mutex);
+    for(auto x:vertex_ranges)if(DemonsPrelightPolicy::Overlaps(address,bytes,x.address,x.bytes))return true;
+    return false;
+}
+inline std::vector<VertexRange> VertexRanges(){
+    std::scoped_lock lock(vertex_mutex);return vertex_ranges;
+}
+inline void WatchVertexShader(uint64_t shader){
+    if(!shader)return;
+    std::scoped_lock lock(vertex_mutex);
+    if(vertex_shaders.size()<16&&std::ranges::find(vertex_shaders,shader)==vertex_shaders.end())vertex_shaders.push_back(shader);
+}
+inline bool VertexShader(uint64_t shader){
+    std::scoped_lock lock(vertex_mutex);
+    return std::ranges::find(vertex_shaders,shader)!=vertex_shaders.end();
+}
+inline bool IsNanWord(uint32_t w){return (w&0x7f800000u)==0x7f800000u&&(w&0x007fffffu)!=0;}
 std::vector<uint32_t> ReadNativeWords(RenderContext&,vk::Buffer,uint64_t,uint32_t);
 inline std::filesystem::path Folder(){return Config::GetShaderDumpFolder()/"queue-state";}
 inline void StatusLocked(const Journal& j) {
     std::ofstream out(Folder()/"ds_prelight_status.json",std::ios::trunc);
-    if(out)out<<nlohmann::json{{"schema",2},{"node","N20/N30"},{"last_seq",j.seq},
+    if(out)out<<nlohmann::json{{"schema",3},{"node","N32/L09 vertex producer"},{"last_seq",j.seq},
         {"dropped_events",j.dropped},{"samples",j.samples},{"sample_dropped",j.sample_dropped},
         {"full_samples",j.full},{"full_dropped",j.full_dropped},{"chunks",j.chunk+(j.out.is_open()?1u:0u)},
         {"scope","observed target range; candidate cache events, not complete guest oracle"},
@@ -114,7 +145,7 @@ inline void Range(uint64_t tick,const char* operation,uint64_t address,uint64_t 
 }
 inline void BufferWriter(uint64_t tick,const char* op,uint64_t address,uint64_t bytes,
         uint64_t operand,const char* route,bool overflow=false){
-    if(!Enabled()||!Matches(address,bytes))return;
+    if(!Enabled()||(!Matches(address,bytes)&&!VertexMatches(address,bytes)))return;
     Record({{"kind","buffer_writer"},{"operation",op},{"tick",tick},
         {"address",address},{"bytes",bytes},{"operand",operand},{"route",route},{"overflow",overflow}});
 }

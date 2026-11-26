@@ -85,6 +85,7 @@ public:
 	// Returns the number of newly materialized cache pages.
 	[[nodiscard]] uint32_t MakeResident(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
+    [[nodiscard]] Buffer* PeekVertexProducerBuffer(uint64_t address,uint64_t size);
 	// For an opted-in shader storage write that aliases a GPU-authored image,
 	// preserve its existing texels on the GPU before the writer takes ownership.
 	// Returns false when no safe full-copy path exists, retaining legacy handling.

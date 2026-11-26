@@ -300,3 +300,47 @@ captures only W0/W1 by count and same address/instance, no assumption
 that W0 is expected visible. Prioritize query and vertex exports ahead
 of capped 16MiB journal. Reuse existing readback instrumentation;
 readbacks may perturb timing. No production semantic change.
+
+
+## #730 — N20 validation and concrete N32 input witness (083233)
+5456 consecutive journal records, no dropped events or samples. 610 guest
+commands, 547 prepared returns (540 selected prepared/execute pairs),
+49 CPU fallback, 14 zero count. 134/134 native indirect records match
+independent mode-0 fixup replay (77 indexed, 19 nonempty). Do not infer
+all guest culling correct or all fallback commands absent. Coverage phase2
+f251–252: all ten scene prepasses and ten material draws pass zero; phase1
+f220–221 W0 12765 indices has 86/30 passes; late f429–430 W0 has zero,
+W1 57066 indices has 25675/12453. Phase3 paired native vertex captures:
+W1 37358/37358 identical finite XYZW/clip, W0 2624/2624 identical but
+all four XYZW are NaN, clip distance zero. W0 index stream identical,
+all vertices referenced. Prepass slot2 XYZ 0x20cca0e40 31488 bytes
+7872/7872 NaNs: 5145 0xffc00000, 2727 0x7fc00000. Material slot3
+same address/content; slot4 other XYZ 0x20ccab240 also NaN.
+Packed slot0 0x20cca8940 2621 x e0080200, 3 x 20080200. GPU-dirty
+CPU backing zero is NOT evidence of corruption. W0 transform buffer
+contains finite data; no independent transform operand mapping for
+this VS variant. N32/L09: nonfinite values already present before VS;
+compare producer output vs actual consumer. Intentional NaN cull remains
+possible; no guest oracle demonstrating that W0 should be visible at
+f429. W1 finite control, other scene meshes remain open. No fix yet.
+Next F uses dynamic live W0 range discovery, earlier session addresses
+only as seeds, bounded prior writer history and exact consumer words.
+For overlapping compute descriptor writers or learned writer hash,
+capture actual input descriptors/SRT/bytes before dispatch and tracked
+range words before/after, native module name and guest code. BDA or DMA
+writer candidates reported, not proof of a write. Peek existing buffer
+only (no allocation). Upstream inputs larger than budget marked partial.
+Share capture gate across queue threads; #730 phase1/2 query records
+had command ID 0; thread-local population gate was a potential cause.
+Retain bounded phase2 position pair. Prioritize producer files and exact
+modules in ZIP. No semantic change.
+
+Binary extension:
+N32 observed nonfinite input -> N70: does exact last producer already
+write NaN? S -> N71: guest ISA with actual inputs should write NaN?
+S -> legitimate cull or upstream invalid operand, trace input producer;
+N -> first differing compute instruction, fix with regression.
+N -> N72: same bytes at producer and consumer? N -> first overlapping
+writer/transfer/version; S -> invalid witness, check exact identity.
+Unproven producer or missing actual operand -> BLOCKED. Do not treat
+NaN alone as proof of error. Keep N30/N40/N50/N60 active for finite W1.
