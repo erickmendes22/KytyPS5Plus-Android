@@ -305,3 +305,26 @@ Replay comparison still measures total discard; actual first compare operands
 not yet instrumented because prior native modules missing. Do not change
 shader semantics or force the input to null. Exact native SPIR-V and bound
 texture evidence will permit fingerprinted instrumentation if still needed.
+
+### PC source cross-check (U59 dd9f990)
+EmitFloatCompare, S_ANDN2_B64 dispatch, S_U64_MASK and ReadMixF32 have
+matching relevant semantics. V_INTERP_MOV_F32 frontend matches; backend
+per-vertex lowering and Android manual-interpolation optimization require
+actual module evidence. PC optional ps_exec_words and f16_exact_round are
+both false by default; no speculative backport. Frame 502 also has early
+large occluder writes (VS 23371923, 7296 indices, 1094892 passed samples)
+before the smaller scene-depth draws. Do not assume a single gate explains
+persistent darkness; the separate depth/stencil rejection remains open.
+
+## Build #723 delivery
+Revision f41e4c10eebafdc6dab8068d6d6ff743063f91a6, run 45738716818,
+artifact 15080661176. Mandatory fast tests, native compilation, APK tests,
+certificate compatibility and native dependency audit passed. Full optional
+regressions skipped. ZIP SHA256 f044962c146de62d509105f2fcb2798d9647bc3de3ee66e7bd41707f3f27dfe7
+verified; APK SHA256 0a297246dd6286ee62a98c074af6671f6344bb4659b38195441d920fe1dceb43,
+16273686 bytes. libmain.so contains exact revision; APK v2 RSA signature
+and signed content digest independently verified; certificate identical to
+#722. Diagnostic only; test F. Actual first compare operands not captured
+in this revision; exact native module and resource bytes required before
+fingerprinted instrumentation or semantic correction. Address-specific
+writer log may miss a dynamically relocated allocation.
