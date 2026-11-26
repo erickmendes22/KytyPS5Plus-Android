@@ -4,6 +4,11 @@ References: Jetsku dd9f990 (#130 documents fog-transition crash), Chenxiao07
 
 ## Continuidade executável após #744 — 26/11/2026
 
+Entrega técnica: **#745 / `4a94749`**, APK assinado com a identidade estável,
+versionCode 845, compilação e auditoria concluídas.
+[Registro de verificação](DEMONS_APK_745_VERIFICATION.md).
+Gameplay #745 ainda não observado; a última evidência no aparelho é #744.
+
 Mesmo caso e mesmo ciclo: #741 40367→40979; #744 39624→40091.
 A autorização de aquisição não depende de já conhecer a resposta global.
 Foi removido do auditor o veto constante à compilação, preservando os estados

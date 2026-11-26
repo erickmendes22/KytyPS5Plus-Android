@@ -2,6 +2,13 @@
 
 ## Continuidade operacional — 26/11/2026
 
+**APK #745 compilado, assinado e verificado**, revisão
+`4a94749e889ffd178418d347fcdd82ccc83ca73e`, versionCode 845.
+[Verificação do artefato](DEMONS_APK_745_VERIFICATION.md).
+A última execução de gameplay analisada continua sendo #744; #745 aguarda
+uma execução F no mesmo ponto. Não interpretar entrega do APK como correção
+visual comprovada ou decisão global de P8.
+
 A falta de certificação integral de P8 não é uma proibição de adquirir os
 operandos de uma comparação concreta. O usuário corrigiu expressamente esse
 bloqueio circular nesta sessão. Mantêm-se a testemunha #741/#744, as classes,
@@ -33,7 +40,7 @@ permanece preservada. Na #737, W0 reproduz os NaNs; W1 identifica a leitura
 0xc8 cujo slot2 não contém os 448.296 bytes necessários. Estes últimos são
 controles do mecanismo, não novas testemunhas do defeito de iluminação.
 
-O APK desta revisão completa a correção da captura: admissão após o clear
+O APK #745 completa a correção da captura: admissão após o clear
 executado, orçamento que inclui os blobs, leituras GPU em lote por draw,
 posições de todos os VS estruturalmente suportados, ISA guest inclusive em
 cache hits, SPIR-V original e ligado, fecho obrigatório de exportação com
