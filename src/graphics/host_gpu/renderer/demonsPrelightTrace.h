@@ -6,6 +6,7 @@
 #include "common/emulatorConfig.h"
 #include <nlohmann/json.hpp>
 #include <atomic>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -113,6 +114,44 @@ inline bool VertexShader(uint64_t shader){
 inline bool IsNanWord(uint32_t w){return (w&0x7f800000u)==0x7f800000u&&(w&0x007fffffu)!=0;}
 std::vector<uint32_t> ReadNativeWords(RenderContext&,vk::Buffer,uint64_t,uint32_t);
 inline std::filesystem::path Folder(){return Config::GetShaderDumpFolder()/"queue-state";}
+// P8 evidence must not expire when the older layer-0 witness is sealed.
+// These are candidate windows, not an independent correctness oracle.
+inline constexpr bool P8Frame(int32_t frame) {
+    return frame >= 0 && frame % 24 == 1;
+}
+inline void RecordP8Boundary(int32_t frame, nlohmann::json event) {
+    if (!Enabled() || !P8Frame(frame)) return;
+    struct Slot { int32_t frame=-1; size_t bytes=0; uint64_t rows=0, dropped=0; };
+    static std::mutex mutex;
+    static std::array<Slot,16> slots{};
+    std::scoped_lock lock(mutex);
+    const auto index=static_cast<size_t>(frame/24)%slots.size();
+    auto& slot=slots[index];
+    if (slot.frame>frame) return; // a late queue must not erase a newer frame
+    const bool fresh=slot.frame!=frame;
+    if(fresh) slot={frame,0,0,0};
+    event["frame"]=frame;
+    event["window_row"]=slot.rows;
+    const auto line=event.dump();
+    constexpr size_t budget=1024u*1024u;
+    std::error_code ec;
+    std::filesystem::create_directories(Folder(),ec);
+    const auto stem="ds_prelight_p8_window_"+std::to_string(index);
+    if(ec || line.size()+1>budget-slot.bytes) {
+        ++slot.dropped;
+        if(fresh && !ec) {
+            // A fresh rejected row must not leave the prior frame's file in place.
+            std::ofstream clear(Folder()/(stem+".jsonl"),std::ios::trunc);
+        }
+    } else {
+        std::ofstream out(Folder()/(stem+".jsonl"),fresh?std::ios::trunc:std::ios::app);
+        if(out) { out<<line<<'\n';out.flush(); }
+        if(out) {slot.bytes+=line.size()+1;++slot.rows;} else ++slot.dropped;
+    }
+    std::ofstream status(Folder()/(stem+"_status.json"),std::ios::trunc);
+    if(status)status<<nlohmann::json{{"frame",slot.frame},{"rows",slot.rows},{"bytes",slot.bytes},
+        {"dropped",slot.dropped},{"scope","P8 boundary observations, not reference values"}};
+}
 // Independent bounded timeline: root draw census must not evict the XYZ edge.
 inline void VertexRecord(nlohmann::json event) {
     if(!Enabled())return;

@@ -1761,7 +1761,7 @@ static void MonitorDsCompositeLight(RenderContext& context, const PreparedBindin
 	if (Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	const auto selected = std::ranges::find_if(pixel.images, [](const auto& binding) {
 		return binding.image_id && !binding.placeholder &&
-		       binding.desc.info.data.address == DemonsQueueProbe::SceneAddress;
+		       binding.desc.info.data.address == DemonsQueueProbe::CompositeAuxAddress;
 	});
 	if (selected == pixel.images.end()) return;
 	auto& image = context.GetTextureCache().GetImage(selected->image_id);
@@ -1946,6 +1946,62 @@ static DsSceneGridSnapshot SnapshotDsSceneGrid(RenderContext& context, ImageId i
 	}
 	result.luminance /= count;
 	return result;
+}
+
+// Raw output samples with resource identity: unlike the overlay-only monitor,
+// this records the compositor's actual input views and attachment output.
+static nlohmann::json SnapshotP8ColorGrid(RenderContext& context, ImageId id,
+                                        const ImageViewInfo& view) {
+    if(!id)return {{"valid",false},{"reason","missing_image"}};
+    auto& image=context.GetTextureCache().GetImage(id);
+    const auto& b=image.backing;
+    auto record=DemonsPrelightTrace::Identity(image);
+    record["layer"]=view.base_layer;record["mip"]=view.base_level;
+    record["view_format"]=static_cast<uint32_t>(view.format);
+    record["valid"]=false;
+    uint32_t size=0;
+    switch(b.format){
+        case vk::Format::eR16G16B16A16Sfloat: size=8;break;
+        case vk::Format::eR32Uint:
+        case vk::Format::eA2B10G10R10UnormPack32:
+        case vk::Format::eA2R10G10B10UnormPack32:
+        case vk::Format::eR8G8B8A8Unorm:
+        case vk::Format::eB8G8R8A8Unorm:
+        case vk::Format::eR8G8B8A8Srgb:
+        case vk::Format::eB8G8R8A8Srgb: size=4;break;
+        default: break;
+    }
+    if(!size||!b.image||b.samples!=1||b.image_type!=vk::ImageType::e2D||
+        !(b.usage&vk::ImageUsageFlagBits::eTransferSrc)||
+        view.base_level>=b.mip_levels||view.base_layer>=b.layers){
+        record["reason"]="unsupported_backing";return record;
+    }
+    const auto w=std::max(b.extent.width>>view.base_level,1u);
+    const auto h=std::max(b.extent.height>>view.base_level,1u);
+    if(w<16||h<16){record["reason"]="small_view";return record;}
+    auto& download=context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+    auto [mapped,offset]=download.Map(64u*size,16u,true);
+    if(!mapped){record["reason"]="map_failed";return record;}
+    download.Commit();
+    std::array<vk::BufferImageCopy,64> copies{};
+    for(uint32_t i=0;i<64;++i){
+        auto& copy=copies[i];
+        copy.bufferOffset=offset+uint64_t{i}*size;
+        copy.imageSubresource={vk::ImageAspectFlagBits::eColor,view.base_level,view.base_layer,1};
+        copy.imageOffset={static_cast<int32_t>((2u*(i%8u)+1u)*w/16u),
+                          static_cast<int32_t>((2u*(i/8u)+1u)*h/16u),0};
+        copy.imageExtent={1,1,1};
+    }
+    image.Download(std::span{copies},download.Handle(),offset,64u*size);
+    context.GetCommandScheduler().Finish();
+    download.Invalidate(offset,64u*size);
+    std::vector<uint32_t> words(64u*size/4u);
+    std::memcpy(words.data(),mapped,64u*size);
+    record["extent"]={w,h};record["texel_bytes"]=size;record["words"]=std::move(words);
+    record["version_after_read"]=image.ContentVersion();
+    record["valid"]=record["version"]==record["version_after_read"];
+    if(!record["valid"].get<bool>())record["reason"]="version_changed";
+    return record;
 }
 
 static nlohmann::json DsSceneGridJson(const DsSceneGridSnapshot& value) {
@@ -3721,6 +3777,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	constexpr uint8_t DsHdrReader = 1, DsComposite = 2, DsHdrWriter = 4;
 	std::array<uint8_t, DemonsQueueProbe::Queues.size()> ds_draw_stage {};
 	bool ds_live_composite_output = false;
+    nlohmann::json p8_composite;
 	bool ds_scene_trace = false;
 	bool ds_scene_bright = false, ds_scene_onset = false, ds_scene_paired = false;
 	bool ds_scene_post_transition = false;
@@ -3823,6 +3880,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			}
 		}
 		if (composite) MonitorDsCompositeLight(m_context, *bindings.pixel, frame);
+        if(composite&&root_trace&&DemonsPrelightTrace::P8Frame(frame)){
+            p8_composite={{"kind","compositor"},{"submit",submit_id},{"shader",shader},
+                {"tick_before",m_context.GetCommandScheduler().CurrentTick()},
+                {"inputs",nlohmann::json::array()}};
+            for(size_t slot=0;slot<inputs.size();++slot){
+                const auto& binding=inputs[slot];
+                nlohmann::json input={{"slot",slot},{"guest",binding.desc.info.data.address},
+                    {"placeholder",binding.placeholder}};
+                if(binding.image_id&&!binding.placeholder){
+                    auto& image=m_context.GetTextureCache().GetImage(binding.image_id);
+                    const auto view=std::ranges::find(image.views,binding.image_view,&CachedImageView::view);
+                    if(view!=image.views.end())input["grid"]=SnapshotP8ColorGrid(m_context,binding.image_id,view->info);
+                    else input["reason"]="missing_view";
+                }
+                p8_composite["inputs"].push_back(std::move(input));
+            }
+        }
 		if (composite && DemonsAdaptiveCapture::Current().CapturedFrame(frame)) {
 			// A completed coefficient->atlas pair belongs to this exact
 			// frame. Sample the compositing inputs at fixed normalized
@@ -5656,6 +5730,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    rendering.color_attachments[ds_scene_target.target_slot].is_clear, name,
 		    file.good()));
 	}
+    if(!p8_composite.is_null()){
+        p8_composite["outputs"]=nlohmann::json::array();
+        for(uint32_t i=0;i<state.color_count;++i){
+            const auto& color=state.color_info[i];
+            p8_composite["outputs"].push_back({{"slot",color.target_slot},
+                {"guest",color.desc.info.data.address},
+                {"grid",SnapshotP8ColorGrid(m_context,color.image_id,color.desc.view_info)}});
+        }
+        p8_composite["tick_after"]=m_context.GetCommandScheduler().CurrentTick();
+        DemonsPrelightTrace::RecordP8Boundary(root_frame,std::move(p8_composite));
+    }
 	if (ds_live_composite_output) {
 		const auto frame = m_context.GetGpu().GetFrameNum();
 		const auto shader = state.ps_input_info.stage.program->shader_hash;

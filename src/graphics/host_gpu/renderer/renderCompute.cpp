@@ -4712,7 +4712,8 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	// The HDR producer queue may run BEFORE the coefficient/atlas pair
 	// is marked captured in this guest frame. Sampling its output must
 	// not depend on NoteCaptured() having run first.
-    if(root&&DemonsPrelightTrace::Phase(frame)<0)return;
+    const bool p8_window=root&&DemonsPrelightTrace::P8Frame(frame);
+    if(root&&DemonsPrelightTrace::Phase(frame)<0&&!p8_window)return;
 	const char* phase = root?"root":gate.PostTransitionDarkDue(frame)
 	    ? "post_transition" : gate.DarkOnsetDue(frame) ? "onset"
 	    : gate.BrightSceneActive(frame) ? "bright"
@@ -4815,16 +4816,124 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
         uint64_t submit=0,gbuffer_owner=0,hdr_owner=0,gbuffer_version=0,hdr_version=0;
         std::array<uint32_t,64> g{};
         std::array<uint16_t,256> h{};
+        std::array<std::array<uint32_t,64>,3> other{};
+        std::array<uint32_t,64> depth{};
+        bool other_valid=false,depth_valid=false;
+        nlohmann::json albedo_identity,hdr_identity,depth_identity;
         std::array<uint8_t,64> covered{};
         bool queue_valid=false;
         uint32_t queue_first=0,queue_end=0;
         std::vector<uint32_t> queue_tiles;
         nlohmann::json inputs;
     };
-    static std::array<BridgeBefore,3> before_states;
+    static thread_local std::array<BridgeBefore,3> before_states;
     auto& previous=before_states[queue_slot];
     const auto gbytes = snapshot(*albedo, 4u);
     const auto hbytes = snapshot(*hdr, 8u);
+	// Read the other three material layers at the SAME 8x8 coordinates.
+	// The first-layer-only capture cannot distinguish missing geometry from
+	// incorrect R32_UINT layer/view selection. Keep these readbacks bounded
+	// by the existing bridge windows. Read actual inputs before dispatch too.
+	std::array<std::array<uint32_t, 64>, 3> other_gbuffer_layers {};
+	std::array<uint32_t, 3> other_gbuffer_colored {};
+	bool other_gbuffer_valid = false;
+	const auto albedo_view = std::ranges::find(
+	    albedo_image.views, albedo->image_view, &CachedImageView::view);
+	if (albedo_view != albedo_image.views.end() &&
+	    albedo_image.backing.layers >= albedo_view->info.base_layer + 4u &&
+	    albedo_image.backing.samples == 1 &&
+	    (albedo_image.backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
+		const auto w = std::max(albedo_image.backing.extent.width >>
+		    albedo_view->info.base_level, 1u);
+		const auto h = std::max(albedo_image.backing.extent.height >>
+		    albedo_view->info.base_level, 1u);
+		auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+		auto [mapped, offset] = download.Map(3u * 64u * sizeof(uint32_t), 16u, true);
+		if (mapped) {
+			download.Commit();
+			std::array<vk::BufferImageCopy, 192> copies {};
+			for (uint32_t layer = 0; layer < 3; ++layer) {
+				for (uint32_t i = 0; i < 64; ++i) {
+					auto& copy = copies[layer * 64u + i];
+					copy.bufferOffset = offset + (layer * 64u + i) * sizeof(uint32_t);
+					copy.imageSubresource = {vk::ImageAspectFlagBits::eColor,
+					    albedo_view->info.base_level,
+					    albedo_view->info.base_layer + layer + 1u, 1};
+					copy.imageOffset = {
+					    static_cast<int32_t>(((i % 8u) * 2u + 1u) * w / 16u),
+					    static_cast<int32_t>(((i / 8u) * 2u + 1u) * h / 16u), 0};
+					copy.imageExtent = {1u, 1u, 1u};
+				}
+			}
+			albedo_image.Download(std::span{copies}, download.Handle(), offset,
+			                      3u * 64u * sizeof(uint32_t));
+			context.GetCommandScheduler().Finish();
+			download.Invalidate(offset, 3u * 64u * sizeof(uint32_t));
+			for (uint32_t layer = 0; layer < 3; ++layer) {
+				std::memcpy(other_gbuffer_layers[layer].data(),
+				            mapped + layer * 64u * sizeof(uint32_t),
+				            64u * sizeof(uint32_t));
+				for (const uint32_t word: other_gbuffer_layers[layer])
+					other_gbuffer_colored[layer] += (word & 0x00ffffffu) != 0u;
+			}
+			other_gbuffer_valid = true;
+		}
+	}
+
+	// Depth is copied from the queue's actual bound sampled surface, not from
+	// a separately captured material draw in a potentially different frame.
+	std::array<uint32_t, 64> depth_bits {};
+	bool depth_valid = false;
+	nlohmann::json depth_identity;
+	uint32_t depth_nonzero = 0;
+	const auto depth_binding = std::ranges::find_if(bindings.images, [](const auto& b) {
+		return b.image_id && !b.placeholder &&
+		       b.desc.info.data.address == 0x282b60000ull;
+	});
+	if (depth_binding != bindings.images.end()) {
+		auto& depth_image = textures.GetImage(depth_binding->image_id);
+		const auto depth_view = std::ranges::find(
+		    depth_image.views, depth_binding->image_view, &CachedImageView::view);
+		const auto format = depth_image.backing.format;
+		if (depth_view != depth_image.views.end() &&
+		    depth_image.backing.samples == 1 &&
+		    (format == vk::Format::eD32Sfloat ||
+		     format == vk::Format::eD32SfloatS8Uint) &&
+		    (depth_image.backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
+			const auto w = std::max(depth_image.backing.extent.width >>
+			    depth_view->info.base_level, 1u);
+			const auto h = std::max(depth_image.backing.extent.height >>
+			    depth_view->info.base_level, 1u);
+			if (w >= 16 && h >= 16) {
+				auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+				auto [mapped, offset] = download.Map(64u * sizeof(uint32_t), 16u, true);
+				if (mapped) {
+					download.Commit();
+					std::array<vk::BufferImageCopy, 64> copies {};
+					for (uint32_t i = 0; i < 64; ++i) {
+						auto& copy = copies[i];
+						copy.bufferOffset = offset + i * sizeof(uint32_t);
+						copy.imageSubresource = {vk::ImageAspectFlagBits::eDepth,
+						    depth_view->info.base_level, depth_view->info.base_layer, 1};
+						copy.imageOffset = {
+						    static_cast<int32_t>(((i % 8u) * 2u + 1u) * w / 16u),
+						    static_cast<int32_t>(((i / 8u) * 2u + 1u) * h / 16u), 0};
+						copy.imageExtent = {1u, 1u, 1u};
+					}
+					depth_image.Download(std::span{copies}, download.Handle(), offset,
+					                     64u * sizeof(uint32_t));
+					context.GetCommandScheduler().Finish();
+					download.Invalidate(offset, 64u * sizeof(uint32_t));
+					std::memcpy(depth_bits.data(), mapped, 64u * sizeof(uint32_t));
+					for (const auto bits: depth_bits) depth_nonzero += bits != 0u;
+					depth_valid = true;
+					depth_identity=DemonsPrelightTrace::Identity(depth_image);
+					depth_identity["layer"]=depth_view->info.base_layer;
+					depth_identity["mip"]=depth_view->info.base_level;
+				}
+			}
+		}
+	}
     if(before){
         previous={};
         if(gbytes.size()!=256u||hbytes.size()!=512u)return;
@@ -4832,6 +4941,14 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
         previous.gbuffer_owner=albedo_image.info.data.address;previous.hdr_owner=hdr_image.info.data.address;
         previous.gbuffer_version=albedo_image.ContentVersion();previous.hdr_version=hdr_image.ContentVersion();
         std::memcpy(previous.g.data(),gbytes.data(),gbytes.size());std::memcpy(previous.h.data(),hbytes.data(),hbytes.size());
+        previous.other=other_gbuffer_layers;previous.other_valid=other_gbuffer_valid;
+        previous.depth=depth_bits;previous.depth_valid=depth_valid;previous.depth_identity=depth_identity;
+        previous.albedo_identity=DemonsPrelightTrace::Identity(albedo_image);
+        previous.hdr_identity=DemonsPrelightTrace::Identity(hdr_image);
+        if(albedo_view!=albedo_image.views.end()){
+            previous.albedo_identity["layer"]=albedo_view->info.base_layer;
+            previous.albedo_identity["mip"]=albedo_view->info.base_level;
+        }
         // Read actual bound tile-list/prefix, not the periodically cached queue sample.
         std::vector<uint32_t> prefix,tiles;
         for(uint32_t slot=0;slot<bindings.buffer_sources.size();++slot){
@@ -4910,106 +5027,6 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	std::array<uint16_t, 256> hwords {};
 	std::memcpy(gwords.data(), gbytes.data(), gbytes.size());
 	std::memcpy(hwords.data(), hbytes.data(), hbytes.size());
-	// Read the other three material layers at the SAME 8x8 coordinates.
-	// The first-layer-only capture cannot distinguish missing geometry from
-	// incorrect R32_UINT layer/view selection. Keep these readbacks bounded
-	// by the existing three post-transition bridge captures.
-	std::array<std::array<uint32_t, 64>, 3> other_gbuffer_layers {};
-	std::array<uint32_t, 3> other_gbuffer_colored {};
-	bool other_gbuffer_valid = false;
-	const auto albedo_view = std::ranges::find(
-	    albedo_image.views, albedo->image_view, &CachedImageView::view);
-	if (albedo_view != albedo_image.views.end() &&
-	    albedo_image.backing.layers >= albedo_view->info.base_layer + 4u &&
-	    albedo_image.backing.samples == 1 &&
-	    (albedo_image.backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
-		const auto w = std::max(albedo_image.backing.extent.width >>
-		    albedo_view->info.base_level, 1u);
-		const auto h = std::max(albedo_image.backing.extent.height >>
-		    albedo_view->info.base_level, 1u);
-		auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
-		auto [mapped, offset] = download.Map(3u * 64u * sizeof(uint32_t), 16u, true);
-		if (mapped) {
-			download.Commit();
-			std::array<vk::BufferImageCopy, 192> copies {};
-			for (uint32_t layer = 0; layer < 3; ++layer) {
-				for (uint32_t i = 0; i < 64; ++i) {
-					auto& copy = copies[layer * 64u + i];
-					copy.bufferOffset = offset + (layer * 64u + i) * sizeof(uint32_t);
-					copy.imageSubresource = {vk::ImageAspectFlagBits::eColor,
-					    albedo_view->info.base_level,
-					    albedo_view->info.base_layer + layer + 1u, 1};
-					copy.imageOffset = {
-					    static_cast<int32_t>(((i % 8u) * 2u + 1u) * w / 16u),
-					    static_cast<int32_t>(((i / 8u) * 2u + 1u) * h / 16u), 0};
-					copy.imageExtent = {1u, 1u, 1u};
-				}
-			}
-			albedo_image.Download(std::span{copies}, download.Handle(), offset,
-			                      3u * 64u * sizeof(uint32_t));
-			context.GetCommandScheduler().Finish();
-			download.Invalidate(offset, 3u * 64u * sizeof(uint32_t));
-			for (uint32_t layer = 0; layer < 3; ++layer) {
-				std::memcpy(other_gbuffer_layers[layer].data(),
-				            mapped + layer * 64u * sizeof(uint32_t),
-				            64u * sizeof(uint32_t));
-				for (const uint32_t word: other_gbuffer_layers[layer])
-					other_gbuffer_colored[layer] += (word & 0x00ffffffu) != 0u;
-			}
-			other_gbuffer_valid = true;
-		}
-	}
-
-	// Depth is copied from the queue's actual bound sampled surface, not from
-	// a separately captured material draw in a potentially different frame.
-	std::array<uint32_t, 64> depth_bits {};
-	bool depth_valid = false;
-	uint32_t depth_nonzero = 0;
-	const auto depth_binding = std::ranges::find_if(bindings.images, [](const auto& b) {
-		return b.image_id && !b.placeholder &&
-		       b.desc.info.data.address == 0x282b60000ull;
-	});
-	if (depth_binding != bindings.images.end()) {
-		auto& depth_image = textures.GetImage(depth_binding->image_id);
-		const auto depth_view = std::ranges::find(
-		    depth_image.views, depth_binding->image_view, &CachedImageView::view);
-		const auto format = depth_image.backing.format;
-		if (depth_view != depth_image.views.end() &&
-		    depth_image.backing.samples == 1 &&
-		    (format == vk::Format::eD32Sfloat ||
-		     format == vk::Format::eD32SfloatS8Uint) &&
-		    (depth_image.backing.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
-			const auto w = std::max(depth_image.backing.extent.width >>
-			    depth_view->info.base_level, 1u);
-			const auto h = std::max(depth_image.backing.extent.height >>
-			    depth_view->info.base_level, 1u);
-			if (w >= 16 && h >= 16) {
-				auto& download = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
-				auto [mapped, offset] = download.Map(64u * sizeof(uint32_t), 16u, true);
-				if (mapped) {
-					download.Commit();
-					std::array<vk::BufferImageCopy, 64> copies {};
-					for (uint32_t i = 0; i < 64; ++i) {
-						auto& copy = copies[i];
-						copy.bufferOffset = offset + i * sizeof(uint32_t);
-						copy.imageSubresource = {vk::ImageAspectFlagBits::eDepth,
-						    depth_view->info.base_level, depth_view->info.base_layer, 1};
-						copy.imageOffset = {
-						    static_cast<int32_t>(((i % 8u) * 2u + 1u) * w / 16u),
-						    static_cast<int32_t>(((i / 8u) * 2u + 1u) * h / 16u), 0};
-						copy.imageExtent = {1u, 1u, 1u};
-					}
-					depth_image.Download(std::span{copies}, download.Handle(), offset,
-					                     64u * sizeof(uint32_t));
-					context.GetCommandScheduler().Finish();
-					download.Invalidate(offset, 64u * sizeof(uint32_t));
-					std::memcpy(depth_bits.data(), mapped, 64u * sizeof(uint32_t));
-					for (const auto bits: depth_bits) depth_nonzero += bits != 0u;
-					depth_valid = true;
-				}
-			}
-		}
-	}
 	const auto half = [](uint16_t value) -> double {
 		if ((value & 0x8000u) || (value & 0x7c00u) == 0x7c00u) return 0.0;
 		const auto exponent = (value >> 10u) & 31u;
@@ -5062,12 +5079,21 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
         {"same_dispatch_before_valid",paired},{"queue_membership_valid",queue_valid},
         {"before_gbuffer",previous.g},{"before_hdr",previous.h},{"before_gbuffer_version",previous.gbuffer_version},
         {"before_hdr_version",previous.hdr_version},{"queue_covered",previous.covered},
+        {"before_other_layers_valid",paired&&previous.other_valid},{"before_other_layers_r32",previous.other},
+        {"before_depth_grid_valid",paired&&previous.depth_valid},{"before_depth_grid_bits",previous.depth},
+        {"before_albedo_identity",paired?previous.albedo_identity:nlohmann::json{}},
+        {"before_hdr_identity",paired?previous.hdr_identity:nlohmann::json{}},
+        {"before_depth_identity",paired?previous.depth_identity:nlohmann::json{}},
+        {"after_albedo_identity",DemonsPrelightTrace::Identity(albedo_image)},
+        {"after_hdr_identity",DemonsPrelightTrace::Identity(hdr_image)},
+        {"after_depth_identity",depth_identity},
         {"colored_lit",colored_lit},{"colored_unlit",colored_unlit},{"covered_colored",covered_colored},
         {"covered_colored_unlit",covered_colored_unlit},{"covered_colored_changed",covered_changed},{"joint_pixels",joint},
         {"queue_first",previous.queue_first},{"queue_end",previous.queue_end},{"queue_tiles",previous.queue_tiles},
         {"input_bindings_before",paired?previous.inputs:nlohmann::json{}}
 	};
     if(root){auto row=output;row["kind"]="light_bridge";row["tick"]=context.GetCommandScheduler().CurrentTick();
+        if(p8_window)DemonsPrelightTrace::RecordP8Boundary(frame,row);
         DemonsPrelightTrace::Record(std::move(row));return;}
 	const auto folder = Config::GetShaderDumpFolder() / "queue-state";
 	std::error_code ec;

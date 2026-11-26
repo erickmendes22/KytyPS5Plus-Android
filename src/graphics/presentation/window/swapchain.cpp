@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/gpuFatal.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/presentation/presenter.h"
@@ -425,6 +426,12 @@ struct Presenter::Impl {
 			}
 		}
 		cache.UpdateImage(image_id);
+        const auto trace_frame=renderer.GetGpu().GetFrameNum();
+        if(DemonsPrelightTrace::Enabled()&&DemonsPrelightTrace::P8Frame(trace_frame)){
+            DemonsPrelightTrace::RecordP8Boundary(trace_frame,{{"kind","flip_source"},
+                {"guest",info.data.address},{"tick",renderer.GetCommandScheduler().CurrentTick()},
+                {"version_before_refresh",version_before},{"image",DemonsPrelightTrace::Identity(image)}});
+        }
 		if (ds_log) {
 			std::printf("[DS_FLIP_BACKING] sample=%u stage=after addr=0x%016" PRIx64
 			     " gpu_modified=%u cpu_dirty=%u buffer_modified=%u version=%" PRIu64
