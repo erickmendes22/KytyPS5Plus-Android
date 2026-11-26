@@ -728,3 +728,41 @@ Scalar chain logged from existing coherent read. Capture gaps explicit;
 no new render behavior or forced colors/depth. Need replay guest inputs
 and expected coverage/depth to certify G0/P8; if sky correct, do not
 blame sky. Keep original 16-class tree and interval unchanged.
+
+
+## #741 offline oracle extension — no new witness or branch
+Disassembled all original guest words with LLVM AMDGPU gfx1010, no unknown
+instructions in the five relevant shaders. PS651f53f5932d8794 only exports
+null and terminates. VS2337192397a30339 sets v3=0 at PC0x40 and never
+writes v3 again before exp pos0 v2,v0,v3,v1 at PC0x1d8. Thus the two
+7296/192 occluder draws legitimately export Z=0 (subject to actual
+viewport/depth bias); zero depth at the fixed grid is not evidence of a
+broken store. PS552d823d original PC0x184 loads s0..s3, PC0x190/1c8/208
+log abs RGB, exp, scale255, v_cvt_pk_u8_f32 PC0x264/298/2c4 from
+0xff000000, MRT0 export v2 PC0x364. RGB zero -> ff000000, independent of
+interpolation. This agrees with live flat[6..8]=0 and 1439331 black words
+in exact anchor after; delta 1439989-658=1439331 equals passed samples.
+The two sky draws share both complete matrix (960B) and XYZ (288B) buffers
+byte for byte, exact indices, same sampled D32 before material as after
+prepass (64/64). Guest aff9c7ef arithmetic reconstructed from the actual
+960B record 5 (user_data[2]=5), 288B XYZ, flat[14..29] matrix and [30..31]
+offsets, in original float32 operation order. Independent homogeneous
+clipping/raster over the 64 grid points with full viewport and Y flip
+assumption gives 64/64 coverage, median absolute D32 difference
+2.6176003e-11, max2.1141597e-9, correlation .999999999978819. Not an exact
+full-frame oracle; viewport/depth bias still need live confirmation.
+Strong local evidence the sky draw and preceding zero-depth occluders
+are behaving as requested. Do not change them. G0/P8 remains BLOCKED
+because the expected foreground coverage is not yet established.
+Same cycle starts at f232 s6631 draw40367 (actual load-clear, VS868546d8,
+PS62548803, indices11118) and crosses host frame into f233. 23 earlier
+non-sky/non-occluder direct depth draws have 2,176,052 bytes of bound
+inputs+indices, mostly omitted due to old 1024B cap; 17 measured replay
+rows show no-discard and keep-discard agree, very low coverage before
+sky. Need all actual inputs and states of this cycle, not a later W0/W1
+or randomly selected mesh. Supplemental build retains one such matched
+cycle with up to12MiB JSON in RAM, only writes on first same material
+loss, exports exact native shader files/guest binaries, depth grid
+before/after and actual dynamic viewport/scissor/compare/bias. Unknown
+or unsupported paths remain BLOCKED. No semantic fix. #742 superseded
+before device testing to avoid redundant confirmation-only round.

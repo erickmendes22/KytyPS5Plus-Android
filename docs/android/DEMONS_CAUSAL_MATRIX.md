@@ -536,3 +536,7 @@ A árvore integral C1..C16 substitui a premissa pré-iluminação. P8 divide G-b
 
 ## #741 113031
 First loss f233 draw40979 552d823d, 1439989->658, identical full hash to q0/q33, prepass40809 same exact index digest/1439331 samples. Prior 40780/40785 actual depth coverage high but only 1/64 nonzero stored before next draw; no proof of invalid incoming depth. PS RGB input zero, actual write consistent. G0/P8 BLOCKED pending same-cycle independent foreground/sky oracle. Preserve V3 and acquire exact fixed witness inputs and depth history; no W0/W1 detour.
+
+
+## #741 offline guest replay extension
+Original GFX10 occluder explicitly exports Z=0, PS552d MRT0 packs zero RGB to ff000000, and reconstructed sky projection matches 64 D32 points within 2.12e-9 under full viewport Y-flip assumption. Focus stays on actual foreground producers in first loss cycle (starts f232 draw40367 load-clear). Exact missing native inputs total ~2.08MiB. Capture all bounded actual direct prepass inputs in same matched cycle; no new tree or semantic change. P8 remains BLOCKED until expected foreground established.

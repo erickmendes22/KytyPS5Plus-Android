@@ -264,6 +264,9 @@ object Diagnostics {
                     (launchTime == 0L || it.lastModified() >= launchTime) && it.length() <= 8L*1024L*1024L }
                 .flatMap { f -> Regex("spv/[a-z]+_[0-9a-f]{16}_[0-9a-f]{16}\\.spv").findAll(f.readText()).map { it.value.substringAfter("/") }.toList() }
                 .toSet()
+            val witnessHashes = exactDepthFiles.mapNotNull {
+                Regex("[a-z]+_([0-9a-f]{16})_").find(it)?.groupValues?.get(1)
+            }.toSet()
             val vertexProducerHashes = File(dump, "queue-state").listFiles().orEmpty().filter { it.name.startsWith("ds_vertex_producer_") && (launchTime == 0L || it.lastModified() >= launchTime) }.mapNotNull { Regex("ds_vertex_producer_([0-9a-f]{16})_").find(it.name)?.groupValues?.get(1) }.toSet()
             val candidates = listOf("queue-state", "guest-shaders", "spv", "pipelines", "buffers").flatMap { subdir ->
                 val files = File(dump, subdir).listFiles().orEmpty()
@@ -292,7 +295,7 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_scene_writer_f[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_light_bridge_(bright|onset|paired_dark|post_transition)_f[0-9]+(_q(0|8|33))?\\.json")) ||
                                      file.name.matches(Regex("ds_gbuffer_material_(bright|onset|dark|post_transition)_f[0-9]+_s[0-9]+(_ps[0-9a-f]{16})?\\.json")))) ||
-                                (watched + vertexProducerHashes).any { hash -> file.name.contains("_${hash}_") }) &&
+                                (watched + vertexProducerHashes + witnessHashes).any { hash -> file.name.contains("_${hash}_") }) &&
                             (when (subdir) {
                                 "spv" -> file.extension == "spv"
                                 "pipelines" -> file.extension == "json"
@@ -392,7 +395,10 @@ object Diagnostics {
                     val firstLightModules = files.filter { f -> listOf("f0c482b0b355e9de","3dfe402653925fbf","e3daeb1e7426761b").any { f.name.contains("_${it}_") } }
                     val causalModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { it.name.contains("_fb18d110fab8234e_") || it.name.contains("_cb3b9c1ea64fe876_") } else emptyList()
-                    (files.filter { it.name in exactDepthFiles } + files.filter { f -> vertexProducerHashes.any { f.name.contains("_${it}_") } } + depthProbeModules + firstLightModules + causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
+                    (files.filter { it.name in exactDepthFiles } + files.filter { f ->
+                        (subdir == "guest-shaders" && witnessHashes.any { f.name.contains("_${it}_") }) ||
+                        vertexProducerHashes.any { f.name.contains("_${it}_") }
+                    } + depthProbeModules + firstLightModules + causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
                         "guest-shaders" -> 96
                         "spv" -> 48
                         else -> 24
