@@ -248,7 +248,7 @@ object Diagnostics {
             "c96f3fcde8141266", "552d823dcfcf2dee",
             "34c51585c926a664", "a7208481a1f2b760", "3dce2bd78d58db62", "895c9fe037e704f5",
             "f825a988127faeb4", "74b55dea9562eda1", "cfc1d9193e7f9e53", "c92deb23fc611b10")
-        val depthProbeHashes = setOf("6254880342eb8db4","31e660625354d953","3cc41a5737b15e7f","9da9c10e59d6e38e","e1638ea46c70bc9c","868546d85ce5090a","0a472b34f593b99b","3dce2bd78d58db62","895c9fe037e704f5")
+        val depthProbeHashes = setOf("13f07ce83dc1cc67","a9cdf62111c5b448","aff9c7ef505c6253","c96f3fcde8141266","6254880342eb8db4","31e660625354d953","3cc41a5737b15e7f","9da9c10e59d6e38e","e1638ea46c70bc9c","868546d85ce5090a","0a472b34f593b99b","3dce2bd78d58db62","895c9fe037e704f5")
         val watched = depthProbeHashes + dominantShaders + queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
             "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
             "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",
@@ -260,7 +260,7 @@ object Diagnostics {
             // with the current session's identical frame numbers.
             val launchTime = File(context.filesDir, "logs/last-launch.txt").lastModified()
             val exactDepthFiles = File(dump, "queue-state").listFiles().orEmpty()
-                .filter { (it.name.startsWith("ds_geometry_coverage_f") || it.name.startsWith("ds_discard_active_")) && it.extension == "json" &&
+                .filter { (it.name.startsWith("ds_geometry_coverage_f") || it.name.startsWith("ds_discard_active_") || it.name.startsWith("ds_vertex_position_")) && it.extension == "json" &&
                     (launchTime == 0L || it.lastModified() >= launchTime) && it.length() <= 8L*1024L*1024L }
                 .flatMap { f -> Regex("spv/[a-z]+_[0-9a-f]{16}_[0-9a-f]{16}\\.spv").findAll(f.readText()).map { it.value.substringAfter("/") }.toList() }
                 .toSet()
@@ -275,7 +275,7 @@ object Diagnostics {
                                     (file.name.matches(Regex("ds_ray_producer_f[0-9]+_s[0-9]+(_t[0-9]+)?(_target)?\\.json")) ||
                                      file.name.matches(Regex("ds_relight_trace_f[0-9]+_s[0-9]+_p[0-9]+\\.(json|bin)")) ||
                                      file.name.matches(Regex("ds_transition_edge_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
-                                     file.name.matches(Regex("ds_vertex_position_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_vertex_position_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+(_pair[0-9]+)?\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_coverage_f[0-9]+(_active)?\\.json")) ||
                                      file.name.matches(Regex("ds_discard_active_[0-9a-f]{16}_n[01]\\.json")) ||
                                      file.name.matches(Regex("ds_albedo_chain_p[0-3]\\.json")) ||
@@ -344,7 +344,7 @@ object Diagnostics {
                         it.name.startsWith("cs_567d21ad45386c8d_radiance_") }
                     val albedoChain = newest.filter { it.name.startsWith("ds_albedo_chain_p") }.take(4)
                     val activeDiscard = newest.filter { it.name.startsWith("ds_discard_active_") }.take(14)
-                    val producer = (activeDiscard + coverage + albedoChain + positions + depthOwners + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
+                    val producer = (positions + coverage + albedoChain + depthOwners + activeDiscard + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
                         prioritizedRays.take(8) + coverage + edges + visibility.take(4) + depthOwners + positions +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +

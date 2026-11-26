@@ -3629,7 +3629,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         int32_t base=0;
         bool material_captured=false;
     };
-    static std::array<DsVertexPair,2> ds_vertex_pairs{};
+    static std::array<DsVertexPair,VP::FocusPairCount> ds_vertex_pairs{};
     static uint64_t ds_vertex_serial=0;
     const auto* ds_vp=state.vertex_info[0].stage.program;
     if(ds_vp && VP::Watched(ds_vp->shader_hash) && ds_vp->ds_light_math_variant){
@@ -3637,21 +3637,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         const auto* ps=state.ps_active?state.ps_input_info.stage.program:nullptr;
         const int phase=gate.PostTransitionDarkDue(ds_gbuffer_frame)?3:
             gate.DarkOnsetDue(ds_gbuffer_frame)?2:gate.BrightSceneActive(ds_gbuffer_frame)?1:0;
-        static std::array<std::array<int32_t,4>,2> last{{{{-1,-1,-1,-1}},{{-1,-1,-1,-1}}}};
-        static std::array<std::array<uint32_t,4>,2> counts{};
-        const uint32_t k=VP::PairIndex(ds_vp->shader_hash);
+        static std::array<std::array<uint32_t,4>,VP::FocusPairCount> counts{};
+        const uint32_t k=VP::FocusPair(ds_vp->shader_hash,ps?ps->shader_hash:0,draw.index_count);
         const bool material=VP::Material(ds_vp->shader_hash);
-        auto& pair=ds_vertex_pairs[k];
-        const bool matched=ps && ps->shader_hash==(material ?
-            (k==0 ? 0xc92deb23fc611b10ull : 0xcfc1d9193e7f9e53ull) :
-            (k==0 ? 0x3dce2bd78d58db62ull : 0x895c9fe037e704f5ull));
-        const bool due=material ?
+        const bool matched=k<VP::FocusPairCount;
+        // Invalid category still binds disabled recorder, never indexes
+        // outside the selected pair array.
+        auto& pair=ds_vertex_pairs[matched?k:0];
+        const bool due=matched && (material ?
             pair.serial && !pair.material_captured && ds_gbuffer_frame>=pair.frame &&
             int64_t{ds_gbuffer_frame}-pair.frame<=1 &&
             pair.address==index_source.address && pair.count==draw.index_count &&
             pair.base==emit.vertex_offset && pair.instance==emit.first_instance :
-            phase!=0 && counts[k][phase]<(phase==3?2u:1u) &&
-            (last[k][phase]<0 || ds_gbuffer_frame-last[k][phase]>=24);
+            phase>=2 && counts[k][phase]<1u);
         if(matched && due && vertex_stages.size()==1 && !mesh_active && !mesh_emulated && !indirect &&
             draw.IsIndexed() && draw.instance_count==1 && !primitive_restart_enable &&
             topology==vk::PrimitiveTopology::eTriangleList && index_source.guest_element_size>=2 &&
@@ -3672,7 +3670,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                         ds_vertex_pair=++ds_vertex_serial;
                         pair={ds_gbuffer_frame,phase,ds_vertex_pair,index_source.address,
                             draw.index_count,emit.first_instance,emit.vertex_offset,false};
-                        last[k][phase]=ds_gbuffer_frame;
                         ++counts[k][phase];
                     }
                     // This read is before the current draw, including before
@@ -4442,12 +4439,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         for(const auto& desc:snap.buffers)descriptors.push_back(desc.dwords);
         const auto folder=Config::GetShaderDumpFolder()/"queue-state";
         std::error_code ec;std::filesystem::create_directories(folder,ec);
-        const auto name=fmt::format("ds_vertex_position_{:016x}_f{}_s{}_p{}.json",
-            ds_vp->shader_hash,ds_gbuffer_frame,submit_id,ds_vertex_phase);
+        const auto name=fmt::format("ds_vertex_position_{:016x}_f{}_s{}_p{}_pair{}.json",
+            ds_vp->shader_hash,ds_gbuffer_frame,submit_id,ds_vertex_phase,ds_vertex_pair);
         std::ofstream file(folder/name,std::ios::trunc);
         if(file)file<<nlohmann::json{{"frame",ds_gbuffer_frame},{"submit",submit_id},
             {"phase",ds_vertex_phase},{"shader",fmt::format("{:016x}",ds_vp->shader_hash)},
             {"fingerprint",fmt::format("{:016x}",ds_vp->ds_light_math_variant)},
+            {"native_vs_file",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
+            {"native_ps_file",ShaderDump::ModuleFile(state.programs.pixel.module)},
+            {"depth_owner",m_context.GetTextureCache().GetImage(state.depth_info.image_id).info.data.address},
+            {"depth_version",m_context.GetTextureCache().GetImage(state.depth_info.image_id).ContentVersion()},
+            {"tick",m_context.GetCommandScheduler().CurrentTick()},
             {"index_guest",index_source.address},{"base_vertex",emit.vertex_offset},
             {"first_instance",emit.first_instance},{"indices",ds_vertex_indices},{"missing",missing},
             {"pair_id",ds_vertex_pair},{"material",VP::Material(ds_vp->shader_hash)},

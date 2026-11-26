@@ -59,7 +59,8 @@ constexpr bool WatchedIndirectVs(uint64_t hash) {
            hash == 0x1b14b4883aece7ebull;
 }
 constexpr bool Watched(uint64_t hash) {
-    return ProbeDepthPs(hash) || hash == 0x868546d85ce5090aull || hash == 0x0a472b34f593b99bull ||
+    return ProbeDepthPs(hash) || hash == 0x868546d85ce5090aull || hash == 0x13f07ce83dc1cc67ull ||
+           hash == 0xa9cdf62111c5b448ull || hash == 0x0a472b34f593b99bull ||
            hash == OccluderVs || hash == DepthPs || hash == DominantDepthVs ||
            hash == MaterialVs || hash == MaterialPs ||
            // Actual zero-coverage depth/material geometry from the 213553 capture.

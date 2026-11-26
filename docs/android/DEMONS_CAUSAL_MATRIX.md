@@ -395,3 +395,43 @@ sampled texture is corrupt. Actual per-fragment operands remain unknown.
 ### Offline BC1 reference and build #725 delivery
 Guest 64 KiB backing from #724 reconstructed using repository Standard64KB64Tables (tile mode 9, 8 bytes per compressed block) and the 64KB mip-tail origins. Seven linear BC1 mip payload lengths: 2048,512,128,32,8,8,8 bytes; SHA-256 prefixes respectively 66b988d891574db0,d794a30e29a4ea84,d37ca62e2836eefc,3bb810dc8a85452b,f2be2576986318a9,a27c100a632942de,6a1f3577581cf300. Approximate decoded red mean mip0=0.478, range 0..1, 256 unique blocks. Pattern consistent with noise but purpose and guest layout independently unproven. Compare actual GPU block payload and recorded guest mip layout in next session; if backing changes compute a new reference.
 Revision b74644e40ae01b50b4924886dba2aaaa3469a896, run 45742267999, artifact 15081344247. All mandatory checks, ARM64 compilation, APK unit tests, signing compatibility and dependency audit passed; optional full regressions skipped. ZIP SHA256 9e0970072bd6d2012906a7de59a8864e1bf09e8bf9331453cb4522645f565bfc. APK SHA256 46ef17f499c2ea0323c47082afcf206778b14c956e480b2c86e0c254df292fbb (16277142 bytes), exact embedded revision, ZIP integrity and APK v2 RSA signature plus signed content digest independently verified. Certificate matches #724. Test F; no production graphics fix claimed.
+
+
+## Build #725 — F, ZIP 20261125-233709
+All 12 active descriptor snapshots (f300..305) have same backing and
+owner version. Independently linearized using captured guest mip offsets
+and Standard64KB64 offset mapping: 84/84 mip payloads, 32928 bytes exact
+match. No transfer/detiling corruption demonstrated. The reference uses
+repository guest layout, not physical PS5 capture. 25 selected original
+replay sets: phase1 f283 411 raster/411 survive/75 less/0 equal/336 greater;
+phase2 f331 284/284/138/0/146; phase3 f474 12010/12010/6943/0/5067;
+phase4 f300..305 365/271/271/0/0. All 25 less+equal+greater partition
+exactly, all stencil-only equal to survive. Active draw losses 94/365
+from discard (e1638ea4 83, 3dce2bd7 11), not every active draw. Other
+271 survive discard but all have strictly lower reverse-Z depth.
+Six same-host-frame vertex pairs (IDs3..8) have identical indices and
+positions/clip-distance for every vertex (27084 vertices total; calculate
+from individual row counts: 1333+6303+3421+6303+3421+6303=27084).
+Pairs1/2 cross host frame 231->232 and positions differ, not same camera.
+Independent CPU center-sample rasterization, two face orientations, actual
+clip/W viewport and stored per-pixel depth. For the matching face at
+f283 PS 3dce2bd7: 4 raster/4 pass, GPU 4/4, 2 unique changed pixels;
+895c9fe0 72/25 CPU and GPU, 25 changed. f474 3dce2bd7 CPU 107/0 vs GPU
+108/0, 895c9fe0 CPU 1674/0 = GPU 1674/0, zero actual changes in both.
+No bit-exact hardware raster claim at boundaries, no guest vertex oracle.
+Do not repeat small mesh depth/stencil/texture-transfer investigations.
+Actual primary direct geometry pairs 868546d85ce5090a -> 13f07ce83dc1cc67.
+At f474 22236 indices passes 2762->534; 57066 passes 29483->13556;
+12765 same index guest 0x27c3a7280 f283 and f474 has zero prepass AND
+material coverage. f283 and f474 background pair aff9c7ef -> c96f3fcd
+27/36 indices passes exactly 1438773/1397147 in each corresponding
+prepass and material draw. Background is not a mismatched depth pair
+by coverage; capture positions before attributing causation. Focus next
+F revision on five paired categories (6254/afd9, persistent zero 12765,
+large 31e6/e31a, e163/a9cd, background), one per dark phase, exact index
+identity; no repeated small captures. Native 8685 module 7843cbd43b48179b
+position store verified (975,967), clip 971, vertex 75 instance77.
+Other variants use validated structural discovery, no guessed transform
+operands. Prioritize paired position data and exact native modules.
+This distinguishes wrong positions from legitimate occlusion or missing
+upstream geometry; no rendering semantic change or root cause proven.

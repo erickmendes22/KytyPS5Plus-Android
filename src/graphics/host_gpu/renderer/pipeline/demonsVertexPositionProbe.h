@@ -11,8 +11,31 @@ constexpr uint32_t Header=3, Stride=23, MaxVertices=65536;
 constexpr uint32_t WordCount=Header+Stride*MaxVertices;
 // 225647 proved the two small-mesh depth/material pairs equivalent.
  // Focus the expensive per-vertex capture on the actual dominant surface.
-constexpr bool Material(uint64_t hash) { return hash==0xf825a988127faeb4ull || hash==0x74b55dea9562eda1ull; }
-constexpr bool Watched(uint64_t hash) { return hash==0x34c51585c926a664ull || hash==0xa7208481a1f2b760ull || Material(hash); }
+constexpr bool Material(uint64_t hash) {
+    return hash==0xf825a988127faeb4ull || hash==0x74b55dea9562eda1ull ||
+           hash==0x13f07ce83dc1cc67ull || hash==0xc96f3fcde8141266ull;
+}
+constexpr bool Watched(uint64_t hash) {
+    return hash==0x34c51585c926a664ull || hash==0xa7208481a1f2b760ull ||
+           hash==0x868546d85ce5090aull || hash==0xaff9c7ef505c6253ull || Material(hash);
+}
+// #725: the two small meshes are consistent with an independent CPU
+// raster/depth oracle. Select actual dominant pairs by VS/PS and count,
+// then require exact index identity in the renderer.
+constexpr uint32_t FocusPairCount=5;
+constexpr uint32_t FocusPair(uint64_t vs,uint64_t ps,uint32_t indices) {
+    if((vs==0xaff9c7ef505c6253ull && ps==0x651f53f5932d8794ull) ||
+       (vs==0xc96f3fcde8141266ull && ps==0x552d823dcfcf2deeull))return 4;
+    const bool pre=vs==0x868546d85ce5090aull;
+    const bool mat=vs==0x13f07ce83dc1cc67ull;
+    if((pre&&ps==0x6254880342eb8db4ull)||(mat&&ps==0xafd9334e8581cda2ull))return 0;
+    if((pre&&ps==0x31e660625354d953ull)||(mat&&ps==0xe31a5473e9ee7503ull)){
+        if(indices==12765)return 1;
+        if(indices>=19956)return 2;
+    }
+    if((pre&&ps==0xe1638ea46c70bc9cull)||(mat&&ps==0xa9cdf62111c5b448ull))return 3;
+    return FocusPairCount;
+}
 constexpr uint32_t PairIndex(uint64_t hash) { return hash==0xa7208481a1f2b760ull || hash==0x74b55dea9562eda1ull ? 1u : 0u; }
 // Exact 221410 modules. Inputs are the actual SSA values used by the
 // transform, not a re-read of a potentially different guest buffer.
@@ -22,7 +45,8 @@ struct Site {
     std::array<uint32_t,15> inputs; // position xyz, matrix rows
     uint32_t f32=8,vec4=9;
 };
-constexpr std::array<Site,13> Sites{{
+constexpr std::array<Site,14> Sites{{
+ {0x868546d85ce5090aull,0x7843cbd43b48179bull,39,64,43,119,75,77,0,967,975,971,{}},
  {0x34c51585c926a664ull,0x92e062bff851bfe3ull,39,60,43,99,71,73,97,593,602,597,
   {366,367,368,253,254,255,256,292,293,294,295,331,332,333,334}},
  {0x34c51585c926a664ull,0x5650cfdc24ed3f10ull,39,60,43,115,71,73,112,878,887,882,

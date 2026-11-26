@@ -46,6 +46,11 @@ static void Save(const std::string& path,const std::vector<uint32_t>& v){
 }
 int main(int argc,char** argv){
     assert(argc==2);
+    static_assert(FocusPair(0x868546d85ce5090aull,0x31e660625354d953ull,12765)==1);
+    static_assert(FocusPair(0x13f07ce83dc1cc67ull,0xe31a5473e9ee7503ull,12765)==1);
+    static_assert(FocusPair(0x868546d85ce5090aull,0x31e660625354d953ull,57066)==2);
+    static_assert(FocusPair(0xc96f3fcde8141266ull,0x552d823dcfcf2deeull,36)==4);
+    static_assert(FocusPair(0x34c51585c926a664ull,0x3dce2bd78d58db62ull,17760)==FocusPairCount);
     for(size_t k=0;k<Sites.size();++k){
         const auto& s=Sites[k];
         for(uint32_t version:{0x00010300u,0x00010400u}){
