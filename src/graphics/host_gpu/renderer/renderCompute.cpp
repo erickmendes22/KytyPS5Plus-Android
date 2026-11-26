@@ -3337,7 +3337,48 @@ static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,cons
         bindings.buffer_sources.size()>2&&bindings.buffer_sources[1].size==31488&&
         bindings.buffer_sources[2].size==31488&&groups[0]==123;
     // #734: source CPU-owned for this exact copy; stop capturing unrelated producers.
-    if(!xyz_copy)return cap;
+    if(!xyz_copy){
+        // Match live or candidate constant range against actual writable
+        // descriptors. Claims are not execution evidence; save both sides.
+        for(auto r:ProjectionRanges()){
+            for(const auto& res:prog.info.buffers){
+                if(!res.written||res.descriptor_index>=bindings.buffer_sources.size())continue;
+                const auto& b=bindings.buffer_sources[res.descriptor_index];
+                if(DemonsPrelightPolicy::Overlaps(b.address,b.size,r.address,r.bytes)){
+                    cap.targets.push_back(r);break;
+                }
+            }
+        }
+        if(cap.targets.empty())return cap;
+        static uint64_t captured=0;
+        if(captured++>=512){
+            if(captured==513)ProjectionRecord({{"kind","capture_budget_exhausted"},{"frame",frame}});
+            cap.targets.clear();return cap;
+        }
+        cap.report={{"projection",true},{"kind","compute_constant_writer"},{"frame",frame},
+            {"submit",submit},{"shader",prog.shader_hash},{"shader_hex",fmt::format("{:016x}",prog.shader_hash)},
+            {"native_cs_file",ShaderDump::ModuleFile(module)},{"groups",groups},{"indirect",indirect},
+            {"tick_before",context.GetCommandScheduler().CurrentTick()},
+            {"target_before",nlohmann::json::array()},{"target_after",nlohmann::json::array()},
+            {"bindings",nlohmann::json::array()}};
+        for(auto r:cap.targets)cap.report["target_before"].push_back(DsVertexRangeWords(context,r));
+        for(uint32_t slot=0;slot<bindings.buffer_sources.size()&&slot<bindings.buffers.size();++slot){
+            const auto& s=bindings.buffer_sources[slot];
+            bool written=false;
+            for(const auto& res:prog.info.buffers)if(res.descriptor_index==slot)written|=res.written;
+            nlohmann::json entry={{"slot",slot},{"address",s.address},{"bytes",s.size},{"written",written}};
+            // Small bound operands only, large input buffers explicitly
+            // identified as not captured in this bounded provenance pass.
+            if(s.size&&s.size<=640&&s.size%4==0)
+                entry["gpu_words"]=ReadDsBoundWords(context,bindings,slot,s.size/4);
+            cap.report["bindings"].push_back(std::move(entry));
+        }
+        return cap;
+    }
+    // W0 1107/1111 exact AVX stores agree; keep a small control budget
+    // rather than evicting the W1 projection evidence.
+    static uint64_t xyz_control=0;
+    if(xyz_control++>=48)return cap;
     if(xyz_copy){
         const auto& src=bindings.buffer_sources[1];
         WatchVertexInput(src.address,src.size);
@@ -3417,6 +3458,9 @@ static void EndDsVertexProducer(RenderContext& context,DsVertexProducerCapture&&
     if(cap.report.is_null())return;
     for(auto r:cap.targets)cap.report["target_after"].push_back(DsVertexRangeWords(context,r));
     cap.report["tick_after"]=context.GetCommandScheduler().CurrentTick();
+    if(cap.report.value("projection",false)){
+        ProjectionRecord(std::move(cap.report));return;
+    }
     // Preserve every transition, but only the first unchanged dispatch per
     // shader/target. Emit compact before/after observations for all captures.
     static std::mutex retained_mutex;

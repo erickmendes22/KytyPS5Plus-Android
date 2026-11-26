@@ -351,6 +351,7 @@ object Diagnostics {
                     val rootTrace = newest.filter { it.name.startsWith("ds_prelight_") }.sortedBy { if (it.name == "ds_prelight_status.json") -1 else it.name.removePrefix("ds_prelight_events_").substringBefore(".").toIntOrNull() ?: 999 }
                     val vertexProducers = newest.filter { it.name.startsWith("ds_vertex_producer_") }
                         .sortedBy { when {
+                            it.name.startsWith("ds_vertex_producer_projection") -> -1
                             it.name == "ds_vertex_producer_cpu_status.json" -> 0
                             it.name == "ds_vertex_producer_cpu_source.jsonl" -> 1
                             it.name.startsWith("ds_vertex_producer_cpu_edge_") -> 2

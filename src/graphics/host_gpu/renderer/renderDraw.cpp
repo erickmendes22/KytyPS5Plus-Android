@@ -3845,6 +3845,44 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             }
         }
     }
+    if(root_trace&&ds_vp&&ds_vp->shader_hash==0x868546d85ce5090aull&&
+        draw.IsIndexed()&&!indirect&&draw.index_count==57066){
+        const auto& bound=bindings.vertex[0];
+        if(bound.buffer_sources.size()>2&&bound.buffer_sources[1].size==160){
+            const auto& s=bound.buffer_sources[1];
+            DemonsPrelightTrace::WatchProjection(s.address,s.size);
+            // One consumer per frame; keep the entire 40-word constant block.
+            // Slot0 and slot2 identities are retained as distinct inputs.
+            static int32_t last_frame=-1;
+            if(last_frame!=ds_gbuffer_frame){
+                last_frame=ds_gbuffer_frame;
+                nlohmann::json row={{"kind","w1_consumer"},{"frame",ds_gbuffer_frame},
+                    {"phase",root_phase},{"submit",submit_id},{"index_guest",index_source.address},
+                    {"tick",m_context.GetCommandScheduler().CurrentTick()},{"sources",nlohmann::json::array()}};
+                for(auto slot:{0u,1u,2u}){
+                    if(slot>=bound.buffers.size())continue;
+                    const auto& src=bound.buffer_sources[slot];const auto& native=bound.buffers[slot];
+                    nlohmann::json entry={{"slot",slot},{"address",src.address},{"bytes",src.size},
+                        {"gpu_dirty",m_context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size)},
+                        {"writers",nlohmann::json::array()}};
+                    for(const auto& w:m_context.GetBufferCache().RecentProbeRayTransfers(src.address,src.size))
+                        if(w.path)entry["writers"].push_back({{"path",w.path},{"tick",w.tick},{"shader",w.shader},
+                            {"begin",w.begin},{"end",w.end},{"source",w.source}});
+                    const auto word=ds_vp->bindings.memory_offset_dword+slot/4u;
+                    if(slot==1&&word<bound.shader_data.size()&&native.buffer&&native.range!=VK_WHOLE_SIZE){
+                        const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
+                        if(adjust<=native.range&&src.size<=native.range-adjust){
+                            entry["gpu_words"]=DemonsPrelightTrace::ReadNativeWords(m_context,native.buffer,native.offset+adjust,40);
+                            std::vector<uint32_t> cpu(40);
+                            if(LibKernel::Memory::TryReadBacking(src.address,cpu.data(),160))entry["backing_words"]=std::move(cpu);
+                        }
+                    }
+                    row["sources"].push_back(std::move(entry));
+                }
+                DemonsPrelightTrace::ProjectionRecord(std::move(row));
+            }
+        }
+    }
     if(ds_vp && VP::Watched(ds_vp->shader_hash) && ds_vp->ds_light_math_variant){
         const auto& gate=DemonsAdaptiveCapture::Current();
         const auto* ps=state.ps_active?state.ps_input_info.stage.program:nullptr;
@@ -3918,6 +3956,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                                     entry["backing_words"]=std::move(backing);
                                 entry["gpu_dirty"]=m_context.GetBufferCache().HasGpuDirtyBytes(source.address,source.size);
                                 entry["cpu_modified"]=m_context.GetBufferCache().IsRegionCpuModified(source.address,source.size);
+                            }
+                        }
+                        if(draw.index_count==57066&&!material&&slot==2&&source.size==448296&&
+                           word<bound.shader_data.size()&&native.buffer&&native.range!=VK_WHOLE_SIZE){
+                            const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
+                            if(adjust<=native.range&&source.size<=native.range-adjust){
+                                auto words=ReadDsVertexIndices(m_context,
+                                    PreparedIndexBuffer{native.buffer,native.offset+adjust,vk::IndexType::eUint32},
+                                    static_cast<uint32_t>(source.size/4));
+                                const auto folder=DemonsPrelightTrace::Folder();
+                                std::error_code ec;std::filesystem::create_directories(folder,ec);
+                                const auto name=fmt::format("ds_vertex_producer_projection_xyz_f{}_s{}.json",ds_gbuffer_frame,submit_id);
+                                std::ofstream out(folder/name,std::ios::trunc);
+                                if(out)out<<nlohmann::json{{"frame",ds_gbuffer_frame},{"submit",submit_id},
+                                    {"phase",phase},{"address",source.address},{"bytes",source.size},
+                                    {"gpu_words",words}};
+                                entry["xyz_file"]=name;entry["xyz_words"]=words.size();
+                                entry["xyz_digest"]=DemonsPrelightTrace::VertexWordDigest(words);
                             }
                         }
                         ds_vertex_sources.push_back(std::move(entry));

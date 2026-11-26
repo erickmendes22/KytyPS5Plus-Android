@@ -129,6 +129,44 @@ inline void VertexRecord(nlohmann::json event) {
         if(status)status<<nlohmann::json{{"events",seq},{"bytes",bytes},{"dropped",dropped},{"scope","candidate writer and exact consumer ranges"}};
     }
 }
+// N31: actual W1 slot-1 160-byte transform. Session seed is not proof
+// of identity; the exact W1 draw must confirm the live binding.
+inline std::mutex projection_mutex;
+inline std::vector<VertexRange> projection_ranges{{0x20f97e680ull,160,false}};
+inline void WatchProjection(uint64_t address,uint64_t bytes){
+    if(!Enabled()||!address||bytes!=160)return;
+    std::scoped_lock lock(projection_mutex);
+    for(auto& r:projection_ranges)if(r.address==address){r.confirmed=true;return;}
+    if(projection_ranges.size()<16)projection_ranges.push_back({address,bytes,true});
+}
+inline std::vector<VertexRange> ProjectionRanges(){
+    std::scoped_lock lock(projection_mutex);return projection_ranges;
+}
+inline bool ProjectionMatches(uint64_t address,uint64_t bytes){
+    if(!Enabled())return false;
+    for(const auto& r:ProjectionRanges())
+        if(DemonsPrelightPolicy::Overlaps(address,bytes,r.address,r.bytes))return true;
+    return false;
+}
+inline void ProjectionRecord(nlohmann::json event){
+    if(!Enabled())return;
+    static std::mutex mutex;
+    static uint64_t seq=0,bytes=0,dropped=0;
+    static std::ofstream out;
+    std::scoped_lock lock(mutex);
+    event["seq"]=++seq;
+    if(seq==1){
+        std::error_code ec;std::filesystem::create_directories(Folder(),ec);
+        out.open(Folder()/"ds_vertex_producer_projection.jsonl",std::ios::trunc);
+    }
+    const auto line=event.dump();
+    if(!out||bytes+line.size()+1>8u*1024u*1024u)++dropped;
+    else{out<<line<<'\n';out.flush();if(out)bytes+=line.size()+1;else ++dropped;}
+    if(seq==1||seq%32==0||dropped){
+        std::ofstream status(Folder()/"ds_vertex_producer_projection_status.json",std::ios::trunc);
+        if(status)status<<nlohmann::json{{"events",seq},{"bytes",bytes},{"dropped",dropped}};
+    }
+}
 inline bool VertexConsumerFrame(uint64_t address,int32_t frame){
     static std::mutex mutex;
     static std::vector<std::pair<uint64_t,int32_t>> seen;

@@ -457,3 +457,26 @@ record prepass phases 1/2/3, preserve all clip positions and indices,
 sample 1/64 projection operands separately to fit exporter. Compare
 same identity and actual input constants; do not assume another frame
 or count is identical. N00 remains open; no production semantic fix.
+
+
+## #737 — N31 sampled arithmetic verified; transform provenance (102508)
+297 CPU source records, all CPU/GPU equal; 1111 XMM0 observations,
+1107 equal eventual 16-byte destination, four mismatches (not proven
+store errors: later writes possible). 791 also equal RSI prefix; 316
+match destination but not RSI. W0 CPU store deprioritized, not closed.
+W1 f348 phase2 vs f503 phase3: exact same indices (57066), 37358 finite
+vertices, same viewport; Y/W [-1.65826,-1.22331] vs [-0.84419,-0.32230],
+0 vs 14320 changed depth pixels. All 584 sampled vertices per frame:
+Y, W and both Y accumulators exactly reproduced from actual SSA. N31
+arithmetic compatible with inputs; not proof camera/object expected.
+Slot1 same 0x20f97e680 (160B), only words 7/19 change from -1.7599986 /
+-0.2899988 to -514.87097/-514.87097. Slot0 same address, every word
+changes; both slot0/1 GPU-dirty and backing differs. Slots3/4 identical;
+slot2 448296 bytes not captured, different addresses. Cannot isolate
+causal constant from two different scene states or assume erroneous
+translation. W1 recovers coverage while global lighting remains wrong.
+Next collect exact W1 constant consumer each frame, candidate compute
+writer before/after full constant range, transfer journal independent
+of saturated root journal, and full XYZ descriptor separate for phase
+snapshots. Prior address seed is unconfirmed until live binding. No
+semantic changes. N31 upstream provenance open, N00 still open.
