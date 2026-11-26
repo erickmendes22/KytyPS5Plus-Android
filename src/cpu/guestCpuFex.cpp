@@ -116,12 +116,12 @@ bool HostSigsegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/, vo
 	const auto* si       = static_cast<const siginfo_t*>(info);
 	const bool  is_write = Common::HostException::IsWriteFault(ucontext);
 	Common::HostException::RecordFaultRegisters(ucontext);
-	const bool trace=is_write&&Cpu::DemonsGuestWriteHistory::Enabled();
+	const auto address=reinterpret_cast<uintptr_t>(si->si_addr);
+	const bool trace=is_write&&Cpu::DemonsGuestWriteHistory::ShouldRecord(address);
 	GuestRegisters regs{};
 	const bool exact=trace&&CaptureFaultingGuestRegisters(ucontext,&regs);
-	const auto address=reinterpret_cast<uintptr_t>(si->si_addr);
 	const bool handled=handler(address,is_write);
-	if(handled&&exact)Cpu::DemonsGuestWriteHistory::Record(address,regs.rip,regs.gpr[GuestRegisters::kRsi],regs.gpr[GuestRegisters::kRdi],regs.gpr[GuestRegisters::kRcx]);
+	if(handled&&trace)Cpu::DemonsGuestWriteHistory::Record(address,exact?regs.rip:0,regs.gpr[GuestRegisters::kRsi],regs.gpr[GuestRegisters::kRdi],regs.gpr[GuestRegisters::kRcx],exact?regs.gpr:nullptr);
 	return handled;
 }
 

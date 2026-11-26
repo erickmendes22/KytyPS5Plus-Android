@@ -388,3 +388,24 @@ CPU producer; if GPU-only, trace actual producer and input operands. Partial
 or missing writer history is BLOCKED, not proof. Source addresses rotate;
 learn from exact copy binding and retain prior aligned upload candidates
 without assuming identity. Keep W1 and N00 albedo causal link open.
+
+
+## #734 — N73 CPU source proven, N74 candidate producer
+ZIP 092639, native revision 74965f2. 308 exact source observations f218+,
+105 rotating addresses; 308 backing_ok and backing_equals_gpu, 308 GPU
+not dirty, 308 latest full staging digest identical to source GPU digest,
+307 latest transfer guest_backing_upload, no observed compute candidate.
+11 finite, 2 x3897 NaNs, 2 x7446, 293 x7872. f223 finite, f224 3897,
+f225 7446, f226 7872; f259..263 finite, f264 3897, f265 7446.
+N73 yes: NaNs predate Vulkan upload, exact copy not causal error. N74:
+identify actual CPU writer and guest operation; intentional NaN sentinel
+cull is plausible, not proven. No FEX divergence demonstrated yet.
+Timeline saturated (29446 saved, 11088 dropped); full copy reports evicted
+by unrelated overlapping producer records. New build focuses exact copy
+source; enables CPU write-fault history in mode F without ray history,
+retains candidate MiB-aligned first 64KiB fault windows, exact guest RIP
+and integer registers when available, code bytes read after fault,
+file-read candidates, staging provenance, full source at each NaN
+population transition. Dedicated bounded CPU journal and prioritized export.
+First-write faults may not be the final NaN store; absent fault or code
+is BLOCKED, not evidence of legitimate cull or FEX bug. W1 and N00 open.

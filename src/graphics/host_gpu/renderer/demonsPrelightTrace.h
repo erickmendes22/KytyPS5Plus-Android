@@ -87,7 +87,7 @@ inline bool VertexMatches(uint64_t address,uint64_t bytes){
     if(!Enabled())return false;
     std::scoped_lock lock(vertex_mutex);
     for(auto x:vertex_ranges)if(DemonsPrelightPolicy::Overlaps(address,bytes,x.address,x.bytes))return true;
-    for(auto x:vertex_inputs)if(DemonsPrelightPolicy::Overlaps(address,bytes,x.address,x.bytes))return true;
+    // Source CPU provenance is recorded separately.
     return false;
 }
 inline std::vector<VertexRange> VertexRanges(){
@@ -173,8 +173,7 @@ inline void NoteVertexUpload(uint64_t tick,uint64_t address,const uint8_t* data,
             if(vertex_upload_samples.size()>=4096)vertex_upload_samples.erase(vertex_upload_samples.begin(),vertex_upload_samples.begin()+1024);
             vertex_upload_samples.push_back({begin,end-begin,tick,hash,nans});
         }
-        if(r.confirmed)VertexRecord({{"kind","source_staging_upload"},{"tick",tick},{"address",begin},
-            {"bytes",end-begin},{"word_digest",hash},{"nan_words",nans}});
+        // Exact copy consumer exports its matching staging history.
     }
 }
 inline nlohmann::json VertexUploadHistory(uint64_t address,uint64_t bytes){

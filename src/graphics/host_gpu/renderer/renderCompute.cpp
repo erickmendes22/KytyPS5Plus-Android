@@ -3218,6 +3218,66 @@ static nlohmann::json DsVertexRangeWords(RenderContext& context,DemonsPrelightTr
     }
     return out;
 }
+static void SaveDsVertexCpuSource(int32_t frame,uint64_t submit,uint64_t tick,const nlohmann::json& source){
+    using namespace DemonsPrelightTrace;
+    if(!source.value("complete",false))return;
+    const auto address=source.value("address",0ull);
+    const auto bytes=source.value("bytes",0ull);
+    const auto folded=Kernel::AddressFold::Fold(address);
+    nlohmann::json report=source;
+    report.erase("gpu_words");report.erase("backing_words");
+    report["frame"]=frame;report["submit"]=submit;report["tick"]=tick;
+    report["kind"]="xyz_cpu_source";
+    report["fault_candidates"]=nlohmann::json::array();
+    const auto faults=Cpu::DemonsGuestWriteHistory::Overlap(address,bytes);
+    report["fault_ring_oldest"]=faults.oldest;report["fault_ring_newest"]=faults.newest;
+    report["fault_candidates_total"]=faults.events.size();report["fault_candidates_truncated"]=faults.truncated;
+    for(bool exact_only:{true,false}){
+        unsigned count=0;
+        for(const auto& e:faults.events){
+            const bool exact=e.address>=folded&&e.address-folded<bytes;
+            if(exact!=exact_only||count>=8)continue;
+            nlohmann::json row={{"event",e.id},{"fault_address",e.address},{"guest_rip",e.rip},
+                {"exact_range",exact},{"gpr",e.gpr},{"rsi",e.rsi},{"rdi",e.rdi},{"rcx",e.rcx}};
+            if(e.rip>=16){
+                std::array<uint8_t,64> code{};
+                if(LibKernel::Memory::TryReadBacking(e.rip-16,code.data(),code.size())){
+                    row["code_base"]=e.rip-16;row["code_bytes"]=code;
+                }
+            }
+            report["fault_candidates"].push_back(std::move(row));++count;
+        }
+    }
+    report["file_read_candidates"]=nlohmann::json::array();
+    for(const auto& e:LibKernel::DemonsFileReadHistory::Overlap(address,bytes))
+        report["file_read_candidates"].push_back({{"event",e.id},{"begin",e.begin},{"end",e.end},
+            {"file_offset",e.file_offset},{"path",e.path}});
+    static std::mutex mutex;
+    static std::ofstream out;
+    static uint64_t events=0,used=0,dropped=0;
+    std::scoped_lock lock(mutex);
+    report["seq"]=++events;
+    if(events==1){
+        std::error_code ec;std::filesystem::create_directories(Folder(),ec);
+        out.open(Folder()/"ds_vertex_producer_cpu_source.jsonl",std::ios::trunc);
+    }
+    const auto line=report.dump();
+    if(!out||used+line.size()+1>6u*1024u*1024u)++dropped;
+    else{out<<line<<'\n';out.flush();if(out)used+=line.size()+1;else ++dropped;}
+    std::ofstream status(Folder()/"ds_vertex_producer_cpu_status.json",std::ios::trunc);
+    if(status)status<<nlohmann::json{{"events",events},{"bytes",used},{"dropped",dropped},
+        {"scope","CPU first-write fault candidates, not complete store history"}};
+    static uint64_t last=UINT64_MAX;
+    static unsigned retained=0;
+    const auto n=source.value("nan_words",0ull);
+    if(n!=last&&retained<16){
+        last=n;++retained;
+        report["gpu_words"]=source["gpu_words"];
+        if(source.contains("backing_words"))report["backing_words"]=source["backing_words"];
+        std::ofstream edge(Folder()/fmt::format("ds_vertex_producer_cpu_edge_f{}_s{}_t{}.json",frame,submit,tick),std::ios::trunc);
+        if(edge)edge<<report;
+    }
+}
 static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,const PreparedBindings& bindings,
     uint64_t submit,vk::ShaderModule module,std::array<uint32_t,3> groups,bool indirect,uint64_t args_addr){
     using namespace DemonsPrelightTrace;
@@ -3230,6 +3290,8 @@ static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,cons
     const bool xyz_copy=prog.shader_hash==0x22e0328668b00aa3ull &&
         bindings.buffer_sources.size()>2&&bindings.buffer_sources[1].size==31488&&
         bindings.buffer_sources[2].size==31488&&groups[0]==123;
+    // #734: source CPU-owned for this exact copy; stop capturing unrelated producers.
+    if(!xyz_copy)return cap;
     if(xyz_copy){
         const auto& src=bindings.buffer_sources[1];
         WatchVertexInput(src.address,src.size);
@@ -3298,6 +3360,7 @@ static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,cons
                 }
             }
             entry["gpu_words"]=std::move(words);
+            if(xyz_copy&&slot==1)SaveDsVertexCpuSource(frame,submit,context.GetCommandScheduler().CurrentTick(),entry);
         }
         cap.report["bindings"].push_back(std::move(entry));
     }
