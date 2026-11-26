@@ -1,4 +1,5 @@
 #include "graphics/shader/demonsPcRenderParity.h"
+#include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
 #include "graphics/host_gpu/renderer/cache/bufferUploadPolicy.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
@@ -1575,6 +1576,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 		(void)m_texture_cache.PublishGpuImagesForBufferAccess(vaddr,size);
 	} else (void)m_texture_cache.ClearMeta(vaddr);
 	if (!IsRegionGpuModified(vaddr, size)) {
+        DemonsPrelightTrace::BufferWriter(m_scheduler.CurrentTick(),"dma_fill",vaddr,size,value,"cpu");
 		// Access the guest mapping so write faults invalidate cached buffers and images.
 		auto* destination = reinterpret_cast<uint32_t*>(vaddr);
 		{
@@ -1589,6 +1591,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 		return;
 	}
 
+	DemonsPrelightTrace::BufferWriter(m_scheduler.CurrentTick(),"dma_fill",vaddr,size,value,"gpu");
 	m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
 	auto [dst, dst_offset] = ObtainBuffer(vaddr, size, true, true);
 	dst->Fill(dst_offset, size, value);
@@ -1615,6 +1618,7 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	if (src_memory && dst_memory && !IsRegionGpuModified(dst_vaddr, size) &&
 	    !IsRegionGpuModified(src_vaddr, size) && !m_texture_cache.FindImageFromRange(src_vaddr, size)) {
 		{
+			DemonsPrelightTrace::BufferWriter(m_scheduler.CurrentTick(),"dma_copy",dst_vaddr,size,src_vaddr,"cpu");
 			const RefreshCause::CpuWriteScope tag(RefreshCause::Source::Copy);
 			std::memcpy(reinterpret_cast<void*>(dst_vaddr), reinterpret_cast<const void*>(src_vaddr),
 			            size);
@@ -1625,6 +1629,7 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 
 	auto& command = m_scheduler.Current();
 	if (dst_memory) {
+        DemonsPrelightTrace::BufferWriter(m_scheduler.CurrentTick(),src_memory?"dma_copy":"gds_copy",dst_vaddr,size,src_vaddr,"gpu");
 		m_texture_cache.InvalidateMemoryFromGPU(dst_vaddr, size);
 	}
 	const auto src_id      = src_memory ? FindBuffer(src_vaddr, size) : BufferId {};
@@ -2044,6 +2049,7 @@ void BufferCache::SettleBdaWrites(uint64_t shader_hash) {
 			// Transfer actual GPU writes to cache tracking before lighting consumes them.
 			(void)ObtainBuffer(low, high - low, true, false, id);
 			NoteProbeRayWrite(low, high - low, writes.overflow ? "bda_overflow" : "bda", 0, shader_hash);
+			DemonsPrelightTrace::BufferWriter(m_scheduler.CurrentTick(),"bda_settle",low,high-low,shader_hash,"gpu",writes.overflow);
 			m_texture_cache.InvalidateMemoryFromGPU(low, high - low);
 			++settled;
 		}

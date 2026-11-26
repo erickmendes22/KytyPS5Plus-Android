@@ -2601,6 +2601,7 @@ bool TextureCache::HasCachedImageOverlap(uint64_t address, uint64_t size) {
 bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address, uint64_t size,
                                         uint32_t packed_clear) {
 	address = Kernel::AddressFold::Fold(address); // guest -> host (kernel/addressFold.h)
+    DemonsPrelightTrace::BufferWriter(m_scheduler.CurrentTick(),"clear_image_candidate",address,size,packed_clear,"image");
 	if (command.IsInvalid() || !GuestRange {address, size}.Valid()) {
 		EXIT("TextureCache: invalid image clear\n");
 	}

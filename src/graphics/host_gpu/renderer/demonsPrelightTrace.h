@@ -11,6 +11,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <algorithm>
 
 namespace Libs::Graphics {
@@ -49,7 +50,8 @@ struct Journal {
 };
 inline Journal& State(){static Journal j;return j;}
 inline constexpr size_t ChunkBytes=2u*1024u*1024u;
-inline constexpr unsigned MaxChunks=12;
+inline constexpr unsigned MaxChunks=16;
+inline thread_local uint64_t active_draw=0;
 inline std::filesystem::path Folder(){return Config::GetShaderDumpFolder()/"queue-state";}
 inline void StatusLocked(const Journal& j) {
     std::ofstream out(Folder()/"ds_prelight_status.json",std::ios::trunc);
@@ -82,7 +84,7 @@ inline bool AllowSample(bool full=false){
     if(!Enabled())return false;
     auto& j=State();std::scoped_lock lock(j.mutex);
     auto& used=full?j.full:j.samples;auto& dropped=full?j.full_dropped:j.sample_dropped;
-    if(j.chunk>=MaxChunks||used>=(full?900u:24000u)){
+    if(j.chunk>=MaxChunks||used>=(full?2400u:48000u)){
         ++dropped;if(dropped==1||dropped%256==0)StatusLocked(j);return false;
     }
     ++used;return true;
@@ -91,13 +93,21 @@ inline void Cache(uint64_t tick,const Image& image,const char* operation,
                   uint64_t source=0,uint64_t detail=0) {
     if(!Enabled()||!Matches(image.info.data.address,image.info.data.size))return;
     Watch(image.info.data.address,image.info.data.size);
-    Record({{"kind","cache"},{"operation",operation},{"tick",tick},
+    // A claim precedes execution; actual boundary records retain version/order.
+    if(std::string_view(operation)=="commit_gpu_write_claim")return;
+    Record({{"kind","cache"}',{"operation",operation},{"tick",tick},
         {"image",Identity(image)},{"source",source},{"detail",detail}});
 }
 inline void Range(uint64_t tick,const char* operation,uint64_t address,uint64_t bytes,uint64_t detail=0){
     if(!Enabled()||!Matches(address,bytes))return;
     Record({{"kind","range"},{"operation",operation},{"tick",tick},
         {"address",address},{"bytes",bytes},{"detail",detail}});
+}
+inline void BufferWriter(uint64_t tick,const char* op,uint64_t address,uint64_t bytes,
+        uint64_t operand,const char* route,bool overflow=false){
+    if(!Enabled()||!Matches(address,bytes))return;
+    Record({{"kind","buffer_writer"},{"operation",op},{"tick",tick},
+        {"address",address},{"bytes",bytes},{"operand",operand},{"route",route},{"overflow",overflow}});
 }
 void ObserveCompute(RenderContext& context,const PreparedBindings& bindings,uint64_t submit,
                     bool after,bool indirect,uint64_t args_address=0);

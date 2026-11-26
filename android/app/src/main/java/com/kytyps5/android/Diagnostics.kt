@@ -248,7 +248,7 @@ object Diagnostics {
             "c96f3fcde8141266", "552d823dcfcf2dee",
             "34c51585c926a664", "a7208481a1f2b760", "3dce2bd78d58db62", "895c9fe037e704f5",
             "f825a988127faeb4", "74b55dea9562eda1", "cfc1d9193e7f9e53", "c92deb23fc611b10")
-        val depthProbeHashes = setOf("13f07ce83dc1cc67","a9cdf62111c5b448","aff9c7ef505c6253","c96f3fcde8141266","6254880342eb8db4","31e660625354d953","3cc41a5737b15e7f","9da9c10e59d6e38e","e1638ea46c70bc9c","868546d85ce5090a","0a472b34f593b99b","3dce2bd78d58db62","895c9fe037e704f5")
+        val depthProbeHashes = setOf("552d823dcfcf2dee","651f53f5932d8794","13f07ce83dc1cc67","a9cdf62111c5b448","aff9c7ef505c6253","c96f3fcde8141266","6254880342eb8db4","31e660625354d953","3cc41a5737b15e7f","9da9c10e59d6e38e","e1638ea46c70bc9c","868546d85ce5090a","0a472b34f593b99b","3dce2bd78d58db62","895c9fe037e704f5")
         val watched = depthProbeHashes + dominantShaders + queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
             "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
             "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",

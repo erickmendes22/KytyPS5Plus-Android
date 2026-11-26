@@ -491,3 +491,10 @@ perda/ausência e separar produção de retenção/publicação; não inferir
 visibilidade de W0. Não há folha causal comprovada. #726 foi disparada
 antes da nova árvore; somente usar dados que fecharem um nó. Nenhuma
 nova build solicitada/disparada pela construção da árvore.
+
+## Build #727 — F, ZIP 20261126-075253
+See DEMONS_PRELIGHT_BINARY_TREE.md. f239 physical overwrite by
+552d823d, f265 loss interval includes upload. Do not infer wrong
+background or material shader. Trace exact buffer producer and
+post-acquisition bytes; background SRT/depth pair. Journal reached
+capacity f293; late gameplay not certified. No rendering fix yet.

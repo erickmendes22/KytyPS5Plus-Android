@@ -223,3 +223,36 @@ não decide apenas com zero/contagem, lacuna ou identidade distinta.
 Retirar recaptura de BC1, replay antigo de depth/stencil e coleta de
 vértices direcionada no modo F enquanto N00 estiver aberto; manter demais
 mecanismos e modo E. Prioridade de exportação dos chunks no ZIP.
+
+
+## #727 — primeira fronteira observada, ZIP 20261126-075253
+Revision 174725d, mode F. 56,386 consecutive records (no internal gap),
+frames 1–293, 709 full consumer snapshots across 247 frames. Journal
+filled: 48,128 dropped events, 700 sample drops, 699 full drops.
+First sharp collapse f238 1,440,000 -> f239 658 nonzero RGB words.
+f239 s6723 draw33122 VS c96f3fcde8141266 PS 552d823dcfcf2dee,
+27 indices at 0x20fb00000, after 21 preceding material draws leave
+all 64 sampled words unchanged. Before33123 all colored; after33129
+all 0xff000000. No load clear, same native object, version11334->11342,
+depth compare EQUAL (2), no depth writes. q0/q8/q33 read identical full
+digest/grid. No upload or invalidation between these observations.
+Observed N10=draw for physical overwrite; N00 causal expectation
+still blocked: colored before-image could be previous-cycle data,
+PS552d may intentionally produce black, background prepass could
+legitimately own pixels. Do not disable background.
+f239 prepass VS aff9c7ef/PS651f53 27 indices seq32948.
+Second collapse f264 1,440,000 -> f265 13,264 -> f266..269 zero.
+f265 s7716 first layer0 draw PS afd9334e, VS13f07ce8, 22236 indices,
+0x27cbfd730, before43144 colored64, after43152 all zero. Four GPU
+invalidations seq43136..43139 at 0x287ae0000,0x288160000,0x2887e0000,
+0x288e60000, length 0x680000 each, cause GpuBuffer(5); upload seq43145–46
+BETWEEN before snapshot and draw execution. Cannot attribute loss
+to afd933. Repeats f266–268, twice f269. Distinguish DMA fill/copy/BDA
+origin and expected bytes from refreshed image before draw; legitimate
+clear is not corruption. Record exact buffer producer and route,
+draw_acquired after FindRenderTarget refresh before attachment transition
+and draw, skip pending folded clear. Record background SRT and depth
+before/after matched prepass, native module names. Reduce duplicate
+claims, unrelated sampled compute, depth-only after records except
+background, expand journal 32MiB; full snapshots q0/q33, grids q8.
+No production graphics changes or proof of causal first divergence.

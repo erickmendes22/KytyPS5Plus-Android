@@ -83,6 +83,8 @@
 
 namespace Libs::Graphics {
 
+static std::optional<std::array<uint32_t,64>> SnapshotDsGBufferGrid(RenderContext&,const RenderColorInfo&);
+
 // Draw accounting, enabled only for PPSA01341's already-present frame trace.
 // The current screenshots contain UI but zero 3D scene: normal flip and
 // shader compile counters do not say whether graphics draws got a real
@@ -810,12 +812,31 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		    owner->binding.needs_rebind) {
 			EXIT("color target changed after render-state discovery\n");
 		}
-		auto  image_view = cache.FindRenderTarget(target.image_id, target.desc);
+		const bool root_acquire=DemonsPrelightTrace::active_draw &&
+            target.desc.info.data.address==DemonsQueueProbe::GBufferAddress &&
+            target.desc.view_info.base_layer==0 && target.desc.view_info.base_level==0;
+        const bool root_dirty=root_acquire&&(owner->IsBufferModified()||owner->IsCpuDirty());
+        const auto root_prior=root_dirty?DemonsPrelightTrace::Identity(*owner):nlohmann::json();
+        auto  image_view = cache.FindRenderTarget(target.image_id, target.desc);
 		auto& image      = cache.GetImage(target.image_id);
 		ensure_pass_scale(image, target.desc.view_info, image_view);
 		EXIT_IF(image.backing.samples != target.desc.info.samples || image_view == nullptr);
 		const auto& view   = target.desc.view_info;
 		const auto shader = stages.empty() ? 0u : stages.back()->runtime->program->shader_hash;
+        // AFTER RefreshImage/UploadImage, BEFORE attachment transition/loadOp/draw.
+        if(root_acquire&&(root_dirty||shader==DemonsDominantGeometry::MaterialPs)){
+            nlohmann::json row={{"kind","draw_acquired"},{"draw",DemonsPrelightTrace::active_draw},
+                {"frame",m_context.GetGpu().GetFrameNum()},{"tick",m_context.GetCommandScheduler().CurrentTick()},
+                {"shader",shader},{"dirty_before",root_dirty},{"prior_image",root_prior},
+                {"image",DemonsPrelightTrace::Identity(image)},{"layer",view.base_layer},{"mip",view.base_level},
+                {"pending_fold",image.rp_fold.Pending()}};
+            if(!image.rp_fold.Pending()&&DemonsPrelightTrace::AllowSample()){
+                const auto sample=SnapshotDsGBufferGrid(m_context,target);
+                row["grid"]=sample?nlohmann::json(*sample):nlohmann::json();
+            }else row["sample_status"]="pending_fold_or_budget";
+            row["tick_after_sample"]=m_context.GetCommandScheduler().CurrentTick();
+            DemonsPrelightTrace::Record(std::move(row));
+        }
 		RememberDsAtlasWriter(target.image_id, target.desc.info, view, shader, "attachment");
 		const auto  layout = image.binding.is_bound ? vk::ImageLayout::eGeneral
 		                                            : vk::ImageLayout::eColorAttachmentOptimal;
@@ -1511,7 +1532,7 @@ void DemonsPrelightTrace::ObserveCompute(RenderContext& context,const PreparedBi
         const auto& b=bindings.images[slot];
         if(!b.image_id||b.placeholder||!Matches(b.desc.info.data.address,b.desc.info.data.size))continue;
         const bool storage=b.desc.type==TextureCache::BindingType::Storage;
-        if(after&&!storage)continue;
+        if((after||queue==UINT32_MAX)&&!storage)continue;
         auto& image=context.GetTextureCache().GetImage(b.image_id);
         Watch(image.info.data.address,image.info.data.size);
         const auto view=std::ranges::find(image.views,b.image_view,&CachedImageView::view);
@@ -1535,8 +1556,8 @@ void DemonsPrelightTrace::ObserveCompute(RenderContext& context,const PreparedBi
                 row["grid"]=sample?nlohmann::json(*sample):nlohmann::json();
             }else row["sample_status"]="budget";
             static std::array<int32_t,3> last_full{-1,-1,-1};
-            if(consumer){
-                const auto q=queue==0?0u:queue==8?1u:2u;
+            if(consumer && queue!=8){
+                const auto q=queue==0?0u:2u;
                 if(last_full[q]!=frame&&AllowSample(true)){
                     last_full[q]=frame;
                     const auto full=SnapshotDsAlbedo(context,color);
@@ -2922,6 +2943,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     });
     const bool root_depth=state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress;
     uint64_t root_draw=0;
+    const auto* root_vs=state.vertex_info[0].stage.program;
+    const auto* root_ps=state.ps_active?state.ps_input_info.stage.program:nullptr;
+    const bool root_background_depth=root_depth&&root_vs&&root_ps&&
+        root_vs->shader_hash==DemonsDominantGeometry::DominantDepthVs&&
+        root_ps->shader_hash==DemonsDominantGeometry::DepthPs;
+    const bool root_background_material=root_target!=root_colors.end()&&root_ps&&
+        root_ps->shader_hash==DemonsDominantGeometry::MaterialPs;
     if(root_trace&&(root_target!=root_colors.end()||root_depth)){
         const auto* v=state.vertex_info[0].stage.program;
         const auto* p=state.ps_active?state.ps_input_info.stage.program:nullptr;
@@ -3342,6 +3370,34 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     RenderColorInfo root_color{};
     std::optional<std::array<uint32_t,64>> root_before;
     nlohmann::json root_identity;
+    if(root_draw&&(root_background_depth||root_background_material)){
+        nlohmann::json inputs={{"kind","background_inputs"},{"draw",root_draw},{"frame",root_frame},
+            {"submit",submit_id},{"tick",m_context.GetCommandScheduler().CurrentTick()},
+            {"vs_file",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
+            {"ps_file",ShaderDump::ModuleFile(state.programs.pixel.module)},
+            {"depth_load_clear",state.depth_info.depth_load_clear_enable},
+            {"depth_clear_value",state.depth_info.depth_clear_value}};
+        if(state.depth_info.image_id){
+            inputs["depth_image"]=Identity(m_context.GetTextureCache().GetImage(state.depth_info.image_id));
+            if(!state.depth_info.depth_load_clear_enable&&AllowSample()){
+                const auto d=SnapshotDsMaterialDepthGrid(m_context,state.depth_info);
+                inputs["depth_grid"]=d?nlohmann::json(*d):nlohmann::json();
+            }
+        }
+        if(state.ps_input_info.stage.resources){
+            const auto& snap=*state.ps_input_info.stage.resources;
+            inputs["ps_srt"]=snap.flattened_srt;
+            inputs["ps_user_data"]=snap.user_data;
+        }
+        if(state.vertex_info[0].stage.resources){
+            const auto& snap=*state.vertex_info[0].stage.resources;
+            inputs["vs_srt"]=snap.flattened_srt;
+            inputs["vs_user_data"]=snap.user_data;
+            inputs["vs_buffers"]=nlohmann::json::array();
+            for(const auto& b:snap.buffers)inputs["vs_buffers"].push_back(b.dwords);
+        }
+        Record(std::move(inputs));
+    }
     if(root_draw && root_target!=root_colors.end()){
         root_color=*root_target;
         auto& im=m_context.GetTextureCache().GetImage(root_color.image_id);
@@ -3621,9 +3677,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 	}
 	vk::ImageAspectFlags feedback_aspects;
+    DemonsPrelightTrace::active_draw=root_draw;
 	const auto rendering =
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info,
 	                         feedback_aspects, stages);
+    DemonsPrelightTrace::active_draw=0;
 
 	// Track the final Demon scene-composition pixel shader (identified from
 	// the guest output chain), not the unrelated 0x17defa... pass that reports
@@ -4442,8 +4500,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 	}
 
-	if(root_draw){
-        nlohmann::json event={{"kind","draw_after"},{"draw",root_draw},{"frame",root_frame},
+	if(root_draw&&(root_color.image_id||root_background_depth)){
+        nlohmann::json event={{"kind","draw_after"}',{"draw",root_draw},{"frame",root_frame},
             {"submit",submit_id},{"tick",m_context.GetCommandScheduler().CurrentTick()}};
         if(root_color.image_id){
             auto& im=m_context.GetTextureCache().GetImage(root_color.image_id);
@@ -4456,6 +4514,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                 event["sample_delta"]={{"changed",d.changed},{"lost",d.lost},{"gained",d.gained},
                     {"rgb_before",d.before},{"rgb_after",d.after}};
             }
+        }
+        if(root_background_depth&&AllowSample()){
+            const auto depth=SnapshotDsMaterialDepthGrid(m_context,state.depth_info);
+            event["depth_grid"]=depth?nlohmann::json(*depth):nlohmann::json();
+            event["depth_image"]=Identity(m_context.GetTextureCache().GetImage(state.depth_info.image_id));
         }
         event["tick_after_sample"]=m_context.GetCommandScheduler().CurrentTick();
         Record(std::move(event));
