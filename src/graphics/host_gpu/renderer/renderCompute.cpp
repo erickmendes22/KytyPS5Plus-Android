@@ -3338,13 +3338,14 @@ static void EndDsVertexProducer(RenderContext& context,DsVertexProducerCapture&&
         // Capture the first finite/partial/all-NaN source state, including
         // a source seen before the corresponding VS destination was learned.
         static std::mutex source_mutex;
-        static std::vector<std::pair<uint64_t,int>> source_states;
+        static std::vector<std::pair<int,int>> source_states;
         const auto& s=summary["xyz_source"];
         if(s.value("complete",false)){
             const auto klass=DemonsPrelightTrace::VertexNanClass(s.value("nan_words",0ull),s.value("captured_words",0ull));
-            const std::pair key{s.value("address",0ull),klass};
+            const int backing=!s.value("backing_ok",false)?0:(s.value("backing_equals_gpu",false)?1:2);
+            const std::pair<int,int> key{klass,backing};
             std::scoped_lock lock(source_mutex);
-            if(source_states.size()<96&&std::ranges::find(source_states,key)==source_states.end()){
+            if(std::ranges::find(source_states,key)==source_states.end()){
                 source_states.push_back(key);keep=true;
             }
         }
