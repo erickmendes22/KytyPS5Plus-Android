@@ -2,10 +2,15 @@
 
 ## Continuidade operacional — 26/11/2026
 
-**APK #745 compilado, assinado, verificado e executado no aparelho**, revisão
-`4a94749e889ffd178418d347fcdd82ccc83ca73e`, versionCode 845.
-[Verificação do artefato](DEMONS_APK_745_VERIFICATION.md).
-A última execução analisada é o ZIP `20261126-132544`, modo F.
+**Balanço obrigatório por build:**
+[cortes obtidos, ausências de corte, causa e correção da aquisição](DEMONS_BUILD_ELIMINATION_LEDGER.md).
+Revalidação, certificado local e corte de metade global têm contagens separadas.
+
+**Entrega atual: APK #746 compilado, assinado e verificado**, revisão
+`4e321c2dbedcab17085c1af6ecf0d0f4f8345afe`, versionCode 846;
+[verificação do artefato](DEMONS_APK_746_VERIFICATION.md). Aguarda captura do aparelho.
+A última execução analisada continua sendo a **#745**, núcleo `4a94749`,
+ZIP `20261126-132544`, modo F.
 [Resultados completos da #745](DEMONS_APK_745_RESULTS.md).
 Não interpretar entrega do APK ou matches locais como correção visual
 comprovada ou decisão global de P8.

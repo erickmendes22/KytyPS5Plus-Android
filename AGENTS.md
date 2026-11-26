@@ -56,6 +56,34 @@ de prova causal e teste de regressão antes de virar correção de produção.
 Build de isolamento, build de correção fundamentada, consolidação se
 necessária. Entregar cada APK conforme regra de continuidade acima.
 
+## Balanço obrigatório de eliminação por build
+
+Manter `docs/android/DEMONS_BUILD_ELIMINATION_LEDGER.md` a cada APK, conforme
+instrução explícita do usuário de 26/11/2026. Registrar a revisão, o nó/aresta
+ativo, a captura analisada, os ramos ou operações efetivamente eliminados,
+a prova e seu alcance, o que permanece ativo e a próxima decisão.
+
+**Se nenhum ramo foi cortado, escrever isso diretamente.** Explicar a causa
+concreta: operando ausente, identidade incompatível, retenção incorreta,
+referência sem autoridade, comparador insuficiente, resultado temporalmente
+instável ou outra falha demonstrada. Registrar a correção dessa deficiência e
+a verificação que a próxima aquisição deve satisfazer para produzir o corte.
+Não usar uma nova hipótese ou mais medidores como substituto dessa correção.
+
+Separar corte de um ramo inteiro de certificado de uma operação local.
+Revalidação de certificado antigo não é um corte novo. Compilar, assinar,
+passar testes e entregar uma sonda também não elimina uma causa do jogo.
+APK ainda não executado no aparelho fica explicitamente aguardando captura;
+nunca registrar seu corte previsto como resultado obtido.
+
+Antes de compilar a aquisição seguinte, conferir que os dois resultados da
+comparação têm referência/operandos, vínculo ao mesmo caso, retenção, orçamento,
+exportação e comparador capazes de distingui-los. Exercitar igualdade, divergência
+e os modos concretos de falha da aquisição anterior. Se a execução não decidir,
+o próximo trabalho deve reparar a lacuna identificada, sem alternar o galho.
+Isso não exige oráculo integral de P8, PC idêntico ou rastreador universal CPU
+como pré-condição para uma aresta local decidível.
+
 
 ## Investigação causal sequencial (obrigatória, precede a escolha de sondas)
 
