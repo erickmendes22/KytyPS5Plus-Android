@@ -1,3 +1,4 @@
+#include <fmt/format.h>
 #pragma once
 #include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -25,8 +26,8 @@ template<class T> T Read(RenderContext& renderer,uint64_t address) {
     static std::atomic_uint32_t n{0},logs{0};
     const auto i=n.fetch_add(1,std::memory_order_relaxed)+1;
     if((i<=16 || changed || (i & (i-1))==0) && logs.fetch_add(1,std::memory_order_relaxed)<512)
-        LOGF("[DS_MATRIX_CP] mode=C1 addr=0x%llx size=%zu dirty=%u pending=%u read=%u changed=%u\n",
-            static_cast<unsigned long long>(address),sizeof(T),unsigned(dirty),unsigned(pending),unsigned(read),unsigned(changed));
+        Log::WriteToConsoleAndLog(fmt::format("[DS_MATRIX_CP] mode=C1 addr=0x{:x} size={} dirty={} pending={} read={} changed={}\n",
+            address,sizeof(T),dirty,pending,read,changed));
     return value;
 }
 }

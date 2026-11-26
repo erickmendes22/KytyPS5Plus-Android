@@ -310,7 +310,9 @@ object Diagnostics {
                     val newest = files.sortedByDescending { it.lastModified() }
                     val geometry = newest.filter { it.name.startsWith("ds_geometry_writer_") }
                     val countTraces = newest.filter { it.name.startsWith("ds_count_producer_") }
-                    val upstreamCounts = countTraces.filter { it.name.contains("cb3b9c1ea64fe876") }.take(20)
+                    val upstreamCounts = countTraces.filter { it.name.contains("cb3b9c1ea64fe876") }.let { rows ->
+                        (rows.filter { it.name.endsWith("_p3.json") }.take(12) + rows.filter { it.name.endsWith("_p2.json") }.take(12) + rows.take(16) + rows.takeLast(8)).distinct()
+                    }
                     val rayTargets = newest.filter { it.name.startsWith("ds_ray_producer_f") && it.name.endsWith("_target.json") }
                     // Retain both the first and last matched updates of the actually consumed probes.
                     val prioritizedRays = (rayTargets.takeLast(10) + rayTargets.take(20)).distinct()
@@ -325,7 +327,7 @@ object Diagnostics {
                     val depthOwners = newest.filter { it.name.startsWith("ds_depth_prepass_f") }
                     val positions = newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24)
                     val visibility = countTraces.filter { it.name.contains("fb18d110fab8234e") }
-                    val producer = (coverage + bridge + visibility + upstreamCounts + depthOwners + positions + edges + relightTraces + prioritizedRays +
+                    val producer = (bridge + upstreamCounts + coverage + visibility + depthOwners + positions + edges + relightTraces + prioritizedRays +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
                         geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +

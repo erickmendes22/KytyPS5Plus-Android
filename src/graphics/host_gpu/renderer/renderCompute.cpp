@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/pipeline/demonsCountArithmeticProbe.h"
 #include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsDominantGeometry.h"
@@ -432,7 +433,26 @@ void RenderExecutor::RememberDsAtlasWriter(ImageId id, const ImageInfo& info,
 	          frame, view.base_layer, view.layer_count, view.base_level, path};
 }
 
+void RenderExecutor::BindDsCountArithmetic(PreparedBindings& bindings,bool capture) {
+    namespace P=DemonsCountArithmeticProbe;
+    const auto& p=*bindings.runtime->program;
+    if(p.shader_hash!=P::Shader||!P::Supported(p.ds_light_math_variant))return;
+    auto& storage=m_ds_count_arithmetic_buffers[capture];
+    const bool init=!storage;
+    constexpr auto bytes=P::WordCount*sizeof(uint32_t);
+    if(init)storage=std::make_unique<Buffer>(m_context.GetGraphics(),m_context.GetCommandScheduler(),
+        MemoryUsage::Download,0,vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eTransferSrc,bytes);
+    if(init||capture){
+        std::array<uint32_t,P::WordCount> words{};
+        words[0]=capture?1u:0u;
+        std::memcpy(storage->Mapped().data(),words.data(),bytes);storage->Flush(0,bytes);
+    }
+    bindings.shared_memory=vk::DescriptorBufferInfo{storage->Handle(),0,bytes};
+}
 void RenderExecutor::BindDsCountExec(PreparedBindings& bindings,bool capture) {
+    if(bindings.runtime->program->shader_hash==DemonsCountArithmeticProbe::Shader) {
+        BindDsCountArithmetic(bindings,capture);return;
+    }
     namespace D=DemonsCountExecProbe;
     const auto& p=*bindings.runtime->program;
     if(p.shader_hash!=D::Shader || !D::SupportedFingerprint(p.ds_light_math_variant))return;
@@ -471,6 +491,9 @@ void RenderExecutor::BindDsLightMath(PreparedBindings& bindings,
 	if (!bindings.runtime->program->ds_light_math_variant) return;
     if(bindings.runtime->program->shader_hash==DemonsRelightProbe::Shader){
         BindDsRelightTrace(bindings,{0,UINT32_MAX,UINT32_MAX});return;
+    }
+    if(bindings.runtime->program->shader_hash==DemonsCountArithmeticProbe::Shader){
+        BindDsCountArithmetic(bindings,false);return;
     }
     if(bindings.runtime->program->shader_hash==DemonsCountExecProbe::Shader){
         BindDsCountExec(bindings,false);return;
@@ -3320,7 +3343,8 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
         {"watch_address",watch_address},{"capture_seq",seq},
         {"user_data",snap.user_data},{"shader_data",bindings.shader_data},
         {"matrix_mode",static_cast<unsigned>(DemonsCausalMatrix::Mode())},
-        {"execution_probe_variant",bindings.runtime->program->ds_light_math_variant}};
+        {"execution_probe_variant",bindings.runtime->program->ds_light_math_variant},
+        {"capture_tick_before",context.GetCommandScheduler().CurrentTick()}};
     auto buffers=nlohmann::json::array();
     for (uint32_t slot=0;slot<bindings.buffer_sources.size() && slot<bindings.buffers.size();++slot) {
         const auto& src=bindings.buffer_sources[slot];
@@ -3330,6 +3354,8 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
             entry["cpu_modified"]=context.GetBufferCache().IsRegionCpuModified(src.address,src.size);
         }
         if (slot<snap.buffers.size()) entry["descriptor"]=snap.buffers[slot].dwords;
+        entry["native_offset"]=bindings.buffers[slot].offset;
+        entry["native_range"]=bindings.buffers[slot].range;
         // Small model tables, per-object lists, flags and reservation counters
         // are captured in full. Large vertex payloads are not needed for the
         // first gate; report explicitly that they were not read.
@@ -3337,7 +3363,7 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
             auto words=ReadDsBoundWords(context,bindings,slot,src.size/4);
             entry["status"]=words.size()==src.size/4?"captured":"incomplete_gpu_read";
             entry["gpu_words"]=std::move(words);
-            if (slot==0 || slot==7 || (!upstream_count && slot==2) ||
+            if (slot==0 || slot==7 || upstream_count || (!upstream_count && slot==2) ||
                 (upstream_count && D::Overlaps(src.address,src.size,watch_address,20))) {
                 std::vector<uint32_t> backing(src.size/4);
                 if (LibKernel::Memory::TryReadBacking(src.address,backing.data(),src.size))
@@ -3354,7 +3380,7 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
         }
         if (const auto* w=FindDsBufferProducer(frame,src.address,src.size,false))
             entry["overlapping_compute_candidate"]={{"shader",fmt::format("{:016x}",w->shader)},
-                {"frame",w->frame},{"submit",w->submit},{"address",w->address},{"bytes",w->size},{"fill",w->fill}};
+                {"frame",w->frame},{"submit",w->submit},{"address",w->address},{"bytes",w->size},{"fill",w->fill},{"serial",w->serial}};
         buffers.push_back(std::move(entry));
     }
     report["before"]=std::move(buffers);
@@ -3446,6 +3472,41 @@ static void EndDsCountProducer(RenderContext& context,const PreparedBindings& bi
     } else if(bindings.runtime->program->shader_hash==P::Shader) {
         (*report)["exec_trace_status"]="no_validated_variant";
     }
+    namespace A=DemonsCountArithmeticProbe;
+    if(bindings.runtime->program->shader_hash==A::Shader) {
+        const auto fp=bindings.runtime->program->ds_light_math_variant;
+        const auto& native=bindings.shared_memory;
+        std::array<uint32_t,A::WordCount> raw{};
+        auto evidence=nlohmann::json{{"status","no_validated_variant"},{"fingerprint",fmt::format("{:016x}",fp)}};
+        if(A::Supported(fp)){
+            evidence["status"]="readback_failed";
+            if(native.buffer&&native.range==raw.size()*sizeof(uint32_t)&&ReadDsGpuWords(context,native.buffer,native.offset,raw)){
+                evidence["raw"]=raw;
+                const auto get=[&](A::Site site)->std::optional<uint32_t>{
+                    const auto i=1+2*static_cast<uint32_t>(site);
+                    return raw[i]?std::optional<uint32_t>(raw[i+1]):std::nullopt;
+                };
+                constexpr std::array<const char*,A::SiteCount> names{"secondary_limit","secondary_index","secondary_length","secondary_resolved_offset","secondary_in_range","secondary_load","secondary_value",
+                    "primary_index","primary_length","primary_resolved_offset","primary_in_range","primary_load","primary_limit","primary_value","count","groups",
+                    "store_groups","store_y","store_count","store_secondary","store_z"};
+                auto sites=nlohmann::json::object();
+                for(uint32_t i=0;i<A::SiteCount;++i)if(auto v=get(static_cast<A::Site>(i)))sites[names[i]]=*v;
+                evidence["sites"]=std::move(sites);
+                const auto sec_limit=get(A::SecLimit),sec_load=get(A::SecLoad),sec=get(A::SecValue),
+                    pri=get(A::PriLoad),pri_limit=get(A::PriLimit),count=get(A::Count),groups_site=get(A::Groups);
+                if(sec_limit&&sec&&pri&&pri_limit&&count&&groups_site&&(!*sec_limit||sec_load||fp==A::Two)){
+                    const auto expected=DemonsCausalMatrix::CountExpected(*pri,sec_load.value_or(0),*pri_limit,*sec_limit);
+                    const std::array<std::optional<uint32_t>,5> stores{get(A::StoreGroup),get(A::StoreZ),get(A::StoreY),get(A::StoreCount),get(A::StoreSecondary)};
+                    bool complete=true,match=*sec==expected[4]&&*count==expected[3]&&*groups_site==expected[0];
+                    for(size_t i=0;i<stores.size();++i){complete&=stores[i].has_value();if(stores[i])match&=*stores[i]==expected[i];}
+                    evidence["actual_operand_expected"]=expected;
+                    evidence["status"]=complete?(match?"match":"arithmetic_or_store_divergence"):"store_not_executed";
+                    if(complete){std::array<uint32_t,5> out{};for(size_t i=0;i<5;++i)out[i]=*stores[i];evidence["stores"]=out;}
+                }else evidence["status"]="incomplete_operands";
+            }
+        }
+        (*report)["actual_execution"]=std::move(evidence);
+    }
     (*report)["groups_valid"]=!indirect || ReadDsGpuWords(context,indirect,indirect_offset,groups);
     (*report)["groups"]=groups;
     auto after=nlohmann::json::array();
@@ -3494,7 +3555,16 @@ static void EndDsCountProducer(RenderContext& context,const PreparedBindings& bi
             }
         }
         (*report)["independent_replay"]=std::move(result);
+        auto& actual=(*report)["actual_execution"];
+        const auto& independent=(*report)["independent_replay"];
+        if(actual.contains("stores")&&independent.contains("actual")) {
+            actual["stores_match_gpu_readback"]=actual["stores"]==independent["actual"];
+            actual["actual_operands_match_snapshot_oracle"]=actual["actual_operand_expected"]==independent["expected"];
+        }
+        Log::WriteToConsoleAndLog(fmt::format("[DS_COUNT_ARITH_RESULT] frame={} submit={} snapshot={} executed={}\n",
+            (*report)["frame"].get<int32_t>(),(*report)["submit"].get<uint64_t>(),independent.value("status",std::string("unavailable")),actual.value("status",std::string("unavailable"))));
     }
+    (*report)["capture_tick_after"]=context.GetCommandScheduler().CurrentTick();
     const auto folder=Config::GetShaderDumpFolder()/"queue-state";
     std::error_code ec;
     std::filesystem::create_directories(folder,ec);
@@ -3976,10 +4046,10 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 // positions, and never changes a draw, dispatch, or shader.
 static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings& bindings,
                                  uint64_t submit, const std::array<uint32_t, 3>& groups,
-                                 bool groups_valid) {
+                                 bool groups_valid, bool before=false) {
 	using namespace DemonsQueueProbe;
 	if (!DsTraceEnabled() || bindings.runtime->program->shader_hash != Shaders[1] ||
-	    !groups_valid || groups[0] == 0 || groups[1] == 0 || groups[2] == 0 ||
+	    (!before && (!groups_valid || groups[0] == 0 || groups[1] == 0 || groups[2] == 0)) ||
 	    Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return;
 	const int32_t frame = context.GetGpu().GetFrameNum();
 	const auto& gate = DemonsAdaptiveCapture::Current();
@@ -4075,8 +4145,50 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 		std::memcpy(raw.data(), mapped, raw.size());
 		return raw;
 	};
-	const auto gbytes = snapshot(*albedo, 4u);
-	const auto hbytes = snapshot(*hdr, 8u);
+	struct BridgeBefore {
+        int32_t frame=-1;
+        uint64_t submit=0,gbuffer_owner=0,hdr_owner=0,gbuffer_version=0,hdr_version=0;
+        std::array<uint32_t,64> g{};
+        std::array<uint16_t,256> h{};
+        std::array<uint8_t,64> covered{};
+        bool queue_valid=false;
+    };
+    static BridgeBefore previous;
+    const auto gbytes = snapshot(*albedo, 4u);
+    const auto hbytes = snapshot(*hdr, 8u);
+    if(before){
+        previous={};
+        if(gbytes.size()!=256u||hbytes.size()!=512u)return;
+        previous.frame=frame;previous.submit=submit;
+        previous.gbuffer_owner=albedo_image.info.data.address;previous.hdr_owner=hdr_image.info.data.address;
+        previous.gbuffer_version=albedo_image.ContentVersion();previous.hdr_version=hdr_image.ContentVersion();
+        std::memcpy(previous.g.data(),gbytes.data(),gbytes.size());std::memcpy(previous.h.data(),hbytes.data(),hbytes.size());
+        // Read actual bound tile-list/prefix, not the periodically cached queue sample.
+        std::vector<uint32_t> prefix,tiles;
+        for(uint32_t slot=0;slot<bindings.buffer_sources.size();++slot){
+            const auto addr=bindings.buffer_sources[slot].address;
+            if(addr==PrefixAddress)prefix=ReadDsBoundWords(context,bindings,slot,256);
+            if(addr==TilesAddress)tiles=ReadDsBoundWords(context,bindings,slot,128*1024);
+        }
+        const auto selected=SelectTiles(prefix,tiles,33);
+        const auto av=std::ranges::find(albedo_image.views,albedo->image_view,&CachedImageView::view);
+        const auto hv=std::ranges::find(hdr_image.views,hdr->image_view,&CachedImageView::view);
+        if(selected.valid&&av!=albedo_image.views.end()&&hv!=hdr_image.views.end()){
+            const auto w=std::max(albedo_image.backing.extent.width>>av->info.base_level,1u);
+            const auto h=std::max(albedo_image.backing.extent.height>>av->info.base_level,1u);
+            const auto hw=std::max(hdr_image.backing.extent.width>>hv->info.base_level,1u);
+            const auto hh=std::max(hdr_image.backing.extent.height>>hv->info.base_level,1u);
+            if(w==hw&&h==hh){
+                previous.queue_valid=true;
+                for(uint32_t i=0;i<64;++i){
+                    const auto x=((i%8u)*2u+1u)*w/16u,y=((i/8u)*2u+1u)*h/16u;
+                    const auto tile=(y/8u)*((w+7u)/8u)+x/8u;
+                    previous.covered[i]=std::find(tiles.begin()+selected.first,tiles.begin()+selected.end,tile)!=tiles.begin()+selected.end;
+                }
+            }
+        }
+        return;
+    }
 	if (gbytes.size() != 256u || hbytes.size() != 512u) {
 		Log::WriteToConsoleAndLog(fmt::format(
 		    "[DS_LIGHT_BRIDGE_SKIP] frame={} phase={} reason=readback albedo={} hdr={}\n",
@@ -4194,7 +4306,10 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 		return exponent == 0 ? std::ldexp(double(fraction), -24)
 		                     : std::ldexp(1.0 + double(fraction) / 1024.0, int(exponent) - 15);
 	};
-	uint32_t colored = 0, lit = 0;
+	uint32_t colored = 0, lit = 0, colored_lit=0, colored_unlit=0, covered_colored=0, covered_colored_unlit=0, covered_changed=0;
+    const bool paired=previous.frame==frame&&previous.submit==submit&&previous.gbuffer_owner==albedo_image.info.data.address&&previous.hdr_owner==hdr_image.info.data.address;
+    const bool queue_valid=paired&&previous.queue_valid;
+    auto joint=nlohmann::json::array();
 	double total = 0.0;
 	for (uint32_t i = 0; i < 64; ++i) {
 		colored += (gwords[i] & 0x00ffffffu) != 0u;
@@ -4204,6 +4319,15 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 		const double level = 0.2126 * r + 0.7152 * g + 0.0722 * b;
 		total += std::min(level, 4.0);
 		lit += level >= 0.006;
+        const bool has_color=(gwords[i]&0x00ffffffu)!=0u,has_light=level>=0.006;
+        colored_lit+=has_color&&has_light;colored_unlit+=has_color&&!has_light;
+        const bool covered=queue_valid&&previous.covered[i];
+        const bool unchanged=paired&&std::equal(hwords.begin()+4*i,hwords.begin()+4*i+4,previous.h.begin()+4*i);
+        covered_colored+=covered&&has_color;
+        covered_colored_unlit+=covered&&has_color&&!has_light;
+        covered_changed+=covered&&has_color&&!unchanged;
+        if(has_color)joint.push_back({{"pixel",i},{"albedo",gwords[i]},{"hdr_level",level},{"queue_membership_known",queue_valid},{"covered",covered},
+            {"paired",paired},{"albedo_unchanged",paired&&previous.g[i]==gwords[i]},{"hdr_unchanged",unchanged}});
 	}
 	const nlohmann::json output {
 	    {"frame", frame}, {"phase", phase}, {"submit", submit},
@@ -4222,7 +4346,12 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
 	    {"hdr_owner", hdr_image.info.data.address},
 	    {"hdr_version", hdr_image.ContentVersion()},
 	    {"hdr_extent", {hdr_image.backing.extent.width, hdr_image.backing.extent.height}},
-	    {"hdr_rgba16_bits", hwords}, {"hdr_lit", lit}, {"hdr_mean", total / 64.0}
+	    {"hdr_rgba16_bits", hwords}, {"hdr_lit", lit}, {"hdr_mean", total / 64.0},
+        {"same_dispatch_before_valid",paired},{"queue_membership_valid",queue_valid},
+        {"before_gbuffer",previous.g},{"before_hdr",previous.h},{"before_gbuffer_version",previous.gbuffer_version},
+        {"before_hdr_version",previous.hdr_version},{"queue_covered",previous.covered},
+        {"colored_lit",colored_lit},{"colored_unlit",colored_unlit},{"covered_colored",covered_colored},
+        {"covered_colored_unlit",covered_colored_unlit},{"covered_colored_changed",covered_changed},{"joint_pixels",joint}
 	};
 	const auto folder = Config::GetShaderDumpFolder() / "queue-state";
 	std::error_code ec;
@@ -5166,6 +5295,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (count_producer_trace) BindDsCountExec(bindings,true);
     const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{args.x,args.y,args.z},submit_id,
         split_on_cpu?vk::Buffer{}:indirect_buffer,indirect_offset);
+    if(DemonsCausalMatrix::Evidence()&&program.shader_hash==DemonsQueueProbe::Shaders[1])
+        CaptureDsLightBridge(m_context,bindings,submit_id,{1,1,1},true,true);
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
 	               std::span {&descriptor_stage, 1u});

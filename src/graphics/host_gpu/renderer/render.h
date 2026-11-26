@@ -452,6 +452,7 @@ private:
 	                          const std::array<uint32_t, 3>& groups = {}, bool groups_valid = false);
 	std::array<std::unique_ptr<Buffer>, 2> m_ds_light_math_buffers;
 	std::array<std::unique_ptr<Buffer>, 2> m_ds_count_exec_buffers;
+	std::array<std::unique_ptr<Buffer>, 2> m_ds_count_arithmetic_buffers;
     std::array<std::unique_ptr<Buffer>,2> m_ds_relight_buffers;
 	std::array<std::unique_ptr<Buffer>, 2> m_ds_vertex_position_buffers;
 	struct DsAtlasWriter {
@@ -466,6 +467,7 @@ private:
 	void RememberDsAtlasWriter(ImageId id, const ImageInfo& info, const ImageViewInfo& view,
 	                          uint64_t shader, const char* path);
 	void BindDsCountExec(PreparedBindings& bindings,bool capture);
+	void BindDsCountArithmetic(PreparedBindings& bindings,bool capture);
     void BindDsRelightTrace(PreparedBindings& bindings,std::array<uint32_t,3> header);
 	void BindDsLightMath(PreparedBindings& bindings, const DemonsQueueProbe::Capture* capture);
 	void ReadDsLightMath(const DemonsQueueProbe::Capture& capture, uint64_t submit,

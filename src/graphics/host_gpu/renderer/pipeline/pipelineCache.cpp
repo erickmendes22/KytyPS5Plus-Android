@@ -4,6 +4,7 @@
 #include "graphics/shader/demonsPcDppPolicy.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsLightMathProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsCountExecProbe.h"
+#include "graphics/host_gpu/renderer/pipeline/demonsCountArithmeticProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsRelightProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsVertexPositionProbe.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsMaterialCoverage.h"
@@ -619,6 +620,26 @@ struct PipelineCache::ProgramCache {
 			    "[DS_LIGHT_MATH_VARIANT] shader=0x{:016x} binary=0x{:016x} instrumented={}\n",
 			    options.shader_hash, fingerprint, program.ds_light_math_variant != 0));
 		}
+        if (options.shader_hash==DemonsCountArithmeticProbe::Shader && trace && std::strcmp(trace,"1")==0) {
+            constexpr auto kind=ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
+            constexpr auto slot=static_cast<size_t>(kind);
+            const auto fp=XXH3_64bits(result.spirv.data(),result.spirv.size()*sizeof(uint32_t));
+            auto copy=result.spirv;
+            const bool assembled=!program.bindings.descriptor_counts[slot] &&
+                DemonsCountArithmeticProbe::Instrument(copy,fp,ShaderRecompiler::IR::NativeBinding(program.stage,kind));
+            const bool valid=assembled && ValidateShaderSpirv(options.dump_label,options.shader_hash,copy,options.maintenance8_enabled,true);
+            const auto path=Config::GetShaderDumpFolder()/"spv"/fmt::format("cs_{:016x}_{:016x}_causal.spv",options.shader_hash,fp);
+            Common::File::CreateDirectories(path.parent_path());
+            Common::File native(path);
+            if(!native.IsInvalid())native.Write(result.spirv.data(),result.spirv.size()*sizeof(uint32_t));
+            Log::WriteToConsoleAndLog(fmt::format("[DS_COUNT_ARITH_STATUS] binary={:016x} assembled={} validated={}\n",fp,assembled,valid));
+            if(valid){
+                result.spirv=std::move(copy);
+                program.bindings.descriptor_counts[slot]=1;
+                program.bindings.descriptor_mask|=uint64_t{1}<<slot;
+                program.ds_light_math_variant=fp;
+            }
+        }
 		if (options.shader_hash==DemonsRelightProbe::Shader && trace && std::strcmp(trace,"1")==0) {
             constexpr auto kind=ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory;
             constexpr auto slot=static_cast<size_t>(kind);
