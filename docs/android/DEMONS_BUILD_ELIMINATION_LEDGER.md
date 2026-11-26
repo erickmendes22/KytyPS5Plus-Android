@@ -354,3 +354,30 @@ Reprodução offline (somente host):
 `python3 docs/android/tools/p8_prepare_guest_capture.py KYTY_746.zip OUT --seq 4891`.
 O arquivo observado fica separado dos bytes do manifesto de execução.
 A referência não usa o conteúdo do target posterior como entrada.
+
+## #748 — aquisição integrada da fronteira P8 (preparação)
+
+A análise offline executou o binário guest real ea2e66ea6ad76baf da #746,
+frame 215 / submit 6292, com o executável Rocjitsu efetivamente compilado
+no run 45897822805 (artifact 15156142536, SHA-256 do ZIP
+056fb5eda9256b446b1e4256edecd2954a281a8f790b75ff08bdfbc11a72b9dd).
+**78 passos, 45 acessos arquiteturais, 120/120 bytes iguais** nos ranges
+0x21de00078 e 0x21de00138; zero diagnóstico de execução. Preservar esse
+certificado local; não comparar a câmera do frame 215 com a do 216.
+
+O problema de aquisição seguinte está demonstrado: image_sample_l dos dois
+produtores de visibilidade usa HZB, mas a #746 preserva somente os descriptors.
+O mesmo blob agora inclui os bytes reais de todos os subrecursos lidos pelos
+dois produtores, em ordem anterior ao dispatch, com descriptor, view/swizzle,
+extent, versão, offsets e digest. A retenção e exportação seguem os mesmos
+endpoints dos argumentos, com 16 MiB por geração e 64 MiB globais; o teste
+de política exercita limites e overflow. Isso alimenta a execução guest e
+o crossover de P8; não força contagem, iluminação ou depth.
+
+**Corte global: nenhum.** #748 é a aquisição integrada dos mecanismos
+preparados; não exige ter o gameplay futuro ou um PC externo para compilar.
+Ainda não há prova integral de P8: o executor de wave não é rasterizador,
+e o replay Vulkan não é referência guest independente. Após o diagnóstico,
+comparar os dados da fronteira, usar o crossover control/sham/substitution
+com referência válida e só classificar PASS/FAIL no alcance demonstrado.
+Não publicar resultado fictício se a captura ou uma comparação falhar.

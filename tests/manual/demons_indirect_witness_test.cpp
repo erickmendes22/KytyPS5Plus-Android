@@ -62,8 +62,13 @@ int main(){
     static_assert(RetainCandidate(false,ProducerChainLimit-1));
     static_assert(!RetainCandidate(false,ProducerChainLimit));
     static_assert(RetainCandidate(true,ProducerChainLimit));
-    static_assert(ReplacementCapacity(24ull<<20,8ull<<20)==(8ull<<20));
-    static_assert(ReplacementCapacity(24ull<<20,0)==0);
+    static_assert(ReplacementCapacity(64ull<<20,16ull<<20)==(16ull<<20));
+    static_assert(ReplacementCapacity(64ull<<20,0)==0);
+    static_assert(ImagePayloadFits(12,44,2,4,4));
+    static_assert(!ImagePayloadFits(12,43,2,4,4));
+    static_assert(!ImagePayloadFits(45,44,1,1,4));
+    static_assert(!ImagePayloadFits(0,UINT64_MAX,UINT32_MAX,UINT32_MAX,4));
+    static_assert(!ImagePayloadFits(0,64,0,1,4));
     static_assert(ReplacementCapacity(0,1)==0);
     static_assert(MetadataFits(4ull<<20,3ull<<20,512ull<<10));
     static_assert(!MetadataFits(4ull<<20,4ull<<20,1));

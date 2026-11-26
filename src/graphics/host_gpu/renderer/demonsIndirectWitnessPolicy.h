@@ -6,8 +6,14 @@
 
 namespace Libs::Graphics::DemonsIndirectWitnessPolicy {
 constexpr uint64_t MetadataBudget = 8ull << 20;
-constexpr uint64_t BlobBudget = 24ull << 20;
-constexpr uint64_t GenerationBudget = 8ull << 20;
+// Account for retained image operands of the two culling producers, plus
+// buffers and both pinned endpoints. Remains below the Java queue budget.
+constexpr uint64_t BlobBudget = 64ull << 20;
+constexpr uint64_t GenerationBudget = 16ull << 20;
+constexpr bool ImagePayloadFits(uint64_t used,uint64_t budget,uint32_t w,uint32_t h,uint32_t texel){
+    return w&&h&&texel&&w<=16384&&h<=16384&&used<=budget&&
+        uint64_t(w)*h*texel<=budget-used;
+}
 constexpr uint64_t RecordBytes = 20;
 constexpr uint64_t BatchBytes = 60;
 // Retain the changed producer and its next seven candidates even when the

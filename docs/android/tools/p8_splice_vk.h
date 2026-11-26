@@ -36,6 +36,9 @@ inline uint32_t pixel_bytes(VkFormat fmt, VkImageAspectFlags a) {
         return fmt==VK_FORMAT_D32_SFLOAT_S8_UINT || fmt==VK_FORMAT_S8_UINT ? 1 : 0;
     if (a!=VK_IMAGE_ASPECT_COLOR_BIT) return 0;
     switch(fmt) {
+        case VK_FORMAT_R16_SFLOAT: return 2;
+        case VK_FORMAT_R32G32_SFLOAT: return 8;
+        case VK_FORMAT_R16G16_SFLOAT: case VK_FORMAT_R32_SFLOAT:
         case VK_FORMAT_R32_UINT: case VK_FORMAT_R8G8B8A8_UNORM:
         case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB:
         case VK_FORMAT_B8G8R8A8_SRGB: case VK_FORMAT_A2R10G10B10_UNORM_PACK32:

@@ -642,3 +642,7 @@ reprova ambos os ZIPs e declara backend independente C1..C8 indisponível.
 ## Staging da referência independente após #747
 
 P8 [0,16] permanece ativo. Ver [registro detalhado](DEMONS_BUILD_ELIMINATION_LEDGER.md#staging--referência-guest-independente-26112026-após-747). A calibração do produtor ea2e66ea6ad76baf reproduz 120 bytes observados no frame 215, sem certificar o prefixo completo. A matriz de câmera muda no episódio seguinte; preservar HZB e operandos da execução real, não transplantar contagens. Backend Rocjitsu em validação host, sem novo APK.
+
+## #748 — referência AMD validada e aquisição da entrada HZB
+
+CI 45897822805 aprovado; execução offline do shader real ea2e66ea6ad76baf da #746: 78 passos, 45 acessos, 120/120 bytes iguais. A próxima aquisição integra os bytes de imagem lidos por b213157ad251f2c7 e 7d5ad40fca3137e2 aos buffers retidos no mesmo endpoint, com identidade e digest. Não se altera a semântica. P8 [0,16], sem corte global; ver ledger.

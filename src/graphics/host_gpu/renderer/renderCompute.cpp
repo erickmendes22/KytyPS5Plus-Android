@@ -3316,6 +3316,90 @@ static bool ReadDsIndirectOperandSlices(RenderContext& context,
     return true;
 }
 
+// Capture actual sampled image payloads at the producer, not a later HZB
+// version or a screenshot. The bytes share the CP witness's retained blob,
+// so its rolling endpoints pin the matching buffers and textures together.
+static void CaptureDsIndirectImageOperands(RenderContext& context,
+    const PreparedBindings& bindings, uint64_t budget, DsIndirectProducerCapture& cap) {
+    const auto& program=*bindings.runtime->program;
+    if(program.shader_hash!=0xb213157ad251f2c7ull &&
+       program.shader_hash!=0x7d5ad40fca3137e2ull)return;
+    const auto& resources=program.info.images;
+    cap.inputs["image_operands"]=nlohmann::json::array();
+    bool complete=!resources.empty();
+    for(size_t i=0;i<resources.size();++i){
+        const auto& res=resources[i];
+        if(!res.read&&!res.atomic)continue;
+        nlohmann::json entry={{"resource",i},{"descriptor_index",res.descriptor_index},
+            {"shader_swizzle",res.shader_swizzle},{"status","missing_binding"},
+            {"subresources",nlohmann::json::array()}};
+        auto capture=[&]()->bool{
+            if(i>=bindings.images.size())return false;
+            const auto& binding=bindings.images[i];
+            if(!binding.image_id||binding.placeholder)return false;
+            auto& image=context.GetTextureCache().GetImage(binding.image_id);
+            const auto found=std::ranges::find(image.views,binding.image_view,&CachedImageView::view);
+            entry["image"]=DemonsPrelightTrace::Identity(image);
+            entry["guest"]=binding.desc.info.data.address;
+            if(found==image.views.end()){entry["status"]="missing_view";return false;}
+            const auto view=found->info;
+            const auto& host=image.backing;
+            entry["view"]={{"format",static_cast<uint32_t>(view.format)},
+                {"type",static_cast<uint32_t>(view.type)},{"base_mip",view.base_level},
+                {"mip_count",view.level_count},{"base_layer",view.base_layer},
+                {"layer_count",view.layer_count},{"min_lod",view.min_lod},
+                {"swizzle",{static_cast<uint32_t>(view.mapping.r),static_cast<uint32_t>(view.mapping.g),
+                    static_cast<uint32_t>(view.mapping.b),static_cast<uint32_t>(view.mapping.a)}}};
+            const auto texel=DemonsP8Reference::TexelBytes(host.format,vk::ImageAspectFlagBits::eColor);
+            if(!texel||!host.image||host.samples!=1||host.image_type!=vk::ImageType::e2D||
+                view.aspect!=vk::ImageAspectFlagBits::eColor||
+                !(host.usage&vk::ImageUsageFlagBits::eTransferSrc)||
+                !view.level_count||!view.layer_count||view.base_level>=host.mip_levels||
+                view.base_layer>=host.layers||view.level_count>host.mip_levels-view.base_level||
+                view.layer_count>host.layers-view.base_layer){
+                entry["status"]="unsupported_backing";return false;
+            }
+            const auto version=image.ContentVersion();
+            for(uint32_t m=0;m<view.level_count;++m){
+                const auto mip=view.base_level+m;
+                const auto w=std::max(1u,host.extent.width>>mip);
+                const auto h=std::max(1u,host.extent.height>>mip);
+                for(uint32_t l=0;l<view.layer_count;++l){
+                    if(!DemonsIndirectWitnessPolicy::ImagePayloadFits(cap.operand_bytes.size(),budget,w,h,texel)){
+                        entry["status"]="image_budget_exceeded";return false;
+                    }
+                    const auto bytes=uint64_t{w}*h*texel;
+                    auto& download=context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+                    auto [mapped,offset]=download.Map(bytes,16u,true);
+                    if(!mapped){entry["status"]="image_map_failed";return false;}
+                    download.Commit();
+                    vk::BufferImageCopy copy{};
+                    copy.bufferOffset=offset;
+                    copy.imageSubresource={vk::ImageAspectFlagBits::eColor,mip,view.base_layer+l,1};
+                    copy.imageExtent={w,h,1};
+                    context.GetCommandScheduler().EndRendering(PassEnd::ImageCopy);
+                    image.Download(std::span{&copy,1u},download.Handle(),offset,bytes);
+                    context.GetCommandScheduler().Finish();
+                    download.Invalidate(offset,bytes);
+                    if(image.ContentVersion()!=version){entry["status"]="image_version_changed";return false;}
+                    const auto* first=reinterpret_cast<const uint8_t*>(mapped);
+                    entry["subresources"].push_back({{"mip",mip},{"layer",view.base_layer+l},
+                        {"extent",{w,h}},{"texel_bytes",texel},{"bytes",bytes},
+                        {"offset_bytes",cap.operand_bytes.size()},
+                        {"fnv1a64",DemonsIndirectWitness::Digest(std::span<const uint8_t>{first,static_cast<size_t>(bytes)})}});
+                    cap.operand_bytes.insert(cap.operand_bytes.end(),first,first+bytes);
+                }
+            }
+            entry["version_after"]=image.ContentVersion();
+            entry["status"]="complete";
+            return true;
+        };
+        if(!capture())complete=false;
+        cap.inputs["image_operands"].push_back(std::move(entry));
+    }
+    cap.inputs["image_operands_complete"]=complete&&!cap.inputs["image_operands"].empty();
+}
+
 static DsIndirectProducerCapture BeginDsIndirectProducer(RenderContext& context,
     const PreparedBindings& bindings, const ShaderComputeInputInfo& input, uint64_t submit,
     vk::ShaderModule module, std::array<uint32_t, 3> groups, bool indirect = false,
@@ -3490,6 +3574,7 @@ static DsIndirectProducerCapture BeginDsIndirectProducer(RenderContext& context,
     for (const auto& entry : cap.inputs["bindings"])
         if ((entry["read"].get<bool>() || entry["atomic"].get<bool>()) && entry["bytes"].get<uint64_t>() &&
             entry["capture_status"] != "complete") cap.inputs["buffers_complete"] = false;
+    CaptureDsIndirectImageOperands(context,bindings,budget,cap);
     cap.inputs["operand_tick_after"] = context.GetCommandScheduler().CurrentTick();
     cap.inputs["operand_mapping_epoch_after"] = context.GetBufferCache().UnregisterEpoch();
     cap.inputs["operand_gpu_dirty_generation_after"] = context.GetBufferCache().GpuDirtyGeneration();

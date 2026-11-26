@@ -22,6 +22,10 @@ inline uint32_t TexelBytes(vk::Format format,vk::ImageAspectFlagBits aspect) {
     if(aspect==vk::ImageAspectFlagBits::eDepth)
         return format==vk::Format::eD32Sfloat||format==vk::Format::eD32SfloatS8Uint?4:0;
     switch(format){
+        case vk::Format::eR16Sfloat:return 2;
+        case vk::Format::eR32G32Sfloat:return 8;
+        case vk::Format::eR16G16Sfloat:
+        case vk::Format::eR32Sfloat:
         case vk::Format::eR32Uint:
         case vk::Format::eA2B10G10R10UnormPack32:
         case vk::Format::eA2R10G10B10UnormPack32:
