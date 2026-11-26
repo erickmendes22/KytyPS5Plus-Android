@@ -107,6 +107,38 @@ struct SavedGuestRegs {
 	}
 };
 
+// Read using the existing fault-safe kernel-mediated reader; never dereference
+// guest code or RSI directly in a SIGSEGV handler. Save errno across diagnostics.
+static Cpu::DemonsGuestWriteHistory::Evidence CaptureVertexFaultEvidence(uint64_t address,const GuestRegisters& regs){
+    Cpu::DemonsGuestWriteHistory::Evidence e;
+    const int saved_errno=errno;
+    auto& w=e.words;
+    w[0]=Cpu::DecodeDiagnostics::ReadSelf(Kernel::AddressFold::Fold(regs.rip),w.data()+1,32);
+    if(regs.gpr[GuestRegisters::kRsp])
+        w[5]=Cpu::DecodeDiagnostics::ReadSelf(Kernel::AddressFold::Fold(regs.gpr[GuestRegisters::kRsp]),w.data()+6,64);
+    const auto src=Kernel::AddressFold::Fold(regs.gpr[GuestRegisters::kRsi]);
+    const auto dst=Kernel::AddressFold::Fold(regs.gpr[GuestRegisters::kRdi]);
+    const uint64_t offset=address&((1ull<<20)-1);
+    // Exact page boundary and matching RDI: a copy candidate, not proof of
+    // instruction semantics. Include the last partial page of the XYZ range.
+    if(src&&dst==address&&offset<31488&&!(address&4095)){
+        std::array<uint32_t,1024> page{};
+        const auto bytes=std::min<uint64_t>(4096,31488-offset);
+        w[17]=src;
+        w[14]=Cpu::DecodeDiagnostics::ReadSelf(src,page.data(),bytes);
+        if(w[14]==bytes){
+            w[15]=14695981039346656037ull;
+            for(size_t i=0;i<bytes/4;++i){
+                const uint32_t x=page[i];
+                w[15]^=x;w[15]*=1099511628211ull;
+                w[16]+=(x&0x7f800000u)==0x7f800000u&&(x&0x007fffffu)!=0;
+            }
+        }
+    }
+    errno=saved_errno;
+    return e;
+}
+
 // FEX delivers Kyty's SIGSEGV hook through the signal delegator, before its own handling.
 bool HostSigsegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/, void* info, void* ucontext) {
 	auto* handler = g_fault_handler.load(std::memory_order_acquire);
@@ -120,8 +152,11 @@ bool HostSigsegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/, vo
 	const bool trace=is_write&&Cpu::DemonsGuestWriteHistory::ShouldRecord(address);
 	GuestRegisters regs{};
 	const bool exact=trace&&CaptureFaultingGuestRegisters(ucontext,&regs);
+    Cpu::DemonsGuestWriteHistory::Evidence evidence{};
+    if(exact&&Cpu::DemonsGuestWriteHistory::vertex_only.load(std::memory_order_relaxed))
+        evidence=CaptureVertexFaultEvidence(address,regs);
 	const bool handled=handler(address,is_write);
-	if(handled&&trace)Cpu::DemonsGuestWriteHistory::Record(address,exact?regs.rip:0,regs.gpr[GuestRegisters::kRsi],regs.gpr[GuestRegisters::kRdi],regs.gpr[GuestRegisters::kRcx],exact?regs.gpr:nullptr);
+	if(handled&&trace)Cpu::DemonsGuestWriteHistory::Record(address,exact?regs.rip:0,regs.gpr[GuestRegisters::kRsi],regs.gpr[GuestRegisters::kRdi],regs.gpr[GuestRegisters::kRcx],exact?regs.gpr:nullptr,&evidence);
 	return handled;
 }
 

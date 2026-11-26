@@ -3232,17 +3232,42 @@ static void SaveDsVertexCpuSource(int32_t frame,uint64_t submit,uint64_t tick,co
     const auto faults=Cpu::DemonsGuestWriteHistory::Overlap(address,bytes);
     report["fault_ring_oldest"]=faults.oldest;report["fault_ring_newest"]=faults.newest;
     report["fault_candidates_total"]=faults.events.size();report["fault_candidates_truncated"]=faults.truncated;
-    for(bool exact_only:{true,false}){
+    std::vector<uint64_t> emitted;
+    for(int pass=0;pass<3;++pass){
         unsigned count=0;
         for(const auto& e:faults.events){
             const bool exact=e.address>=folded&&e.address-folded<bytes;
-            if(exact!=exact_only||count>=8)continue;
+            const bool copy_candidate=exact&&e.evidence.words[17]!=0;
+            if((pass==0&&!copy_candidate)||(pass==1&&!exact)||(pass==2&&exact)||
+                count>=static_cast<unsigned>(pass==0?8:pass==1?4:2)||std::ranges::find(emitted,e.id)!=emitted.end())continue;
+            emitted.push_back(e.id);
             nlohmann::json row={{"event",e.id},{"fault_address",e.address},{"guest_rip",e.rip},
                 {"exact_range",exact},{"gpr",e.gpr},{"rsi",e.rsi},{"rdi",e.rdi},{"rcx",e.rcx}};
-            if(e.rip>=16){
-                std::array<uint8_t,64> code{};
-                if(LibKernel::Memory::TryReadBacking(e.rip-16,code.data(),code.size())){
-                    row["code_base"]=e.rip-16;row["code_bytes"]=code;
+            const auto& w=e.evidence.words;
+            row["fault_code_read_bytes"]=w[0];
+            if(w[0]){
+                std::array<uint8_t,32> code{};
+                std::memcpy(code.data(),w.data()+1,code.size());
+                row["code_base"]=e.rip;
+                row["code_bytes"]=std::vector<uint8_t>(code.begin(),code.begin()+std::min<uint64_t>(w[0],code.size()));
+            }
+            row["stack_read_bytes"]=w[5];
+            if(w[5])row["stack_words"]=std::vector<uint64_t>(w.begin()+6,w.begin()+6+std::min<uint64_t>(w[5]/8,8));
+            if(w[17]){
+                row["source_at_fault"]=w[17];row["source_read_bytes"]=w[14];
+                row["source_nan_words"]=w[16];row["source_digest"]=w[15];
+                if(exact&&source.contains("gpu_words")&&w[14]&&w[15]){
+                    const auto offset=e.address-folded;
+                    const auto page_bytes=std::min<uint64_t>(4096,bytes-offset);
+                    if(w[14]==page_bytes&&offset%4==0&&source["gpu_words"].size()>=(offset+page_bytes)/4){
+                        uint64_t digest=14695981039346656037ull,nans=0;
+                        for(uint64_t i=offset/4;i<(offset+page_bytes)/4;++i){
+                            const auto x=source["gpu_words"][i].get<uint32_t>();
+                            digest^=x;digest*=1099511628211ull;nans+=IsNanWord(x);
+                        }
+                        row["destination_page_digest"]=digest;row["destination_page_nan_words"]=nans;
+                        row["source_matches_destination_digest"]=digest==w[15];
+                    }
                 }
             }
             report["fault_candidates"].push_back(std::move(row));++count;
@@ -3262,7 +3287,7 @@ static void SaveDsVertexCpuSource(int32_t frame,uint64_t submit,uint64_t tick,co
         out.open(Folder()/"ds_vertex_producer_cpu_source.jsonl",std::ios::trunc);
     }
     const auto line=report.dump();
-    if(!out||used+line.size()+1>6u*1024u*1024u)++dropped;
+    if(!out||used+line.size()+1>8u*1024u*1024u)++dropped;
     else{out<<line<<'\n';out.flush();if(out)used+=line.size()+1;else ++dropped;}
     std::ofstream status(Folder()/"ds_vertex_producer_cpu_status.json",std::ios::trunc);
     if(status)status<<nlohmann::json{{"events",events},{"bytes",used},{"dropped",dropped},

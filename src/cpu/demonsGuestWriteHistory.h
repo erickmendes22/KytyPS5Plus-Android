@@ -12,8 +12,14 @@ namespace Cpu::DemonsGuestWriteHistory {
 // unprotected pages may be written again without any fault.
 constexpr uint64_t Window=64ull*1024;
 constexpr size_t Capacity=32768;
-struct Event {uint64_t id=0,address=0,rip=0,rsi=0,rdi=0,rcx=0;std::array<uint64_t,16> gpr{};};
-struct Cell {std::atomic<uint64_t> seq{},address{},rip{},rsi{},rdi{},rcx{};std::array<std::atomic<uint64_t>,16> gpr{};};
+// Captured at the fault, before allowing the guest store to resume.
+struct Evidence {
+    // 0 code byte count, 1..4 code bytes, 5 stack byte count, 6..13 stack,
+    // 14 source byte count, 15 source digest, 16 NaN words, 17 source address.
+    std::array<uint64_t,18> words{};
+};
+struct Event {uint64_t id=0,address=0,rip=0,rsi=0,rdi=0,rcx=0;std::array<uint64_t,16> gpr{};Evidence evidence{};};
+struct Cell {std::atomic<uint64_t> seq{},address{},rip{},rsi{},rdi{},rcx{};std::array<std::atomic<uint64_t>,16> gpr{};std::array<std::atomic<uint64_t>,18> evidence{};};
 static_assert(std::atomic<uint64_t>::is_always_lock_free);
 inline std::array<Cell,Capacity> ring{};
 inline std::atomic<uint64_t> next{};
@@ -32,7 +38,7 @@ inline bool VertexCandidate(uint64_t address){return (address&((1ull<<20)-1))<Wi
 inline bool ShouldRecord(uint64_t address){
     return Enabled()&&(!vertex_only.load(std::memory_order_relaxed)||VertexCandidate(address));
 }
-inline void Record(uint64_t address,uint64_t rip,uint64_t rsi,uint64_t rdi,uint64_t rcx,const uint64_t* gpr=nullptr) noexcept{
+inline void Record(uint64_t address,uint64_t rip,uint64_t rsi,uint64_t rdi,uint64_t rcx,const uint64_t* gpr=nullptr,const Evidence* evidence=nullptr) noexcept{
     if(!rip&&!vertex_only.load(std::memory_order_relaxed))return;
     if(vertex_only.load(std::memory_order_relaxed)&&!VertexCandidate(address))return;
     const auto id=next.fetch_add(1,std::memory_order_relaxed)+1;
@@ -42,6 +48,7 @@ inline void Record(uint64_t address,uint64_t rip,uint64_t rsi,uint64_t rdi,uint6
     c.rip.store(rip,std::memory_order_relaxed);c.rsi.store(rsi,std::memory_order_relaxed);
     c.rdi.store(rdi,std::memory_order_relaxed);c.rcx.store(rcx,std::memory_order_relaxed);
     for(size_t i=0;i<c.gpr.size();++i)c.gpr[i].store(gpr?gpr[i]:0,std::memory_order_relaxed);
+    for(size_t i=0;i<c.evidence.size();++i)c.evidence[i].store(evidence?evidence->words[i]:0,std::memory_order_relaxed);
     c.seq.store(id,std::memory_order_release);
 }
 struct Result {std::vector<Event> events;bool truncated=false;uint64_t newest=0,oldest=0;};
@@ -57,6 +64,7 @@ inline Result Overlap(uint64_t address,uint64_t size){
         Event e{id,c.address.load(std::memory_order_relaxed),c.rip.load(std::memory_order_relaxed),
             c.rsi.load(std::memory_order_relaxed),c.rdi.load(std::memory_order_relaxed),c.rcx.load(std::memory_order_relaxed)};
         for(size_t j=0;j<e.gpr.size();++j)e.gpr[j]=c.gpr[j].load(std::memory_order_relaxed);
+        for(size_t j=0;j<e.evidence.words.size();++j)e.evidence.words[j]=c.evidence[j].load(std::memory_order_relaxed);
         if(c.seq.load(std::memory_order_acquire)!=id)continue;
         const auto begin=e.address&~(Window-1);
         if(begin<address+size&&begin<=UINT64_MAX-Window&&begin+Window>address){

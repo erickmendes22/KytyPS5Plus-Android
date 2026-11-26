@@ -409,3 +409,22 @@ file-read candidates, staging provenance, full source at each NaN
 population transition. Dedicated bounded CPU journal and prioritized export.
 First-write faults may not be the final NaN store; absent fault or code
 is BLOCKED, not evidence of legitimate cull or FEX bug. W1 and N00 open.
+
+
+## #735 — N74 CPU writer candidates, not final writer (094459)
+Revision d7f39dc; 607 source records, no CPU journal drops, 167 distinct
+addresses. 607 CPU/GPU equal, 597 have fault candidates, no code bytes
+exported, no file-read candidate. NaN states 14 finite, 2 x3897, 2 x7446,
+589 x7872. RIP 0x910003fb0 appears in exact range in 8/14 finite, 2/2
+3897, 2/2 7446 and 580/589 all-NaN captures. f239 and f288 show RDI
+page-aligned in destination and RSI progressing by 4096; tail RIP
+0x910004069. This is consistent with copy, not proof of guest operation.
+N74 remains blocked; do not blame FEX or intentional cull. Next F reads
+actual instruction bytes and stack at fault using existing fault-safe
+kernel-mediated ReadSelf (TryReadBacking yielded no code), captures
+source page digest and NaN population before resumed store when RDI
+matches fault address, compares same page with consumed destination.
+If source already NaN and digest matches, trace earlier caller and source;
+if not, distinguish later writes vs actual instruction divergence. Stack
+words are candidates not verified return addresses. First-write faults
+cannot certify complete stores. W1 and global N00 remain open.
