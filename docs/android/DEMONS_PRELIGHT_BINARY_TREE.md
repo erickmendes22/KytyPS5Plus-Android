@@ -81,6 +81,39 @@ evictada explícitos. Teste unitário verifica todos 16 caminhos de
 bisseção, BLOCKED, fila do gatilho e encerramento de janela.
 Nenhuma mudança semântica de renderização ou fix especulativo.
 Estado: G0/P8 BLOCKED, primeira divisão não selecionada.
+
+## Auditoria executável de #741/#744 — 26/11/2026
+
+A [auditoria reproduzível](DEMONS_V3_AUDIT_2026_11_26.md) preserva G0/P8,
+o mesmo ciclo e o intervalo potencial [0,16]. Nenhuma metade global foi
+eliminada. `tools/prelight_v3_gate.py` confere o fecho da captura e retorna
+BLOCKED/exit 2 nos dois ZIPs reais; não aceita booleanos de certificação
+como substituto de um replay independente. O backend integral C1..C8 ainda
+não existe, e o gate declara essa ausência. Esse script é auditoria de
+prontidão, não um oráculo P8 implementado.
+
+Clear executado seleciona corretamente 40367→40979 (#741) e
+39624→40091 (#744), 50 draws em cada ciclo. Faltam 3.304.608 bytes de
+buffers por usos declarados (3.214.628 após excluir zero invocações),
+269.592 índices diretos e 20 dos 36 shaders guest do ciclo (16 necessários
+continuam ausentes após excluir os quatro dos indiretos sem invocações). Os dois
+indiretos têm argumentos efetivos [8907,0,0,0,0], compatíveis com zero
+trabalho; não exigir VS/índices não consumidos nem certificar seu produtor.
+
+Certificados locais reproduzíveis, sem alargar seu escopo:
+`tools/prelight_sky_replay.py` reproduz a máscara D32 inteira #744 com
+zero divergências, 1.439.331 alterações e erro numérico máximo 2,375e-9;
+usa XYZW capturado, não o VS guest como referência.
+`tools/prelight_position_formula_replay.py` reproduz as quatro expressões
+XYZW de VS8685/variant7843 sob a premissa de loads idênticos e lane ativa;
+não certifica fetch/EXEC/precisão/visibilidade. Ambos mantêm P8 BLOCKED.
+
+A staging recebeu regressão adicional da retenção: primeiro reconhecer
+o clear executado/resetar o orçamento, depois admitir o payload capturado
+antes da aquisição. Um ciclo anterior cheio não pode expulsar o primeiro
+registro do novo ciclo. Correção de instrumentação, sem alteração da luz
+e sem nova build Android. Os filtros/caps de shaders, recursos ausentes e
+oráculo completo ainda impedem promover a staging a APK de decisão.
 ---
 # Histórico V2 e V1 (somente evidência)
 # Demon's Souls PPSA01341 — árvore operacional V2: bisseção causal

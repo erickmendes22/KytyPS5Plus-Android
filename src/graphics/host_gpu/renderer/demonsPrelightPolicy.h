@@ -1,6 +1,10 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
+#include <utility>
+#include <vector>
 namespace Libs::Graphics::DemonsPrelightPolicy {
 // A word is evidence only of stored bytes, never proof of expected albedo.
 // Preserve alpha separately: RGB=0 can be intentional.
@@ -74,7 +78,7 @@ private:
     int32_t edge=-1;
     uint32_t edge_queue=UINT32_MAX;
 };
-// A draw is retained before render-target acquisition. Only the executed
+// A draw's inputs are captured before render-target acquisition. Only the executed
 // clear is authoritative for the cycle boundary (#741/#744: false -> true).
 struct ExecutedCycle {
     uint64_t first=0;
@@ -84,6 +88,36 @@ struct ExecutedCycle {
     }
     constexpr bool Includes(uint64_t draw,uint64_t loss) const {
         return first&&draw>=first&&draw<=loss;
+    }
+};
+// A prepared input stays outside the previous cycle's budget until the
+// executed clear is known. Otherwise a full previous cycle rejects exactly
+// the first record needed to establish the next cycle (#741/#744 boundary).
+struct CycleInputRetention {
+    struct Limits {
+        uint64_t bytes=48u*1024u*1024u;
+        uint64_t record_bytes=4u*1024u*1024u;
+        std::size_t records=192;
+    };
+    uint64_t bytes=0,dropped=0;
+    std::vector<std::pair<uint64_t,std::string>> inputs;
+
+    bool Retain(uint64_t draw,std::string payload,bool begins_cycle,
+                bool cycle_selected,Limits limits) {
+        if(begins_cycle){inputs.clear();bytes=0;dropped=0;}
+        const uint64_t size=payload.size();
+        if(!draw||payload.empty()||size>limits.record_bytes||size>limits.bytes||!limits.records){
+            ++dropped;return false;
+        }
+        // Before a confirmed boundary only a rolling prefix is meaningful.
+        // Once selected, missing records must be reported, never evicted.
+        if(!cycle_selected){
+            while(!inputs.empty()&&(bytes>limits.bytes||size>limits.bytes-bytes||inputs.size()>=limits.records)){
+                bytes-=inputs.front().second.size();inputs.erase(inputs.begin());
+            }
+        }
+        if(bytes>limits.bytes||size>limits.bytes-bytes||inputs.size()>=limits.records){++dropped;return false;}
+        bytes+=size;inputs.emplace_back(draw,std::move(payload));return true;
     }
 };
 enum class Certificate {Blocked,Pass,Fail};

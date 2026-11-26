@@ -540,3 +540,27 @@ First loss f233 draw40979 552d823d, 1439989->658, identical full hash to q0/q33,
 
 ## #741 offline guest replay extension
 Original GFX10 occluder explicitly exports Z=0, PS552d MRT0 packs zero RGB to ff000000, and reconstructed sky projection matches 64 D32 points within 2.12e-9 under full viewport Y-flip assumption. Focus stays on actual foreground producers in first loss cycle (starts f232 draw40367 load-clear). Exact missing native inputs total ~2.08MiB. Capture all bounded actual direct prepass inputs in same matched cycle; no new tree or semantic change. P8 remains BLOCKED until expected foreground established.
+
+## #744 / staging — auditoria reproduzível de 26/11/2026
+
+Ver [relatório e comandos](DEMONS_V3_AUDIT_2026_11_26.md). Os ZIPs #741/#744
+reproduzem o mesmo ciclo de 50 draws e âncoras completas idênticas. A seleção
+pelo flag preparado era incorreta: false na captura, true no clear executado.
+A staging também podia perder o primeiro payload novo quando o orçamento do
+ciclo anterior estava cheio; retenção adiada até após clear/reset, com teste
+de regressão da política efetivamente usada pelo renderer.
+
+Replay local #744: zero discrepâncias na máscara inteira de alteração D32,
+1.439.331 pixels alterados, erro máximo 2,375e-9 a partir do XYZW capturado.
+Fórmula guest de posição VS8685 coincide em XYZW com variant7843 sob a
+premissa explícita de mesmos loads/lane ativa. Fixup 43/43; os dois indiretos
+do ciclo têm instanceCount=0. Não alargar esses certificados para P8.
+
+Inventário: 3.304.608 bytes bound omitidos por usos (3.214.628 necessários
+excluindo zero invocações), 269.592 índices diretos omitidos, 20/36 shaders
+guest ausentes (16 necessários após excluir zero invocações), incluindo
+VS557d de 15 draws de material. Filtros/caps
+antigos e falta de imagens/versões/saídas impedem replay completo. Nenhum
+contraexemplo causal de iluminação demonstrado. Gate executável de prontidão
+reprova ambos os ZIPs e declara backend independente C1..C8 indisponível.
+**G0/P8 BLOCKED; [0,16] inalterado; sem nova build Android.**

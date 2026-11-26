@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Offline N00 evidence reader. Never turns an unverified dark pixel into a bug.
+"""Historical V1/N00 evidence reader, NOT the normative V3/G0/P8 oracle.
+Use prelight_v3_gate.py to audit V3 capture readiness. Caller-supplied oracle
+booleans below are historical assertions and cannot certify a V3 prefix.
+Never turns an unverified dark pixel into a bug.
 Usage: python prelight_tree_replay.py diagnostics.zip [--oracle expected.json]
 Oracle: [{"consumer_seq": int, "start_seq": int, "point": 0..63,
           "expected_word": int, "provenance": nonempty string,

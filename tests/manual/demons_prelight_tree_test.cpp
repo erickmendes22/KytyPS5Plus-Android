@@ -33,6 +33,22 @@ int main(){
         assert(!c.Observe(ids[1]-1,false,true)&&c.first==ids[0]);
         assert(c.Includes(ids[0],ids[1])&&c.Includes(ids[1],ids[1]));
         assert(!c.Includes(ids[0]-1,ids[1])&&!c.Includes(ids[1]+1,ids[1]));
+        // Regression: the previous selected cycle exhausted its budget.
+        // Preparing the boundary draw must not discard its inputs before
+        // its executed clear starts a fresh cycle.
+        CycleInputRetention retained;
+        const CycleInputRetention::Limits limits{8,8,2};
+        assert(retained.Retain(ids[0]-3,"12345678",true,true,limits));
+        assert(!retained.Retain(ids[0]-2,"lost",false,true,limits));
+        assert(retained.dropped==1&&retained.inputs.size()==1);
+        assert(retained.Retain(ids[0],"first",true,true,limits));
+        assert(retained.dropped==0&&retained.bytes==5&&retained.inputs.size()==1);
+        assert(retained.inputs.front().first==ids[0]&&retained.inputs.front().second=="first");
+        assert(!retained.Retain(ids[0]+1,"overflow",false,true,limits));
+        assert(retained.inputs.front().first==ids[0]&&retained.dropped==1);
+        // A boundary whose own record is oversized remains explicitly incomplete.
+        assert(!retained.Retain(ids[1],"too_large",true,true,limits));
+        assert(retained.inputs.empty()&&retained.bytes==0&&retained.dropped==1);
     }
     BisectionWindow root;
     assert(root.Phase(10)==-1);
