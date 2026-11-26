@@ -261,3 +261,23 @@ and native shader modules in export. Compare raster, discard survival and
 original depth/stencil query for same draw. Keep shader side-effect,
 alpha-to-mask, depth-export and other existing safety gates. Do not force
 production depth or change discard; no demonstrated semantic mismatch yet.
+
+## Build #722 — F, ZIP 20261125-224726
+Revision 5335d15. Replay measured six original scene depth draws at f311,
+six at f359, seven at f502. No capture capacity reached. At f359 s10845,
+PS 62548803 raster/keep-discard/original 324/67/62; 31e66062 537/0/0;
+3dce2bd7 7/0/0; 3cc41a57 2/0/0; 895c9fe0 183/0/0; e1638ea4 28/0/0.
+Total 1081/67/62. All six have identical live image descriptor ordinal 0
+[0208a300,ca900000,800fc00f,90960fac,0,60,0,0] (hex). At f311 all six
+and f502 all seven have null ordinal 0 and no discard losses in replays.
+Same index address 0x25e6b5de0, 9852 indices, offsets 0, instance 1,
+VS 868546d85ce5090a PS e1638ea46c70bc9c: f311 19/19/13; f359 28/0/0;
+f502 990/990/0. This is the same index identity, not proof of identical
+vertices/constants. Strong shared descriptor correlation, not proof of
+bad resource data or incorrect guest discard. f502 proves a separate
+late-test rejection. Original tests include stencil. Next isolate actual
+guest branch predicate, sampled coordinates/value, guest descriptor source,
+image owner/version and producer of the live ordinal-zero resource, and
+compare guest ISA to native lowering. The ZIP has guest PS code but no
+matching native SPIR-V for these selected hashes. Do not force null,
+remove discard, or change depth/stencil without semantic evidence.
