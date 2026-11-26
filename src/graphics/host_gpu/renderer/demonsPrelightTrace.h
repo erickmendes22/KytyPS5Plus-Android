@@ -95,7 +95,7 @@ inline void Cache(uint64_t tick,const Image& image,const char* operation,
     Watch(image.info.data.address,image.info.data.size);
     // A claim precedes execution; actual boundary records retain version/order.
     if(std::string_view(operation)=="commit_gpu_write_claim")return;
-    Record({{"kind","cache"}',{"operation",operation},{"tick",tick},
+    Record({{"kind","cache"},{"operation",operation},{"tick",tick},
         {"image",Identity(image)},{"source",source},{"detail",detail}});
 }
 inline void Range(uint64_t tick,const char* operation,uint64_t address,uint64_t bytes,uint64_t detail=0){

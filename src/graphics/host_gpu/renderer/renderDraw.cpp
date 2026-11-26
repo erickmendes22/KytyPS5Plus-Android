@@ -4501,7 +4501,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 
 	if(root_draw&&(root_color.image_id||root_background_depth)){
-        nlohmann::json event={{"kind","draw_after"}',{"draw",root_draw},{"frame",root_frame},
+        nlohmann::json event={{"kind","draw_after"},{"draw",root_draw},{"frame",root_frame},
             {"submit",submit_id},{"tick",m_context.GetCommandScheduler().CurrentTick()}};
         if(root_color.image_id){
             auto& im=m_context.GetTextureCache().GetImage(root_color.image_id);
