@@ -3442,7 +3442,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         }
         inputs["kind"]="draw_inputs";
         inputs["native_index_count"]=draw.index_count;
-        if(draw.IsIndexed()&&!mesh_active&&!indirect&&draw.index_count&&draw.index_count<=262144){
+        if(draw.IsIndexed()&&!mesh_active&&!indirect&&draw.index_count&&draw.index_count<=65536&&
+           index_source.guest_element_size&&uint64_t{draw.index_count}*index_source.guest_element_size<=index_source.size){
             const auto raw=ReadDsVertexIndices(m_context,index_binding,draw.index_count);
             inputs["index_words_captured"]=raw.size();
             inputs["index_digest"]=DemonsPrelightTrace::VertexWordDigest(raw);
@@ -3454,14 +3455,27 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             if(!program)return out;
             for(uint32_t slot=0;slot<bound.buffer_sources.size()&&slot<bound.buffers.size();++slot){
                 const auto& src=bound.buffer_sources[slot];const auto& native=bound.buffers[slot];
-                nlohmann::json item={{"slot",slot},{"address",src.address},{"bytes",src.size},
-                    {"gpu_dirty",m_context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size)}};
-                const auto word=program->bindings.memory_offset_dword+slot/4u;
-                if(word<bound.shader_data.size()&&native.buffer&&native.range!=VK_WHOLE_SIZE&&src.size&&src.size%4==0&&src.size<=1024){
-                    const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
-                    if(adjust<=native.range&&src.size<=native.range-adjust)
-                        item["gpu_words"]=DemonsPrelightTrace::ReadNativeWords(m_context,native.buffer,native.offset+adjust,uint32_t(src.size/4));
+                nlohmann::json item={{"slot",slot},{"address",src.address},{"bytes",src.size}};
+                uint64_t folded=0;
+                const bool valid=DemonsPrelightPolicy::DiagnosticRange(src.address,src.size)&&
+                    Kernel::AddressFold::FoldSpan(src.address,src.size,&folded)&&
+                    DemonsPrelightPolicy::DiagnosticRange(folded,src.size);
+                if(!valid){
+                    // A placeholder is not evidence of clean memory, nor an error in gameplay.
+                    item["gpu_dirty"]=nullptr;
+                    item["capture_status"]="empty_or_invalid_guest_range";
+                    out.push_back(std::move(item));continue;
                 }
+                item["gpu_dirty"]=m_context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size);
+                const auto word=program->bindings.memory_offset_dword+slot/4u;
+                if(word<bound.shader_data.size()&&native.buffer&&src.size<=1024){
+                    const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
+                    if(DemonsPrelightPolicy::DiagnosticSlice(native.offset,native.range,adjust,src.size)){
+                        auto captured=DemonsPrelightTrace::ReadNativeWords(m_context,native.buffer,native.offset+adjust,uint32_t(src.size/4));
+                        item["capture_status"]=captured.size()==src.size/4?"complete":"readback_unavailable";
+                        item["gpu_words"]=std::move(captured);
+                    }else item["capture_status"]="invalid_native_slice";
+                }else item["capture_status"]="not_captured";
                 out.push_back(std::move(item));
             }
             return out;

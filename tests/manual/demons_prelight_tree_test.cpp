@@ -9,6 +9,15 @@ int main(){
     assert(!Compare(a,std::span<const uint32_t>{}).valid);
     static_assert(Overlaps(99,2,100,4)&&!Overlaps(99,1,100,4));
     static_assert(!Overlaps(100,0,100,1));
+    static_assert(!DiagnosticRange(0,64));
+    static_assert(!DiagnosticRange(0x1000,0));
+    static_assert(!DiagnosticRange(UINT64_MAX-2,4));
+    static_assert(DiagnosticRange(0x1000,64));
+    static_assert(!DiagnosticSlice(0,UINT64_MAX,0,4));
+    static_assert(!DiagnosticSlice(0,64,64,4));
+    static_assert(!DiagnosticSlice(UINT64_MAX-3,64,4,4));
+    static_assert(!DiagnosticSlice(1,64,0,4));
+    static_assert(DiagnosticSlice(0x1000,64,16,48));
     static_assert(Decide(false,true,true,true,false)==Root::Blocked);
     static_assert(Decide(true,false,true,false,false)==Root::Blocked);
     static_assert(Decide(true,true,false,true,false)==Root::Blocked);

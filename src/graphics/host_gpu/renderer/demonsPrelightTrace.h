@@ -250,6 +250,20 @@ inline bool ObservePopulation(int32_t frame,uint32_t queue,uint64_t colored,uint
         j.rolling.clear();j.rolling_bytes=0;
     }
     if(close)j.closed=true;
+    if(!j.triggered){
+        // The RAM ring used to disappear if the process exited before the
+        // trigger. Keep a compact latest checkpoint without flushing 12 MiB.
+        std::error_code ec;std::filesystem::create_directories(Folder(),ec);
+        std::ofstream recent(Folder()/"ds_prelight_recent.jsonl",std::ios::trunc);
+        if(recent){
+            size_t n=0,bytes=0;
+            for(auto i=j.rolling.rbegin();i!=j.rolling.rend()&&n<128;++i){
+                if(bytes+i->second.size()+1>512u*1024u)break;
+                ++n;bytes+=i->second.size()+1;
+            }
+            for(size_t i=j.rolling.size()-n;i<j.rolling.size();++i)recent<<j.rolling[i].second<<'\n';
+        }
+    }
     StatusLocked(j);return edge;
 }
 inline uint64_t Record(nlohmann::json event) {

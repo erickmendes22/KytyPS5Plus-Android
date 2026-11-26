@@ -1427,7 +1427,7 @@ private:
 		}
 		fclose(maps);
 
-		auto reserve_range = [this](uint64_t start, uint64_t end) {
+		auto reserve_range = [this]([[maybe_unused]] auto&& self,uint64_t start, uint64_t end,[[maybe_unused]] unsigned attempts) -> void {
 			start = AlignUp(start, PageSize());
 			end   = AlignDown(end, PageSize());
 			if (start == 0 || end <= start) {
@@ -1444,16 +1444,48 @@ private:
 
 			void* ptr = mmap(reinterpret_cast<void*>(start), size, PROT_NONE, flags, -1, 0);
 			if (ptr == MAP_FAILED || reinterpret_cast<uint64_t>(ptr) != start) {
+                const int map_error=ptr==MAP_FAILED?errno:0;
 				if (ptr != MAP_FAILED) {
 					munmap(ptr, size);
 				}
 #if KYTY_HOST_ARM64
-				// The ARM64 layout is packed tightly; a silently missing range would break guest
-				// address assumptions later, so fail here with the exact range.
+#if defined(MAP_FIXED_NOREPLACE) && !defined(KYTY_LINKED_GUEST_ADDRESS_SPACE)
+                // The initial /proc/self/maps census is not atomic with mmap.
+                // A new ART/libc/allocator mapping can claim a gap meanwhile.
+                // Only recover a confirmed collision, with fresh actual bounds.
+                // Never overwrite a host mapping or silently skip other mmap errors.
+                if(map_error==EEXIST&&attempts){
+                    std::vector<std::pair<uint64_t,uint64_t>> collisions;
+                    if(FILE* fresh=fopen("/proc/self/maps","r")){
+                        char row[512];
+                        while(fgets(row,sizeof(row),fresh)){
+                            unsigned long long a=0,b=0;
+                            if(sscanf(row,"%llx-%llx",&a,&b)==2&&a<b&&a<end&&b>start)
+                                collisions.emplace_back(std::max<uint64_t>(a,start),std::min<uint64_t>(b,end));
+                        }
+                        fclose(fresh);
+                    }
+                    if(!collisions.empty()){
+                        std::sort(collisions.begin(),collisions.end());
+                        auto cursor=start;
+                        LOGF("guest VA reservation collision at 0x%016" PRIx64 ", size 0x%016" PRIx64
+                             "; rescan found %zu occupied spans\n",start,size,collisions.size());
+                        for(const auto& [a,b]:collisions){
+                            if(a>cursor)self(self,cursor,a,attempts-1);
+                            cursor=std::max(cursor,b);
+                        }
+                        if(cursor<end)self(self,cursor,end,attempts-1);
+                        return;
+                    }
+                }
+#endif
+                // Unexplained or resource failures remain explicit.
 				EXIT("failed to reserve guest address space at 0x%016" PRIx64 ", size 0x%016" PRIx64
-				     "\n",
-				     start, size);
+				     ", mmap errno=%d\n",start,size,map_error);
 #else
+                (void)map_error;
+                (void)self;
+                (void)attempts;
 				return;
 #endif
 			}
@@ -1474,7 +1506,7 @@ private:
 				}
 
 				if (mapping_start > current) {
-					reserve_range(current, std::min(mapping_start, region_end));
+					reserve_range(reserve_range,current,std::min(mapping_start,region_end),3);
 				}
 
 				current = std::max(current, mapping_end);
@@ -1484,7 +1516,7 @@ private:
 			}
 
 			if (current < region_end) {
-				reserve_range(current, region_end);
+				reserve_range(reserve_range,current,region_end,3);
 			}
 		}
 #else

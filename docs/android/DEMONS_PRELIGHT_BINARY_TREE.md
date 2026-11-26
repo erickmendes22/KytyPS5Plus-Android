@@ -687,3 +687,7 @@ writer before/after full constant range, transfer journal independent
 of saturated root journal, and full XYZ descriptor separate for phase
 snapshots. Prior address seed is unconfirmed until live binding. No
 semantic changes. N31 upstream provenance open, N00 still open.
+
+
+## #740 runtime regression (ZIP 110818) — V3 interval unchanged
+Core 264c911, mode F, frame230 abort rangeSet.h:107, exit65. New encode_bound called HasGpuDirtyBytes without checking descriptor address/size; RangeSet::End aborts on zero/wrapping length. Guard both guest and folded range, explicitly report null/unavailable rather than clean; validate native readback offset/size, test zero/overflow/null. This is a diagnostic regression, not a lighting branch. Status had 20096 seq, 13561 evicted, no trigger, hence RAM-only ring was lost; persist bounded recent checkpoint. Previous session had separate guest VA reservation error at 0x6f61c00000 size0x10ec000, no errno; not proven same cause. Add errno and bounded EEXIST recovery via fresh maps only, preserve occupied host spans, never force mapping or hide other failures. G0/P8 still BLOCKED. No lighting semantics changed.

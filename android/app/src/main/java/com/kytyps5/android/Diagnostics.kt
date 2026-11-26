@@ -283,6 +283,7 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_prelight_events_[0-9]+\\.jsonl")) ||
                                      file.name.startsWith("ds_vertex_producer_") ||
                                      file.name.startsWith("ds_prelight_anchor") ||
+                                     file.name == "ds_prelight_recent.jsonl" ||
                                      file.name == "ds_prelight_status.json" ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_dominant_material_f[0-9]+_s[0-9]+\\.json")) ||
@@ -352,6 +353,7 @@ object Diagnostics {
                     val rootTrace = newest.filter { it.name.startsWith("ds_prelight_") }.sortedBy { when {
                         it.name == "ds_prelight_status.json" -> -4
                         it.name == "ds_prelight_anchor.json" -> -3
+                        it.name == "ds_prelight_recent.jsonl" -> -2
                         it.name == "ds_prelight_anchor_before.bin" -> -2
                         it.name == "ds_prelight_anchor_after.bin" -> -1
                         else -> it.name.removePrefix("ds_prelight_events_").substringBefore(".").toIntOrNull() ?: 999

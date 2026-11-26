@@ -16,6 +16,16 @@ inline Delta Compare(std::span<const uint32_t> a,std::span<const uint32_t> b) {
     }
     return d;
 }
+// Null descriptors are legal placeholders in prepared bindings. Diagnostic
+// code must not pass empty or wrapping ranges into RangeSet::End.
+constexpr bool DiagnosticRange(uint64_t address,uint64_t bytes){
+    return address!=0&&bytes!=0&&bytes<=UINT64_MAX-address;
+}
+constexpr bool DiagnosticSlice(uint64_t offset,uint64_t range,uint64_t adjust,uint64_t bytes){
+    return bytes!=0&&range!=UINT64_MAX&&adjust<=range&&bytes<=range-adjust&&
+        adjust<=UINT64_MAX-offset&&bytes<=UINT64_MAX-(offset+adjust)&&
+        ((offset+adjust)&3u)==0&&(bytes&3u)==0;
+}
 constexpr bool Overlaps(uint64_t a,uint64_t n,uint64_t b,uint64_t m){
     return n&&m&&(a<=b?b-a<n:a-b<m);
 }
