@@ -297,7 +297,58 @@ public final class DsLightingCaptureExport {
                 }
             } catch (IOException error) { problem("JOURNAL_READ_ERROR", path, error.getClass().getSimpleName()); }
         }
+        // P8 observations are exported separately, but their guest-code
+        // dependencies belong in this mandatory closure, not in the 96-file
+        // optional shader selection for the early material-loss witness.
+        void discoverP8GuestCode() {
+            String path = "p8-reference/observations.jsonl";
+            File file;
+            try {
+                File base = root.getCanonicalFile();
+                file = new File(base, path);
+                if (!file.exists()) return; // captures predating P8
+                if (!file.getCanonicalFile().equals(file.getAbsoluteFile()) || !file.isFile()) {
+                    problem("P8_OBSERVATIONS_UNSAFE", path, "not a regular capture file"); return;
+                }
+                if (launchTime != 0 && file.lastModified() < launchTime) return;
+            } catch (IOException error) {
+                problem("P8_OBSERVATIONS_READ_ERROR", path, error.getClass().getSimpleName()); return;
+            }
+            Pattern guest = Pattern.compile("guest-shaders/(cs|vs|ps|ms|ls|hs|ds)_[0-9a-f]{16}_probe\\.bin");
+            int uses = 0, lineNumber = 0;
+            try (BufferedReader reader = Files.newBufferedReader(file.toPath(), StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    ++lineNumber;
+                    JSONObject event;
+                    try { event = new JSONObject(line); }
+                    catch (Exception error) {
+                        problem("P8_OBSERVATIONS_PARSE_ERROR", path, "line=" + lineNumber); continue;
+                    }
+                    if (!"cut_use".equals(event.optString("kind"))) continue;
+                    ++uses;
+                    String source = path + ":" + lineNumber + " " + event.optString("marker");
+                    JSONArray stages = event.optJSONArray("stages");
+                    if (stages == null || stages.length() == 0) {
+                        problem("P8_GUEST_STAGE_MISSING", path, source); continue;
+                    }
+                    for (int i = 0; i < stages.length(); ++i) {
+                        JSONObject stage = stages.optJSONObject(i);
+                        String code = stage == null ? "" : stage.optString("guest_file");
+                        if (stage == null || !stage.optBoolean("valid") || !guest.matcher(code).matches()) {
+                            problem("P8_GUEST_STAGE_MISSING", path, source + " stage=" + i);
+                            continue;
+                        }
+                        require(code, source);
+                    }
+                }
+            } catch (IOException error) {
+                problem("P8_OBSERVATIONS_READ_ERROR", path, error.getClass().getSimpleName());
+            }
+            if (uses == 0) problem("P8_USE_CENSUS_MISSING", path, "no cut_use records");
+        }
         void run() {
+            discoverP8GuestCode();
             List<File> journals = new ArrayList<>();
             boolean indirectWitnessPresent = false;
             for (File file : files(new File(root, "queue-state"))) {

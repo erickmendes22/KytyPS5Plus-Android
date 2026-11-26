@@ -2,6 +2,8 @@
 #include "graphics/host_gpu/renderer/demonsP8Capture.h"
 #include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/shader/shader.h"
+#include <fmt/format.h>
 #include <span>
 #include <string>
 #include <map>
@@ -123,6 +125,21 @@ inline nlohmann::json SnapshotBoundary(RenderContext& context,Image& image,
     return event;
 }
 
+// Use the same stage labels as PipelineCache::StageLabels and the exact
+// bound program hash. An unknown or synthesized program is not evidence
+// of guest code coverage.
+inline const char* GuestStageName(ShaderType stage) {
+    switch(stage) {
+        case ShaderType::Vertex: return "vs";
+        case ShaderType::Mesh: return "ms";
+        case ShaderType::Local: return "ls";
+        case ShaderType::TessellationControl: return "hs";
+        case ShaderType::TessellationEvaluation: return "ds";
+        case ShaderType::Pixel: return "ps";
+        case ShaderType::Compute: return "cs";
+        default: return nullptr;
+    }
+}
 template<typename Bound>
 inline nlohmann::json InspectBindings(RenderContext& context,const Bound& bound,
     int32_t frame,uint64_t submit) {
@@ -132,6 +149,11 @@ inline nlohmann::json InspectBindings(RenderContext& context,const Bound& bound,
     }
     const auto& program=*bound.runtime->program;
     stage["shader"]=program.shader_hash;
+    if(const auto* name=GuestStageName(program.stage); name && program.shader_hash) {
+        stage["guest_file"]=fmt::format("guest-shaders/{}_{:016x}_probe.bin",name,program.shader_hash);
+    } else {
+        stage["guest_file_reason"]="unsupported_guest_stage_or_hash";
+    }
     stage["valid"]=true;
     stage["bda_writes"]=program.info.bda_writes;
     for(size_t i=0;i<bound.buffer_sources.size();++i){

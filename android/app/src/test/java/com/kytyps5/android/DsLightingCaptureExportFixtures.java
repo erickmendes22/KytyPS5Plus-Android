@@ -101,6 +101,8 @@ public final class DsLightingCaptureExportFixtures {
         indirectGenerationsSurviveOutsideDrawWindow();
         indirectMissingOrTruncatedManifestIsIncomplete();
         indirectMissingOrTruncatedBlobIsIncomplete();
+        p8GuestClosureIgnoresOptionalCap();
+        p8MissingAndMalformedStageIsIncomplete();
         System.out.println("DsLightingCaptureExport fixtures: " + assertions + " assertions passed");
     }
     private static void completeMinimalCapture() throws Exception {
@@ -372,6 +374,52 @@ public final class DsLightingCaptureExportFixtures {
             f.sized(blob, 60);
             result = f.select();
             check(result.getRequiredComplete(), "a complete zero-capable operand is valid transport");
+        }
+    }
+
+    private static void p8GuestClosureIgnoresOptionalCap() throws Exception {
+        try (Fixture f = new Fixture()) {
+            StringBuilder rows = new StringBuilder();
+            Set<String> names = new LinkedHashSet<>();
+            for (int i = 1; i <= 110; ++i) {
+                String name = String.format("guest-shaders/cs_%016x_probe.bin", i);
+                f.write(name, "guest");
+                names.add(name);
+                JSONObject stage = new JSONObject().put("valid", true).put("guest_file", name);
+                rows.append(new JSONObject().put("kind", "cut_use").put("marker", "P8_USE_" + i)
+                        .put("stages", new JSONArray().put(stage))).append('\n');
+            }
+            // Same code hash, different stage: stage identity must be preserved.
+            String pixel = "guest-shaders/ps_0000000000000001_probe.bin";
+            f.write(pixel, "guest"); names.add(pixel);
+            rows.append(new JSONObject().put("kind", "cut_use").put("marker", "P8_USE_111")
+                    .put("stages", new JSONArray().put(new JSONObject().put("valid", true)
+                            .put("guest_file", pixel)))).append('\n');
+            f.write("p8-reference/observations.jsonl", rows.toString());
+            DsLightingCaptureExport.Selection result = f.select();
+            check(result.getRequiredComplete(), "P8 guest dependencies are complete");
+            check(result.requiredPaths.containsAll(names), "111 exact stage/code paths mandatory");
+            check(paths(result).containsAll(names), "no old 96 shader cap");
+            Files.delete(new File(f.root, pixel).toPath());
+            result = f.select();
+            check(!result.getRequiredComplete(), "missing P8 guest stage blocks closure");
+            check(problem(result, "REQUIRED_FILE_MISSING", pixel), "exact missing guest stage recorded");
+        }
+    }
+    private static void p8MissingAndMalformedStageIsIncomplete() throws Exception {
+        try (Fixture f = new Fixture()) {
+            String path = "p8-reference/observations.jsonl";
+            f.write(path, "{\"kind\":\"cut_use\",\"stages\":[{\"valid\":true}]}\n");
+            DsLightingCaptureExport.Selection result = f.select();
+            check(!result.getRequiredComplete(), "unidentified P8 stage cannot pass");
+            check(problem(result, "P8_GUEST_STAGE_MISSING", path), "unidentified stage recorded");
+            f.write(path, "{\"kind\":\"cut_use\",\"stages\":[{\"valid\":true,\"guest_file\":\"../outside.bin\"}]}\n");
+            result = f.select();
+            check(problem(result, "P8_GUEST_STAGE_MISSING", path), "unsafe guest dependency rejected");
+            f.write(path, "{\"kind\":\"cut_use\",\"stages\":[");
+            result = f.select();
+            check(problem(result, "P8_OBSERVATIONS_PARSE_ERROR", path), "truncated JSONL explicit");
+            check(!result.getRequiredComplete(), "truncated P8 observations never complete");
         }
     }
 
