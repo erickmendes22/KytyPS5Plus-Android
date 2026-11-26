@@ -369,3 +369,22 @@ journal; compare exact XYZ ranges at every matched dispatch rather
 than one phase sample. Preserve the first transition and its actual
 input bindings. BDA/transfer claims remain candidates, not proof.
 No production graphics semantic change or global illumination fix.
+
+
+## #732 — N70 yes, N71 copy verified, upstream source split (091326)
+Timeline 1388 consecutive records, 226 exact dispatches of 22e0328668b00aa3,
+249 consumer records; no recorded drops. Nine transitions in two independently
+allocated destination pairs: f242/243/244/245/246 and f265/266/267/268.
+All 13 retained dispatches: slot0 control [7872,7872,1,0], groups123,
+slot1 source 31488 bytes, slot2 destination 31488 bytes. Independent byte
+comparison: all 102336 source words equal output, no mismatches. Example
+f242 source 0x3a5700000 contains 3897 NaNs, dst 0x20d2c2f10 initially zero
+NaNs, after identical to source. Both cycles first 1299 then 2482 vertices
+have all three XYZ NaN. No evidence of arithmetic/transfer corruption in
+this copy. N70 yes, N71 copy matches observed source, recurse N32 upstream.
+N73: actual source guest backing vs actual GPU bytes and prior staging
+upload/compute/BDA/DMA writer. If matching staging and backing, trace guest
+CPU producer; if GPU-only, trace actual producer and input operands. Partial
+or missing writer history is BLOCKED, not proof. Source addresses rotate;
+learn from exact copy binding and retain prior aligned upload candidates
+without assuming identity. Keep W1 and N00 albedo causal link open.

@@ -3227,6 +3227,15 @@ static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,cons
     const auto frame=context.GetGpu().GetFrameNum();
     const int phase=std::clamp(Phase(frame),0,3);
     const bool learned=VertexShader(prog.shader_hash);
+    const bool xyz_copy=prog.shader_hash==0x22e0328668b00aa3ull &&
+        bindings.buffer_sources.size()>2&&bindings.buffer_sources[1].size==31488&&
+        bindings.buffer_sources[2].size==31488&&groups[0]==123;
+    if(xyz_copy){
+        const auto& src=bindings.buffer_sources[1];
+        WatchVertexInput(src.address,src.size);
+        const auto* writer=FindDsBufferProducer(frame,src.address,src.size,false);
+        if(writer)WatchVertexShader(writer->shader);
+    }
     for(auto r:VertexRanges()){
         bool match=false;
         for(const auto& res:prog.info.buffers)if(res.written&&res.descriptor_index<bindings.buffer_sources.size()){
@@ -3235,24 +3244,25 @@ static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,cons
         }
         // Only XYZ, not packed auxiliary words. Unconfirmed session seeds
         // cannot consume the repeated capture budget.
-        if(r.confirmed&&r.bytes==31488&&(match||(learned&&prog.info.bda_writes)))cap.targets.push_back(r);
+        if(r.confirmed&&r.bytes==31488&&(match||(!r.upstream&&learned&&prog.info.bda_writes)))cap.targets.push_back(r);
     }
-    if(cap.targets.empty())return cap;
+    if(cap.targets.empty()&&!xyz_copy)return cap;
     static std::mutex capture_mutex;
-    static uint64_t taken=0;
+    static uint64_t taken=0,copy_taken=0;
     {
         std::scoped_lock lock(capture_mutex);
-        if(taken>=512){
+        auto& budget=xyz_copy?copy_taken:taken;
+        if(budget>=768){
             VertexRecord({{"kind","dispatch_capture_skipped"},{"reason","capture_budget"},{"frame",frame},{"submit",submit},{"shader",prog.shader_hash}});
             cap.targets.clear();return cap;
         }
-        ++taken;
+        ++budget;
     }
     const auto& snap=*bindings.runtime->resources;
     cap.report={{"frame",frame},{"submit",submit},{"phase",phase},{"shader",prog.shader_hash},
         {"shader_hex",fmt::format("{:016x}",prog.shader_hash)},{"native_cs_file",ShaderDump::ModuleFile(module)},
         {"groups",groups},{"indirect",indirect},{"args_guest",args_addr},
-        {"tick_before",context.GetCommandScheduler().CurrentTick()},{"srt",snap.flattened_srt},
+        {"tick_before",context.GetCommandScheduler().CurrentTick()},{"xyz_copy",xyz_copy},{"srt",snap.flattened_srt},
         {"user_data",snap.user_data},{"learned_writer",learned},{"bindings",nlohmann::json::array()},
         {"target_before",nlohmann::json::array()},{"target_after",nlohmann::json::array()}};
     size_t remaining=32768;
@@ -3267,6 +3277,26 @@ static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,cons
             auto words=ReadDsBoundWords(context,bindings,slot,n);
             remaining-=std::min(remaining,words.size());
             entry["captured_words"]=words.size();entry["complete"]=words.size()*4==b.size;
+            if(xyz_copy&&slot==1){
+                entry["nan_words"]=std::ranges::count_if(words,IsNanWord);
+                entry["word_digest"]=VertexWordDigest(words);
+                entry["gpu_dirty"]=context.GetBufferCache().HasGpuDirtyBytes(b.address,b.size);
+                entry["writers"]=nlohmann::json::array();
+                for(const auto& w:context.GetBufferCache().RecentProbeRayTransfers(b.address,b.size))if(w.path)
+                    entry["writers"].push_back({{"path",w.path},{"tick",w.tick},{"shader",w.shader},{"begin",w.begin},{"end",w.end},{"source",w.source}});
+                if(const auto* p=FindDsBufferProducer(frame,b.address,b.size,false))
+                    entry["compute_candidate"]={{"shader",p->shader},{"frame",p->frame},{"submit",p->submit},{"address",p->address},{"bytes",p->size}};
+                entry["staging_history"]=VertexUploadHistory(b.address,b.size);
+                std::vector<uint32_t> cpu(n);
+                const bool ok=LibKernel::Memory::TryReadBacking(b.address,cpu.data(),cpu.size()*4);
+                entry["backing_ok"]=ok;
+                if(ok){
+                    entry["backing_nan_words"]=std::ranges::count_if(cpu,IsNanWord);
+                    entry["backing_digest"]=VertexWordDigest(cpu);
+                    entry["backing_equals_gpu"]=cpu==words;
+                    entry["backing_words"]=std::move(cpu);
+                }
+            }
             entry["gpu_words"]=std::move(words);
         }
         cap.report["bindings"].push_back(std::move(entry));
@@ -3301,6 +3331,24 @@ static void EndDsVertexProducer(RenderContext& context,DsVertexProducerCapture&&
         }
     }
     nlohmann::json summary=cap.report;
+    if(cap.report.value("xyz_copy",false)&&cap.report["bindings"].size()>1){
+        auto src=cap.report["bindings"][1];
+        src.erase("gpu_words");src.erase("backing_words");
+        summary["xyz_source"]=std::move(src);
+        // Capture the first finite/partial/all-NaN source state, including
+        // a source seen before the corresponding VS destination was learned.
+        static std::mutex source_mutex;
+        static std::vector<std::pair<uint64_t,int>> source_states;
+        const auto& s=summary["xyz_source"];
+        if(s.value("complete",false)){
+            const auto klass=DemonsPrelightTrace::VertexNanClass(s.value("nan_words",0ull),s.value("captured_words",0ull));
+            const std::pair key{s.value("address",0ull),klass};
+            std::scoped_lock lock(source_mutex);
+            if(source_states.size()<96&&std::ranges::find(source_states,key)==source_states.end()){
+                source_states.push_back(key);keep=true;
+            }
+        }
+    }
     summary.erase("bindings");summary.erase("srt");summary.erase("user_data");
     for(auto key:{"target_before","target_after"})for(auto& e:summary[key])e.erase("gpu_words");
     summary["kind"]="dispatch_xyz";summary["nan_count_changed"]=edge;

@@ -1396,6 +1396,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 			if (!LibKernel::Memory::CopySparseMemory(address, mapped + copy.srcOffset, copy.size)) {
 				EXIT("BufferCache: failed to read sparse guest buffer memory\n");
 			}
+            DemonsPrelightTrace::NoteVertexUpload(m_scheduler.CurrentTick(),address,mapped+copy.srcOffset,copy.size);
 			copy.srcOffset += base_offset;
 		}
 	});

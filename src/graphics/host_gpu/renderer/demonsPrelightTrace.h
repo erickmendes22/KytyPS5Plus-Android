@@ -61,11 +61,22 @@ inline int Phase(int32_t frame){std::scoped_lock lock(phase_mutex);return produc
 inline void ObservePopulation(int32_t frame,uint64_t colored,uint64_t area){
     std::scoped_lock lock(phase_mutex);production_window.Observe(frame,colored,area);
 }
-struct VertexRange{uint64_t address=0,bytes=0;bool confirmed=false;};
+struct VertexRange{uint64_t address=0,bytes=0;bool confirmed=false;bool upstream=false;};
 // Prior addresses are candidate seeds only; live VS descriptors certify identity.
 inline std::mutex vertex_mutex;
 inline std::vector<VertexRange> vertex_ranges{{0x20cca0e40ull,31488,false},{0x20cca8940ull,10496,false},{0x20ccab240ull,31488,false}};
 inline std::vector<uint64_t> vertex_shaders;
+inline std::vector<VertexRange> vertex_inputs;
+inline void WatchVertexInput(uint64_t address,uint64_t bytes){
+    if(!Enabled()||!address||bytes!=31488)return;
+    std::scoped_lock lock(vertex_mutex);
+    for(auto& r:vertex_inputs)if(r.address==address)return;
+    if(vertex_inputs.size()>=256)return;
+    vertex_inputs.push_back({address,bytes,true,true});
+}
+inline std::vector<VertexRange> VertexInputs(){
+    std::scoped_lock lock(vertex_mutex);return vertex_inputs;
+}
 inline void WatchVertex(uint64_t address,uint64_t bytes){
     if(!Enabled()||!address||!bytes||bytes>65536)return;
     std::scoped_lock lock(vertex_mutex);
@@ -76,10 +87,14 @@ inline bool VertexMatches(uint64_t address,uint64_t bytes){
     if(!Enabled())return false;
     std::scoped_lock lock(vertex_mutex);
     for(auto x:vertex_ranges)if(DemonsPrelightPolicy::Overlaps(address,bytes,x.address,x.bytes))return true;
+    for(auto x:vertex_inputs)if(DemonsPrelightPolicy::Overlaps(address,bytes,x.address,x.bytes))return true;
     return false;
 }
 inline std::vector<VertexRange> VertexRanges(){
-    std::scoped_lock lock(vertex_mutex);return vertex_ranges;
+    std::scoped_lock lock(vertex_mutex);
+    auto ranges=vertex_ranges;
+    ranges.insert(ranges.end(),vertex_inputs.begin(),vertex_inputs.end());
+    return ranges;
 }
 inline void WatchVertexShader(uint64_t shader){
     if(!shader)return;
@@ -125,6 +140,51 @@ inline uint64_t VertexWordDigest(const std::vector<uint32_t>& words){
     uint64_t hash=14695981039346656037ull;
     for(uint32_t w:words){hash^=w;hash*=1099511628211ull;}
     return hash;
+}
+// Save actual staging bytes' fingerprints before the copy, including aligned
+// source candidates that have not yet been discovered by the consumer.
+struct VertexUploadSample {
+    uint64_t address=0,bytes=0,tick=0,digest=0,nans=0;
+};
+inline std::mutex vertex_upload_mutex;
+inline std::vector<VertexUploadSample> vertex_upload_samples;
+inline void NoteVertexUpload(uint64_t tick,uint64_t address,const uint8_t* data,uint64_t bytes){
+    if(!Enabled()||!data||!bytes)return;
+    auto inputs=VertexInputs();
+    // #732 source ranges are 1 MiB aligned in both independent cycles.
+    // Treat alignment as a candidate filter only, never as identity.
+    constexpr uint64_t alignment=1ull<<20, length=31488;
+    const auto first=(address+alignment-1)&~(alignment-1);
+    for(uint64_t a=first;a>=address&&a-address<bytes&&a-first<8*alignment;a+=alignment)
+        if(bytes-(a-address)>=length)inputs.push_back({a,length,false,true});
+    for(const auto& r:inputs){
+        if(!DemonsPrelightPolicy::Overlaps(address,bytes,r.address,r.bytes))continue;
+        const auto begin=std::max(address,r.address);
+        const auto end=std::min(address+bytes,r.address+r.bytes);
+        if(begin%4||end%4||end<=begin)continue;
+        uint64_t hash=14695981039346656037ull,nans=0;
+        for(uint64_t a=begin;a<end;a+=4){
+            const auto* p=data+(a-address);
+            const uint32_t w=uint32_t(p[0])|(uint32_t(p[1])<<8)|(uint32_t(p[2])<<16)|(uint32_t(p[3])<<24);
+            hash^=w;hash*=1099511628211ull;nans+=IsNanWord(w);
+        }
+        {
+            std::scoped_lock lock(vertex_upload_mutex);
+            if(vertex_upload_samples.size()>=4096)vertex_upload_samples.erase(vertex_upload_samples.begin(),vertex_upload_samples.begin()+1024);
+            vertex_upload_samples.push_back({begin,end-begin,tick,hash,nans});
+        }
+        if(r.confirmed)VertexRecord({{"kind","source_staging_upload"},{"tick",tick},{"address",begin},
+            {"bytes",end-begin},{"word_digest",hash},{"nan_words",nans}});
+    }
+}
+inline nlohmann::json VertexUploadHistory(uint64_t address,uint64_t bytes){
+    std::scoped_lock lock(vertex_upload_mutex);
+    auto result=nlohmann::json::array();
+    for(auto it=vertex_upload_samples.rbegin();it!=vertex_upload_samples.rend()&&result.size()<16;++it)
+        if(DemonsPrelightPolicy::Overlaps(address,bytes,it->address,it->bytes))
+            result.push_back({{"address",it->address},{"bytes",it->bytes},{"tick",it->tick},
+                {"word_digest",it->digest},{"nan_words",it->nans}});
+    return result;
 }
 inline int VertexNanClass(size_t n,size_t total){
     if(!total)return -1;
