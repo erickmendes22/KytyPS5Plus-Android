@@ -2982,8 +2982,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     const bool root_background_depth=root_depth&&root_vs&&root_ps&&
         root_vs->shader_hash==DemonsDominantGeometry::DominantDepthVs&&
         root_ps->shader_hash==DemonsDominantGeometry::DepthPs;
-    const bool root_background_material=root_target!=root_colors.end()&&root_ps&&
-        root_ps->shader_hash==DemonsDominantGeometry::MaterialPs;
     const int root_phase=root_trace?DemonsPrelightTrace::Phase(root_frame):-1;
     if(root_trace&&command_seq)command_prepared=true;
     if(root_phase>=0&&(root_target!=root_colors.end()||root_depth)){
@@ -3870,48 +3868,6 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     static std::array<DsVertexPair,VP::FocusPairCount> ds_vertex_pairs{};
     static uint64_t ds_vertex_serial=0;
     const auto* ds_vp=state.vertex_info[0].stage.program;
-    if(!root_trace&&false&&ds_vp&&ds_vp->shader_hash==0x868546d85ce5090aull&&
-        draw.IsIndexed()&&!indirect&&draw.index_count==12765){
-        const auto& bound=bindings.vertex[0];
-        if(bound.buffer_sources.size()>2){
-            for(auto slot:{0u,2u}){
-                const auto& src=bound.buffer_sources[slot];
-                DemonsPrelightTrace::WatchVertex(src.address,src.size);
-                for(const auto& w:m_context.GetBufferCache().RecentProbeRayTransfers(src.address,src.size))
-                    if(w.path&&w.shader)DemonsPrelightTrace::WatchVertexShader(w.shader);
-            }
-            const auto p=std::clamp(root_phase,0,3);
-            if(DemonsPrelightTrace::VertexConsumerFrame(bound.buffer_sources[2].address,ds_gbuffer_frame)){
-                nlohmann::json row={{"kind","vertex_consumer"},{"phase",p},{"frame",ds_gbuffer_frame},
-                    {"submit",submit_id},{"draw",root_draw},{"index_guest",index_source.address},
-                    {"shader",ds_vp->shader_hash},{"native_vs",ShaderDump::ModuleFile(state.programs.vertex[0].module)},
-                    {"tick",m_context.GetCommandScheduler().CurrentTick()},{"sources",nlohmann::json::array()}};
-                for(auto slot:{0u,1u,2u}){
-                    if(slot>=bound.buffers.size())continue;
-                    const auto& src=bound.buffer_sources[slot];const auto& native=bound.buffers[slot];
-                    nlohmann::json entry={{"slot",slot},{"address",src.address},{"bytes",src.size},
-                        {"gpu_dirty",m_context.GetBufferCache().HasGpuDirtyBytes(src.address,src.size)},
-                        {"writers",nlohmann::json::array()}};
-                    for(const auto& w:m_context.GetBufferCache().RecentProbeRayTransfers(src.address,src.size))
-                        if(w.path)entry["writers"].push_back({{"path",w.path},{"tick",w.tick},{"shader",w.shader},
-                            {"begin",w.begin},{"end",w.end},{"source",w.source}});
-                    const auto word=ds_vp->bindings.memory_offset_dword+slot/4u;
-                    if(word<bound.shader_data.size()&&native.buffer&&native.range!=VK_WHOLE_SIZE&&src.size&&src.size%4==0&&src.size<=65536){
-                        const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
-                        if(adjust<=native.range&&src.size<=native.range-adjust){
-                            auto words=DemonsPrelightTrace::ReadNativeWords(m_context,native.buffer,native.offset+adjust,uint32_t(src.size/4));
-                            entry["nan_words"]=std::ranges::count_if(words,DemonsPrelightTrace::IsNanWord);
-                            entry["word_digest"]=DemonsPrelightTrace::VertexWordDigest(words);
-                            entry["captured_words"]=words.size();
-                            entry["gpu_words"]=std::move(words);
-                        }
-                    }
-                    row["sources"].push_back(std::move(entry));
-                }
-                DemonsPrelightTrace::RecordVertexConsumer(std::move(row));
-            }
-        }
-    }
     if(ds_vp && VP::Watched(ds_vp->shader_hash) && ds_vp->ds_light_math_variant){
         const auto& gate=DemonsAdaptiveCapture::Current();
         const auto* ps=state.ps_active?state.ps_input_info.stage.program:nullptr;

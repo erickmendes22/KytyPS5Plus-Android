@@ -3324,7 +3324,7 @@ static void SaveDsVertexCpuSource(int32_t frame,uint64_t submit,uint64_t tick,co
         if(edge)edge<<report;
     }
 }
-static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,const PreparedBindings& bindings,
+[[maybe_unused]] static DsVertexProducerCapture BeginDsVertexProducer(RenderContext& context,const PreparedBindings& bindings,
     uint64_t submit,vk::ShaderModule module,std::array<uint32_t,3> groups,bool indirect,uint64_t args_addr){
     using namespace DemonsPrelightTrace;
     DsVertexProducerCapture cap;
