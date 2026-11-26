@@ -1065,3 +1065,7 @@ Intervalo global [0,16], nó P8, zero metades eliminadas. O [registro](DEMONS_BU
 ## #748 — aquisição integrada
 
 P8 permanece [0,16]. O executor AMD real confirmou 120/120 bytes da compactação do frame 215 da #746. O APK seguinte inclui a retenção dos subrecursos HZB dos dois produtores, sem alterar a execução guest; ver o balanço #748. Nenhuma metade eliminada antes da captura.
+
+## #748 — entrega verificada (26/11/2026)
+
+APK compilado, assinado, baixado e verificado: revisão `0f1709763e30ab7812652d2eda81518a6e32ebff`, run [45905112907](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45905112907), artifact [15157339392](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45905112907/artifacts/15157339392). Registros de assinatura, integridade, ABI e alcance em [DEMONS_APK_748_VERIFICATION.md](DEMONS_APK_748_VERIFICATION.md). **Corte global: nenhum. P8 [0,16] permanece ativo; aguarda captura F do aparelho.** A entrega não fica condicionada a PC externo ou ao resultado futuro de gameplay.

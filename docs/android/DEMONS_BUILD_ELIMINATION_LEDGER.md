@@ -381,3 +381,7 @@ e o replay Vulkan não é referência guest independente. Após o diagnóstico,
 comparar os dados da fronteira, usar o crossover control/sham/substitution
 com referência válida e só classificar PASS/FAIL no alcance demonstrado.
 Não publicar resultado fictício se a captura ou uma comparação falhar.
+
+## #748 — entrega verificada (26/11/2026)
+
+APK compilado, assinado, baixado e verificado: revisão `0f1709763e30ab7812652d2eda81518a6e32ebff`, run [45905112907](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45905112907), artifact [15157339392](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45905112907/artifacts/15157339392). Registros de assinatura, integridade, ABI e alcance em [DEMONS_APK_748_VERIFICATION.md](DEMONS_APK_748_VERIFICATION.md). **Corte global: nenhum. P8 [0,16] permanece ativo; aguarda captura F do aparelho.** A entrega não fica condicionada a PC externo ou ao resultado futuro de gameplay.

@@ -8,6 +8,7 @@ import hashlib
 import itertools
 import json
 import pathlib
+import re
 import struct
 import zipfile
 
@@ -94,7 +95,50 @@ def prepare(archive,out,seq):
         require(i['operand_mapping_epoch_before']==i['operand_mapping_epoch_after'] and i['operand_gpu_dirty_generation_before']==i['operand_gpu_dirty_generation_after'],'operand identity changed')
         matches=[]
         for n in z.namelist():
-            if n.startswith(prefix+'queue-state/ds_prelight_cp_args_') and n.endswith('_compute.bin') and z.getinfo(n).file_size==i['operand_blob_bytes']:
+            if n.startswith(prefix+'queue-state/ds_prelight_cp_args_') and re.search(r'_compute(?:_\d+)?\.bin and z.getinfo(n).file_size==i['operand_blob_bytes']:
+                d=z.read(n)
+                if fnv1a(d)==i['operand_blob_fnv1a64']: matches.append(d)
+        require(matches and all(d==matches[0] for d in matches),'no unambiguous operand blob')
+        blob=matches[0];segments=[]
+        for b in i['bindings']:
+            require(b['capture_status']=='complete' and b['captured_bytes']==b['bytes'] and b['byte_adjustment']==0,'incomplete binding')
+            offset=b['offset_bytes']
+            require(0<=offset and offset+b['bytes']<=len(blob),'binding out of operand blob')
+            segments.append((b['address'],blob[offset:offset+b['bytes']]))
+        for s in i['scalar_regions']:
+            require(s['source']=='consumed_srt' and s['bytes']==4*len(s['words']),'scalar input incomplete')
+            segments.append((s['address'],pack(s['words'])))
+        segments=merge_segments(segments);code=z.read(prefix+i['guest_cs_file'])
+        require(hashlib.sha256(code).hexdigest()=='6378731ae866d8f6a0576252b5501c2fe826a3b8cb8bff102064c2bae1425985','guest code differs from audited instruction sequence')
+        # Integer-only shader uses s[0:1], s2 (group X) and v0 (local X).
+        require(i['user_data_base']==0 and len(i['user_data'])==2,'user SGPR ABI')
+        sgpr=i['user_data']+[0]*104;vgpr=list(range(64))+[0]*(63*64)
+        (out/'guest.bin').write_bytes(code)
+        lines=[f'P8ISA1 rdna1 10000 ffffffffffffffff {i["float_mode"]:x} 64 106 64 1000000 "{out/"guest.bin"}"',' '.join(f'{v:x}' for v in sgpr),' '.join(f'{v:x}' for v in vgpr),str(len(segments))]
+        for j,(a,data) in enumerate(segments):
+            path=out/f'segment{j}.bin';path.write_bytes(data)
+            lines.append(f'{a:x} "{path}"')
+        witnesses=[x for x in events if x.get('retained') and x.get('phase')=='after' and x.get('submit')==event['submit'] and x.get('shader')==event['shader'] and x.get('frame')==event['frame']]
+        observations=[]
+        for e in witnesses:
+            a,b=e['target_before'],e['target_after']
+            require(e['same_native_mapping'] and e['target_bytes_comparable'] and a['address']==b['address'] and a['bytes']==b['bytes'],'witness not comparable')
+            require(read_range(segments,a['address'],a['bytes'])==pack(a['native_words']),'blob does not match observed pre-dispatch bytes')
+            observations.append({'seq':e['seq'],'address':a['address'],'before':pack(a['native_words']).hex(),'observed_after':pack(b['native_words']).hex()})
+        require(observations,'no output witnesses')
+        lines.append(str(len(observations)))
+        for o in observations: lines.append(f'{o["address"]:x} {len(bytes.fromhex(o["before"])):x}')
+        (out/'manifest.txt').write_text('\n'.join(lines)+'\n')
+        result={'frame':event['frame'],'submit':event['submit'],'producer':i['shader_hex'],'scope':'local calibration only; atomic ordering may differ; not P8 decision','operand_digest':i['operand_blob_fnv1a64'],'witnesses':observations,'calibration':check_compaction(segments,i['user_data'],observations)}
+        (out/'observed.json').write_text(json.dumps(result,indent=2)+'\n')
+        print(json.dumps(result['calibration'],indent=2))
+
+if __name__=='__main__':
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('archive',type=pathlib.Path);p.add_argument('output',type=pathlib.Path)
+    p.add_argument('--seq',type=int,default=4891)
+    a=p.parse_args();prepare(a.archive,a.output.resolve(),a.seq)
+,n) is not None and z.getinfo(n).file_size==i['operand_blob_bytes']:
                 d=z.read(n)
                 if fnv1a(d)==i['operand_blob_fnv1a64']: matches.append(d)
         require(matches and all(d==matches[0] for d in matches),'no unambiguous operand blob')
