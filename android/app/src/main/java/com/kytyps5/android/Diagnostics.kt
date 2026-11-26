@@ -276,7 +276,7 @@ object Diagnostics {
                                      file.name.matches(Regex("ds_relight_trace_f[0-9]+_s[0-9]+_p[0-9]+\\.(json|bin)")) ||
                                      file.name.matches(Regex("ds_transition_edge_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
                                      file.name.matches(Regex("ds_vertex_position_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
-                                     file.name.matches(Regex("ds_geometry_coverage_f[0-9]+\\.json")) ||
+                                     file.name.matches(Regex("ds_geometry_coverage_f[0-9]+(_active)?\\.json")) ||
                                      file.name.matches(Regex("ds_discard_active_[0-9a-f]{16}_n[01]\\.json")) ||
                                      file.name.matches(Regex("ds_albedo_chain_p[0-3]\\.json")) ||
                                      file.name.matches(Regex("ds_geometry_writer_[0-9a-f]{16}_f[0-9]+_s[0-9]+_p[0-9]+\\.json")) ||
@@ -344,7 +344,7 @@ object Diagnostics {
                         it.name.startsWith("cs_567d21ad45386c8d_radiance_") }
                     val albedoChain = newest.filter { it.name.startsWith("ds_albedo_chain_p") }.take(4)
                     val activeDiscard = newest.filter { it.name.startsWith("ds_discard_active_") }.take(14)
-                    val producer = (activeDiscard + coverage + albedoChain + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
+                    val producer = (activeDiscard + coverage + albedoChain + positions + depthOwners + bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
                         prioritizedRays.take(8) + coverage + edges + visibility.take(4) + depthOwners + positions +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +

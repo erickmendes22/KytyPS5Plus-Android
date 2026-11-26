@@ -1357,30 +1357,66 @@ static nlohmann::json SnapshotDsDiscardImage(RenderContext& context,
        view.base_layer>=backing.layers || backing.format==vk::Format::eUndefined){
         result["status"]="unsupported_native_view";return result;
     }
-    const uint32_t width=std::max(1u,backing.extent.width>>view.base_level);
-    const uint32_t height=std::max(1u,backing.extent.height>>view.base_level);
     const auto block=vk::blockExtent(backing.format);
-    const uint32_t bpp=vk::blockSize(backing.format);
-    const uint64_t size=uint64_t{width}*height*bpp;
-    result["extent"]={width,height};
-    result["bytes_per_texel"]=bpp;
-    if(block[0]!=1 || block[1]!=1 || block[2]!=1 || !size || size>65536u){
+    const uint32_t bpb=vk::blockSize(backing.format);
+    result["block_extent"]={block[0],block[1],block[2]};
+    result["bytes_per_block"]=bpb;
+    // A compressed VkBufferImageCopy still uses the texel extent, but the
+    // buffer occupies ceil(width/blockW)*ceil(height/blockH)*blockBytes.
+    // Capture every accessible mip: implicit LOD can sample any of them.
+    if(!bpb || !block[0] || !block[1] || block[2]!=1 ||
+       !view.level_count || view.level_count>16 ||
+       view.level_count>backing.mip_levels-view.base_level){
         result["status"]="bounded_readback_unsupported";return result;
+    }
+    std::vector<vk::BufferImageCopy> copies;
+    nlohmann::json layout=nlohmann::json::array();
+    uint64_t size=0;
+    for(uint32_t i=0;i<view.level_count;++i){
+        const auto level=view.base_level+i;
+        const uint32_t width=std::max(1u,backing.extent.width>>level);
+        const uint32_t height=std::max(1u,backing.extent.height>>level);
+        const uint64_t bytes=((uint64_t{width}+block[0]-1)/block[0])*
+                             ((uint64_t{height}+block[1]-1)/block[1])*bpb;
+        size=(size+15u)&~uint64_t{15u};
+        if(!bytes || bytes>65536u || size>65536u-bytes){
+            result["status"]="bounded_readback_unsupported";return result;
+        }
+        vk::BufferImageCopy copy{};
+        copy.bufferOffset=size;
+        copy.imageSubresource={vk::ImageAspectFlagBits::eColor,level,view.base_layer,1};
+        copy.imageExtent={width,height,1};
+        copies.push_back(copy);
+        nlohmann::json row={{"level",level},{"width",width},{"height",height},
+                            {"offset",size},{"bytes",bytes}};
+        if(level<image.info.mip_layout.size()){
+            const auto& m=image.info.mip_layout[level];
+            row["guest_layout"]={{"offset",m.offset},{"size",m.size},{"pitch",m.pitch},
+                {"height",m.height},{"linear_offset",m.linear_offset},{"linear_size",m.linear_size},
+                {"linear_pitch",m.linear_pitch},{"tail_x",m.tail_x},{"tail_y",m.tail_y},
+                {"surface_z",m.surface_z}};
+        }
+        layout.push_back(std::move(row));
+        size+=bytes;
     }
     auto& download=context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
     auto [mapped,offset]=download.Map(size,16u,true);
     if(!mapped){result["status"]="map_failed";return result;}
+    // Padding is not image data; return per-mip bytes only, never expose
+    // uninitialized alignment padding from the utility buffer.
     download.Commit();
-    vk::BufferImageCopy copy{};
-    copy.bufferOffset=offset;
-    copy.imageSubresource={vk::ImageAspectFlagBits::eColor,view.base_level,view.base_layer,1};
-    copy.imageExtent={width,height,1};
-    image.Download(std::span{&copy,1u},download.Handle(),offset,size);
+    for(auto& copy:copies)copy.bufferOffset+=offset;
+    image.Download(std::span{copies},download.Handle(),offset,size);
     context.GetCommandScheduler().Finish();
     download.Invalidate(offset,size);
-    std::vector<uint8_t> bytes(size);
-    std::memcpy(bytes.data(),mapped,size);
-    result["native_texel_bytes"]=std::move(bytes);
+    for(auto& row:layout){
+        const auto at=row["offset"].get<uint64_t>();
+        const auto bytes=row["bytes"].get<uint64_t>();
+        std::vector<uint8_t> data(bytes);
+        std::memcpy(data.data(),static_cast<const uint8_t*>(mapped)+at,bytes);
+        row["native_block_bytes"]=std::move(data);
+    }
+    result["native_mips"]=std::move(layout);
     result["status"]="captured";
     return result;
 }
@@ -3809,19 +3845,30 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		int32_t frame = -1;
 		uint64_t last_tick = 0;
 		int32_t phase = -1;
-		std::array<bool,4> completed {};
+		std::array<bool,5> completed {};
 		bool capacity_reached = false;
 		std::array<bool,DemonsDominantGeometry::DepthProbeShaders.size()> replay_seen {};
 		nlohmann::json rows = nlohmann::json::array();
 	};
-	static DsGeometryFrame geometry;
+	static DsGeometryFrame regular_geometry, active_geometry;
+    const auto* geometry_ps=state.ps_active?state.ps_input_info.stage.program:nullptr;
+    const auto& geometry_resources=state.ps_input_info.stage.resources;
+    const auto active_slot=geometry_ps?DemonsDominantGeometry::DepthProbeSlot(geometry_ps->shader_hash):
+        DemonsDominantGeometry::DepthProbeShaders.size();
+    const bool active_candidate=active_slot<DemonsDominantGeometry::DepthProbeShaders.size() &&
+        geometry_resources && !geometry_resources->images.empty() &&
+        geometry_resources->images.front().dwords[0] &&
+        state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress;
+    auto& geometry=(active_candidate && !active_geometry.completed[4])?active_geometry:regular_geometry;
 	constexpr uint32_t geometry_capacity = 512;
 	uint32_t geometry_query = UINT32_MAX;
 	uint32_t geometry_replay_first = UINT32_MAX;
 	std::array<vk::Pipeline,3> geometry_replay {};
 	if (Config::GetShaderDumpFolder().filename() == "ds-lighting-dumps" &&
 	    graphics.occlusion_query_precise_enabled) {
-		if (geometry.pool && int64_t{ds_gbuffer_frame} > int64_t{geometry.frame} + 1 && !geometry.rows.empty() &&
+		const auto drain_geometry=[&](DsGeometryFrame& geometry){
+        const auto window=geometry.phase==4?8:1;
+        if (geometry.pool && int64_t{ds_gbuffer_frame} > int64_t{geometry.frame} + window && !geometry.rows.empty() &&
 		    geometry.last_tick != 0 && m_context.GetCommandScheduler().GetMasterSemaphore().IsFree(geometry.last_tick)) {
 			std::vector<uint64_t> result(geometry.rows.size() * 2);
 			const auto status = graphics.device.getQueryPoolResults(
@@ -3837,7 +3884,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				const auto folder = Config::GetShaderDumpFolder() / "queue-state";
 				std::error_code ec;
 				std::filesystem::create_directories(folder, ec);
-				const auto name = fmt::format("ds_geometry_coverage_f{}.json", geometry.frame);
+				const auto name = fmt::format("ds_geometry_coverage_f{}{}.json", geometry.frame,geometry.phase==4?"_active":"");
 				std::ofstream file(folder / name, std::ios::trunc);
 				if (file) file << nlohmann::json{{"frame", geometry.frame}, {"phase", geometry.phase},
 				    {"capacity_reached", geometry.capacity_reached}, {"draws", geometry.rows}};
@@ -3852,6 +3899,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				geometry.last_tick = 0;
 			}
 		}
+		};
+        drain_geometry(regular_geometry);
+        drain_geometry(active_geometry);
 		const bool relevant_depth = state.depth_info.image_id &&
 		    state.depth_info.desc.info.data.address == 0x282b60000ull;
 		const auto colors = std::span{state.color_info, state.color_count};
@@ -3859,9 +3909,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			return color.image_id && color.desc.info.data.address == DemonsQueueProbe::GBufferAddress &&
 			       color.desc.view_info.base_layer == 0 && color.desc.view_info.base_level == 0;
 		});
-		const bool relevant = relevant_depth || gbuffer != colors.end();
+		const bool active_window=&geometry==&active_geometry;
+        const bool relevant = active_window ? active_candidate : (relevant_depth || gbuffer != colors.end());
 		const auto& geometry_gate = DemonsAdaptiveCapture::Current();
-		const int geometry_phase = geometry_gate.PostTransitionDarkDue(ds_gbuffer_frame) ? 3
+		const int geometry_phase = active_window ? 4 : geometry_gate.PostTransitionDarkDue(ds_gbuffer_frame) ? 3
 		    : geometry_gate.DarkOnsetDue(ds_gbuffer_frame) ? 1
 		    : geometry_gate.BrightBaselineDue(ds_gbuffer_frame) ? 0
 		    : geometry_gate.CaptureDue(ds_gbuffer_frame) ? 2 : -1;
@@ -3887,11 +3938,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 		// Guest flips can split depth prepass and G-buffer across adjacent host
 		// frame numbers (213553: depth=429, material=430). Keep both.
-		if (geometry.pool && relevant && int64_t{ds_gbuffer_frame} >= geometry.frame &&
-		    int64_t{ds_gbuffer_frame} <= int64_t{geometry.frame} + 1 &&
+		const auto window=active_window?8:1;
+        if (geometry.pool && relevant && int64_t{ds_gbuffer_frame} >= geometry.frame &&
+		    int64_t{ds_gbuffer_frame} <= int64_t{geometry.frame} + window &&
 		    geometry.rows.size() >= geometry_capacity) geometry.capacity_reached = true;
 		if (geometry.pool && int64_t{ds_gbuffer_frame} >= geometry.frame &&
-		    int64_t{ds_gbuffer_frame} <= int64_t{geometry.frame} + 1 && relevant &&
+		    int64_t{ds_gbuffer_frame} <= int64_t{geometry.frame} + window && relevant &&
 		    geometry.rows.size() < geometry_capacity) {
 			geometry_query = static_cast<uint32_t>(geometry.rows.size());
 			const auto& hw = buffer.GetRegisters();
@@ -3940,7 +3992,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			    !depth.depth_bounds_test_enable && depth.desc.info.samples == 1 &&
 			    !pixel.ps_depth_export_enable && !pixel.ps_sample_mask_export_enable &&
 			    !hw.GetShaderRegisters().AlphaToMask() &&
-			    geometry.rows.size()+6 <= geometry_capacity) {
+			    geometry.rows.size()+9 <= geometry_capacity) {
 				const auto k = DemonsDominantGeometry::DepthProbeSlot(ps->shader_hash);
 				if (!geometry.replay_seen[k]) {
                     auto& original=geometry.rows[geometry_query];
@@ -3964,6 +4016,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                     original["vertex_inputs"]=encode(state.vertex_info[0].stage);
                     original["pixel_inputs"]=encode(state.ps_input_info.stage);
                     original["native_ps_file"]=ShaderDump::ModuleFile(state.programs.pixel.module);
+                    original["depth_owner"]=m_context.GetTextureCache().GetImage(depth.image_id).info.data.address;
+                    original["depth_version_before"]=m_context.GetTextureCache().GetImage(depth.image_id).ContentVersion();
+                    original["stencil_compare_front"]=uint32_t(depth.stencil_front.compareOp);
+                    original["stencil_compare_back"]=uint32_t(depth.stencil_back.compareOp);
+                    original["stencil_reference_front"]=depth.stencil_front.reference;
+                    original["stencil_reference_back"]=depth.stencil_back.reference;
+                    if(!depth.depth_load_clear_enable){
+                        const auto depth_grid=SnapshotDsMaterialDepthGrid(m_context,depth);
+                        if(depth_grid)original["stored_depth_grid_before"]=*depth_grid;
+                    }
                     original["native_vs_file"]=ShaderDump::ModuleFile(state.programs.vertex[0].module);
                     if(bindings.pixel && state.ps_input_info.stage.resources &&
                        !state.ps_input_info.stage.resources->images.empty()){
@@ -3988,13 +4050,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                         geometry.rows[geometry_query]["replay_status"]="measured";
 						geometry_replay_first = static_cast<uint32_t>(geometry.rows.size());
 						for (const auto* kind: {"raster_no_discard","survive_discard","raster_no_discard_no_cull",
-                                "survive_depth_only","survive_stencil_only","survive_both_readonly"}) {
+                                "survive_depth_only","survive_stencil_only","survive_both_readonly",
+                                "survive_depth_less","survive_depth_equal","survive_depth_greater"}) {
 							auto row = geometry.rows[geometry_query];
 							row["kind"] = kind;
 							row["original_query"] = geometry_query;
                             row.erase("discard_input");
 							const auto q=geometry.rows.size()-geometry_replay_first;
-                            row["depth_test"] = (q==3 || q==5) && depth.depth_test_enable;
+                            row["depth_test"] = (q==3 || q==5 || q>=6) && depth.depth_test_enable;
+                            if(q>=6)row["depth_compare"]=uint32_t(q==6?vk::CompareOp::eLess:q==7?vk::CompareOp::eEqual:vk::CompareOp::eGreater);
                             row["depth_write"] = false;
                             row["stencil_test"] = (q==4 || q==5) && depth.stencil_test_enable;
                             row["stencil_write_mask"]=0;
@@ -4168,13 +4232,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             // modifying depth, stencil or color. Restore all dynamic state.
             vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics,geometry_replay[1]);
             vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFrontAndBack,0);
-            for(uint32_t q=3;q<6;++q){
-                vk_buffer.setDepthTestEnable((q==3 || q==5) && state.depth_info.depth_test_enable);
+            for(uint32_t q=3;q<9;++q){
+                vk_buffer.setDepthTestEnable((q==3 || q==5 || q>=6) && state.depth_info.depth_test_enable);
+                if(q>=6)vk_buffer.setDepthCompareOp(q==6?vk::CompareOp::eLess:q==7?vk::CompareOp::eEqual:vk::CompareOp::eGreater);
                 vk_buffer.setStencilTestEnable((q==4 || q==5) && state.depth_info.stencil_test_enable);
                 vk_buffer.beginQuery(geometry.pool,geometry_replay_first+q,vk::QueryControlFlagBits::ePrecise);
                 issue_draw();
                 vk_buffer.endQuery(geometry.pool,geometry_replay_first+q);
             }
+            vk_buffer.setDepthCompareOp(material_depth_compare);
             vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eFront,dynamic_state.stencil_front_write_mask);
             vk_buffer.setStencilWriteMask(vk::StencilFaceFlagBits::eBack,dynamic_state.stencil_back_write_mask);
 			vk_buffer.setDepthWriteEnable(state.depth_info.depth_write_enable);

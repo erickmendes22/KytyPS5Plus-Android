@@ -354,3 +354,40 @@ No graphics semantics changed.
 
 ## Build #724 delivery
 Revision d0975c557a477d203f495dfb68628cc2b0611dc6, run 45740027126, artifact 15081360854. Mandatory tests, ARM64 compilation, APK tests, certificate compatibility and packaged-native audit passed. Full optional regressions skipped. ZIP SHA-256 ada8e224365380721dac639489db9cf58786a211797ff132747d76c97934a72b verified. APK SHA-256 3fa61f946a66f86459d4bd3d402a5f4bcf17f93e300d9c13ed6e16bec8e57801 (16275618 bytes), embedded libmain.so revision matches, v2 RSA signature and signed content digest verified independently; certificate matches #723. Diagnostic mode F, no production graphics fix claimed. Active image capture remains bounded and does not itself record the actual comparison operands.
+
+
+## Build #724 — F, ZIP 20261125-231956
+Revision d0975c5, 19 original draws with all six replays, no capacity reached.
+f260/261 raster=3972, discard=3972, stencil=3972, depth=3841, both=3841,
+original=3439; f308 230/230/230/102/102/94; f451
+12045/12045/12045/5093/5093/4548. Total raster 16247, depth 9036,
+7211 rejected by depth; no stencil or discard loss in these samples.
+f451 3dce2bd7,3cc41a57,895c9fe0,e1638ea4 have zero depth-only passes
+from 107,15,1712,390 raster samples respectively. f260 3cc41a57,
+895c9fe0,31e66062 have zero even with cull disabled; do not infer wrong
+clipping without vertex and viewport data. f451 s13716 after HTile clear
+all 1440000 depths zero; 23371923 7296 and 192 index draws report
+1122222 and 484251 passing samples but zero depth changes, hence passes
+alone do not prove an occluding write. Later 3dce2bd7 and 895c9fe0
+see only 17846 and 20226 nonzero stored depth pixels, respectively, and
+change none. s13717 aff9c7ef fills 1398973 pixels (41028->1440000 filled).
+Do not suppress this draw or relax depth based on those counts.
+13 event-triggered active descriptor observations f263..269 all resolve
+unique native slot0, same owner 0x208a30000, version1, VkFormat133
+BC1_RGBA_UNORM_BLOCK, 64x64, seven mips, guest format169, tile mode9,
+pitch512, 65536 guest backing bytes, all SHA256
+1b481f49d81dbbefd892d736fb9c4e89f79d8651619d314a9945d09683d2165b.
+All 13 readbacks rejected by diagnostic's uncompressed-only guard.
+Two CPU dirty uploads logged, no GPU write at that exact address.
+Next revision captures actual compressed blocks per accessible mip with
+correct block pitches, exact guest mip layout and separate mip payloads.
+Add independent active-descriptor query pool phase4 lasting up to nine
+host frames, so regular phase window cannot prevent sampling active
+shader. Split surviving fragments by less/equal/greater against the
+same original attachment with writes off; restore effective dynamic
+compare and stencil masks. Record depth owner/version and sampled stored
+depth grid (skip pending load clear). #724 session log records 15 vertex
+captures, all omitted by 48 MiB export budget; move positions and depth
+owners ahead of previously established producer captures. These are
+read-only diagnostics, not a production correction or proof that the
+sampled texture is corrupt. Actual per-fragment operands remain unknown.
