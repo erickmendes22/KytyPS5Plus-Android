@@ -3860,7 +3860,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         // Both persistent zero-cycle meshes were observed in prepass and
         // material (#729 frames 249/250). Select them by exact index count
         // AND pair identity, not the first occurrence of a shader.
-        const bool root_witness=root_phase==2&&(draw.index_count==12765||draw.index_count==57066);
+        const bool root_witness=(root_phase==2&&(draw.index_count==12765||draw.index_count==57066))||
+            (!material&&(root_phase==1||root_phase==3)&&
+             (draw.index_count==12765||draw.index_count==19956||draw.index_count==57066));
         const bool due=(!root_trace||root_witness) && matched && (material ?
             pair.serial && !pair.material_captured && ds_gbuffer_frame>=pair.frame &&
             int64_t{ds_gbuffer_frame}-pair.frame<=1 &&
@@ -4619,13 +4621,21 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         std::vector<uint32_t> unique=ds_vertex_indices;
         std::sort(unique.begin(),unique.end());
         unique.erase(std::unique(unique.begin(),unique.end()),unique.end());
+        const bool projection=VP::HasProjectionOperands(ds_vp->shader_hash,ds_vp->ds_light_math_variant);
+        nlohmann::json projection_rows=nlohmann::json::array();
+        size_t ordinal=0;
         for(auto raw:unique){
             const auto idx=static_cast<uint32_t>(int64_t{raw}+emit.vertex_offset);
             const auto p=VP::Header+size_t{idx-ds_vertex_base}*VP::Stride;
             if(!values[p]){++missing;continue;}
             nlohmann::json row=nlohmann::json::array();
             row.push_back(idx);
-            for(uint32_t j=1;j<VP::Stride;++j)row.push_back(values[p+j]);
+            for(uint32_t j=1;j<VP::Stride;++j)row.push_back(projection&&j>=8?0u:values[p+j]);
+            if(projection&&ordinal++%64==0){
+                nlohmann::json sample=nlohmann::json::array();sample.push_back(idx);
+                for(uint32_t j=8;j<VP::Stride;++j)sample.push_back(values[p+j]);
+                projection_rows.push_back(std::move(sample));
+            }
             rows.push_back(std::move(row));
         }
         // Retain the exact region of D32 consumed by this draw. The
@@ -4714,6 +4724,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             {"pixel_shader",state.ps_input_info.stage.program?
                 fmt::format("{:016x}",state.ps_input_info.stage.program->shader_hash):std::string{}},
             {"transform_inputs_valid",VP::HasTransformInputs(ds_vp->shader_hash,ds_vp->ds_light_math_variant)},
+            {"projection_operands_valid",projection},
+            {"projection_operand_ids",{170,733,739,155,689,710,133,716,135,650,677,137,140,158,671}},
+            {"projection_rows",std::move(projection_rows)},
             {"viewport",{viewport.x,viewport.y,viewport.width,viewport.height,viewport.minDepth,viewport.maxDepth}},
             {"scissor",{scissor.offset.x,scissor.offset.y,scissor.extent.width,scissor.extent.height}},
             {"dx_clip_space",bool(buffer.GetRegisters().GetClipControl().dx_clip_space)},

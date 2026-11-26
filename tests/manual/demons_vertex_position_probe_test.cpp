@@ -46,6 +46,8 @@ static void Save(const std::string& path,const std::vector<uint32_t>& v){
 }
 int main(int argc,char** argv){
     assert(argc==2);
+    static_assert(HasProjectionOperands(0x868546d85ce5090aull,0x7843cbd43b48179bull));
+    assert(!HasTransformInputs(0x868546d85ce5090aull,0x7843cbd43b48179bull));
     static_assert(FocusPair(0x868546d85ce5090aull,0x31e660625354d953ull,12765)==1);
     static_assert(FocusPair(0x13f07ce83dc1cc67ull,0xe31a5473e9ee7503ull,12765)==1);
     static_assert(FocusPair(0x868546d85ce5090aull,0x31e660625354d953ull,57066)==2);

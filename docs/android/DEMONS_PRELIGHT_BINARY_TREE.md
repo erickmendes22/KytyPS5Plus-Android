@@ -428,3 +428,32 @@ If source already NaN and digest matches, trace earlier caller and source;
 if not, distinguish later writes vs actual instruction divergence. Stack
 words are candidates not verified return addresses. First-write faults
 cannot certify complete stores. W1 and global N00 remain open.
+
+
+## #736 — CPU AVX store and independent finite-geometry clipping (100418)
+719 source records CPU/GPU equal, 9046 fault observations (may repeat event),
+8592 with 32 code bytes, 5145 complete source pages and zero digest matches.
+RIP 0x910003fb0 decoded C5 FA 7F 07 = vmovdqu [rdi],xmm0. 3307
+observations, 1795 distinct fault IDs; 3258 RSI candidate pages already
+have NaNs, 3305 stack[1] candidates 0x900bd453f. RSI is NOT the actual
+store operand; digest mismatch alone cannot prove corruption. Capture
+mapped XMM0, host store opcode, RSI prefix and eventual destination 16B;
+read code near candidate caller. Missing mapping or later overwrites are
+BLOCKED. Keep N74 scoped to W0, no speculative FEX correction.
+Independent offline clip replay (same triangles and captured XYZW): W1
+all 19022 triangles satisfy y<-w on all vertices in phase2 of #731 f270,
+#732 f295, #735 f279, #736 f272. #736 W1 finite y/w [-1.6564,-1.2578];
+W0 1299 nonfinite vertices, 2446 triangles with nonfinite vertices,
+remaining 1809 triangles all y<-w; finite y/w [-1.4794,-1.3434]. Both
+material and prepass match. f271 all nine material draws zero coverage;
+f447 W1 13783/13844 material samples, W0 zero, so W0 alone cannot
+account for all albedo loss. N30 clip compatible with actual XYZW; open
+N31 projection/transform expectation, not proven wrong camera. #736
+original prepass SPIR-V 7843cbd43b48179b: Y=asfloat(170)*asfloat(733)+
+asfloat(739) for active path, W=asfloat(155)*asfloat(689)+asfloat(710),
+Y accumulator 739 from 133*689+716, 716 from 135*650+677. Capture
+these exact typed SSA IDs plus upstream operands at position export;
+record prepass phases 1/2/3, preserve all clip positions and indices,
+sample 1/64 projection operands separately to fit exporter. Compare
+same identity and actual input constants; do not assume another frame
+or count is identical. N00 remains open; no production semantic fix.

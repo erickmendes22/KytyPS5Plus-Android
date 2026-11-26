@@ -3239,7 +3239,7 @@ static void SaveDsVertexCpuSource(int32_t frame,uint64_t submit,uint64_t tick,co
             const bool exact=e.address>=folded&&e.address-folded<bytes;
             const bool copy_candidate=exact&&e.evidence.words[17]!=0;
             if((pass==0&&!copy_candidate)||(pass==1&&!exact)||(pass==2&&exact)||
-                count>=static_cast<unsigned>(pass==0?8:pass==1?4:2)||std::ranges::find(emitted,e.id)!=emitted.end())continue;
+                count>=static_cast<unsigned>(pass==0?8:pass==1?2:1)||std::ranges::find(emitted,e.id)!=emitted.end())continue;
             emitted.push_back(e.id);
             nlohmann::json row={{"event",e.id},{"fault_address",e.address},{"guest_rip",e.rip},
                 {"exact_range",exact},{"gpr",e.gpr},{"rsi",e.rsi},{"rdi",e.rdi},{"rcx",e.rcx}};
@@ -3253,6 +3253,27 @@ static void SaveDsVertexCpuSource(int32_t frame,uint64_t submit,uint64_t tick,co
             }
             row["stack_read_bytes"]=w[5];
             if(w[5])row["stack_words"]=std::vector<uint64_t>(w.begin()+6,w.begin()+6+std::min<uint64_t>(w[5]/8,8));
+            if(w[18]){
+                std::array<uint32_t,4> xmm{},prefix{},dest{};
+                std::memcpy(xmm.data(),w.data()+19,16);
+                std::memcpy(prefix.data(),w.data()+21,16);
+                row["xmm0_words"]=xmm;row["xmm0_host_register"]=w[26];
+                row["host_pc"]=w[24];row["host_opcode"]=w[25];
+                if(w[23]==16){row["rsi_prefix"]=prefix;row["xmm0_matches_rsi"]=xmm==prefix;}
+                if(exact&&e.address%4==0&&e.address-folded+16<=bytes&&source.contains("gpu_words")){
+                    const auto offset=(e.address-folded)/4;
+                    if(source["gpu_words"].size()>=offset+4){
+                        for(size_t j=0;j<4;++j)dest[j]=source["gpu_words"][offset+j].get<uint32_t>();
+                        row["consumed_store_words"]=dest;row["xmm0_matches_consumer"]=xmm==dest;
+                    }
+                }
+            }
+            if(w[28]){
+                std::array<uint8_t,64> caller{};
+                std::memcpy(caller.data(),w.data()+29,64);
+                row["caller_code_base"]=w[27];
+                row["caller_code_bytes"]=std::vector<uint8_t>(caller.begin(),caller.begin()+std::min<uint64_t>(w[28],caller.size()));
+            }
             if(w[17]){
                 row["source_at_fault"]=w[17];row["source_read_bytes"]=w[14];
                 row["source_nan_words"]=w[16];row["source_digest"]=w[15];

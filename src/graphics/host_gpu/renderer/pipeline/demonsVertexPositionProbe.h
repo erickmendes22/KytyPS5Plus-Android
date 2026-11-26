@@ -46,7 +46,9 @@ struct Site {
     uint32_t f32=8,vec4=9;
 };
 constexpr std::array<Site,14> Sites{{
- {0x868546d85ce5090aull,0x7843cbd43b48179bull,39,64,43,119,75,77,0,967,975,971,{}},
+ // #736 exact original SPIR-V: final Y/W arithmetic and upstream Y accumulators.
+ {0x868546d85ce5090aull,0x7843cbd43b48179bull,39,64,43,119,75,77,0,967,975,971,
+  {170,733,739,155,689,710,133,716,135,650,677,137,140,158,671}},
  {0x34c51585c926a664ull,0x92e062bff851bfe3ull,39,60,43,99,71,73,97,593,602,597,
   {366,367,368,253,254,255,256,292,293,294,295,331,332,333,334}},
  {0x34c51585c926a664ull,0x5650cfdc24ed3f10ull,39,60,43,115,71,73,112,878,887,882,
@@ -72,7 +74,11 @@ constexpr std::array<Site,14> Sites{{
  {0xf825a988127faeb4ull,0x0397926184a9f830ull,40,65,44,120,76,78,0,1195,1204,1199,{}},
  {0x74b55dea9562eda1ull,0x3998632d8b97d056ull,46,73,50,128,84,86,0,1353,1361,1357,{}}
 }};
+inline constexpr bool HasProjectionOperands(uint64_t hash,uint64_t fingerprint) {
+    return hash==0x868546d85ce5090aull&&fingerprint==0x7843cbd43b48179bull;
+}
 inline bool HasTransformInputs(uint64_t hash,uint64_t fingerprint) {
+    if(HasProjectionOperands(hash,fingerprint))return false;
     for(const auto& x:Sites) if(x.hash==hash&&x.fingerprint==fingerprint) return x.inputs[0]!=0;
     return false;
 }

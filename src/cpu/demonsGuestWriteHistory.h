@@ -16,10 +16,13 @@ constexpr size_t Capacity=32768;
 struct Evidence {
     // 0 code byte count, 1..4 code bytes, 5 stack byte count, 6..13 stack,
     // 14 source byte count, 15 source digest, 16 NaN words, 17 source address.
-    std::array<uint64_t,18> words{};
+    // 18 validity, 19..20 XMM0, 21..22 RSI prefix, 23 prefix bytes,
+    // 24 host PC, 25 host opcode, 26 host register, 27 caller code base,
+    // 28 caller readable bytes, 29..36 caller code.
+    std::array<uint64_t,37> words{};
 };
 struct Event {uint64_t id=0,address=0,rip=0,rsi=0,rdi=0,rcx=0;std::array<uint64_t,16> gpr{};Evidence evidence{};};
-struct Cell {std::atomic<uint64_t> seq{},address{},rip{},rsi{},rdi{},rcx{};std::array<std::atomic<uint64_t>,16> gpr{};std::array<std::atomic<uint64_t>,18> evidence{};};
+struct Cell {std::atomic<uint64_t> seq{},address{},rip{},rsi{},rdi{},rcx{};std::array<std::atomic<uint64_t>,16> gpr{};std::array<std::atomic<uint64_t>,37> evidence{};};
 static_assert(std::atomic<uint64_t>::is_always_lock_free);
 inline std::array<Cell,Capacity> ring{};
 inline std::atomic<uint64_t> next{};

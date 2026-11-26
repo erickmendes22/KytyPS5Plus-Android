@@ -109,7 +109,7 @@ struct SavedGuestRegs {
 
 // Read using the existing fault-safe kernel-mediated reader; never dereference
 // guest code or RSI directly in a SIGSEGV handler. Save errno across diagnostics.
-static Cpu::DemonsGuestWriteHistory::Evidence CaptureVertexFaultEvidence(uint64_t address,const GuestRegisters& regs){
+static Cpu::DemonsGuestWriteHistory::Evidence CaptureVertexFaultEvidence(uint64_t address,const GuestRegisters& regs,void* ucontext){
     Cpu::DemonsGuestWriteHistory::Evidence e;
     const int saved_errno=errno;
     auto& w=e.words;
@@ -125,6 +125,29 @@ static Cpu::DemonsGuestWriteHistory::Evidence CaptureVertexFaultEvidence(uint64_
         std::array<uint32_t,1024> page{};
         const auto bytes=std::min<uint64_t>(4096,31488-offset);
         w[17]=src;
+        // Restrict this to the decoded first vmovdqu [rdi],xmm0 instruction.
+        // FEX's static vector mapping is the same mapping used by its signal
+        // delegator. Capture host opcode as a separate cross-check.
+        const auto* code=reinterpret_cast<const uint8_t*>(w.data()+1);
+        if(regs.rip==0x910003fb0ull&&w[0]>=4&&code[0]==0xc5&&code[1]==0xfa&&code[2]==0x7f&&code[3]==0x07){
+            const auto& cfg=Fex::GetRuntime().signals->GetConfig();
+            using namespace FEX::ArchHelpers::Context;
+            const auto* fp=reinterpret_cast<const HostFPRState*>(&GetMContext(ucontext)->__reserved[0]);
+            if(cfg.SRAFPRCount>0&&cfg.SRAFPRMapping[0]<32&&fp->Head.Magic==FPR_MAGIC&&fp->Head.Size>=sizeof(HostFPRState)){
+                const auto value=GetArmFPR(ucontext,cfg.SRAFPRMapping[0]);
+                std::memcpy(w.data()+19,&value,16);
+                w[18]=1;w[26]=cfg.SRAFPRMapping[0];
+            }
+            w[23]=Cpu::DecodeDiagnostics::ReadSelf(src,w.data()+21,16);
+            w[24]=GetPc(ucontext);
+            Cpu::DecodeDiagnostics::ReadSelf(w[24],w.data()+25,4);
+            // The second stack word repeatedly pointed to the same guest code.
+            // Record bytes around that candidate; a stack word alone is not a return address.
+            if(offset==0&&w[5]>=16&&w[7]>=48){
+                w[27]=w[7]-48;
+                w[28]=Cpu::DecodeDiagnostics::ReadSelf(Kernel::AddressFold::Fold(w[27]),w.data()+29,64);
+            }
+        }
         w[14]=Cpu::DecodeDiagnostics::ReadSelf(src,page.data(),bytes);
         if(w[14]==bytes){
             w[15]=14695981039346656037ull;
@@ -154,7 +177,7 @@ bool HostSigsegv(FEXCore::Core::InternalThreadState* /*thread*/, int /*sig*/, vo
 	const bool exact=trace&&CaptureFaultingGuestRegisters(ucontext,&regs);
     Cpu::DemonsGuestWriteHistory::Evidence evidence{};
     if(exact&&Cpu::DemonsGuestWriteHistory::vertex_only.load(std::memory_order_relaxed))
-        evidence=CaptureVertexFaultEvidence(address,regs);
+        evidence=CaptureVertexFaultEvidence(address,regs,ucontext);
 	const bool handled=handler(address,is_write);
 	if(handled&&trace)Cpu::DemonsGuestWriteHistory::Record(address,exact?regs.rip:0,regs.gpr[GuestRegisters::kRsi],regs.gpr[GuestRegisters::kRdi],regs.gpr[GuestRegisters::kRcx],exact?regs.gpr:nullptr,&evidence);
 	return handled;
