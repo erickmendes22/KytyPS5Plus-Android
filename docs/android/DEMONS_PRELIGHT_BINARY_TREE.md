@@ -344,3 +344,28 @@ N -> N72: same bytes at producer and consumer? N -> first overlapping
 writer/transfer/version; S -> invalid witness, check exact identity.
 Unproven producer or missing actual operand -> BLOCKED. Do not treat
 NaN alone as proof of error. Keep N30/N40/N50/N60 active for finite W1.
+
+
+## #731 — first XYZ transition bounded (ZIP 20261126-085152)
+W0 12765 indices: exact live XYZ range 0x20a231510 (31488 bytes)
+has 0/7872 NaN at f195 tick11690 and f196 ticks11719..11835,
+7872/7872 at f226 tick14733, unchanged through f270 tick20222.
+Same range, not just same index count. f270 prepass and material
+consume identical invalid XYZ; backing has only 4 NaN words and is
+GPU-dirty (not an independent oracle). Other live ranges rotate:
+0x3c264a600 finite f232, all NaN f269; 0x3c2640200 all NaN f265.
+The observed executions of 22e0328668b00aa3 and d2bbd6fff133ed4e
+did not change tracked XYZ; no producer transition in 12 captures.
+Writer history empty for the invalid XYZ range; do NOT interpret
+missing provenance as no GPU writer. Journal dropped 16896 events,
+216 full samples and 324 samples. The phase/hash gate captures only
+one execution per shader/phase and consumer gate waits 32 frames.
+N70 remains BLOCKED: producer vs transfer not decided. N71 remains
+BLOCKED: deliberate guest NaN culling not disproved. N00 causal link
+to all albedo still unproven; retain finite W1 control and material path.
+Next division: preserve a dedicated compact per-frame live consumer
+and overlapping write journal independent of the saturated root
+journal; compare exact XYZ ranges at every matched dispatch rather
+than one phase sample. Preserve the first transition and its actual
+input bindings. BDA/transfer claims remain candidates, not proof.
+No production graphics semantic change or global illumination fix.
