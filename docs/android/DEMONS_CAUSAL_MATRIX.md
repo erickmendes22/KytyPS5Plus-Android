@@ -351,3 +351,6 @@ stencil-only and both tests, preserving masks and all original writes.
 Compare same-draw queries, not different frames; original may differ from
 read-only replay if depth writes within a draw cause self-occlusion.
 No graphics semantics changed.
+
+## Build #724 delivery
+Revision d0975c557a477d203f495dfb68628cc2b0611dc6, run 45740027126, artifact 15081360854. Mandatory tests, ARM64 compilation, APK tests, certificate compatibility and packaged-native audit passed. Full optional regressions skipped. ZIP SHA-256 ada8e224365380721dac639489db9cf58786a211797ff132747d76c97934a72b verified. APK SHA-256 3fa61f946a66f86459d4bd3d402a5f4bcf17f93e300d9c13ed6e16bec8e57801 (16275618 bytes), embedded libmain.so revision matches, v2 RSA signature and signed content digest verified independently; certificate matches #723. Diagnostic mode F, no production graphics fix claimed. Active image capture remains bounded and does not itself record the actual comparison operands.
