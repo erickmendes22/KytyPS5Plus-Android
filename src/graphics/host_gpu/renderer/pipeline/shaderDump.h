@@ -31,6 +31,8 @@ void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t gues
                   std::span<const uint32_t> spirv);
 // Must be called before a recorded module handle is destroyed, since handles are reused.
 void ForgetModule(vk::ShaderModule module);
+// Diagnostic identity of the exact original bound module, not a cached hash guess.
+std::string ModuleFile(vk::ShaderModule module);
 
 using LayoutState = PipelineRecord::LayoutState;
 

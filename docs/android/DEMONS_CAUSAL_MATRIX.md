@@ -281,3 +281,27 @@ image owner/version and producer of the live ordinal-zero resource, and
 compare guest ISA to native lowering. The ZIP has guest PS code but no
 matching native SPIR-V for these selected hashes. Do not force null,
 remove discard, or change depth/stencil without semantic evidence.
+
+
+## Offline guest ISA replay of #722 and next focused capture
+All six original PS binaries use a common image descriptor from a scalar
+load at +0xa00, sample red, ordered float greater-than, AND-NOT with the
+saved EXEC mask. For e1638ea4/62548803/31e66062 guest offsets 0x154,
+0x180, 0x1ac, 0x1b0; 3dce2bd7 and 3cc41a57 compare 0x1a8;
+895c9fe0 compares 0x1b0. For e1638ea4 gate at 0x44/0x11c uses scalar
+load +0x28, SRT flattened[57] is 1.0 at f359, zero at f311/f502.
+Descriptor address observed 0x208a30000 (low base 0x0208a300).
+Other material predicates also exist; cannot equate total replay losses
+with first gate without exact native data. Prior exporter prioritized
+new shader hashes only AFTER the allowlist, which omitted them. Add
+allowlist and exact bound module filenames (not merely guest hash); retain
+native module variants and original descriptor evidence. Snapshot unique
+bound native view by low-base address, format/component mapping, mip/layer,
+owner/version/dirty state and bounded raw texels and guest backing.
+Capture upload and GPU-write candidates at the observed resource address;
+no claim of writer provenance for other allocations. Native/guest raw
+bytes use potentially different tiling and formats, not directly comparable.
+Replay comparison still measures total discard; actual first compare operands
+not yet instrumented because prior native modules missing. Do not change
+shader semantics or force the input to null. Exact native SPIR-V and bound
+texture evidence will permit fingerprinted instrumentation if still needed.

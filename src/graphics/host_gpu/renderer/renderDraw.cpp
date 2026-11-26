@@ -39,6 +39,7 @@
 #include "graphics/host_gpu/renderer/gpuTimer.h"
 #include "graphics/host_gpu/renderer/liveKnobs.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderDump.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -1296,6 +1297,92 @@ static void ProbeDsColorOutputs(RenderContext& context, const RenderColorInfo* c
 		     no_id, no_backing, not_1x, unknown_format, tiny, no_transfer,
 		     example_format, example_width, example_height));
 	}
+}
+
+// Read the exact bound view of the common scene-depth discard input. A
+// raw guest backing dump is tiled guest memory, not a linear texel oracle.
+static nlohmann::json SnapshotDsDiscardImage(RenderContext& context,
+    const PreparedBindings& pixel, const std::array<uint32_t,8>& raw) {
+    nlohmann::json result={{"status","unavailable"},{"guest_descriptor",raw}};
+    if(!raw[0]) {result["status"]="null_or_zero_base";return result;}
+    // The captured family uses a 32-bit base in units of 256 bytes. Fail
+    // closed on high address bits; do not silently select another image.
+    if(raw[1]&0x3fu){result["status"]="unsupported_high_address";return result;}
+    const uint64_t expected=uint64_t{raw[0]}<<8;
+    result["expected_guest"]=expected;
+    result["bound_views"]=nlohmann::json::array();
+    size_t matches=0;
+    const auto& inputs=pixel.images;
+    size_t selected=0;
+    for(size_t i=0;i<inputs.size();++i){
+        const auto& in=inputs[i];
+        result["bound_views"].push_back({{"slot",i},{"guest",in.desc.info.data.address},
+            {"placeholder",in.placeholder || !in.image_id},{"format",uint32_t(in.desc.view_info.format)},
+            {"mip",in.desc.view_info.base_level},{"layer",in.desc.view_info.base_layer}});
+        if(in.desc.info.data.address==expected && in.image_id && !in.placeholder){selected=i;++matches;}
+    }
+    if(matches!=1){result["status"]=matches?"ambiguous_binding":"no_exact_binding";return result;}
+    const auto& input=inputs[selected];
+    auto& image=context.GetTextureCache().GetImage(input.image_id);
+    const auto found=std::ranges::find(image.views,input.image_view,&CachedImageView::view);
+    if(found==image.views.end()){result["status"]="native_view_unavailable";return result;}
+    const auto& view=found->info;
+    const auto& backing=image.backing;
+    result["native_slot"]=selected;
+    result["owner"]=image.info.data.address;
+    result["owner_bytes"]=image.info.data.size;
+    result["version"]=image.ContentVersion();
+    result["gpu_modified"]=image.IsGpuModified();
+    result["cpu_dirty"]=image.IsCpuDirty();
+    result["buffer_modified"]=image.IsBufferModified();
+    result["view_format"]=uint32_t(view.format);
+    result["backing_format"]=uint32_t(backing.format);
+    result["view_mip"]=view.base_level;
+    result["view_layers"]=view.layer_count;
+    result["view_levels"]=view.level_count;
+    result["view_layer"]=view.base_layer;
+    result["view_mapping"]={uint32_t(view.mapping.r),uint32_t(view.mapping.g),uint32_t(view.mapping.b),uint32_t(view.mapping.a)};
+    result["guest_format"]=uint32_t(image.info.guest_format);
+    result["guest_tile_mode"]=uint32_t(image.info.tile_mode);
+    result["guest_pitch"]=image.info.pitch;
+    result["guest_mip_offset"]=view.base_level<image.info.mip_layout.size()?image.info.mip_layout[view.base_level].offset:0ull;
+    if(image.info.data.size && image.info.data.size<=65536u){
+        std::vector<uint8_t> bytes(image.info.data.size);
+        if(LibKernel::Memory::TryReadBacking(image.info.data.address,bytes.data(),bytes.size()))
+            result["guest_backing_bytes"]=std::move(bytes);
+    }
+    if(!backing.image || backing.image_type!=vk::ImageType::e2D || backing.samples!=1 ||
+       !(backing.usage&vk::ImageUsageFlagBits::eTransferSrc) ||
+       view.aspect!=vk::ImageAspectFlagBits::eColor || view.base_level>=backing.mip_levels ||
+       view.base_layer>=backing.layers || backing.format==vk::Format::eUndefined){
+        result["status"]="unsupported_native_view";return result;
+    }
+    const uint32_t width=std::max(1u,backing.extent.width>>view.base_level);
+    const uint32_t height=std::max(1u,backing.extent.height>>view.base_level);
+    const auto block=vk::blockExtent(backing.format);
+    const uint32_t bpp=vk::blockSize(backing.format);
+    const uint64_t size=uint64_t{width}*height*bpp;
+    result["extent"]={width,height};
+    result["bytes_per_texel"]=bpp;
+    if(block[0]!=1 || block[1]!=1 || block[2]!=1 || !size || size>65536u){
+        result["status"]="bounded_readback_unsupported";return result;
+    }
+    auto& download=context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+    auto [mapped,offset]=download.Map(size,16u,true);
+    if(!mapped){result["status"]="map_failed";return result;}
+    download.Commit();
+    vk::BufferImageCopy copy{};
+    copy.bufferOffset=offset;
+    copy.imageSubresource={vk::ImageAspectFlagBits::eColor,view.base_level,view.base_layer,1};
+    copy.imageExtent={width,height,1};
+    image.Download(std::span{&copy,1u},download.Handle(),offset,size);
+    context.GetCommandScheduler().Finish();
+    download.Invalidate(offset,size);
+    std::vector<uint8_t> bytes(size);
+    std::memcpy(bytes.data(),mapped,size);
+    result["native_texel_bytes"]=std::move(bytes);
+    result["status"]="captured";
+    return result;
 }
 
 // A full layer comparison also finds writes between the occlusion samples.
@@ -3848,6 +3935,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                     };
                     original["vertex_inputs"]=encode(state.vertex_info[0].stage);
                     original["pixel_inputs"]=encode(state.ps_input_info.stage);
+                    original["native_ps_file"]=ShaderDump::ModuleFile(state.programs.pixel.module);
+                    original["native_vs_file"]=ShaderDump::ModuleFile(state.programs.vertex[0].module);
+                    if(bindings.pixel && state.ps_input_info.stage.resources &&
+                       !state.ps_input_info.stage.resources->images.empty()){
+                        const auto& raw=state.ps_input_info.stage.resources->images.front().dwords;
+                        original["discard_input"]=SnapshotDsDiscardImage(m_context,*bindings.pixel,raw);
+                    }else{
+                        original["discard_input"]={{"status","descriptor_or_binding_unavailable"}};
+                    }
 					auto replay_programs = state.programs;
 					for (size_t i=0; i<geometry_replay.size(); ++i) {
 						const auto& replay = state.programs.pixel.material_coverage[i == 2 ? 0 : i];
@@ -3867,6 +3963,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 							auto row = geometry.rows[geometry_query];
 							row["kind"] = kind;
 							row["original_query"] = geometry_query;
+                            row.erase("discard_input");
 							row["depth_test"] = false;
 							row["depth_write"] = false;
 							row["stencil_test"] = false;

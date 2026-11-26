@@ -248,7 +248,8 @@ object Diagnostics {
             "c96f3fcde8141266", "552d823dcfcf2dee",
             "34c51585c926a664", "a7208481a1f2b760", "3dce2bd78d58db62", "895c9fe037e704f5",
             "f825a988127faeb4", "74b55dea9562eda1", "cfc1d9193e7f9e53", "c92deb23fc611b10")
-        val watched = dominantShaders + queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
+        val depthProbeHashes = setOf("6254880342eb8db4","31e660625354d953","3cc41a5737b15e7f","9da9c10e59d6e38e","e1638ea46c70bc9c","868546d85ce5090a","0a472b34f593b99b","3dce2bd78d58db62","895c9fe037e704f5")
+        val watched = depthProbeHashes + dominantShaders + queueShaders + producerShaders + atlasWriterShaders + coefficientWriterShaders + postShaders + setOf(
             "3dfe402653925fbf", "6cbfe18ea2005263", "1ce1a858f62b5a11",
             "c2e01fbe98f5ebab", "23056085c1120461", "fabe0bcb275a3005",
             "e75589aa0bb3ae52", "93b0be7f1a0293d1"
@@ -258,6 +259,11 @@ object Diagnostics {
             // can legitimately predate it. Do not silently mix old ray rows
             // with the current session's identical frame numbers.
             val launchTime = File(context.filesDir, "logs/last-launch.txt").lastModified()
+            val exactDepthFiles = File(dump, "queue-state").listFiles().orEmpty()
+                .filter { it.name.startsWith("ds_geometry_coverage_f") && it.extension == "json" &&
+                    (launchTime == 0L || it.lastModified() >= launchTime) && it.length() <= 8L*1024L*1024L }
+                .flatMap { f -> Regex("spv/[a-z]+_[0-9a-f]{16}_[0-9a-f]{16}\\.spv").findAll(f.readText()).map { it.value.substringAfter("/") }.toList() }
+                .toSet()
             val candidates = listOf("queue-state", "guest-shaders", "spv", "pipelines", "buffers").flatMap { subdir ->
                 val files = File(dump, subdir).listFiles().orEmpty()
                     .filter { file ->
@@ -354,11 +360,11 @@ object Diagnostics {
                         files.filter { it.name.contains("_bcbcc6ba1e68c974_") } else emptyList()
                     val sceneModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { f -> listOf("34c51585c926a664", "a7208481a1f2b760", "f825a988127faeb4", "74b55dea9562eda1").any { f.name.contains("_${it}_") } } else emptyList()
-                    val depthProbeModules = files.filter { f -> listOf("6254880342eb8db4","31e660625354d953","3cc41a5737b15e7f","9da9c10e59d6e38e","e1638ea46c70bc9c","868546d85ce5090a","0a472b34f593b99b").any { f.name.contains("_${it}_") } }
+                    val depthProbeModules = depthProbeHashes.flatMap { hash -> files.filter { it.name.contains("_${hash}_") }.take(8) }.distinct()
                     val firstLightModules = files.filter { f -> listOf("f0c482b0b355e9de","3dfe402653925fbf","e3daeb1e7426761b").any { f.name.contains("_${it}_") } }
                     val causalModules = if (subdir == "spv" || subdir == "pipelines")
                         files.filter { it.name.contains("_fb18d110fab8234e_") || it.name.contains("_cb3b9c1ea64fe876_") } else emptyList()
-                    (depthProbeModules + firstLightModules + causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
+                    (files.filter { it.name in exactDepthFiles } + depthProbeModules + firstLightModules + causalModules + sceneModules + relightModules + files).distinct().take(when (subdir) {
                         "guest-shaders" -> 96
                         "spv" -> 48
                         else -> 24

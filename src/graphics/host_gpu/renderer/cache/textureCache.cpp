@@ -1691,6 +1691,11 @@ static void RetainGpuArraySlices(std::vector<vk::BufferImageCopy>& copies,
 }
 
 void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_offset) {
+    if(Config::GetShaderDumpFolder().filename()=="ds-lighting-dumps" &&
+       image.info.data.address==0x208a30000ull){
+        Log::WriteToConsoleAndLog(fmt::format("[DS_DISCARD_UPLOAD] guest=0x{:x} bytes={} version={} cpu_dirty={} buffer_modified={} source_offset={}\n",
+            image.info.data.address,image.info.data.size,image.ContentVersion(),image.IsCpuDirty(),image.IsBufferModified(),source_offset));
+    }
 	Common::PerfStats::Count(Common::PerfStats::Counter::ImageUploadBytes, image.info.data.size);
 	if (Common::PerfStats::Enabled()) {
 		NoteVideoUpload(image);
@@ -2571,6 +2576,11 @@ void TextureCache::CommitGpuWrite(Image& image) {
 	}
 	image.MarkGpuModified();
 	image.gpu_write_order = ++m_gpu_image_write_order;
+    if(Config::GetShaderDumpFolder().filename()=="ds-lighting-dumps" &&
+       image.info.data.address==0x208a30000ull){
+        Log::WriteToConsoleAndLog(fmt::format("[DS_DISCARD_GPU_WRITE] guest=0x{:x} bytes={} version={} order={}\n",
+            image.info.data.address,image.info.data.size,image.ContentVersion(),image.gpu_write_order));
+    }
 }
 
 bool TextureCache::HasCachedImageOverlap(uint64_t address, uint64_t size) {

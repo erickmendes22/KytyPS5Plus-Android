@@ -176,6 +176,14 @@ void RecordModule(vk::ShaderModule module, const char* stage_name, uint64_t gues
 	state.modules[static_cast<VkShaderModule>(module)] = {.file = file, .guest_hash = guest_hash};
 }
 
+std::string ModuleFile(vk::ShaderModule module) {
+    if(!Enabled() || !module)return {};
+    auto& state=GetState();
+    std::scoped_lock lock(state.mutex);
+    const auto it=state.modules.find(static_cast<VkShaderModule>(module));
+    return it==state.modules.end()?std::string{}:it->second.file;
+}
+
 void ForgetModule(vk::ShaderModule module) {
 	if (!Enabled()) {
 		return;
