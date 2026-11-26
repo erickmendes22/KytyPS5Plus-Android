@@ -3265,6 +3265,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		return;
 	}
 	auto& pipeline = *pipeline_ptr;
+    nlohmann::json p8_use;
+    if(DemonsP8Capture::FullFrame(root_frame)){
+        p8_use={{"frame",root_frame},{"submit",submit_id},{"path","graphics"},
+            {"draw",root_draw},{"stages",nlohmann::json::array()},{"targets",nlohmann::json::array()}};
+        for(const auto* stage:stages)
+            p8_use["stages"].push_back(DemonsP8Reference::InspectBindings(m_context,*stage,root_frame,submit_id));
+        for(const auto& color:std::span{state.color_info,state.color_count}){
+            if(color.image_id)p8_use["targets"].push_back({{"slot",color.target_slot},
+                {"image",DemonsPrelightTrace::Identity(m_context.GetTextureCache().GetImage(color.image_id))}});
+        }
+        if(state.depth_info.image_id)p8_use["depth_target"]=DemonsPrelightTrace::Identity(m_context.GetTextureCache().GetImage(state.depth_info.image_id));
+    }
 	TraceDsGraphicsOutcome(true, true, state.color_count,
 	                      static_cast<bool>(state.depth_info.image_id), state.ps_active);
 	static const bool ds_gbuffer_enabled = [] {
@@ -4669,6 +4681,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	MarkPassImages(buffer, mesh_emulated ? stages.subspan(1) : stages,
 	               std::span {state.color_info, state.color_count}, state.depth_info);
 	const auto vk_buffer = buffer.PassHandle();
+    DemonsP8Reference::MarkUse(vk_buffer,std::move(p8_use));
 	if (!mesh_active) {
 		CommitVertexBuffers(vk_buffer, vertex_bindings);
 	}

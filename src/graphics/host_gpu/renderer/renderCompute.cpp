@@ -4942,7 +4942,7 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
                 {"queue",queue},{"shader",shader},{"snapshots",nlohmann::json::array()}};
             if(albedo_view!=albedo_image.views.end()){
                 for(uint32_t layer=0;layer<4;++layer)
-                    group["snapshots"].push_back(DemonsP8Reference::Snapshot(context,albedo_image,
+                    group["snapshots"].push_back(DemonsP8Reference::SnapshotBoundary(context,albedo_image,
                         albedo_view->info.base_level,albedo_view->info.base_layer+layer,
                         vk::ImageAspectFlagBits::eColor,frame,submit,"gbuffer",queue));
             }
@@ -4950,7 +4950,7 @@ static void CaptureDsLightBridge(RenderContext& context, const PreparedBindings&
                 auto& image=textures.GetImage(depth_binding->image_id);
                 const auto view=std::ranges::find(image.views,depth_binding->image_view,&CachedImageView::view);
                 if(view!=image.views.end())
-                    group["snapshots"].push_back(DemonsP8Reference::Snapshot(context,image,
+                    group["snapshots"].push_back(DemonsP8Reference::SnapshotBoundary(context,image,
                         view->info.base_level,view->info.base_layer,vk::ImageAspectFlagBits::eDepth,
                         frame,submit,"depth",queue));
             }
@@ -5555,6 +5555,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
     const auto relight_trace=SelectDsRelightTrace(m_context,bindings,{thread_group_x,thread_group_y,thread_group_z},submit_id);
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
     DsVertexProducerCapture vertex_producer; // V3: no W0 capture
+    nlohmann::json p8_use;
+    const int32_t p8_frame=m_context.GetGpu().GetFrameNum();
+    if(DemonsP8Capture::FullFrame(p8_frame)){
+        p8_use={{"frame",p8_frame},{"submit",submit_id},{"path","compute_direct"},
+            {"groups",{thread_group_x,thread_group_y,thread_group_z}},
+            {"stages",nlohmann::json::array({DemonsP8Reference::InspectBindings(m_context,bindings,p8_frame,submit_id)})}};
+    }
     DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,false);
     if(DemonsPrelightTrace::Enabled()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
         CaptureDsLightBridge(m_context,bindings,submit_id,{thread_group_x,thread_group_y,thread_group_z},true,true);
@@ -5646,6 +5653,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	buffer.MarkGpu("misc");
 	{
+		DemonsP8Reference::MarkUse(vk_buffer,std::move(p8_use));
 		const ScopedDebugLabel label(vk_buffer, "cs", program.shader_hash);
 		// A packed program runs group_pack guest groups along X per host group (x is even).
 		const uint32_t host_x = thread_group_x / std::max(program.info.group_pack, 1u);
@@ -6080,6 +6088,12 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
         split_on_cpu?vk::Buffer{}:indirect_buffer,indirect_offset);
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
     DsVertexProducerCapture vertex_producer; // V3: no W0 capture
+    nlohmann::json p8_use;
+    const int32_t p8_frame=m_context.GetGpu().GetFrameNum();
+    if(DemonsP8Capture::FullFrame(p8_frame)){
+        p8_use={{"frame",p8_frame},{"submit",submit_id},{"path","compute_indirect"},{"args_guest",args_addr},
+            {"stages",nlohmann::json::array({DemonsP8Reference::InspectBindings(m_context,bindings,p8_frame,submit_id)})}};
+    }
     DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,true,args_addr);
     if(DemonsCausalMatrix::Evidence()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
         CaptureDsLightBridge(m_context,bindings,submit_id,{1,1,1},true,true);
@@ -6120,6 +6134,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	buffer.MarkGpu("misc");
 	{
+		DemonsP8Reference::MarkUse(vk_buffer,std::move(p8_use));
 		const ScopedDebugLabel label(vk_buffer, "cs-indirect", program.shader_hash);
 		if (split_on_cpu) {
 			RecordGuestDispatch(vk_buffer, limits, {args.x, args.y, args.z}, program, pipeline);

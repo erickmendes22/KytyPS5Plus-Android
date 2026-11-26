@@ -184,7 +184,31 @@ def compare(events, mapping, rd, captured, dump):
         return tuple(x.get(k) for k in ("owner","native","version","format","width","height"))
     linked={f["marker"] for f in finals if any(ident(f)==ident(g["image"]) and 0<=g["frame"]-f["frame"]<=1 for g in flips)}
     require(linked,"no exact compositor-to-flip identity")
-    boundary=[r for r in results if r["role"] in ("gbuffer","depth")]
+    # Every actual marked consumer is checked; reused Android bytes are not a
+    # claim that a second backend has the same version at later uses.
+    uses=[e for e in events if e.get("kind")=="cut_use"]
+    use_markers=set()
+    watched_reads=0
+    for use in uses:
+        marker=use.get("marker")
+        require(use.get("marker_recorded") and marker and marker not in use_markers,
+                "missing or duplicate consumer marker")
+        use_markers.add(marker)
+        for stage in use.get("stages",[]):
+            require(stage.get("valid"),"missing runtime in cut census")
+            for binding in stage.get("images",[]):
+                if not binding.get("cut_candidate") or (binding.get("access_known") and not binding.get("read")):
+                    continue
+                watched_reads+=1
+                require(binding.get("access_known") and not binding.get("reason") and binding.get("snapshots"),
+                        "missing exact cut view")
+                for snap in binding["snapshots"]:
+                    require(snap.get("valid") and snap["marker"] in mapping,"missing cut version bytes")
+                    original=mapping[snap["marker"]]["snapshot"]
+                    require(all(original.get(k)==snap.get(k) for k in
+                        ("owner","native","version","write_order","mip","layer","aspect","format")),
+                        "cut snapshot identity mismatch")
+    boundary=[r for r in results if r["role"] in ("gbuffer","depth","stencil")]
     changed=any(r["different_texels"] for r in boundary)
     final_changed=any(r["different_texels"] for r in results if r["marker"] in linked)
     if not final_changed: result="NO_FINAL_DIFFERENTIAL"
@@ -192,7 +216,8 @@ def compare(events, mapping, rd, captured, dump):
     else: result="NATIVE_POST_BOUNDARY_DIFF_CANDIDATE"
     return {"p8":"BLOCKED_GUEST_REFERENCE","native_result":result,
             "scope":"Known deferred consumers; same translated Vulkan stream; no guest prefix certificate or causal substitution.",
-            "linked_final_markers":sorted(linked),"snapshots":results}
+            "linked_final_markers":sorted(linked),"cut_use_records":len(uses),
+            "watched_read_bindings":watched_reads,"snapshots":results}
 
 def selftest():
     with tempfile.TemporaryDirectory() as d:

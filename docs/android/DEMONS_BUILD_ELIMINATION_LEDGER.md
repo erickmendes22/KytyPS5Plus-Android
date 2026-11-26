@@ -38,6 +38,41 @@ instrumento a construir, não a exigência circular de já possuir a resposta do
 aparelho. Reutilizar os certificados e analisar os dados da #746 quando
 disponíveis; não contabilizar a captura local como uma decisão global.
 
+## Atualização #746 / #747 — cobertura da fronteira P8
+
+Diagnóstico real #746: `20261126-144336`, 404/404 dependências obrigatórias e
+649 entradas do inventário verificadas. A primeira perda de albedo é no
+frame 217; o journal termina no 222. Isso não certifica o frame de gameplay
+escuro posterior. No frame 481, o log registra **40 índices de filas que
+escrevem HDR** (0–31 e 33–40), além de passes gráficos e pós-processamento.
+Nem todos são necessariamente consumidores do G-buffer; a associação deve
+ser determinada pelas bindings efetivamente usadas. O compositor consome
+0x281a80000 (overlay) e 0x2b2a40000 (cena pós-processada). No frame 481 as
+cinco amostras do segundo recurso têm R=G=0 e luminância muito baixa, mas
+não são uma referência independente do material esperado.
+
+A #746 capturou 12 registros CP em quatro batches; o mecanismo de referência
+direta respondeu `pipeline_or_front_thread_unsupported`. Não se promove
+essa falha de aquisição a uma divergência de execução. A comparação local
+de publicações/consumo relatada na análise anterior não corta P8.
+
+#747, commit 63ea76b1f3fcfb4f506322aceed71ab7ef786dfc, run 45881244220:
+candidato de desenvolvimento de replay Vulkan, não build de decisão P8.
+Os testes rápidos executam igualdade e divergências nativas, mas o
+comparador continua sem referência guest e limita a cobertura explícita a
+0, 8 e 33. A compilação ainda não constitui um corte. Não pedir ao usuário
+para instalar como se a decisão global estivesse preparada.
+
+Revisão staging seguinte: censo de bindings reais de todos os dispatches
+normais diretos/indiretos e draws admitidos na janela, marcação de cada uso,
+captura dos subrecursos material/depth efetivamente vinculados e reutilização
+de uma cópia apenas para a mesma identidade/versão limpa. Isso corrige a
+dependência de três hashes, mas não certifica a referência no momento de
+cada uso nem cobre automaticamente caminhos especializados. A substituição
+causal e a referência independente da tradução guest continuam pendentes.
+**Corte global: nenhum; P8 permanece aberto.** Não promover staging ao
+branch de APK enquanto esses requisitos de decisão não forem satisfeitos.
+
 ## Como registrar um corte
 
 | Tipo | O que a evidência permite afirmar |
