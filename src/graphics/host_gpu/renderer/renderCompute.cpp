@@ -1561,8 +1561,8 @@ static void RememberDsRaySourceRows(RenderContext& context,const PreparedBinding
         }
         row+=n;
     }
-    LOGF("[DS_RAY_SOURCE_HISTORY] frame=%d submit=%" PRIu64 " dispatch=%u captured=%u different=%u backing_known=%u backing_different=%u ambiguous=%u\\n",
-        frame,submit,dispatch,captured,different,backing_known,backing_diff,ambiguous);
+    Log::WriteToConsoleAndLog(fmt::format("[DS_RAY_SOURCE_HISTORY] frame={} submit={} dispatch={} captured={} different={} backing_known={} backing_different={} ambiguous={}\n",
+        frame,submit,dispatch,captured,different,backing_known,backing_diff,ambiguous));
 }
 
 static nlohmann::json DsRaySourceAtConsumer(uint64_t owner,uint32_t probe,const nlohmann::json& ray_words){
@@ -3291,6 +3291,8 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
     if (!DsTraceEnabled() || Config::GetShaderDumpFolder().filename() != "ds-lighting-dumps") return {};
     const auto& program=*bindings.runtime->program;
     const bool upstream_count=program.shader_hash==0xcb3b9c1ea64fe876ull;
+    const auto& snap=*bindings.runtime->resources;
+    const bool secondary_active=upstream_count && snap.flattened_srt.size()==18 && snap.flattened_srt[15]!=0;
     uint64_t watch_address=0;
     if (upstream_count) {
         // The exact 20-byte dispatch-count records from all 21 195657 samples.
@@ -3300,6 +3302,17 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
             const auto& src=bindings.buffer_sources[res.descriptor_index];
             for (auto address:watched)
                 if (D::Overlaps(src.address,src.size,address,20)) watch_address=address;
+        }
+        // Separate the live-secondary path from specialized zero-secondary
+        // captures. Watch the actual output address, not only old addresses.
+        if(secondary_active && DemonsCausalMatrix::Evidence()){
+            const uint64_t address=uint64_t{snap.flattened_srt[10]}|
+                (uint64_t{snap.flattened_srt[11]&0xffffu}<<32u);
+            if(address) for(const auto& res:program.info.buffers){
+                if(!res.written||res.descriptor_index>=bindings.buffer_sources.size())continue;
+                const auto& src=bindings.buffer_sources[res.descriptor_index];
+                if(src.address==address&&src.size>=20)watch_address=address;
+            }
         }
         if (!watch_address) return {};
     } else {
@@ -3317,19 +3330,21 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
         gate.BrightSceneActive(frame)?1u:0u;
     struct Gate { std::array<int32_t,4> last{-1,-1,-1,-1}; std::array<uint32_t,4> count{}; std::array<uint32_t,4> same_frame{}; };
     static std::unordered_map<uint64_t,Gate> seen;
-    auto& state=seen[upstream_count ? program.shader_hash^watch_address : program.shader_hash];
+    auto& state=seen[secondary_active ? program.shader_hash^0x5345434f4e444152ull :
+        upstream_count ? program.shader_hash^watch_address : program.shader_hash];
     // Reserve a separate budget for dark onset and post-transition;
     // early scene sampling cannot consume the late capture.
-    const uint32_t budget=upstream_count ? (phase==0?8u:phase==3?12u:4u) :
+    const uint32_t budget=secondary_active ? (phase==0?12u:phase==3?12u:8u) :
+        upstream_count ? (phase==0?4u:phase==3?4u:2u) :
         (phase==3 && (program.shader_hash==0x3b7e54e11ee65120ull ||
                       program.shader_hash==0xfb18d110fab8234eull) ? 8u : phase==0?4u:2u);
     if (state.count[phase]>=budget) return {};
     if (state.last[phase]==frame) {
         // cb3b can populate the same dispatch record twice in one frame
         // (zero for the first consumer, nonzero for the second).
-        if (!upstream_count || state.same_frame[phase]>=4) return {};
+        if (!upstream_count || state.same_frame[phase]>=(secondary_active?2u:4u)) return {};
     } else {
-        if (state.last[phase]>=0 && frame-state.last[phase]<24) return {};
+        if (state.last[phase]>=0 && frame-state.last[phase]<(secondary_active?8:24)) return {};
         state.last[phase]=frame;
         state.same_frame[phase]=0;
     }
@@ -3337,10 +3352,9 @@ static std::optional<nlohmann::json> BeginDsCountProducer(
     ++state.count[phase];
     static uint32_t capture_serial=0;
     const auto seq=++capture_serial;
-    const auto& snap=*bindings.runtime->resources;
     nlohmann::json report={{"frame",frame},{"submit",submit},{"phase",phase},
         {"shader",fmt::format("{:016x}",program.shader_hash)},{"srt",snap.flattened_srt},
-        {"watch_address",watch_address},{"capture_seq",seq},
+        {"watch_address",watch_address},{"capture_seq",seq},{"secondary_active",secondary_active},
         {"user_data",snap.user_data},{"shader_data",bindings.shader_data},
         {"matrix_mode",static_cast<unsigned>(DemonsCausalMatrix::Mode())},
         {"execution_probe_variant",bindings.runtime->program->ds_light_math_variant},
@@ -3569,8 +3583,8 @@ static void EndDsCountProducer(RenderContext& context,const PreparedBindings& bi
     std::error_code ec;
     std::filesystem::create_directories(folder,ec);
     if (ec) return;
-    const auto name=fmt::format("ds_count_producer_{}_f{}_s{}_n{}_p{}.json",
-        (*report)["shader"].get<std::string>(),(*report)["frame"].get<int32_t>(),
+    const auto name=fmt::format("ds_count_producer_{}{}_f{}_s{}_n{}_p{}.json",
+        (*report)["shader"].get<std::string>(),(*report).value("secondary_active",false)?"_secondary":"",(*report)["frame"].get<int32_t>(),
         (*report)["submit"].get<uint64_t>(),(*report)["capture_seq"].get<uint32_t>(),(*report)["phase"].get<uint32_t>());
     std::ofstream file(folder/name,std::ios::trunc);
     if (file) file << *report;

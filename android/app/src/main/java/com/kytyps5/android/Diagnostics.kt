@@ -311,7 +311,11 @@ object Diagnostics {
                     val geometry = newest.filter { it.name.startsWith("ds_geometry_writer_") }
                     val countTraces = newest.filter { it.name.startsWith("ds_count_producer_") }
                     val upstreamCounts = countTraces.filter { it.name.contains("cb3b9c1ea64fe876") }.let { rows ->
-                        (rows.filter { it.name.endsWith("_p3.json") }.take(12) + rows.filter { it.name.endsWith("_p2.json") }.take(12) + rows.take(16) + rows.takeLast(8)).distinct()
+                        val secondary = rows.filter { it.name.contains("_secondary_") }
+                        (secondary.filter { it.name.endsWith("_p3.json") }.take(10) +
+                            secondary.filter { it.name.endsWith("_p2.json") }.take(8) +
+                            secondary.take(12) + secondary.takeLast(8) +
+                            rows.filterNot { it.name.contains("_secondary_") }.take(6)).distinct()
                     }
                     val rayTargets = newest.filter { it.name.startsWith("ds_ray_producer_f") && it.name.endsWith("_target.json") }
                     // Retain both the first and last matched updates of the actually consumed probes.
@@ -327,7 +331,11 @@ object Diagnostics {
                     val depthOwners = newest.filter { it.name.startsWith("ds_depth_prepass_f") }
                     val positions = newest.filter { it.name.startsWith("ds_vertex_position_") }.take(24)
                     val visibility = countTraces.filter { it.name.contains("fb18d110fab8234e") }
-                    val producer = (bridge + upstreamCounts + coverage + visibility + depthOwners + positions + edges + relightTraces + prioritizedRays +
+                    val atlas = newest.filter { it.name.startsWith("cs_c03afccb96a13c5d_atlas_inputs_") }
+                    val source = newest.filter { it.name.startsWith("cs_bcbcc6ba1e68c974_ray_hits_") ||
+                        it.name.startsWith("cs_567d21ad45386c8d_radiance_") }
+                    val producer = (bridge + upstreamCounts + relightTraces + atlas.take(12) + source.take(16) +
+                        prioritizedRays.take(8) + coverage + edges + visibility.take(4) + depthOwners + positions +
                         countTraces.filterNot { it.name.contains("cb3b9c1ea64fe876") }
                         .sortedByDescending { it.name.endsWith("_p3.json") }.take(40) + upstreamCounts +
                         geometry.filter { it.name.contains("f0c140ea8df8f532") }.take(4) +
@@ -410,15 +418,27 @@ object Diagnostics {
                 zip.closeEntry()
                 count++
             }
+            // Reserve space for matching shader modules and pipeline JSON.
+            val inventory = StringBuilder()
+            var queueBudget = 48L * 1024L * 1024L
             for ((subdir, file) in candidates) {
-                if (file.length() > 8L * 1024L * 1024L || file.length() > budget) continue
+                if (file.length() > 8L * 1024L * 1024L || file.length() > budget ||
+                    (subdir == "queue-state" && file.length() > queueBudget)) {
+                    inventory.appendLine("OMITTED $subdir/${file.name} bytes=${file.length()}")
+                    continue
+                }
+                if (subdir == "queue-state") queueBudget -= file.length()
+                inventory.appendLine("INCLUDED $subdir/${file.name} bytes=${file.length()}")
                 zip.putNextEntry(ZipEntry("ds-lighting-capture/${subdir}/${file.name}"))
                 file.inputStream().use { it.copyTo(zip) }
                 zip.closeEntry()
                 budget -= file.length()
                 count++
             }
-            count
+            zip.putNextEntry(ZipEntry("ds-lighting-capture/EXPORT-INVENTORY.txt"))
+            zip.write(inventory.toString().toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+            count+1
         } catch (e: Exception) {
             Log.w(TAG, "Could not export Demon's Souls native lighting capture", e)
             0

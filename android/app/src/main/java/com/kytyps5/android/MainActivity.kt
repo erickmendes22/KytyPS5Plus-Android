@@ -700,7 +700,8 @@ class MainActivity : Activity() {
             args = DemonsSoulsDiagnosticArgs.append(args, matrix >= 7, false, false)
             args += arrayOf("--env", "KYTY_DS_MATRIX=$matrix", "--env", "KYTY_DS_DEPTH_EQUAL_RELAX=0",
                 "--env", "KYTY_DS_PC_DPP=0", "--env", "KYTY_DS_ISOLATE_DEPTH_OCCLUDERS=0",
-                "--env", "KYTY_DS_HTILE_FILL_SEMANTICS=1")
+                "--env", "KYTY_DS_HTILE_FILL_SEMANTICS=1",
+                "--env", "KYTY_DS_RAY_SOURCE_HISTORY=" + if (matrix == 8) "1" else "0")
             if (!perGame.demonsSoulsNexusRoute && perGame.demonsSoulsIdleBackoff) {
                 args += arrayOf("--env", "KYTY_DS_IDLE_BACKOFF=1")
             }

@@ -106,3 +106,37 @@ Mode 3, frame 937, PID 12767 exited reason 1/status 0, no DS_MATRIX_CP in sessio
 
 ## Next causal revision
 Exact cb3b native module fingerprints ac3603ad3ba167b7 (three descriptors) and 3d1cc19be27b4002 (two, secondary specialized). Instrument actual loaded index/limits, resolved offsets, loaded words, arithmetic, and all five executed store operands via dedicated diagnostic buffer. Validate each module before use, never modify original output. Compare snapshot oracle, operand oracle, actual stores and GPU readback separately; include backing and producer serial. Match queue 33 same-submit before/after HDR and albedo grid, with exact bound tile membership where available. A colored unlit pixel outside the actual queue does not certify a lighting failure; missing membership is explicitly unavailable. No claimed rendering fix until causality proven.
+
+
+## Build #718 — F, ZIP 20261125-214449
+Core 1dac99c, matrix 8. Both cb3b SPIR-V fingerprints validated; six
+captured executions, all secondary_limit=0, match snapshot, operand,
+arithmetic, actual stores and post-dispatch GPU readback. Prior live-
+secondary mismatch not reproduced or ruled out. Give the live secondary
+path a separate budget and exact current output address.
+Paired queue 33 bridges: frame 160 64 colored covered pixels / 64 changed
+HDR; frames 424,448,472 2/3/2 colored covered pixels / 0 changed HDR.
+Unchanged HDR is not proof of skipped store or erroneous computation:
+tiny increments round away in RGBA16F. Frame 280 three colored pixels
+outside queue 33 (84 tiles), not evidence of missing writes.
+Frames 241 and 481: all ten instrumented e3da stores execute.
+Independent final RGB formula incoming+accumulated*scale*rgb_factor/pi
+matches logged pre-quantization RGB to max absolute error 8.6e-11.
+Thirteen atlas footprints reproduce logged bilinear sample to max
+absolute error 1.43e-7 (FP16/filter rounding). Radiance already nearly
+zero before accumulation/shadow weighting. No demonstrated final-store
+or atlas-sampling defect. Do not reopen without new evidence.
+Twelve uniquely mapped scatter rows have exact source GPU, destination
+GPU and CPU backing (256 pairs each, no differing pair). Transfer
+history records guest_backing_upload. Same probe ID 4701 has 256 colored
+rays at frame 135 and 27 at 305, but different source addresses and no
+certified same-position relation. No proof of corrupt guest input.
+All 16 consumed relight rows lacked certified producer because extended
+history was disabled. Enable existing full row history in F only,
+bounded to existing 128 dispatches. Consumer digest/source backing/file
+read/write-fault candidates identify provenance; overlapping reads and
+faults are candidates, not proof of exact last guest writer.
+Previous export consumed its budget in queue-state before atlas/radiance
+and SPIR-V. Prioritize live-secondary and relight/atlas/ray evidence;
+reserve 8 MiB for other subdirs, include inventory. No speculative
+rendering change or confirmed correction.
