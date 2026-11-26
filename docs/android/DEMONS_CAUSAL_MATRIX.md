@@ -636,3 +636,7 @@ antigos e falta de imagens/versões/saídas impedem replay completo. Nenhum
 contraexemplo causal de iluminação demonstrado. Gate executável de prontidão
 reprova ambos os ZIPs e declara backend independente C1..C8 indisponível.
 **G0/P8 BLOCKED; [0,16] inalterado; sem nova build Android.**
+
+## Staging da referência independente após #747
+
+P8 [0,16] permanece ativo. Ver [registro detalhado](DEMONS_BUILD_ELIMINATION_LEDGER.md#staging--referência-guest-independente-26112026-após-747). A calibração do produtor ea2e66ea6ad76baf reproduz 120 bytes observados no frame 215, sem certificar o prefixo completo. A matriz de câmera muda no episódio seguinte; preservar HZB e operandos da execução real, não transplantar contagens. Backend Rocjitsu em validação host, sem novo APK.

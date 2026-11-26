@@ -1056,3 +1056,7 @@ change alone: independent same-witness guest oracle for G-buffer, actual
 indirect args, images/versions and complete output remains unimplemented.
 Do not claim P8 or ship this staged capture as a decision build. No changes
 in semantic rendering or in canonical tree.
+
+## Staging após #747 — referência independente de P8
+
+Intervalo global [0,16], nó P8, zero metades eliminadas. O [registro](DEMONS_BUILD_ELIMINATION_LEDGER.md#staging--referência-guest-independente-26112026-após-747) documenta a calibração local do produtor de compactação, a mudança das entradas de câmera e a implementação inicial do executor AMD RDNA. O comparador global ainda não foi implementado por completo. Não descer a P4/P12 nem transformar prova local em corte global.

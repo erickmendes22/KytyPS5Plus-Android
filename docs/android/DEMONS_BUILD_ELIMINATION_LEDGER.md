@@ -312,3 +312,45 @@ O registro da build deve ser completado antes de propor outra:
 Nenhum item desta lista exige uma referência global pronta para adquirir os
 operandos de uma comparação concreta. Ela exige prestação de contas sobre o
 avanço real de cada build e continuidade da mesma cadeia causal.
+
+## Staging — referência guest independente (26/11/2026, após #747)
+
+**P8 permanece aberto, [0,16], nenhuma metade global eliminada.** Não promover
+uma nova build Android até implementar os dois desfechos do instrumento.
+
+- #746: produtor ea2e66ea6ad76baf, frame 215, submit 6292, seq 4891/4892.
+  O blob retido de 1.638.400 bytes tem FNV1a64 2840090357011714871. Os
+  quatro segmentos reconstruídos totalizam 1.638.428 bytes (incluindo SRT
+  fora dos buffers); os 120 bytes anteriores aos dispatches conferem
+  exatamente. Os IDs de record são 2,3,1. A reprodução matemática do
+  guest gfx1010 com a ordem legal de atomics 2,3,1 gera os mesmos 120 bytes
+  posteriores, inclusive firstIndex 442536 e 344232. Não prova que outra
+  ordem seja errada, nem que a compactação do frame 216 esteja correta.
+- No produtor de culling b213157ad251f2c7, entre seq 4876 (frame 215) e
+  4917 (frame 216), os 16 DWORDs da matriz em 0x2088800d0 mudaram.
+  Portanto os índices do frame 215 não constituem oráculo do frame 216.
+  Os dois shaders b213157ad251f2c7 e 7d5ad40fca3137e2 realmente executam
+  image_sample_l da imagem HZB 0x2b2570000; os bytes de entrada do
+  episódio zerado não foram preservados na #746. Não imputar o zero
+  à tradução sem os operandos daquela execução.
+- O frame 481 de gameplay escuro apresenta material não nulo e depth
+  não nulo na amostragem da fronteira. A queda anterior de albedo não
+  certifica o mesmo cone da saída final. Preservar suas provas locais.
+- Staging cdf24b2d: executor de ISA original com AMD Rocjitsu, upstream
+  431f58f7841a88b705992a91d9d71fd972345beb (RDNA1/RDNA2), sem passar
+  pelo recompilador de Kyty. Workflow 45897822805 em execução à
+  época deste registro; não registrar compilação como aprovação antes
+  do resultado. O primeiro adaptador suporta uma wave, sem LDS; os
+  testes de memória e a calibração local não certificam rasterização,
+  imagens guest ou o prefixo inteiro.
+- O replay Vulkan causal 45897822678 passou, inclusive transferência,
+  controles e compilação do replay consumer. Falta conectar a execução
+  guest ao conjunto de dependências de todos os marcadores P8, com
+  estado de rasterização e versões dos recursos, para que o crossover
+  compare resultados realmente independentes. Não substituir isso por
+  um indicador booleano no manifesto.
+
+Reprodução offline (somente host):
+`python3 docs/android/tools/p8_prepare_guest_capture.py KYTY_746.zip OUT --seq 4891`.
+O arquivo observado fica separado dos bytes do manifesto de execução.
+A referência não usa o conteúdo do target posterior como entrada.
