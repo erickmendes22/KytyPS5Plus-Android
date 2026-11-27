@@ -169,6 +169,30 @@ def prefix_reference(code,runner,launch,wg,raw,buffers):
     need(out[0]==out[1]==out[2],'prefix depends on unknown launch input')
     return out[0]
 
+def scalar_segments(raw,buffers,poison=0x12345678):
+    """Only call for HASH: 0x4c0 loads two dead padding words.
+    The original uses s8..10,s12..14; s11/s15 are overwritten at 0x84c
+    before any use. The SRT capture records consumed dwords, not padding.
+    Never synthesize a live operand or overwrite a captured byte.
+    """
+    parts=[(r['address'],pack(r['words'])) for r in raw['scalar_regions']]+buffers
+    seg=merge(parts)
+    def read(addr,n):
+        for a,b in seg:
+            if a<=addr and addr+n<=a+len(b):return b[addr-a:addr-a+n]
+        return None
+    need(len(raw['user_data'])==2,'scalar root ABI')
+    user=int.from_bytes(pack(raw['user_data']),'little')
+    ptr=read(user+8,8);need(ptr is not None,'missing actual SRT pointer')
+    root=int.from_bytes(ptr,'little')
+    for offset in (0x3c,0x4c):
+        addr=root+offset
+        if read(addr,4) is not None:continue
+        need(read(addr-12,12) is not None,'missing live bounds')
+        need(not any(a<addr+4 and addr<a+len(b) for a,b in seg),'partial padding capture')
+        parts.append((addr,pack([poison])))
+    return merge(parts)
+
 def replay(code,runner,launch,wg,lane,raw,buffers,wave,expected):
     need(digest(code)==HASH and raw['scalar_complete'] and len(raw['user_data'])==2,'q33 ISA/operands')
     dec=LLVM()
@@ -182,7 +206,8 @@ def replay(code,runner,launch,wg,lane,raw,buffers,wave,expected):
         text=dis.get(pc,'');need(text.startswith('buffer_load' if kind==2 else 'image_store' if kind==3 else 'image_'),'site opcode')
     original=code[:rows[-1][0]+4]
     mode=launch['mode'];controls=check_signs(runner,mode)
-    seg=merge([(r['address'],pack(r['words'])) for r in raw['scalar_regions']]+buffers)
+    need(dis[0x4c0].startswith('s_load_dwordx8 s[8:15]') and dis[0x84c].startswith('s_load_dwordx16 s[0:15]'),'dead padding proof fingerprint')
+    seg=scalar_segments(raw,buffers)
     sg=[0]*106;sg[:2]=raw['user_data'];sg[2]=wg;sg[3]=0;sg[102]=(1<<lane)&0xffffffff;sg[103]=(1<<lane)>>32
     vg=[0]*(256*64);vg[lane]=lane%8;vg[64+lane]=lane//8
     reductions={}

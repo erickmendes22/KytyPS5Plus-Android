@@ -49,6 +49,16 @@ def main():
     bright=dict(fp,bytes=[255,255,255,255]*4)
     assert footprint_reference(0x508,row,bright,entry,raw)[0]==[fbits(1)]*3
     rejects(lambda:footprint_reference(0x508,row,dict(fp,sampler=dict(sampler,min_lod=256)),entry,raw))
+    # Same scalar capture pattern as #763: six live bounds, two dead words.
+    rawpad=dict(user_data=[0x1000,0],scalar_regions=[
+        dict(address=0x1008,words=[0x2000,0]),
+        dict(address=0x2030,words=[1,2,3]),
+        dict(address=0x2040,words=[4,5,6])])
+    seg=scalar_segments(rawpad,[],0xdeadbeef)
+    assert (0x2030,pack([1,2,3,0xdeadbeef,4,5,6,0xdeadbeef])) in seg
+    rawfull=dict(rawpad,scalar_regions=rawpad['scalar_regions']+[dict(address=0x203c,words=[9]),dict(address=0x204c,words=[10])])
+    assert (0x2030,pack([1,2,3,9,4,5,6,10])) in scalar_segments(rawfull,[])
+    rejects(lambda:scalar_segments(dict(rawpad,scalar_regions=rawpad['scalar_regions'][:2]),[]))
     a=np.zeros(WORDS,'<u4');a[:5]=[2,3,4,0,5]
     for wi in range(2):
         at=SITE_BASE+wi*WITNESS

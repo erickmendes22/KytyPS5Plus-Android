@@ -852,3 +852,6 @@ promovida à branch de APK. O replay real da cobertura/PS do segundo draw
 e a autoridade das operações anteriores, incluindo a ponte G-buffer/HDR,
 não estão fechados. Não equiparar os testes sintéticos a um PASS/FAIL
 global, nem liberar outro APK exclusivamente por ter ampliado a captura.
+
+### Additional offline reference on #763 (host only)
+Original q33 replay with the actual scalar operands, prefix/tile buffers and same-version stencil/depth/G-buffer bytes reached 0x508 and 0x5a4. Screen UV reference dark (0.5021874905,0.6905555725), contrast (0.5028125048,0.6927778125); both first 3D lookup coordinates (16,0,3). Varying the unretained screen sample across zero, one and mixed values leaves those lookup coordinates unchanged in this test; this is a reference prediction, not a native q33 comparison. At 0x4c0 the scalar load spans two unretained padding dwords (s11/s15, overwritten before use by 0x84c). Original ISA and zero/nonzero poison controls confirmed identical prefix/lookup results. Host comparator fills ONLY those exact dead padding words when absent after fingerprint check; missing live data still fails. No native source change and no additional APK required. The actual q33 operations remain the sole active contract.
