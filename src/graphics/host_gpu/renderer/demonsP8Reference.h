@@ -15,7 +15,8 @@ inline std::mutex raw_mutex;
 // Bounded raw-only capture. Reusing an observation of a clean, unchanged
 // version is not a new physical transfer for native replay.
 inline RawStore raw_store{DemonsP8CapturePolicy::RawStorageBudget,
-    DemonsP8CapturePolicy::RawCopyBudget};
+    DemonsP8CapturePolicy::RawCopyBudget,DemonsP8CapturePolicy::CriticalStorageBudget,
+    DemonsP8CapturePolicy::CriticalCopyBudget};
 using ObservationKey=std::tuple<uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t>;
 inline std::map<ObservationKey,nlohmann::json> clean_observations;
 inline uint32_t TexelBytes(vk::Format format,vk::ImageAspectFlagBits aspect) {
@@ -52,7 +53,10 @@ inline nlohmann::json Snapshot(RenderContext& context,Image& image,uint32_t mip,
     event["role"]=role;event["queue"]=queue;event["layer"]=layer;event["mip"]=mip;
     event["aspect"]=static_cast<uint32_t>(aspect);event["valid"]=false;
     auto fail=[&](const char* why){event["reason"]=why;WriteEvent(event);return event;};
-    if(!DemonsP8Capture::FullFrame(frame))return fail("outside_target_frame");
+    if(!DemonsP8CapturePolicy::CaptureCriticalFrame(DemonsP8Capture::EvidenceFrame(frame),
+        DemonsP8Capture::FullFrame(frame),role.c_str()))return fail("outside_target_frame");
+    const bool critical=DemonsP8CapturePolicy::CriticalRole(role.c_str());
+    event["critical"]=critical;
     const auto& b=image.backing;
     const uint32_t size=TexelBytes(b.format,aspect);
     if(!size||!b.image||b.samples!=1||b.image_type!=vk::ImageType::e2D||
@@ -86,7 +90,7 @@ inline nlohmann::json Snapshot(RenderContext& context,Image& image,uint32_t mip,
             WriteEvent(event);return event;
         }
     }
-    const auto id=raw_store.ReserveCopy(bytes);
+    const auto id=raw_store.ReserveCopy(bytes,critical);
     if(!id)return fail("raw_copy_budget_exceeded");
     const auto marker="P8_FULL_"+std::to_string(id);
     event["marker"]=marker;event["extent"]={w,h};
@@ -113,7 +117,7 @@ inline nlohmann::json Snapshot(RenderContext& context,Image& image,uint32_t mip,
     event["version_after"]=image.ContentVersion();
     if(event["version"]!=event["version_after"])return fail("version_changed");
     const auto payload=raw_store.Save(DemonsP8Capture::Folder(),id,
-        std::span<const uint8_t>{reinterpret_cast<const uint8_t*>(mapped),static_cast<size_t>(bytes)});
+        std::span<const uint8_t>{reinterpret_cast<const uint8_t*>(mapped),static_cast<size_t>(bytes)},critical);
     if(payload.reason)return fail(payload.reason);
     event["file"]=payload.file;event["payload_deduplicated"]=payload.reused;
     event["captured_bytes"]=bytes;event["valid"]=true;event["observation_reused"]=false;
@@ -164,9 +168,40 @@ inline nlohmann::json InspectBindings(RenderContext& context,const Bound& bound,
     }
     stage["valid"]=true;
     stage["bda_writes"]=program.info.bda_writes;
+    stage["uses_dma"]=program.info.uses_dma;
+    stage["uses_gds"]=program.info.uses_gds;
+    // Preserve raw scalar reads and descriptor words for the replay targets.
+    const bool replay=DemonsP8CapturePolicy::HzbShader(program.shader_hash)||
+        program.shader_hash==DemonsP8CapturePolicy::CompositePS||
+        program.shader_hash==DemonsP8CapturePolicy::DirectScenePS||
+        program.shader_hash==0xe86bfee195efa5a4ull||program.shader_hash==0x8f52cca9ea3ba4fcull;
+    if(replay&&bound.runtime->resources){
+        const auto& snap=*bound.runtime->resources;
+        auto& raw=stage["guest_operands"];
+        raw={{"user_data",snap.user_data},{"user_data_base",snap.diagnostic_user_data_base},
+            {"scalar_complete",snap.diagnostic_scalar_complete},{"srt",snap.flattened_srt},
+            {"scalar_regions",nlohmann::json::array()},{"image_descriptors",nlohmann::json::array()},
+            {"sampler_descriptors",nlohmann::json::array()},{"buffer_descriptors",nlohmann::json::array()}};
+        for(const auto& r:snap.diagnostic_scalar_reads)
+            raw["scalar_regions"].push_back({{"address",r.address},{"words",r.words},{"kind",r.kind}});
+        for(const auto& r:snap.images)raw["image_descriptors"].push_back(r.dwords);
+        for(const auto& r:snap.samplers)raw["sampler_descriptors"].push_back(r.dwords);
+        for(const auto& r:snap.buffers)raw["buffer_descriptors"].push_back(r.dwords);
+    }
     for(size_t i=0;i<bound.buffer_sources.size();++i){
         const auto& b=bound.buffer_sources[i];
-        stage["buffers"].push_back({{"slot",i},{"guest",b.address},{"bytes",b.size}});
+        bool known=false,written=false;
+        for(const auto& resource:program.info.buffers)if(resource.descriptor_index==i){
+            known=true;written|=resource.written;
+        }
+        nlohmann::json row={{"slot",i},{"guest",b.address},{"bytes",b.size},
+            {"access_known",known},{"read_conservative",true},{"written",written}};
+        if(i<bound.buffers.size()){
+            const auto& native=bound.buffers[i];
+            row["native"]=std::hash<VkBuffer>{}(static_cast<VkBuffer>(native.buffer));
+            row["native_offset"]=native.offset;row["native_range"]=native.range;
+        }
+        stage["buffers"].push_back(std::move(row));
     }
     for(size_t i=0;i<bound.images.size();++i){
         const auto& b=bound.images[i];
@@ -217,6 +252,14 @@ inline nlohmann::json InspectBindings(RenderContext& context,const Bound& bound,
                 }
             }
         }
+        if(DemonsP8CapturePolicy::HzbShader(program.shader_hash)&&read&&!written){
+            const bool one=v.level_count==1&&v.layer_count==1;
+            if(one&&(v.aspect==vk::ImageAspectFlagBits::eColor||v.aspect==vk::ImageAspectFlagBits::eDepth)){
+                entry["snapshots"].push_back(Snapshot(context,image,v.base_level,v.base_layer,
+                    v.aspect==vk::ImageAspectFlagBits::eDepth?vk::ImageAspectFlagBits::eDepth:vk::ImageAspectFlagBits::eColor,
+                    frame,submit,"hzb_input"));
+            }else entry["reason"]="unsupported_hzb_view";
+        }
         const auto* role=DemonsP8CapturePolicy::RadianceInputRole(program.shader_hash,
             image.info.data.address,image.IsGpuModified(),read,written,v.level_count,
             v.layer_count,image.info.data.size);
@@ -235,8 +278,8 @@ inline nlohmann::json InspectBindings(RenderContext& context,const Bound& bound,
     }
     return stage;
 }
-inline void MarkUse(vk::CommandBuffer command,nlohmann::json event) {
-    if(event.is_null())return;
+inline std::string MarkUse(vk::CommandBuffer command,nlohmann::json event) {
+    if(event.is_null())return {};
     const auto marker="P8_USE_"+std::to_string(++use_serial);
     event["kind"]="cut_use";event["marker"]=marker;event["native_replay"]=false;
     if(command&&VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdInsertDebugUtilsLabelEXT){
@@ -244,6 +287,35 @@ inline void MarkUse(vk::CommandBuffer command,nlohmann::json event) {
         command.insertDebugUtilsLabelEXT(label);
         event["marker_recorded"]=true;
     }else event["marker_recorded"]=false;
+    WriteEvent(event);
+    return marker;
+}
+// Call after all commands using the previous VkCommandBuffer and its barrier.
+// A separate event ties the actual produced subresource to the exact use.
+template<typename Bound>
+inline void CaptureHzbOutput(RenderContext& context,const Bound& bound,int32_t frame,
+    uint64_t submit,const std::string& marker){
+    if(marker.empty()||!bound.runtime||!bound.runtime->program||
+       !DemonsP8CapturePolicy::HzbShader(bound.runtime->program->shader_hash))return;
+    const auto& program=*bound.runtime->program;
+    nlohmann::json event={{"kind","hzb_after"},{"frame",frame},{"submit",submit},
+        {"use",marker},{"shader",program.shader_hash},{"outputs",nlohmann::json::array()}};
+    for(size_t i=0;i<bound.images.size();++i){
+        const auto& b=bound.images[i];
+        if(i>=program.info.images.size()||!program.info.images[i].written)continue;
+        nlohmann::json row={{"slot",i},{"valid",false}};
+        if(b.image_id&&!b.placeholder){
+            auto& image=context.GetTextureCache().GetImage(b.image_id);
+            const auto view=std::ranges::find(image.views,b.image_view,&CachedImageView::view);
+            if(view!=image.views.end()&&view->info.level_count==1&&view->info.layer_count==1&&
+               view->info.aspect==vk::ImageAspectFlagBits::eColor){
+                row["snapshot"]=Snapshot(context,image,view->info.base_level,view->info.base_layer,
+                    vk::ImageAspectFlagBits::eColor,frame,submit,"hzb_output");
+                row["valid"]=row["snapshot"].value("valid",false);
+            }
+        }
+        event["outputs"].push_back(std::move(row));
+    }
     WriteEvent(event);
 }
 }

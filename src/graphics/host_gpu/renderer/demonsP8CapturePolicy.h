@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string_view>
 namespace Libs::Graphics::DemonsP8CapturePolicy {
 // Full-state capture reached 14.2 GB on #748. A post-submit size check
 // cannot interrupt that synchronous operation.
@@ -9,6 +10,21 @@ constexpr bool AttachWholeStateLayer(bool requested,bool present,bool markers) {
 }
 constexpr uint64_t RawStorageBudget=192ull*1024*1024;
 constexpr uint64_t RawCopyBudget=256ull*1024*1024;
+// Keep the previous normal budgets; reserve a separate bounded lane for
+// the actual final inputs and previous-frame HZB producer/consumer.
+constexpr uint64_t CriticalStorageBudget=48ull*1024*1024;
+constexpr uint64_t CriticalCopyBudget=64ull*1024*1024;
+constexpr uint64_t HzbCS=0xdbecbbe2051b41baull;
+constexpr bool HzbShader(uint64_t shader){return shader==HzbCS;}
+constexpr bool CriticalRole(const char* role) {
+    const std::string_view r{role};
+    return r=="compositor_overlay_input"||r=="compositor_scene_input"||
+           r=="compositor"||r=="hzb_input"||r=="hzb_output";
+}
+constexpr bool CaptureCriticalFrame(bool evidence,bool full,const char* role) {
+    const std::string_view r{role};
+    return full||(evidence&&(r=="hzb_input"||r=="hzb_output"));
+}
 // #750: full-screen direct HDR contribution occurs after deferred q33.
 constexpr uint64_t DirectScenePS=0xab81bfa8ee4e0feeull;
 constexpr uint64_t HdrOwner=0x281300000ull;
@@ -23,7 +39,8 @@ constexpr const char* RadianceInputRole(uint64_t shader,uint64_t owner,
     if(!read||written||!owner||!levels||!layers)return nullptr;
     if((shader==0xe86bfee195efa5a4ull||shader==0x8f52cca9ea3ba4fcull)
         &&owner==HdrOwner&&layers==1)return "post_hdr_input";
-    if(shader==CompositePS&&owner==SceneOwner&&layers==1)return "compositor_scene_input";
+    if(shader==CompositePS&&layers==1&&levels==1&&bytes<=24ull*1024*1024)
+        return owner==SceneOwner?"compositor_scene_input":"compositor_overlay_input";
     // Preserve the dynamic, small 2D inputs of the actual forward pass,
     // not all static BC textures or hundreds of shadow-array layers.
     if(shader==DirectScenePS&&gpu&&layers==1&&levels<=9&&bytes<=8ull*1024*1024)

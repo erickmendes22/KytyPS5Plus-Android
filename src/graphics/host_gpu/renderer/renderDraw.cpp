@@ -4845,7 +4845,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	MarkPassImages(buffer, mesh_emulated ? stages.subspan(1) : stages,
 	               std::span {state.color_info, state.color_count}, state.depth_info);
 	const auto vk_buffer = buffer.PassHandle();
-    DemonsP8Reference::MarkUse(vk_buffer,std::move(p8_use));
+    const auto p8_marker=DemonsP8Reference::MarkUse(vk_buffer,std::move(p8_use));
 	if (!mesh_active) {
 		CommitVertexBuffers(vk_buffer, vertex_bindings);
 	}
@@ -4889,6 +4889,29 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	dynamic_state.SetAttachmentFeedbackLoopAspects(feedback_aspects);
 	dynamic_state.Commit(m_context.GetGraphics(), vk_buffer);
 	const auto material_depth_compare = dynamic_state.depth_compare_op;
+    if(DemonsP8Capture::FullFrame(root_frame)&&root_ps&&
+       root_ps->shader_hash==DemonsP8CapturePolicy::CompositePS&&!p8_marker.empty()){
+        const auto& vp=dynamic_state.viewports[0];const auto& sc=dynamic_state.scissors[0];
+        const auto& hw=buffer.GetRegisters();const auto& blend=hw.GetBlendControl(0);
+        const auto& ps=state.ps_input_info;
+        DemonsP8Reference::WriteEvent({{"kind","composite_state"},{"use",p8_marker},
+            {"frame",root_frame},{"submit",submit_id},{"shader",root_ps->shader_hash},
+            {"vs",root_vs?root_vs->shader_hash:0ull},{"indices",draw.index_count},
+            {"instances",draw.instance_count},{"first_vertex",emit.first_vertex},{"first_instance",emit.first_instance},
+            {"indexed",draw.IsIndexed()},{"indirect",indirect!=nullptr},{"mesh",mesh_active||mesh_emulated},
+            {"topology",static_cast<uint32_t>(topology)},{"viewport",{vp.x,vp.y,vp.width,vp.height,vp.minDepth,vp.maxDepth}},
+            {"scissor",{sc.offset.x,sc.offset.y,sc.extent.width,sc.extent.height}},
+            {"viewport_count",dynamic_state.num_viewports},{"scissor_count",dynamic_state.num_scissors},
+            {"cull_front",bool(hw.GetModeControl().cull_front)},{"cull_back",bool(hw.GetModeControl().cull_back)},
+            {"depth",state.depth_info.depth_test_enable},{"stencil",state.depth_info.stencil_test_enable},
+            {"blend",blend.enable},{"color_write",static_cast<bool>(dynamic_state.color_write_enables[0])},
+            {"target_mask",hw.GetRenderTargetMask()},{"shader_mask",hw.GetShaderRegisters().m_cbShaderMask},
+            {"output_mode",ps.target_output_mode[0]},{"round_mode",ps.target_round_mode},
+            {"wave",ps.wave_size},{"perspective_center",ps.ps_perspective_center_vgpr},
+            {"interpolator0",ps.interpolator_settings[0]},{"sample_shading",ps.ps_sample_shading},
+            {"kill",ps.ps_pixel_kill_enable},{"depth_export",ps.ps_depth_export_enable},
+            {"color_count",state.color_count}});
+    }
     if(root_capture_inputs){
         const auto& vp=dynamic_state.viewports[0];
         const auto& sc=dynamic_state.scissors[0];
@@ -5970,6 +5993,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             p8_composite["outputs"].push_back(std::move(output));
         }
         p8_composite["tick_after"]=m_context.GetCommandScheduler().CurrentTick();
+        if(DemonsP8Capture::FullFrame(root_frame)&&!p8_marker.empty()){
+            auto paired=p8_composite;paired["kind"]="composite_after";paired["frame"]=root_frame;paired["use"]=p8_marker;
+            DemonsP8Reference::WriteEvent(paired);
+        }
         DemonsPrelightTrace::RecordP8Boundary(root_frame,std::move(p8_composite));
     }
 	if (ds_live_composite_output) {

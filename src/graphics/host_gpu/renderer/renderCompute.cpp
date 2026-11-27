@@ -5649,11 +5649,18 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
     if(relight_trace.header[0])BindDsRelightTrace(bindings,relight_trace.header);
     DsVertexProducerCapture vertex_producer; // V3: no W0 capture
     nlohmann::json p8_use;
+    std::string p8_hzb_use;
     const int32_t p8_frame=m_context.GetGpu().GetFrameNum();
-    if(DemonsP8Capture::FullFrame(p8_frame)){
+    const bool p8_hzb=DemonsP8Capture::EvidenceFrame(p8_frame)&&
+        DemonsP8CapturePolicy::HzbShader(program.shader_hash);
+    if(DemonsP8Capture::FullFrame(p8_frame)||p8_hzb){
         p8_use={{"frame",p8_frame},{"submit",submit_id},{"path","compute_direct"},
             {"groups",{thread_group_x,thread_group_y,thread_group_z}},
             {"stages",nlohmann::json::array({DemonsP8Reference::InspectBindings(m_context,bindings,p8_frame,submit_id)})}};
+        if(p8_hzb)p8_use["launch"]={{"threads",{input_info.threads_num[0],input_info.threads_num[1],input_info.threads_num[2]}},
+            {"wave",input_info.wave_size},{"mode",input_info.float_mode},{"group_pack",program.info.group_pack},
+            {"lds_size_dwords",input_info.lds_size_dwords},{"scratch_size_dwords",input_info.scratch_size_dwords},
+            {"group_id",{input_info.group_id[0],input_info.group_id[1],input_info.group_id[2]}}};
     }
     DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,false);
     if(DemonsPrelightTrace::Enabled()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
@@ -5746,7 +5753,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	buffer.MarkGpu("misc");
 	{
-		DemonsP8Reference::MarkUse(vk_buffer,std::move(p8_use));
+        p8_hzb_use=DemonsP8Reference::MarkUse(vk_buffer,std::move(p8_use));
 		const ScopedDebugLabel label(vk_buffer, "cs", program.shader_hash);
 		// A packed program runs group_pack guest groups along X per host group (x is even).
 		const uint32_t host_x = thread_group_x / std::max(program.info.group_pack, 1u);
@@ -5796,6 +5803,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	EndDsVertexProducer(m_context,std::move(vertex_producer));
     if(DemonsPrelightTrace::Enabled()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
         CaptureDsLightBridge(m_context,bindings,submit_id,{thread_group_x,thread_group_y,thread_group_z},true);
+    if(p8_hzb)DemonsP8Reference::CaptureHzbOutput(m_context,bindings,p8_frame,submit_id,p8_hzb_use);
 	DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,true,false);
 	ResetBindings();
 }
