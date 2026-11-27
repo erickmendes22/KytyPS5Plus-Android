@@ -28,7 +28,10 @@ constexpr uint32_t ImageOffset(std::size_t site){uint32_t off=ImageBase;for(std:
 constexpr uint32_t LegacyWords=ImageOffset(Images.size());
 // One secondary-light record per guest s91 index, at the actual consumed PCs.
 constexpr uint32_t RecordBase=LegacyWords,RecordStride=48;
-constexpr uint32_t Words=RecordBase+Terms*RecordStride;
+constexpr uint32_t SingleWords=RecordBase+Terms*RecordStride;
+// Shared per-wave fields, disjoint per-witness term/sample/light-record tails.
+constexpr uint32_t WitnessStride=SingleWords-TermBase;
+constexpr uint32_t Words=SingleWords+WitnessStride;
 constexpr uint32_t LightRecordBytes=0x180;
 constexpr uint32_t LightRecordCount=224;
 constexpr uint64_t LightBufferBytes=uint64_t(LightRecordBytes)*LightRecordCount;

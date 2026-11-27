@@ -4,7 +4,9 @@
 using namespace Libs::Graphics::DemonsV4LightTrace;
 int main(){
     static_assert(LegacyWords*4==1664112);
-    static_assert(Bytes==1860720);
+    static_assert(SingleWords*4==1860720);
+    static_assert(Bytes==3631296);
+    static_assert(WitnessStride==442644&&TermBase+WitnessStride==SingleWords);
     static_assert(RecordBase==LegacyWords&&RecordStride==48);
     static_assert(LightBufferBytes==86016);
     static_assert(FixedBase==8&&OuterBase==6152&&TermBase==22536);

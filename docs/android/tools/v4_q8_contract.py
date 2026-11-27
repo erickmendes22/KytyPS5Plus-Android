@@ -19,6 +19,29 @@ OUTER_BASE=HEADER+LANES*FIXED; TERM_BASE=OUTER_BASE+32*LANES*OUTER; IMAGE_BASE=T
 SITES=[(0x118,0,2,1),(0x150,0,2,1),(0x164,0,3,1),(0x170,0,3,1),(0x17c,0,3,1),(0x1e8,0,2,4),(0x364,0,2,2),(0x57c,0,7,3),(0x5c4,0,2,2),(0xa70,1,7,3),(0x1010,2,7,3),(0x1328,2,7,3),(0x1410,2,4,1),(0x1424,2,4,1),(0x147c,2,4,1),(0x1488,2,4,1),(0x1864,2,4,1),(0x1874,2,4,1),(0x18e8,2,4,1),(0x18f0,2,4,1),(0x1b9c,2,3,3)]
 WORDS=IMAGE_BASE+sum((TERMS if loop else 1)*IMAGE for _,loop,_,_ in SITES)
 
+# Schema 3 retains the original wave fields once and duplicates only the
+# per-witness tails. Old schema 1/2 captures retain their original layout.
+SINGLE_WORDS=WORDS+TERMS*48
+WITNESS_STRIDE=SINGLE_WORDS-TERM_BASE
+PAIR_WORDS=SINGLE_WORDS+WITNESS_STRIDE
+
+def select_witness(event,raw,witness='dark'):
+    need(witness in ('dark','control'),'unknown witness')
+    if event['schema']!=3:
+        need(witness=='dark','control not captured by this schema')
+        return event,raw
+    need(len(raw)==PAIR_WORDS*4 and event['trace_bytes']==len(raw),'truncated paired trace')
+    a=np.frombuffer(raw,'<u4');d=event['lane'];control=event['control'];c=control['lane'];wg=event['wg']
+    need(0<=d<64 and 0<=c<64 and c!=d and list(a[:5])==[1,wg,d,0,c],'wrong paired header or overflow')
+    need(event['stencil']==control['stencil'] and event['stencil']&64 and event['material_word']&0xffffff and control['material_word']&0xffffff,'invalid material/stencil pair')
+    need(event['pixel']!=control['pixel'] and event['dark_luminance_before']<.003 and control['luminance_before']>=event['dark_luminance_before']
+         and bool(event['pair_contrast_before'])==(control['luminance_before']>=.006),'invalid pre-HDR selection')
+    if witness=='dark':
+        return event,raw[:SINGLE_WORDS*4]
+    selected=dict(event,lane=c,pixel=control['pixel'],material_word=control['material_word'],stencil=control['stencil'])
+    common=a[:TERM_BASE].copy();common[2]=c
+    return selected,common.tobytes()+raw[SINGLE_WORDS*4:]
+
 class Divergence(Exception):
     def __init__(self,pc,op,expected,observed,lane=None):
         self.row={'pc':hex(pc),'operation':op,'expected':expected,'observed':observed,'lane':lane}
@@ -136,7 +159,7 @@ def verify_terms(c,terms,lights,selected,calc):
     need(seen==lights,'selected lane missing or extra light iterations')
     return {'primary_indices':primary,'secondary_contributions':contributions,'base_and_secondary_results':sums}
 
-def audit(path,runner):
+def audit(path,runner,witness='dark',conditional=False):
     a=Archive(path);c=Checks();report={'scope':'V4 local q8 contract, not complete shader arithmetic, shadow sampling or P8'}
     try:
         events=[(i,e) for i,e in enumerate(a.events) if e.get('kind')=='v4_q8_contract']
@@ -146,7 +169,9 @@ def audit(path,runner):
         raw=st['guest_operands'];code=a.z.read('ds-lighting-capture/'+st['guest_file']);need(digest(code)==HASH,'unrecognized guest q8 binary')
         mode=e['launch']['mode'];need(e['launch']['threads']==[8,8,1] and e['launch']['wave']==64 and e['launch']['group_pack']<=1 and e['launch']['workgroup_register']==2 and e['groups'][1:]==[1,1],'launch mismatch')
         wg=e['wg'];lane=e['lane'];need(0<=wg<e['groups'][0] and 0<=lane<64,'witness outside launch')
-        f,o,terms,samples=parse_trace(a.files[e['trace_file']],wg,lane)
+        e,trace=select_witness(e,a.files[e['trace_file']],witness)
+        lane=e['lane']
+        f,o,terms,samples=parse_trace(trace,wg,lane)
         metas=e['buffers'];buffers=[]
         need(len(metas)==4,'incomplete captured buffer list')
         for slot,b in enumerate(metas):
@@ -191,6 +216,11 @@ def audit(path,runner):
         b,aft=e['before'],e['after'];need(key(b)[:3]==key(aft)[:3]==key(st['images'][10]['image'])[:3]==key(st['images'][9]['image'])[:3] and b['format']==aft['format']==97 and not b.get('observation_reused') and not aft.get('observation_reused') and b['extent']==aft['extent']==[w,h],'unpaired HDR image')
         before=np.frombuffer(a.snapshot(b,'q8_hdr_before',later=ui),'<f2').reshape(h,w,4);after=np.frombuffer(a.snapshot(aft,'q8_hdr_after',earlier=ui,later=ei),'<f2').reshape(h,w,4)
         report['hdr_before']=before[y,x].astype(float).tolist();report['hdr_after']=after[y,x].astype(float).tolist();report['admitted_lanes']=active
+        if e['schema']==3:
+            observed_lum=float(before[y,x,:3].astype(np.float64)@np.array([.2126,.7152,.0722]))
+            want=e['dark_luminance_before'] if witness=='dark' else e['control']['luminance_before']
+            need(abs(observed_lum-want)<=1e-12,'selected incoming HDR does not match snapshot')
+            need(lane in active,'selected pair not admitted')
         if lane not in active:
             c.equal(0x128,'rejected_pixel_preserved',before[y,x].view('<u2').tolist(),after[y,x].view('<u2').tolist(),lane)
             report['next']='producer of stencil/material admission for this pixel';return dict(report,status='MATCH',checks=c.counts)
@@ -215,12 +245,22 @@ def audit(path,runner):
                 # Vulkan half conversion rounding: allow either adjacent half;
                 # do not classify half-subnormal flushing as a proven defect.
                 if int(r[48+j])&0x7fffffff==0:c.equal(0x1d9c,'zero_store',0.0,float(actual),l)
-                elif abs(float(expected_half))<2**-14:need(float(actual)==float(expected_half) or float(actual)==0.0,'subnormal storage ambiguous')
+                elif abs(float(expected_half))<2**-14:
+                    lo=np.nextafter(expected_half,np.float16(-np.inf));hi=np.nextafter(expected_half,np.float16(np.inf))
+                    if float(actual)==0.0 and not lo<=actual<=hi:
+                        need(False,'subnormal flushing ambiguous')
+                    c.equal(0x1d9c,'hdr_subnormal_store_within_1ulp',True,bool(lo<=actual<=hi),l)
                 else:
                     lo=np.nextafter(expected_half,np.float16(-np.inf));hi=np.nextafter(expected_half,np.float16(np.inf))
                     c.equal(0x1d9c,'hdr_store_within_1ulp',True,bool(lo<=actual<=hi),l)
             c.equal(0x1d9c,'alpha_store',0,int(after[iy,ix,3].view('<u2')),l)
         report['samples']=list(samples.values());report['selected_accumulation']=[float32(v) for v in f[lane,44:47]]
+        if conditional:
+            from v4_q8_pair_replay import replay
+            # Every native memory load/mask/HDR operation above must match
+            # before using its observed wave boundary in the scoped replay.
+            report['conditional_isa']=replay(code,runner,mode,wg,lane,raw,
+                [(b['guest'],data) for b,data in zip(metas,buffers)],f,o,samples,union,lights,terms)
         if not lights:report['next']='producer of the empty clustered light mask, exact slot 3 and captured indices'
         elif report['terms']['secondary_contributions']:
             term=max(report['terms']['secondary_contributions'],key=lambda q:sum(abs(v) for v in q['rgb']))

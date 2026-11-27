@@ -103,18 +103,19 @@ def compare_records(c,records,terms,lights,lane,stencil,desc,buf):
         result.append(info)
     return result
 
-def audit(path):
+def audit(path,witness='dark'):
     a=Archive(path);report={'scope':'same-dispatch secondary light record publication and dynamic loads; not intended lighting or P8'}
     c=q.Checks()
     try:
         events=[(i,e) for i,e in enumerate(a.events) if e.get('kind')=='v4_q8_contract']
         need(len(events)==1,'exactly one V4 q8 event required')
         ei,e=events[0];ui,u=a.use[e['use']]
-        need(e['schema']==2 and ui<ei and e['frame']==u['frame']==a.frame and e['submit']==u['submit'] and e['shader']==q.SHADER,'new record acquisition/dispatch identity required')
+        need(e['schema'] in (2,3) and ui<ei and e['frame']==u['frame']==a.frame and e['submit']==u['submit'] and e['shader']==q.SHADER,'new record acquisition/dispatch identity required')
         st=u['stages'][0];need(st['valid'] and st['shader']==q.SHADER and digest(a.z.read('ds-lighting-capture/'+st['guest_file']))==q.HASH,'wrong guest shader')
         b,data,desc=bound_identity(e,st,a.files)
         pub=publication(e,b,data,a.files);report['publication']=pub
-        trace=a.files[e['trace_file']];need(len(trace)==(q.WORDS+q.TERMS*STRIDE)*4,'missing extended trace')
+        e,trace=q.select_witness(e,a.files[e['trace_file']],witness)
+        need(len(trace)==(q.WORDS+q.TERMS*STRIDE)*4,'missing extended trace')
         wg,lane=e['wg'],e['lane'];f,o,terms,samples=q.parse_trace(trace,wg,lane)
         need(0<=lane<64 and 0<=wg<e['groups'][0] and e['launch']['threads']==[8,8,1] and e['launch']['wave']==64,'launch mismatch')
         need(f[lane,17]==0x129 and f[lane,18]==1 and int(f[lane,16])==e['stencil'],'stencil/EXEC link')

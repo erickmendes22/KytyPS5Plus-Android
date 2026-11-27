@@ -308,8 +308,10 @@ void Translator::V4LightTrace(const Decoder::Instruction& inst,bool before) {
     gate=ir.LogicalAnd(gate,ir.IEqual(builtin(IR::StageInputKind::WorkgroupId,2),c(0)));
     gate=ir.LogicalAnd(gate,ir.ULessThan(lane,c(T::Lanes)));
     const auto active=ir.LogicalAnd(gate,ir.GetExec());
-    const auto selected_lane=ir.LogicalAnd(gate,ir.IEqual(lane,load(2)));
+    const auto is_control=ir.IEqual(lane,load(4));
+    const auto selected_lane=ir.LogicalAnd(gate,ir.LogicalOr(ir.IEqual(lane,load(2)),is_control));
     const auto chosen=ir.LogicalAnd(selected_lane,ir.GetExec());
+    const auto witness_offset=ir.Select(is_control,c(T::WitnessStride),c(0));
     const auto store=[&](IR::U32 at,IR::U32 val,IR::U1 pred){ir.Emit(O::DebugLogStoreU32,{at,val,pred});};
     const auto record=[&](IR::U32 base,uint32_t off,IR::U32 val,IR::U1 pred){store(ir.IAdd(base,c(off)),val,pred);};
     const auto fbase=ir.IAdd(c(T::FixedBase),ir.IMul(lane,c(T::FixedStride)));
@@ -347,7 +349,7 @@ void Translator::V4LightTrace(const Decoder::Instruction& inst,bool before) {
         if(pc>=0x1d5c){region=1+T::Terms;k=s(91);}
         const auto ok=ir.ULessThan(k,c(T::Terms));const auto pred=ir.LogicalAnd(chosen,ok);
         store(c(3),c(1),ir.LogicalAnd(chosen,ir.LogicalNot(ok)));
-        const auto base=ir.IAdd(c(T::TermBase+region*T::TermStride),ir.IMul(k,c(T::TermStride)));
+        const auto base=ir.IAdd(ir.IAdd(c(T::TermBase+region*T::TermStride),witness_offset),ir.IMul(k,c(T::TermStride)));
         const auto put=[&](uint32_t off,IR::U32 val){record(base,off,val,pred);};
         if(pc==0x880){put(0,c(pc+1));uint32_t j=1;for(auto r:{38u,40u,34u,41u,35u,39u})put(j++,v(r));}
         else if(pc==0x888){put(10,c(pc+1));for(uint32_t j=0;j<3;++j)put(11+j,v(29+j));}
@@ -363,7 +365,7 @@ void Translator::V4LightTrace(const Decoder::Instruction& inst,bool before) {
         const auto k=s(91);const auto ok=ir.ULessThan(k,c(T::Terms));
         const auto pred=ir.LogicalAnd(pc==0xdf8?selected_lane:chosen,ok);
         store(c(3),c(1),ir.LogicalAnd(selected_lane,ir.LogicalNot(ok)));
-        const auto base=ir.IAdd(c(T::RecordBase),ir.IMul(k,c(T::RecordStride)));
+        const auto base=ir.IAdd(ir.IAdd(c(T::RecordBase),witness_offset),ir.IMul(k,c(T::RecordStride)));
         const auto put=[&](uint32_t off,IR::U32 val){record(base,off,val,pred);};
         const auto mark_record=[&](uint32_t off){put(off,c(pc+1));};
         switch(pc){
@@ -386,7 +388,7 @@ void Translator::V4LightTrace(const Decoder::Instruction& inst,bool before) {
         const auto& site=*image;const auto k=site.loop?s(site.loop==1?20:91):c(0);
         const auto ok=ir.ULessThan(k,c(site.loop?T::Terms:1));const auto pred=ir.LogicalAnd(chosen,ok);
         store(c(3),c(1),ir.LogicalAnd(chosen,ir.LogicalNot(ok)));
-        const auto base=ir.IAdd(c(T::ImageOffset(std::size_t(image-T::Images.begin()))),ir.IMul(k,c(T::ImageStride)));
+        const auto base=ir.IAdd(ir.IAdd(c(T::ImageOffset(std::size_t(image-T::Images.begin()))),witness_offset),ir.IMul(k,c(T::ImageStride)));
         const auto put=[&](uint32_t off,IR::U32 val){record(base,off,val,pred);};
         if(before){put(0,c(pc+1));for(uint32_t j=0;j<site.coord_count;++j)put(2+j,v(site.coords[j]));
             for(uint32_t j=0;j<8;++j)put(9+j,s(site.desc+j));

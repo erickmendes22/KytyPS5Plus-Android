@@ -1,4 +1,5 @@
 #include "graphics/shader/demonsV4LightTrace.h"
+#include "graphics/shader/demonsV4Pair.h"
 #include "graphics/host_gpu/renderer/pipeline/demonsCountArithmeticProbe.h"
 #include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/demonsP8Reference.h"
@@ -4818,7 +4819,7 @@ static nlohmann::json BeginDsV4Light(RenderContext& context,const PreparedBindin
     namespace T=DemonsV4LightTrace;namespace P=DemonsP8Reference;
     if(!T::Enabled()||!DemonsP8Capture::FullFrame(frame)||bindings.runtime->program->shader_hash!=T::Shader)return {};
     static int32_t captured=-1;if(captured==frame)return {};
-    nlohmann::json e={{"kind","v4_q8_contract"},{"schema",2},{"frame",frame},{"submit",submit},{"shader",T::Shader},{"groups",groups}};
+    nlohmann::json e={{"kind","v4_q8_contract"},{"schema",3},{"frame",frame},{"submit",submit},{"shader",T::Shader},{"groups",groups}};
     auto fail=[&](const char* why){e["kind"]="v4_q8_incomplete";e["reason"]=why;P::WriteEvent(e);return nlohmann::json{};};
     auto* log=context.GetBufferCache().V4LightTraceBuffer();
     if(!log||!groups_valid||groups[0]==0||groups[1]!=1||groups[2]!=1||
@@ -4869,23 +4870,9 @@ static nlohmann::json BeginDsV4Light(RenderContext& context,const PreparedBindin
     }
     const auto range=DemonsQueueProbe::SelectTiles(data[0],data[1],8);
     if(!range.valid||range.end-range.first!=groups[0])return fail("queue range/dispatch mismatch");
-    const uint32_t cols=(w+7)/8,rows=(h+7)/8;
-    uint32_t best=0,wg=0,lane=0,x=0,y=0,word=0,tile=0;
     std::vector<uint32_t> unique_tiles(data[1].begin()+range.first,data[1].begin()+range.end);
     std::sort(unique_tiles.begin(),unique_tiles.end());
     if(std::adjacent_find(unique_tiles.begin(),unique_tiles.end())!=unique_tiles.end())return fail("duplicate queue tiles");
-    for(uint32_t k=range.first;k<range.end;++k){
-        const auto t=data[1][k];if(t>=uint64_t(cols)*rows)return fail("tile outside extent");
-        for(uint32_t l=0;l<64;++l){
-            const uint32_t px=(t%cols)*8+l%8,py=(t/cols)*8+l/8;
-            if(px>=w||py>=h)continue;
-            const auto idx=uint64_t(py)*w+px;const uint32_t c=colors[idx];
-            const auto rgb=(c&255)+((c>>8)&255)+((c>>16)&255);if(!rgb)continue;
-            const auto score=rgb+((stencil_bytes[idx]&64)?1024:0);
-            if(score>best){best=score;wg=k-range.first;lane=l;x=px;y=py;word=c;tile=t;}
-        }
-    }
-    if(!best)return fail("no material in actual q8 tiles");
     const auto& src=bindings.images[9];const auto& dst=bindings.images[10];
     if(!src.image_id||!dst.image_id||src.placeholder||dst.placeholder||src.image_id!=dst.image_id)return fail("HDR read/write not same image");
     auto& hdr=context.GetTextureCache().GetImage(dst.image_id);
@@ -4895,6 +4882,16 @@ static nlohmann::json BeginDsV4Light(RenderContext& context,const PreparedBindin
     e["mip"]=view->info.base_level;e["layer"]=view->info.base_layer;
     e["before"]=P::Snapshot(context,hdr,view->info.base_level,view->info.base_layer,vk::ImageAspectFlagBits::eColor,frame,submit,"q8_hdr_before",8);
     if(!e["before"].value("valid",false)||e["before"]["extent"]!=g["extent"])return fail("HDR before unavailable");
+    std::vector<uint16_t> hdr_words(pixels*4);
+    if(!read_file(e["before"],hdr_words.data(),pixels*8))return fail("truncated HDR before payload");
+    const auto pair=T::SelectPair(std::span<const uint32_t>(data[1]).subspan(range.first,range.end-range.first),
+        w,h,colors,stencil_bytes,hdr_words);
+    if(!pair.valid)return fail("no two same-stencil admitted material lanes with dark incoming HDR");
+    const uint32_t wg=pair.wg,lane=pair.dark.lane,x=pair.dark.x,y=pair.dark.y,word=pair.dark.word,tile=pair.tile;
+    e["pair_contrast_before"]=pair.contrast;
+    e["dark_luminance_before"]=pair.dark.luminance;
+    e["control"]={{"lane",pair.control.lane},{"pixel",{pair.control.x,pair.control.y}},
+        {"material_word",pair.control.word},{"stencil",pair.control.stencil},{"luminance_before",pair.control.luminance}};
     const auto trace_id=P::raw_store.ReserveCopy(T::Bytes,true);if(!trace_id)return fail("trace budget exceeded");
     e["trace_id"]=trace_id;e["trace_bytes"]=T::Bytes;e["wg"]=wg;e["lane"]=lane;e["tile"]=tile;
     e["pixel"]={x,y};e["material_word"]=word;e["stencil"]=stencil_bytes[uint64_t(y)*w+x];
@@ -4904,7 +4901,7 @@ static nlohmann::json BeginDsV4Light(RenderContext& context,const PreparedBindin
         {"group_id",{input.group_id[0],input.group_id[1],input.group_id[2]}},{"workgroup_register",input.workgroup_register}};
     auto& sched=context.GetCommandScheduler();sched.Wait(sched.CurrentTick());
     auto mapped=log->Mapped();std::memset(mapped.data(),0,T::Bytes);
-    const std::array<uint32_t,3> header{1,wg,lane};std::memcpy(mapped.data(),header.data(),sizeof(header));log->Flush(0,T::Bytes);
+    const std::array<uint32_t,5> header{1,wg,lane,0,pair.control.lane};std::memcpy(mapped.data(),header.data(),sizeof(header));log->Flush(0,T::Bytes);
     captured=frame;return e;
 }
 static void EndDsV4Light(RenderContext& context,const PreparedBindings& bindings,vk::CommandBuffer cmd,
