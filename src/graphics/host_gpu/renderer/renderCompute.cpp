@@ -5145,17 +5145,31 @@ static nlohmann::json BeginDsV4Gi(RenderContext& context,const PreparedBindings&
     if(!T::Enabled()||!DemonsP8Capture::FullFrame(frame)||bindings.runtime->program->shader_hash!=T::GiShader)return {};
     static int32_t captured=-1;if(captured==frame)return {};
     nlohmann::json e={{"kind","v4_gi_contract"},{"schema",1},{"frame",frame},{"submit",submit},{"shader",T::GiShader},{"groups",groups}};
-    auto fail=[&](const char* why){e["kind"]="v4_gi_incomplete";e["reason"]=why;P::WriteEvent(e);return nlohmann::json{};};
+    e["launch"]={{"threads",{input.threads_num[0],input.threads_num[1],input.threads_num[2]}},
+        {"wave",input.wave_size},{"mode",input.float_mode},{"group_pack",bindings.runtime->program->info.group_pack},
+        {"group_id",{input.group_id[0],input.group_id[1],input.group_id[2]}},{"workgroup_register",input.workgroup_register},
+        {"thread_ids",input.thread_ids_num},{"dispatch_thread_dimensions",input.dispatch_thread_dimensions},
+        {"groups_valid",valid},{"lds_size_dwords",input.lds_size_dwords},{"scratch_size_dwords",input.scratch_size_dwords}};
+    auto fail=[&](const char* why){e["kind"]="v4_gi_incomplete";e["reason"]=why;e.erase("stage");P::WriteEvent(e);
+        LOGF("[DS_V4_GI_INCOMPLETE] frame=%d reason=%s launch=%s\n",frame,why,e["launch"].dump().c_str());
+        return nlohmann::json{};};
     if(ds_gi_pair.is_null()||ds_gi_pair.value("frame",-1)!=frame)return fail("no_q8_pair");
     auto* log=context.GetBufferCache().V4LightTraceBuffer();
-    if(!log||!valid||!groups[0]||groups[1]!=1||groups[2]!=1||
-       !T::Supports(input.threads_num[0],input.threads_num[1],input.threads_num[2],input.wave_size)||
-       bindings.runtime->program->info.group_pack>1||input.workgroup_register!=2||input.thread_ids_num<2||
-       !input.group_id[0]||!input.group_id[1]||input.dispatch_thread_dimensions)return fail("unsupported_launch");
+    if(!log)return fail("trace_buffer_unavailable");
+    if(!valid||!groups[0]||groups[1]!=1||groups[2]!=1)return fail("dispatch_group_extent");
+    if(!T::Supports(input.threads_num[0],input.threads_num[1],input.threads_num[2],input.wave_size))return fail("local_size_or_wave");
+    if(bindings.runtime->program->info.group_pack>1)return fail("packed_workgroup");
+    if(input.workgroup_register!=2||!input.group_id[0])return fail("workgroup_x_abi");
+    if(input.thread_ids_num<2)return fail("local_xy_abi");
+    if(input.dispatch_thread_dimensions)return fail("thread_dimension_dispatch");
+    if(!T::GiSupports(input.threads_num[0],input.threads_num[1],input.threads_num[2],input.wave_size,
+        bindings.runtime->program->info.group_pack,input.workgroup_register,input.thread_ids_num,
+        input.group_id[0],input.dispatch_thread_dimensions))return fail("unsupported_gi_abi");
     if(!use.contains("stages")||use["stages"].size()!=1||bindings.buffers.size()!=6||
        bindings.buffer_sources.size()!=6||bindings.images.size()!=11)return fail("binding_layout");
     const auto& st=use["stages"][0];
     if(!st.contains("guest_operands")||st["buffers"].size()!=6||st["images"].size()!=11)return fail("missing_operands");
+    if(!st["guest_operands"].value("scalar_complete",false)||st["guest_operands"]["user_data"].size()!=2)return fail("scalar_operands");
     e["stage"]=st;e["q8_use"]=ds_gi_pair["use"];e["q8_after"]=ds_gi_pair["after"];
     e["tile"]=ds_gi_pair["tile"];e["lane"]=ds_gi_pair["lane"];e["pixel"]=ds_gi_pair["pixel"];e["control"]=ds_gi_pair["control"];
     std::array<std::vector<uint32_t>,6> data;
@@ -5179,15 +5193,13 @@ static nlohmann::json BeginDsV4Gi(RenderContext& context,const PreparedBindings&
     }
     const auto tiles=DemonsQueueProbe::SelectTiles(data[0],data[1],33);
     if(!tiles.valid||tiles.end-tiles.first!=groups[0])return fail("queue_range");
+    e["queue_first"]=tiles.first;e["queue_end"]=tiles.end;
     const auto tile=e["tile"].get<uint32_t>();
     const auto first=data[1].begin()+tiles.first,last=data[1].begin()+tiles.end;
     const auto found=std::find(first,last,tile);
     if(found==last||std::find(found+1,last,tile)!=last)return fail("witness_tile_not_unique");
     const uint32_t wg=static_cast<uint32_t>(found-first);
     e["wg"]=wg;e["queue_first"]=tiles.first;e["queue_end"]=tiles.end;
-    e["launch"]={{"threads",{input.threads_num[0],input.threads_num[1],input.threads_num[2]}},
-        {"wave",input.wave_size},{"mode",input.float_mode},{"group_pack",bindings.runtime->program->info.group_pack},
-        {"group_id",{input.group_id[0],input.group_id[1],input.group_id[2]}},{"workgroup_register",input.workgroup_register}};
     e["hdr_before"]=DsGiHdrPixels(context,bindings,e);
     if(e["hdr_before"].is_null())return fail("hdr_before");
     const auto id=P::raw_store.ReserveCopy(T::GiBytes,true);if(!id)return fail("trace_budget");

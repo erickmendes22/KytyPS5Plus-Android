@@ -2,22 +2,19 @@
 
 > **Diretriz vigente — confirmação explícita do usuário, 27/11/2026:** P8/P(8) foi descartado como modelo de investigação. O único método operacional é V4, por contratos causais locais. Não há obrigação de decidir uma divisão global nem reportar seu intervalo ou status. A documentação histórica abaixo conserva evidências e decisões anteriores, mas seus roteiros, prioridades e estados globais antigos não são instruções vigentes. Os identificadores P8_USE são apenas marcadores técnicos de captura.
 
-## Estado operacional atual — após a #761, APK #763 entregue
+## Estado operacional atual — captura #763
 
-| Contrato causal | Estado e escopo |
-|---|---|
-| Aritmética q8 | MATCH condicional aos operandos observados nas testemunhas; não certifica amostragem independente. |
-| Geração da máscara de clusters | MATCH no dispatch capturado: 10.982 clusters, 87.856 dwords da máscara e 10.982 resumos. |
-| Transferência da máscara | MATCH: 351.424 bytes idênticos entre produtor e consumidor. |
-| Seleção dos probes e leitura da radiância indireta q33 | **Único contrato ativo**. A #763 retém os operandos, texels, descritores e HDR das mesmas testemunhas. Captura de aparelho pendente. |
+Único contrato ativo: q33, aquisição incompleta na #763. Reparar o filtro de lançamento e os comparadores de formato/sampler; não ampliar o ramo. Geração e transferência das máscaras permanecem MATCH no escopo já demonstrado; aritmética q8 permanece MATCH condicional. Nenhum corte causal novo nesta captura. Ver [relatório de reparo](DEMONS_APK_764_V4_GI_ACQUISITION.md).
 
-Próxima decisão: comparar as operações da q33 com referência independente;
-se houver divergência demonstrada, corrigir a primeira e medir seu efeito.
-Se houver igualdade, seguir o produtor do operando relevante à radiância
-baixa. Se a aquisição falhar, reparar a lacuna concreta. Não reabrir os
-contratos fechados sem evidência incompatível. Não confundir uma operação
-validada com a resolução visual completa. Esta alteração é exclusivamente
-metodológica, não requer outro APK.
+## #763 real / next APK — repair q33 acquisition (27/11/2026)
+
+- ZIP 20261127-204832 SHA256 27461144f3b447593f1e03b0ba035220289e90f128191f72a6e26bc86a735849. All 39 manifest files verified, 127404926 bytes. Frame504 submit15160, tile15500, q8 WG45 lanes43/60 pixels (803,621)/(804,623), same stencil86. This time there is actual incoming contrast: dark L=0, relative control L=0.070633544921875 before q8; the control is not certified healthy.
+- q8 original guest replay on both witnesses: 20 sample coordinates/descriptors/samplers exact, final RGB max2 ULP, six BRDF slices within1 ULP, cluster index29232 exact. This is revalidation, not a new elimination. q33 adds one half-float ULP per dark RGB channel, from (2.5987625e-5,2.6643276e-5,2.4676323e-5) to (2.6047230e-5,2.6702881e-5,2.4735928e-5); control HDR unchanged. On 1913 material pixels, mean L after q8 0.0002870207993, after q33 0.0002870862174; 932 changed. Small q33 effect alone is not a guest divergence.
+- **No new causal contract closed by this capture.** q33 event v4_gi_incomplete, reason unsupported_launch, groups [22600,1,1]. q33 dispatch itself did execute and tile15500 has unique membership at workgroup17516. Six actual buffer ranges total 14.239746 MiB, all read-only. Scalar operands complete. The old guard copied the q8 requirement group_id[1] into q33, although original q33 only uses incoming s2 group X (0x64); it initializes/overwrites s3 before use. The old single failure code did not retain the individual launch fields, so the precise rejected flag cannot be recovered retrospectively.
+- Offline original ISA q33 prefix through 0xe4 on the real #763 scalar operands and same-bound q8 prefix/tile buffers (identical native ranges, no intervening overlapping bound writers): 64/64 coordinates exactly match tile15500, all lanes admitted. Repeated with unused SGPRs poisoned 0,0x12345678,0xffffffff: identical. This proves that Y group ID is unnecessary to the guest prefix, not yet a native q33 instruction match.
+- Repair: q33-specific launch guard accepts X-only workgroup ID, preserves real 8x8 wave64, unpacked groups and required local XY. Retain every launch field and distinguish invalid dispatch/ABI/trace-buffer conditions on failure. Add independent original full-wave prefix reference. Exact observed slot5 descriptor [49283072,65539,262144,20484] is stride1 k8UInt; 0xb44 returns zero-extended byte, not a dword. Test actual descriptor, last byte and OOB. Actual sampler0 [0x8060400,0xfff000,0xaf00000,0x40000000] AnisoLinear; q33's fingerprinted explicit LZ sites have zero derivatives and an isotropic point footprint (Vulkan Sampling, Derivative Image Operations and Scale Factor Operation), so support the equivalent linear filtering at level0 with same view. Test black/white footprint and unsupported LOD. All prior capture layout, budgets and identity guards retained. Do not classify missing data as guest divergence.
+- Next remains the same local q33 lookup/load/sample/HDR contract. If actual operations diverge, reduce and correct first demonstrated difference; if equal, follow the particular input that determines the low contribution, considering the real incoming contrast. If acquisition fails, use its precise new reason, not a new hypothesis. This APK repairs the diagnostic; no rendering change or visual fix claimed.
+
 
 ## Registros históricos e evidências preservadas
 

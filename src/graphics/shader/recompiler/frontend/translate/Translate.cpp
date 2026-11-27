@@ -1941,7 +1941,9 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			const bool v4=options.stage==ShaderType::Compute&&options.shader_hash==DemonsV4LightTrace::Shader&&DemonsV4LightTrace::Enabled()&&DemonsV4LightTrace::Address()!=0&&
                 DemonsV4LightTrace::Supports(options.input_info.compute->threads_num[0],options.input_info.compute->threads_num[1],options.input_info.compute->threads_num[2],options.wave_size);
             const bool gi=options.stage==ShaderType::Compute&&options.shader_hash==DemonsV4LightTrace::GiShader&&DemonsV4LightTrace::Enabled()&&DemonsV4LightTrace::Address()!=0&&
-                DemonsV4LightTrace::Supports(options.input_info.compute->threads_num[0],options.input_info.compute->threads_num[1],options.input_info.compute->threads_num[2],options.wave_size);
+                DemonsV4LightTrace::Supports(options.input_info.compute->threads_num[0],options.input_info.compute->threads_num[1],options.input_info.compute->threads_num[2],options.wave_size)&&
+                options.input_info.compute->workgroup_register==2&&options.input_info.compute->thread_ids_num>=2&&
+                options.input_info.compute->group_id[0]&&!options.input_info.compute->dispatch_thread_dimensions;
             if(gi)translator.V4GiTrace(instruction,true);
             if(v4)translator.V4LightTrace(instruction,true);
 			translator.HalfRateBefore(instruction);

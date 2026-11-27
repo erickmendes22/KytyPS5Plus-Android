@@ -84,6 +84,14 @@ constexpr uint32_t GiOffset(std::size_t i){uint32_t n=0;for(std::size_t j=0;j<i;
 constexpr uint32_t GiWitnessWords=GiOffset(GiSites.size()),GiWords=GiSiteBase+2*GiWitnessWords;
 constexpr uint64_t GiBytes=uint64_t(GiWords)*4;
 static_assert(GiBytes<Bytes);
+// q33's fingerprinted prefix reads only s2 (workgroup X) at 0x64.
+// s3 is not an incoming group-Y operand. q8's ABI guard must not be
+// copied to q33. The original reductions read lane 63, hence wave64.
+constexpr bool GiSupports(uint32_t x,uint32_t y,uint32_t z,uint32_t wave,
+    uint32_t pack,int32_t workgroup_reg,int32_t thread_ids,bool group_x,bool thread_dimensions){
+    return x==8&&y==8&&z==1&&wave==64&&pack<=1&&workgroup_reg==2&&
+        thread_ids>=2&&group_x&&!thread_dimensions;
+}
 constexpr bool GiKey(uint32_t key){return key&&key<=128&&(key&(key-1))==0;}
 
 inline bool Enabled(){const auto* e=std::getenv("KYTY_DS_MATRIX");return e&&e[0]=='8'&&e[1]=='\0';}

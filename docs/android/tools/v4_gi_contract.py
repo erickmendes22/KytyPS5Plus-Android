@@ -63,10 +63,16 @@ def read_buffer(pc,row,buffers,raw):
     base=d[0]|((d[1]&65535)<<32);stride=(d[1]>>16)&0x3fff
     need(stride and not(d[1]>>30),'unsupported swizzled buffer')
     idx=row['coords'][0];n=4*len(row['result']);offset=idx*stride+(8 if pc==0xd58 else 0)
-    if pc==0xb44:need(d[3]==81924,'unmodeled formatted buffer load')
+    if pc==0xb44:
+        # Actual #763 descriptor: stride=1, DstSelX=4, RawFormat=5
+        # (k8UInt). buffer_load_format_x zero-extends the selected byte.
+        # The guest immediately consumes the integer as a six-bit face mask.
+        need(stride==1 and d[3]==20484 and len(row['result'])==1,'unmodeled formatted buffer load')
+        n=1
     need(idx<d[2] and offset+n<=stride*(idx+1),'record bounds')
     matches=[data for addr,data in buffers if addr==base]
     need(len(matches)==1 and offset+n<=len(matches[0]),'buffer range not retained')
+    if pc==0xb44:return [matches[0][offset]]
     return list(struct.unpack('<'+'I'*(n//4),matches[0][offset:offset+n]))
 
 def verify_image(row,entry,raw,slot):
@@ -89,8 +95,14 @@ def footprint_reference(pc,row,fp,entry,raw):
         return [struct.unpack('<I',data)[0]],0.0
     need(slot in (3,6,7) and side==2,'sample footprint')
     sm=fp['sampler'];need(sm['raw']==row['sampler'] and row['sampler'] in [list(x[:4]) for x in raw['sampler_descriptors']],'sampler identity')
-    need(not sm['unnormalized'] and sm['reduction']==0 and sm['mag']==sm['min'] and sm['mag'] in (0,1) and
+    # All fingerprinted sites here are image_sample[_c]_lz, explicit Lod=0,
+    # no Grad. Vulkan's derivative image operation defines zero derivatives
+    # and the point footprint is isotropic (eta=1); AnisoLinear therefore
+    # uses the linear filter, AnisoPoint the nearest filter. This does not
+    # model implicit-LOD/gradient anisotropy.
+    need(not sm['unnormalized'] and sm['reduction']==0 and sm['mag']==sm['min'] and sm['mag'] in (0,1,2,3) and
          (sm['mip_filter']==0 or sm['min_lod']==0),'unsupported sampler')
+    need((slot==3 and d['format']==56) or (slot==6 and d['format']==7) or (slot==7 and d['format']==71),'guest sample format')
     c=[fl(v) for v in row['coords']];u0,v0=c[1:3] if slot==6 else c[:2]
     tx=u0*w-.5;ty=v0*h-.5
     need(math.floor(tx)==x and math.floor(ty)==y and 0<=x<w-1 and 0<=y<h-1,'footprint coordinate')
@@ -115,7 +127,7 @@ def footprint_reference(pc,row,fp,entry,raw):
         selectors=[(d['select']>>(3*i))&7 for i in range(3)]
         need(all(s in (0,1,4,5,6,7) for s in selectors),'unsupported swizzle')
         v=np.stack([np.zeros((2,2)) if s==0 else np.ones((2,2)) if s==1 else v[:,:,s-4] for s in selectors],axis=2)
-    if sm['mag']==0:
+    if sm['mag'] in (0,2):
         q=v[math.floor(ty+.5)-y,math.floor(tx+.5)-x];tolerance=1e-6
     else:
         fx,fy=tx-x,ty-y
@@ -142,6 +154,20 @@ def check_signs(runner,mode):
             want=0xbe85a1cb^(0x80000000 if truth==t else 0)
             need(all((0,l) in out and out[0,l][2][0]==want for l in lanes),'SDWA lowering control')
     return len(SIGNS)*8
+
+def prefix_reference(code,runner,launch,wg,raw,buffers):
+    """Execute the original prefix on the complete wave; no observed coordinates injected."""
+    need(digest(code)==HASH and len(raw['user_data'])==2,'q33 prefix identity')
+    seg=merge([(r['address'],pack(r['words'])) for r in raw['scalar_regions']]+buffers[:2])
+    vg=[0]*(256*64)
+    for l in range(64):vg[l]=l%8;vg[64+l]=l//8
+    out=[]
+    for poison in (0,0x12345678,0xffffffff):
+        sg=[poison]*106;sg[:2]=raw['user_data'];sg[2]=wg
+        actual=run_wave(runner,code[:0xe8]+exp(0,[6,7,6,7],True)+END,sg,vg,seg,launch['mode'],(1<<64)-1)
+        out.append({l:list(x[2][:2]) for (t,l),x in actual.items() if t==0})
+    need(out[0]==out[1]==out[2],'prefix depends on unknown launch input')
+    return out[0]
 
 def replay(code,runner,launch,wg,lane,raw,buffers,wave,expected):
     need(digest(code)==HASH and raw['scalar_complete'] and len(raw['user_data'])==2,'q33 ISA/operands')
@@ -231,13 +257,17 @@ def replay(code,runner,launch,wg,lane,raw,buffers,wave,expected):
 
 def audit(a,runner=None):
     events=[(i,e) for i,e in enumerate(a.events) if e['kind']=='v4_gi_contract']
+    if not events:
+        return dict(status='INCOMPLETE',reason='q33 acquisition not completed',
+                    acquisition=[e for e in a.events if e['kind']=='v4_gi_incomplete'])
     need(len(events)==1,'single q33 paired event required');ei,e=events[0]
     ui,use=a.use[e['use']];qi,quse=a.use[e['q8_use']]
     need(qi<ui<ei and use['frame']==e['frame']==quse['frame']==a.frame and use['submit']==e['submit'],'dispatch order')
     q8=[x for x in a.events if x.get('kind')=='v4_q8_contract' and x.get('use')==e['q8_use']]
     need(len(q8)==1 and all(e[k]==q8[0][k] for k in ('tile','lane','pixel','control')) and q8[0]['after']==e['q8_after'],'same q8 pair')
     stage=use['stages'][0];raw=stage['guest_operands'];need(stage['shader']==SHADER and len(stage['buffers'])==6 and len(stage['images'])==11,'q33 bindings')
-    launch=e['launch'];need(launch['threads']==[8,8,1] and launch['wave']==64 and launch['group_pack']==1 and launch['workgroup_register']==2,'q33 ABI')
+    launch=e['launch'];need(launch['threads']==[8,8,1] and launch['wave']==64 and launch['group_pack'] in (0,1) and launch['workgroup_register']==2 and launch['group_id'][0] and
+        launch.get('thread_ids',2)>=2 and not launch.get('dispatch_thread_dimensions',False),'q33 ABI')
     buffers=[]
     for i,b in enumerate(e['buffers']):
         s=stage['buffers'][i];data=a.files.get(b['file'])
@@ -256,6 +286,15 @@ def audit(a,runner=None):
     for f in e['footprints']:
         key=(f['witness'],f['pc'],f['key']);need(key not in fps,'duplicate footprint');fps[key]=f
     code=a.z.read('ds-lighting-capture/'+stage['guest_file']);need(digest(code)==HASH,'guest fingerprint')
+    prefix_result=None
+    if runner:
+        try:
+            coords=prefix_reference(code,runner,launch,e['wg'],raw,buffers)
+            expected={l:list(map(int,wave[l,1:3])) for l in range(64) if wave[l,0]==0xe5 and wave[l,3]==1}
+            need(len(expected)>0 and all(wave[:,0]==0xe5),'incomplete native prefix')
+            prefix_result=dict(status='MATCH_LOCAL' if coords==expected else 'DIVERGENCE_CANDIDATE',
+                lanes=len(coords),native_lanes=len(expected),first_differences=[dict(lane=l,reference=coords.get(l),observed=expected.get(l)) for l in sorted(set(coords)|set(expected)) if coords.get(l)!=expected.get(l)][:8])
+        except Exception as ex:prefix_result=dict(status='INCOMPLETE',reason=str(ex))
     reports=[]
     for wi,(lane,pixel) in enumerate(((e['lane'],e['pixel']),(e['control']['lane'],e['control']['pixel']))):
         need(list(wave[lane,:6])==[0xe5,*pixel,1,0x115,1],'actual wave pixel/admission')
@@ -305,8 +344,10 @@ def audit(a,runner=None):
     bad=[x for x in checks if x['status'].startswith('DIVERGENCE')]
     incomplete=[x for x in checks if x['status']=='INCOMPLETE']
     replay_bad=[r['conditional_isa'] for r in reports if r['conditional_isa'] and r['conditional_isa']['status']!='MATCH_CONDITIONAL']
-    return dict(status='DIVERGENCE_CANDIDATE' if bad or any(x['status'].startswith('DIVERGENCE') for x in replay_bad) else
-                'INCOMPLETE' if incomplete or replay_bad or not runner else 'MATCH_LOCAL_CONDITIONAL',
+    return dict(status='DIVERGENCE_CANDIDATE' if bad or any(x['status'].startswith('DIVERGENCE') for x in replay_bad) or
+                (prefix_result and prefix_result['status'].startswith('DIVERGENCE')) else
+                'INCOMPLETE' if incomplete or replay_bad or not runner or not prefix_result or prefix_result['status']!='MATCH_LOCAL' else 'MATCH_LOCAL_CONDITIONAL',
+                prefix=prefix_result,
                 matched=sum(x['status']=='MATCH_LOCAL' for x in checks),differences=len(bad),incomplete=len(incomplete),
                 witnesses=reports,scope='paired q33 operations, actual native input bytes; no global P8 certification')
 
