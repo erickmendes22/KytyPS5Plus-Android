@@ -4813,6 +4813,83 @@ static nlohmann::json DsV4LightBacking(RenderContext& context,uint64_t address,u
     if(saved.reason){row["reason"]=saved.reason;return row;}
     row["file"]=saved.file;row["ok"]=true;return row;
 }
+// Keep actual writer identity separate from the bytes. A bound write candidate
+// alone is not a proof of mutation, and a changed range is not by itself a bug.
+static nlohmann::json DsClusterWriter(int32_t frame,uint64_t address,uint64_t bytes){
+    const auto* w=FindDsBufferProducer(frame,address,bytes);
+    if(!w)return nullptr;
+    return {{"shader",w->shader},{"frame",w->frame},{"submit",w->submit},
+        {"guest",w->address},{"bytes",w->size},{"serial",w->serial},
+        {"indirect",w->indirect},{"fill",w->fill}};
+}
+static uint64_t ds_cluster_copied=0;
+static uint32_t ds_cluster_dispatches=0;
+static nlohmann::json DsClusterBuffer(RenderContext& context,const PreparedBindings& bindings,uint32_t slot){
+    namespace P=DemonsP8Reference;namespace C=DemonsP8CapturePolicy;
+    nlohmann::json row={{"slot",slot},{"ok",false}};
+    auto fail=[&](const char* why){row["reason"]=why;return row;};
+    if(slot>=bindings.buffers.size()||slot>=bindings.buffer_sources.size())return fail("missing_slot");
+    const auto& b=bindings.buffers[slot];const auto& s=bindings.buffer_sources[slot];
+    const auto offset_word=bindings.runtime->program->bindings.memory_offset_dword+slot/4u;
+    if(offset_word>=bindings.shader_data.size()||!s.address||!b.buffer||b.range==VK_WHOLE_SIZE)return fail("unsupported_binding");
+    const auto adjustment=(bindings.shader_data[offset_word]>>((slot%4u)*8u))&255u;
+    if(!C::ClusterRange(s.size,b.range,adjustment)||b.offset>UINT64_MAX-adjustment)return fail("unsupported_range");
+    if(s.size>C::ClusterCopyBudget-ds_cluster_copied)return fail("cluster_copy_budget");
+    const auto id=P::raw_store.ReserveCopy(s.size,true);if(!id)return fail("raw_copy_budget");
+    ds_cluster_copied+=s.size;
+    auto& cache=context.GetBufferCache();
+    row["guest"]=s.address;row["bytes"]=s.size;
+    row["native"]=std::hash<VkBuffer>{}(static_cast<VkBuffer>(b.buffer));
+    row["binding_offset"]=b.offset;row["native_offset"]=b.offset+adjustment;
+    row["tick_before"]=context.GetCommandScheduler().CurrentTick();
+    row["state_before"]=cache.IndirectWitnessState(s.address,s.size);
+    std::vector<uint32_t> words(s.size/4);
+    if(!ReadDsGpuWords(context,b.buffer,b.offset+adjustment,words,true))return fail("readback_failed");
+    row["tick_after"]=context.GetCommandScheduler().CurrentTick();
+    row["state_after"]=cache.IndirectWitnessState(s.address,s.size);
+    const auto saved=P::raw_store.Save(DemonsP8Capture::Folder(),id,
+        std::span<const uint8_t>{reinterpret_cast<const uint8_t*>(words.data()),words.size()*4},true);
+    if(saved.reason)return fail(saved.reason);
+    row["file"]=saved.file;row["ok"]=true;return row;
+}
+static nlohmann::json BeginDsClusterCapture(RenderContext& context,const PreparedBindings& bindings,
+    int32_t frame,uint64_t submit,const nlohmann::json& use){
+    namespace C=DemonsP8CapturePolicy;
+    if(!DemonsP8Capture::EvidenceFrame(frame)||!C::ClusterShader(bindings.runtime->program->shader_hash))return {};
+    nlohmann::json e={{"kind","v4_cluster_producer"},{"schema",1},{"frame",frame},{"submit",submit},
+        {"shader",C::ClusterCS},{"before",nlohmann::json::array()},{"after",nlohmann::json::array()}};
+    auto fail=[&](const char* why){e["kind"]="v4_cluster_incomplete";e["reason"]=why;DemonsP8Reference::WriteEvent(e);return nlohmann::json{};};
+    if(ds_cluster_dispatches>=C::ClusterDispatchLimit)return fail("cluster_dispatch_budget");
+    ++ds_cluster_dispatches;
+    if(bindings.buffers.size()!=4||bindings.buffer_sources.size()!=4||!bindings.images.empty()||
+        !C::ClusterExtent(bindings.buffer_sources[2].size,bindings.buffer_sources[3].size))return fail("unsupported_cluster_layout");
+    if(!use.contains("stages")||use["stages"].size()!=1)return fail("missing_stage");
+    const auto& stage=use["stages"][0];
+    if(!stage.contains("guest_operands")||stage["buffers"].size()!=4||
+        !stage["buffers"][2].value("written",false)||!stage["buffers"][3].value("written",false))return fail("unsupported_access_layout");
+    // These observations preserve all bound operands, including the old
+    // output for RMW, but do not claim independent execution of the producer.
+    for(uint32_t slot=0;slot<4;++slot){
+        auto row=DsClusterBuffer(context,bindings,slot);
+        e["before"].push_back(row);
+        if(!row.value("ok",false))return fail("cluster_input_unavailable");
+    }
+    return e;
+}
+static void EndDsClusterCapture(RenderContext& context,const PreparedBindings& bindings,
+    nlohmann::json e,const std::string& use){
+    if(e.is_null()||e.empty())return;
+    e["use"]=use;
+    const auto& src=bindings.buffer_sources[2];
+    e["writer"]=DsClusterWriter(e["frame"].get<int32_t>(),src.address,src.size);
+    for(uint32_t slot=2;slot<4;++slot)e["after"].push_back(DsClusterBuffer(context,bindings,slot));
+    if(e["writer"].is_null()||use.empty()||
+        !e["after"][0].value("ok",false)||!e["after"][1].value("ok",false)){
+        e["kind"]="v4_cluster_incomplete";e["reason"]="cluster_output_or_writer_unavailable";
+    }
+    DemonsP8Reference::WriteEvent(e);
+}
+
 static nlohmann::json BeginDsV4Light(RenderContext& context,const PreparedBindings& bindings,
     const ShaderComputeInputInfo& input,int32_t frame,uint64_t submit,
     const std::array<uint32_t,3>& groups,bool groups_valid,const nlohmann::json& use) {
@@ -4858,10 +4935,21 @@ static nlohmann::json BeginDsV4Light(RenderContext& context,const PreparedBindin
         const auto adjustment=(bindings.shader_data[offset_word]>>((slot%4u)*8u))&255u;
         if(adjustment>=native.range||source.size>native.range-adjustment)return fail("native buffer range mismatch");
         if(slot==2)e["light_backing_before"]=DsV4LightBacking(context,source.address,source.size);
+        if(slot==3){
+            e["cluster_writer"]=DsClusterWriter(frame,source.address,source.size);
+            e["cluster_state_before"]=context.GetBufferCache().IndirectWitnessState(source.address,source.size);
+        }
         auto& words=data[slot];words.resize(source.size/4);
         const auto id=P::raw_store.ReserveCopy(source.size,true);
         if(!id||!ReadDsGpuWords(context,native.buffer,native.offset+adjustment,words,true))return fail("buffer readback failed");
         if(slot==2)e["light_backing_after_copy"]=DsV4LightBacking(context,source.address,source.size);
+        if(slot==3){
+            e["cluster_state_after_copy"]=context.GetBufferCache().IndirectWitnessState(source.address,source.size);
+            auto history=nlohmann::json::array();
+            for(const auto& t:context.GetBufferCache().RecentProbeRayTransfers(source.address,source.size))if(t.path)
+                history.push_back({{"path",t.path},{"tick",t.tick},{"source",t.source},{"shader",t.shader},{"begin",t.begin},{"end",t.end}});
+            e["cluster_transfer_candidates"]=std::move(history);
+        }
         const auto raw=P::raw_store.Save(DemonsP8Capture::Folder(),id,
             std::span<const uint8_t>{reinterpret_cast<const uint8_t*>(words.data()),words.size()*4},true);
         if(raw.reason)return fail(raw.reason);
@@ -5794,11 +5882,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
     const int32_t p8_frame=m_context.GetGpu().GetFrameNum();
     const bool p8_hzb=DemonsP8Capture::EvidenceFrame(p8_frame)&&
         DemonsP8CapturePolicy::HzbShader(program.shader_hash);
-    if(DemonsP8Capture::FullFrame(p8_frame)||p8_hzb){
+    const bool p8_cluster=DemonsP8Capture::EvidenceFrame(p8_frame)&&
+        DemonsP8CapturePolicy::ClusterShader(program.shader_hash);
+    if(DemonsP8Capture::FullFrame(p8_frame)||p8_hzb||p8_cluster){
         p8_use={{"frame",p8_frame},{"submit",submit_id},{"path","compute_direct"},
             {"groups",{thread_group_x,thread_group_y,thread_group_z}},
             {"stages",nlohmann::json::array({DemonsP8Reference::InspectBindings(m_context,bindings,p8_frame,submit_id)})}};
-        if(p8_hzb)p8_use["launch"]={{"threads",{input_info.threads_num[0],input_info.threads_num[1],input_info.threads_num[2]}},
+        if(p8_hzb||p8_cluster)p8_use["launch"]={{"threads",{input_info.threads_num[0],input_info.threads_num[1],input_info.threads_num[2]}},
             {"wave",input_info.wave_size},{"mode",input_info.float_mode},{"group_pack",program.info.group_pack},
             {"lds_size_dwords",input_info.lds_size_dwords},{"scratch_size_dwords",input_info.scratch_size_dwords},
             {"group_id",{input_info.group_id[0],input_info.group_id[1],input_info.group_id[2]}}};
@@ -5806,6 +5896,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
     DemonsPrelightTrace::ObserveCompute(m_context,bindings,submit_id,false,false);
     if(DemonsPrelightTrace::Enabled()&&DemonsCausalMatrix::LightingQueue(program.shader_hash)!=UINT32_MAX)
         CaptureDsLightBridge(m_context,bindings,submit_id,{thread_group_x,thread_group_y,thread_group_z},true,true);
+    auto cluster_trace=BeginDsClusterCapture(m_context,bindings,p8_frame,submit_id,p8_use);
     auto v4_trace=BeginDsV4Light(m_context,bindings,input_info,p8_frame,submit_id,{thread_group_x,thread_group_y,thread_group_z},true,p8_use);
 	auto indirect_producer = BeginDsIndirectProducer(m_context, bindings, input_info, submit_id,
 	    compute_program.module, {thread_group_x, thread_group_y, thread_group_z});
@@ -5913,6 +6004,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// current command buffer; the Vulkan handle is no longer recordable after Wait.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
     EndDsV4Light(m_context,bindings,vk_buffer,std::move(v4_trace),p8_hzb_use);
+    EndDsClusterCapture(m_context,bindings,std::move(cluster_trace),p8_hzb_use);
     EndDsIndirectProducer(m_context, std::move(indirect_producer));
 	EndDsCountProducer(m_context,bindings,std::move(count_producer_trace),
 	                   {thread_group_x,thread_group_y,thread_group_z});

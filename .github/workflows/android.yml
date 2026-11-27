@@ -332,6 +332,9 @@ jobs:
           python3 docs/android/tools/test_v4_q8_light_records.py
           python3 docs/android/tools/test_v4_q8_pair.py
           python3 docs/android/tools/test_v4_q8_brdf.py
+          python3 docs/android/tools/test_v4_cluster_publication.py
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_v4_cluster_capture_test.cpp -o /tmp/ds-v4-cluster
+          /tmp/ds-v4-cluster
           python3 -m py_compile docs/android/tools/v4_q8_pair_replay.py docs/android/tools/v4_q8_pair.py
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_v4_pair_test.cpp -o /tmp/ds-v4-pair
           /tmp/ds-v4-pair

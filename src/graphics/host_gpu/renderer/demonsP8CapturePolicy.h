@@ -14,6 +14,21 @@ constexpr uint64_t RawCopyBudget=256ull*1024*1024;
 // the actual final inputs and previous-frame HZB producer/consumer.
 constexpr uint64_t CriticalStorageBudget=80ull*1024*1024;
 constexpr uint64_t CriticalCopyBudget=96ull*1024*1024;
+// #761: retain the actual clustered-light mask producer from the preceding
+// guest frame as well as the selected consumer frame. No global buffer dump.
+constexpr uint64_t ClusterCS=0x1ce1a858f62b5a11ull;
+constexpr uint64_t ClusterCopyBudget=12ull*1024*1024;
+constexpr uint64_t ClusterRangeLimit=2ull*1024*1024;
+constexpr uint32_t ClusterDispatchLimit=8;
+constexpr bool ClusterShader(uint64_t shader){return shader==ClusterCS;}
+constexpr bool ClusterExtent(uint64_t mask,uint64_t summary){
+    return summary&&summary%4==0&&mask<=ClusterRangeLimit&&
+        summary<=ClusterRangeLimit/8&&mask==8*summary;
+}
+constexpr bool ClusterRange(uint64_t bytes,uint64_t range,uint64_t adjustment){
+    return bytes&&bytes%4==0&&bytes<=ClusterRangeLimit&&
+        adjustment<=range&&bytes<=range-adjustment;
+}
 constexpr uint64_t HzbCS=0xdbecbbe2051b41baull;
 constexpr bool HzbShader(uint64_t shader){return shader==HzbCS;}
 constexpr bool CriticalRole(const char* role) {

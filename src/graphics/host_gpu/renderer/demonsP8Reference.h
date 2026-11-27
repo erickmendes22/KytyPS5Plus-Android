@@ -173,6 +173,7 @@ inline nlohmann::json InspectBindings(RenderContext& context,const Bound& bound,
     stage["uses_gds"]=program.info.uses_gds;
     // Preserve raw scalar reads and descriptor words for the replay targets.
     const bool replay=program.shader_hash==0x3dfe402653925fbfull||DemonsP8CapturePolicy::HzbShader(program.shader_hash)||
+        DemonsP8CapturePolicy::ClusterShader(program.shader_hash)||
         program.shader_hash==DemonsP8CapturePolicy::CompositePS||
         program.shader_hash==DemonsP8CapturePolicy::DirectScenePS||
         program.shader_hash==0xe86bfee195efa5a4ull||program.shader_hash==0x8f52cca9ea3ba4fcull;
