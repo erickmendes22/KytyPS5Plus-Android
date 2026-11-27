@@ -25,6 +25,7 @@ jobs:
           python3 docs/android/tools/test_p8_graphics_contract.py /tmp/p8-runner/kyty_p8_guest_ref
           python3 docs/android/tools/test_p8_bilateral.py /tmp/p8-runner/kyty_p8_guest_ref
           python3 docs/android/tools/test_p8_graphics_bilateral.py /tmp/p8-runner/kyty_p8_guest_ref
+          python3 docs/android/tools/test_p8_version_link.py
       - uses: actions/upload-artifact@v4
         with:
           name: p8-integrated-host-source
