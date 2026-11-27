@@ -6,11 +6,13 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
@@ -154,7 +156,21 @@ public final class DsLightingCaptureExport {
         return result;
     }
     private static String text(File file) throws IOException {
-        return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+        // Android may enter explicit diagnostic export with the worker's
+        // interrupt flag set after stopping emulation. NIO's interruptible
+        // channels then fail every read, even on intact regular files.
+        // Preserve the flag; read bounded files with classic stream IO.
+        try (InputStream input = new FileInputStream(file);
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                if (output.size() + (long) count > JSON_SCAN_LIMIT)
+                    throw new IOException("JSON scan limit");
+                output.write(buffer, 0, count);
+            }
+            return new String(output.toByteArray(), StandardCharsets.UTF_8);
+        }
     }
 
     public static Plan discover(File root, long launchTime) {
@@ -173,6 +189,8 @@ public final class DsLightingCaptureExport {
         final List<long[]> clears = new ArrayList<>();
         final Map<Long, Population> before = new LinkedHashMap<>();
         Long firstDraw, lossDraw, lossSequence;
+        JSONObject selectedBoundary;
+        boolean selectedBoundaryFound;
         Discovery(File root, long launchTime) { this.root = root; this.launchTime = launchTime; }
 
         void problem(String code, String path, String detail) { problems.add(new Problem(code, path, detail)); }
@@ -258,11 +276,23 @@ public final class DsLightingCaptureExport {
         void inspectJournalEvent(JSONObject event, String line) {
             String kind = event.optString("kind");
             long sequence = event.optLong("seq", -1), draw = event.optLong("draw", -1);
+            if (selectedBoundary != null && kind.equals("consumer") && !selectedBoundaryFound) {
+                JSONObject image = event.optJSONObject("image_after_sample");
+                if (image != null && event.optLong("frame", -1) == selectedBoundary.optLong("frame", -2) &&
+                        event.optLong("submit", -1) == selectedBoundary.optLong("submit", -2) &&
+                        event.optInt("queue", -1) == 0 && event.optBoolean("exact_layer0") &&
+                        image.optLong("owner", -1) == selectedBoundary.optLong("owner", -2) &&
+                        image.optLong("version", -1) == selectedBoundary.optLong("version", -2) &&
+                        image.optLong("write_order", -1) == selectedBoundary.optLong("write_order", -2)) {
+                    selectedBoundaryFound = true;
+                    lossSequence = sequence;
+                }
+            }
             if (kind.equals("draw_prepared"))
                 draws.put(sequence, new Draw(sequence, event.optBoolean("depth_target"), stageHashes(line)));
             else if (kind.equals("draw_execute") && event.optBoolean("depth_clear")) clears.add(new long[]{sequence, draw});
             else if (kind.equals("draw_before")) before.put(draw, new Population(event));
-            else if (kind.equals("draw_after") && lossDraw == null) {
+            else if (kind.equals("draw_after") && lossDraw == null && selectedBoundary == null) {
                 Population current = new Population(event), previous = before.get(draw);
                 if (event.optBoolean("witness_first_material_loss") ||
                         (previous != null && current.area > 0 && current.area == previous.area &&
@@ -274,7 +304,7 @@ public final class DsLightingCaptureExport {
         }
         void readJournal(File file, boolean collectReferences, Set<Long> selected) {
             String path = "queue-state/" + file.getName();
-            try (BufferedReader reader = Files.newBufferedReader(file.toPath(), StandardCharsets.UTF_8)) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
                 String line;
                 int number = 0;
                 while ((line = reader.readLine()) != null) {
@@ -316,7 +346,7 @@ public final class DsLightingCaptureExport {
             }
             Pattern guest = Pattern.compile("guest-shaders/(cs|vs|ps|ms|ls|hs|ds)_[0-9a-f]{16}_probe\\.bin");
             int uses = 0, lineNumber = 0;
-            try (BufferedReader reader = Files.newBufferedReader(file.toPath(), StandardCharsets.UTF_8)) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     ++lineNumber;
@@ -379,7 +409,15 @@ public final class DsLightingCaptureExport {
             journals.sort(Comparator.comparing(file -> {
                 Matcher match = JOURNAL.matcher(file.getName()); match.matches(); return new BigInteger(match.group(1));
             }));
+            if (manifest != null && "selected_consumer".equals(manifest.optString("seal_reason"))) {
+                selectedBoundary = manifest.optJSONObject("consumer_boundary");
+                if (selectedBoundary == null)
+                    problem("P8_SELECTED_BOUNDARY_MISSING", manifestPath, "no consumer identity");
+                else lossDraw = manifest.optLong("loss_draw", -1);
+            }
             for (File file : journals) readJournal(file, false, Collections.emptySet());
+            if (selectedBoundary != null && !selectedBoundaryFound)
+                problem("P8_SELECTED_BOUNDARY_MISMATCH", manifestPath, "no exact queue-0 consumer in journal");
             for (long[] clear : clears)
                 if (lossSequence != null && clear[0] <= lossSequence && draws.containsKey(clear[1]) && draws.get(clear[1]).depth)
                     firstDraw = clear[1];
@@ -391,6 +429,9 @@ public final class DsLightingCaptureExport {
                 problem("WITNESS_LOSS_MISMATCH", manifestPath, "declared=" + declaredLoss + " observed=" + lossDraw);
             if (firstDraw == null) firstDraw = declaredFirst;
             if (lossDraw == null) lossDraw = declaredLoss;
+            if (selectedBoundary != null && (lossDraw == null || !draws.containsKey(lossDraw) ||
+                    lossSequence == null || lossDraw >= lossSequence || firstDraw == null))
+                problem("P8_SELECTED_PRODUCER_RANGE_INCOMPLETE", manifestPath, "last producer is not before selected consumer");
             if (firstDraw == null || lossDraw == null || firstDraw > lossDraw)
                 problem("WITNESS_CYCLE_UNRESOLVED", manifestPath, "first=" + firstDraw + " loss=" + lossDraw);
             Set<Long> selected = new LinkedHashSet<>();
@@ -487,7 +528,7 @@ public final class DsLightingCaptureExport {
     private static String sha256(File file) throws IOException {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            try (InputStream input = Files.newInputStream(file.toPath())) {
+            try (InputStream input = new FileInputStream(file)) {
                 byte[] buffer = new byte[64 * 1024];
                 int count;
                 while ((count = input.read(buffer)) >= 0) digest.update(buffer, 0, count);

@@ -87,6 +87,8 @@ public final class DsLightingCaptureExportFixtures {
     public static void runFixtureTests() throws Exception {
         assertions = 0;
         completeMinimalCapture();
+        interruptedExportPreservesClosure();
+        selectedConsumerRejectsUnrelatedLoss();
         requiredFilesIgnoreOldCountCaps();
         requiredBlobsUseNewBudgetBeforeOptionalFiles();
         missingRequiredIsNeverComplete();
@@ -113,6 +115,40 @@ public final class DsLightingCaptureExportFixtures {
             check(plan.firstDraw == 100 && plan.lossDraw == 110, "executed clear to fixed loss");
             check(result.entries.size() == 4, "manifest, both statuses and journal retained");
             check(!DsLightingCaptureExport.summary(plan, result).has("p8"), "transport is not an oracle");
+        }
+    }
+    private static void interruptedExportPreservesClosure() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.write("pipelines/fixture.json", "{}");
+            f.required("queue-state/ds_prelight_status.json", 2);
+            f.saveManifest();
+            Thread.currentThread().interrupt();
+            try {
+                DsLightingCaptureExport.Plan plan = DsLightingCaptureExport.discover(f.root, 0);
+                DsLightingCaptureExport.Selection result = DsLightingCaptureExport.select(plan, Collections.emptyList());
+                check(result.getRequiredComplete(), "intact regular files survive preexisting interrupt");
+                check(Thread.currentThread().isInterrupted(), "export does not swallow worker interrupt");
+            } finally { Thread.interrupted(); }
+        }
+    }
+    private static void selectedConsumerRejectsUnrelatedLoss() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.manifest.put("first_draw", 120).put("loss_draw", 130).put("seal_reason", "selected_consumer")
+                .put("consumer_boundary", new JSONObject().put("frame",335).put("submit",9965)
+                    .put("owner",10866262016L).put("version",33155).put("write_order",153697));
+            f.write("queue-state/ds_prelight_events_0.jsonl",
+                "{\"seq\":100,\"kind\":\"draw_prepared\",\"depth_target\":true,\"vs\":0,\"ps\":0}\n" +
+                "{\"seq\":101,\"kind\":\"draw_execute\",\"draw\":100,\"depth_clear\":true}\n" +
+                "{\"seq\":111,\"kind\":\"draw_after\",\"draw\":110,\"witness_first_material_loss\":true}\n" +
+                "{\"seq\":120,\"kind\":\"draw_prepared\",\"depth_target\":true,\"vs\":0,\"ps\":0}\n" +
+                "{\"seq\":121,\"kind\":\"draw_execute\",\"draw\":120,\"depth_clear\":true}\n" +
+                "{\"seq\":130,\"kind\":\"draw_prepared\",\"vs\":0,\"ps\":0}\n" +
+                "{\"seq\":140,\"kind\":\"consumer\",\"frame\":335,\"submit\":9965,\"queue\":0,\"exact_layer0\":true,\"image_after_sample\":{\"owner\":10866262016,\"version\":33155,\"write_order\":153697}}\n");
+            DsLightingCaptureExport.Plan plan = f.plan();
+            check(plan.firstDraw == 120 && plan.lossDraw == 130, "consumer-linked producer cycle supersedes earlier loss");
+            check(DsLightingCaptureExport.select(plan, Collections.emptyList()).getRequiredComplete(), "selected cycle transport");
+            f.manifest.getJSONObject("consumer_boundary").put("version",33154);
+            check(problem(f.select(),"P8_SELECTED_BOUNDARY_MISMATCH",null), "wrong version cannot certify cycle");
         }
     }
     private static void requiredFilesIgnoreOldCountCaps() throws Exception {

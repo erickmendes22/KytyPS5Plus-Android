@@ -14,6 +14,35 @@ namespace Libs::Graphics::DemonsP8Capture {
 inline std::atomic<bool> available{false};
 inline std::atomic<int32_t> target{-1};
 inline std::atomic<bool> stopped{false};
+inline std::atomic<bool> evidence_started{false};
+inline std::atomic<bool> boundary_reached{false};
+// All boundary and foreground recording is serialized by the render context
+// mutex. Release/acquire publishes the first real consumer's identity.
+inline uint64_t boundary_submit=0,boundary_version=0,boundary_owner=0,boundary_order=0;
+inline DemonsP8CapturePolicy::SustainedDark dark_selection;
+inline bool EvidenceFrame(int32_t frame){
+    const auto f=target.load();
+    return available.load()&&!stopped.load()&&f>0&&frame>=f-1&&frame<=f;
+}
+inline bool BeginEvidence(int32_t frame){
+    if(!EvidenceFrame(frame))return false;
+    evidence_started.store(true);
+    return true;
+}
+inline bool ProducerFrame(int32_t frame){
+    return available.load()&&DemonsP8CapturePolicy::ProducerFrame(frame,target.load(),boundary_reached.load(),stopped.load());
+}
+inline bool MarkBoundary(int32_t frame,uint32_t queue,uint64_t submit,uint64_t owner,uint64_t version,uint64_t order){
+    if(!EvidenceFrame(frame)||frame!=target.load()||queue!=0||boundary_reached.load())return false;
+    boundary_submit=submit;boundary_owner=owner;boundary_version=version;boundary_order=order;
+    boundary_reached.store(true);
+    return true;
+}
+inline nlohmann::json Boundary(){
+    if(!boundary_reached.load())return nullptr;
+    return {{"frame",target.load()},{"queue",0},{"submit",boundary_submit},
+        {"owner",boundary_owner},{"version",boundary_version},{"write_order",boundary_order}};
+}
 inline constexpr const char* Layer="VK_LAYER_LUNARG_gfxreconstruct";
 inline bool Requested() {
 #ifdef __ANDROID__
@@ -30,7 +59,8 @@ inline void Status(const char* state, int32_t frame=-1) {
     if(ec)return;
     std::ofstream out(Folder()/"capture-status.json",std::ios::trunc);
     if(out)out<<nlohmann::json{{"schema",1},{"state",state},{"frame",frame},
-        {"target_frame",target.load()},{"native_replay",false},{"scope","bounded raw observations; not a native replay or guest correctness certificate"}};
+        {"target_frame",target.load()},{"producer_first_frame",target.load()>0?target.load()-1:-1},
+        {"boundary",Boundary()},{"native_replay",false},{"scope","bounded raw observations; not a native replay or guest correctness certificate"}};
 }
 inline bool Configure(bool present, bool markers) {
 #ifdef __ANDROID__
@@ -61,9 +91,9 @@ inline void Observe(int32_t frame,double luminance,uint32_t lit) {
     // Select on the actual post-processing input, not the earlier
     // layer-zero collapse or the transparent UI. Candidate only.
     // The frame floor avoids the initial boot fade; it is not a proof of a defect.
-    if(!DemonsP8CapturePolicy::Trigger(frame,luminance,lit))return;
+    if(!dark_selection.Observe(frame,luminance,lit))return;
     int32_t expected=-1;
-    if(!target.compare_exchange_strong(expected,frame+1))return;
+    if(!target.compare_exchange_strong(expected,frame+2))return;
     Status("raw_only_selected",frame);
 #else
     (void)frame;(void)luminance;(void)lit;

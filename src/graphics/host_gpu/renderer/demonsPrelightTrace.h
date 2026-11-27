@@ -66,7 +66,14 @@ inline thread_local uint64_t command_seq=0;
 inline thread_local bool command_prepared=false;
 inline std::mutex phase_mutex;
 inline DemonsPrelightPolicy::BisectionWindow production_window;
-inline int Phase(int32_t frame){std::scoped_lock lock(phase_mutex);return production_window.Phase(frame);}
+inline int Phase(int32_t frame){
+    if(DemonsP8Capture::available.load()){
+        DemonsP8Capture::BeginEvidence(frame);
+        if(!DemonsP8Capture::ProducerFrame(frame))return -1;
+        return frame==DemonsP8Capture::target.load()?1:0;
+    }
+    std::scoped_lock lock(phase_mutex);return production_window.Phase(frame);
+}
 inline bool ObservePopulation(int32_t frame,uint32_t queue,uint64_t colored,uint64_t area);
 struct VertexRange{uint64_t address=0,bytes=0;bool confirmed=false;bool upstream=false;};
 // Prior addresses are candidate seeds only; live VS descriptors certify identity.
@@ -262,7 +269,8 @@ inline void StatusLocked(const Journal& j) {
         {"prehistory_evicted",j.evicted},{"postwindow_ignored",j.closed_events},
         {"dropped_events",j.dropped},{"samples",j.samples},{"sample_dropped",j.sample_dropped},
         {"full_samples",j.full},{"full_dropped",j.full_dropped},{"chunks",j.chunk+(j.out.is_open()?1u:0u)},
-        {"scope","rolling candidate history; exact consumer snapshots; no automatic causal certificate"},
+        {"scope","bounded producer history and exact consumer snapshots; no automatic causal certificate"},
+        {"selected_boundary",DemonsP8Capture::Boundary()},
         {"root_decision","BLOCKED_UNTIL_SAME_WITNESS_EXPECTED_OUTPUT_CERTIFIED"}};
 }
 inline bool WriteLocked(Journal& j,const std::string& line) {
@@ -280,6 +288,14 @@ inline bool WriteLocked(Journal& j,const std::string& line) {
     j.bytes+=line.size()+1;return true;
 }
 inline bool ObservePopulation(int32_t frame,uint32_t queue,uint64_t colored,uint64_t area){
+    // The selected window is already being written. Do not re-latch an
+    // unrelated temporal layer-zero drop from an earlier scene.
+    if(DemonsP8Capture::available.load()){
+        auto& j=State();std::scoped_lock lock(j.mutex);j.last_consumer=frame;
+        const bool selected=DemonsP8Capture::boundary_reached.load()&&!j.triggered;
+        if(selected){j.triggered=true;j.edge=frame;j.edge_queue=queue;}
+        StatusLocked(j);return selected;
+    }
     bool edge=false,close=false;
     {std::scoped_lock lock(phase_mutex);edge=production_window.Observe(frame,queue,colored,area);
         close=production_window.Closed(frame);}
@@ -309,11 +325,20 @@ inline bool ObservePopulation(int32_t frame,uint32_t queue,uint64_t colored,uint
 }
 inline uint64_t Record(nlohmann::json event) {
     if(!Enabled())return 0;
+    const bool selected=DemonsP8Capture::available.load();
+    if(selected&&!DemonsP8Capture::evidence_started.load())return 0;
     auto& j=State();std::scoped_lock lock(j.mutex);
+    if(selected&&DemonsP8Capture::stopped.load()){
+        if(!j.closed){j.closed=true;StatusLocked(j);}
+        return 0;
+    }
     if(j.closed){++j.closed_events;return 0;}
+    if(selected&&event.contains("frame")&&event["frame"].is_number_integer()&&
+        !DemonsP8Capture::EvidenceFrame(event["frame"].get<int32_t>()))return 0;
     const auto seq=++j.seq;event["seq"]=seq;
+    if(selected&&seq==1)j.first_retained=seq;
     auto line=event.dump();
-    if(!j.triggered){
+    if(!j.triggered&&!selected){
         if(line.size()+1>ChunkBytes){++j.dropped;return 0;}
         while(!j.rolling.empty()&&j.rolling_bytes+line.size()+1>RollingBytes){
             j.rolling_bytes-=j.rolling.front().second.size()+1;j.rolling.pop_front();++j.evicted;
@@ -327,6 +352,8 @@ inline uint64_t Record(nlohmann::json event) {
 }
 inline bool AllowSample(bool full=false){
     if(!Enabled())return false;
+    if(DemonsP8Capture::available.load()&&(!DemonsP8Capture::evidence_started.load()||
+        DemonsP8Capture::stopped.load()))return false;
     auto& j=State();std::scoped_lock lock(j.mutex);
     if(j.closed)return false;
     auto& used=full?j.full:j.samples;

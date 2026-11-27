@@ -1531,6 +1531,7 @@ void DemonsPrelightTrace::ObserveCompute(RenderContext& context,const PreparedBi
     const auto shader=bindings.runtime->program->shader_hash;
     const auto queue=DemonsCausalMatrix::LightingQueue(shader);
     const auto frame=context.GetGpu().GetFrameNum();
+    if(DemonsP8Capture::available.load()&&!DemonsP8Capture::BeginEvidence(frame))return;
     bool matched=false;
     for(size_t slot=0;slot<bindings.images.size();++slot){
         const auto& b=bindings.images[slot];
@@ -1579,6 +1580,12 @@ void DemonsPrelightTrace::ObserveCompute(RenderContext& context,const PreparedBi
                             {"rgb_nonzero",nonzero},{"hash_words",hash}};
                         auto meta=row;
                         meta["image_after_sample"]=Identity(image);
+                        const auto sampled=Identity(image);
+                        if(consumer&&sampled["version"]==row["image"]["version"]&&
+                            sampled["write_order"]==row["image"]["write_order"]){
+                            DemonsP8Capture::MarkBoundary(frame,queue,submit,image.info.data.address,
+                                image.ContentVersion(),image.gpu_write_order);
+                        }
                         const bool edge=ObservePopulation(frame,queue,nonzero,uint64_t{full.width}*full.height);
                         if(edge){
                             DemonsIndirectWitness::SealAtLoss(frame,queue);
@@ -3107,9 +3114,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         std::unordered_map<uint64_t,std::string> positions;
         uint64_t position_bytes=0,position_dropped=0;
         int32_t frame=-1;
-        uint64_t first_submit=0;
+        uint64_t first_submit=0,last_draw=0;
+        int32_t last_frame=-1;
     };
     static RootDepthCycle root_cycle;
+    const bool root_boundary_seal=root_trace&&!root_witness_latched&&
+        DemonsP8Capture::boundary_reached.load()&&root_frame==DemonsP8Capture::target.load();
     bool root_capture_inputs=false;
     std::string root_pending_input;
     std::vector<uint8_t> root_pending_binary;
@@ -4659,6 +4669,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                     {"submit",submit_id},{"first_input_retained",retained},
                     {"scope","executed clear, input admitted after resetting previous cycle budget"}});
             }
+            root_cycle.last_draw=root_draw;root_cycle.last_frame=root_frame;
             if(retained&&!root_pending_binary.empty())root_cycle.binary.emplace(root_draw,std::move(root_pending_binary));
             if(!root_cycle.boundary.first){
                 // Prune payloads evicted from the pre-boundary rolling prefix.
@@ -5164,7 +5175,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             root_witness_pre_serial=ds_vertex_pair;
             root_witness_pre_before=std::move(ds_vertex_depth_before);
             root_witness_pre_after=std::move(depth_after);
-        }else if(root_trace&&ds_vertex_sky_pair&&root_witness_loss){
+        }else if(root_trace&&ds_vertex_sky_pair&&(root_witness_loss||
+            (DemonsP8Capture::available.load()&&root_capture_inputs))){
             const auto write_depth=[&](const char* filename,const DsDepthFullSnapshot& depth){
                 if(depth.bits.empty())return false;
                 std::ofstream out(folder/filename,std::ios::binary|std::ios::trunc);
@@ -5192,8 +5204,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         Log::WriteToConsoleAndLog(fmt::format("[DS_VERTEX_POSITION] frame={} shader={:016x} vertices={} missing={} file={} saved={}\n",
             ds_gbuffer_frame,ds_vp->shader_hash,unique.size(),missing,name,position_saved));
     }
-    if(root_witness_loss){
+    if(root_boundary_seal||(root_witness_loss&&!DemonsP8Capture::available.load())){
         root_witness_latched=true;
+        const uint64_t sealed_draw=root_boundary_seal?root_cycle.last_draw:root_draw;
+        const int32_t sealed_frame=root_boundary_seal?root_cycle.last_frame:root_frame;
         const auto folder=DemonsPrelightTrace::Folder();
         std::error_code ec;std::filesystem::create_directories(folder,ec);
         nlohmann::json saved=nlohmann::json::array();
@@ -5237,7 +5251,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         }
         for(const char* name:{"ds_prelight_witness_sky_prepass.json","ds_prelight_witness_sky_material.json",
             "ds_prelight_witness_depth.json","ds_prelight_witness_depth_pre_before.bin",
-            "ds_prelight_witness_depth_pre_after.bin"})require(std::string("queue-state/")+name);
+            "ds_prelight_witness_depth_pre_after.bin"}){
+            if(!root_boundary_seal||std::filesystem::exists(folder/name,ec))
+                require(std::string("queue-state/")+name);
+        }
         const auto optional_depth="ds_prelight_witness_depth_material_before.bin";
         if(std::filesystem::exists(folder/optional_depth,ec))require(std::string("queue-state/")+optional_depth);
         nlohmann::json required_files=nlohmann::json::array();
@@ -5245,16 +5262,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         std::ofstream meta(folder/"ds_prelight_witness_foreground_manifest.json",std::ios::trunc);
         if(meta)meta<<nlohmann::json{{"active",root_cycle.boundary.first!=0},{"first_frame",root_cycle.frame},
             {"first_draw",root_cycle.boundary.first},{"first_submit",root_cycle.first_submit},
-            {"loss_frame",root_frame},{"loss_draw",root_draw},{"bytes",root_cycle.retained.bytes},
+            {"loss_frame",sealed_frame},{"loss_draw",sealed_draw},{"bytes",root_cycle.retained.bytes},
+            {"seal_reason",root_boundary_seal?"selected_consumer":"material_loss"},
+            {"consumer_boundary",root_boundary_seal?DemonsP8Capture::Boundary():nlohmann::json(nullptr)},
             {"dropped",root_cycle.retained.dropped},{"inputs",saved},
             {"position_bytes",root_cycle.position_bytes},{"position_dropped",root_cycle.position_dropped},
             {"positions",position_files},{"required_files",required_files},{"schema",2},
             {"scope","independent guest VS positions versus native positions on the same consumed scalar and vector bytes"},
             {"decision","POSITION_MATCH or POSITION_DIVERGENCE per supported draw; unsupported operands reported per draw, not as a global build prohibition"}};
         root_cycle={};
-        Record({{"kind","witness_latched"},{"frame",root_frame},{"draw",root_draw},
+        Record({{"kind","witness_latched"},{"frame",root_frame},{"draw",sealed_draw},
             {"position_captured",ds_vertex_phase>=0},{"pair",ds_vertex_pair},
-            {"scope","same draw caused population loss; expected guest output not yet certified"}});
+            {"scope",root_boundary_seal?"last producer before selected consumer":"same draw caused population loss; expected guest output not yet certified"}});
     }
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x600u);

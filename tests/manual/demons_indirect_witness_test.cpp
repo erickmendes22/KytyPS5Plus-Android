@@ -15,6 +15,20 @@ int main(){
     static_assert(!P8::Trigger(380,0.01,0));
     static_assert(!P8::Trigger(380,0.000041,9));
     static_assert(P8::Reusable(false,false,true,true,true));
+    P8::SustainedDark selection;
+    assert(!selection.Observe(238,0.000041,0));
+    assert(!selection.Observe(262,0.5831263,64));
+    assert(!selection.Observe(310,0.04832,64));
+    assert(!selection.Observe(334,0.0000367,0));
+    assert(!selection.Observe(334,0.0000367,0)); // duplicate frame
+    assert(!selection.Observe(358,0.0000368,0));
+    assert(selection.Observe(382,0.0000365,0));
+    static_assert(P8::ProducerFrame(383,384,false,false));
+    static_assert(P8::ProducerFrame(384,384,false,false));
+    static_assert(!P8::ProducerFrame(382,384,false,false));
+    static_assert(!P8::ProducerFrame(385,384,false,false));
+    static_assert(!P8::ProducerFrame(384,384,true,false));
+    static_assert(!P8::ProducerFrame(383,384,false,true));
     static_assert(!P8::Reusable(true,false,true,true,true));
     static_assert(!P8::Reusable(false,true,true,true,true));
     static_assert(!P8::Reusable(false,false,false,true,true));
