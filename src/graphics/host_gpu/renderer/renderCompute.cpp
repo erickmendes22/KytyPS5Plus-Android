@@ -5086,8 +5086,56 @@ static nlohmann::json ReadDsGiFootprint(RenderContext& context,const PreparedBin
     out["ok"]=true;out["identity"]=identity;out["view"]=prior["view"];
     out["extent"]={width,height,std::max(1u,h.extent.depth>>view.base_level)};
     out["xyz"]={x,y,z};out["layer"]=layer;out["side"]=side;out["texel_bytes"]=texel;out["bytes"]=data;
+    if(site.kind==1){
+        const auto& samplers=bindings.runtime->resources->samplers;
+        bool matched=false;
+        for(const auto& raw:samplers){
+            if(!std::equal(raw.dwords.begin(),raw.dwords.end(),r+17))continue;
+            const auto smp=DecodeNativeDescriptor<ShaderSamplerResource>(raw);
+            out["sampler"]={{"raw",raw.dwords},{"mag",smp.XyMagFilter()},{"min",smp.XyMinFilter()},
+                {"unnormalized",smp.ForceUnormCoords()},{"reduction",smp.FilterMode()},
+                {"compare",smp.DepthCompareFunc()},{"min_lod",smp.MinLod()},{"max_lod",smp.MaxLod()},
+                {"mip_filter",smp.MipFilter()}};
+            matched=true;break;
+        }
+        if(!matched)return fail("sampler_not_bound");
+        out["subtexel_bits"]=context.GetGraphics().GetPhysicalDeviceProperties().limits.subTexelPrecisionBits;
+    }
     if(slot==7)out["atlas_writer_candidates"]=DsAtlasFootprintProducers(image.info.data.address,image.ContentVersion(),x,y,layer);
     return out;
+}
+
+
+static nlohmann::json DsGiHdrPixels(RenderContext& context,const PreparedBindings& bindings,
+    const nlohmann::json& e){
+    if(bindings.images.size()!=11||!bindings.images[8].image_id||bindings.images[8].placeholder||
+        bindings.images[9].placeholder||bindings.images[8].image_id!=bindings.images[9].image_id)return {};
+    const auto& b=bindings.images[8];
+    auto& image=context.GetTextureCache().GetImage(b.image_id);
+    const auto it=std::ranges::find(image.views,b.image_view,&CachedImageView::view);
+    if(it==image.views.end()||image.backing.format!=vk::Format::eR16G16B16A16Sfloat||
+       image.backing.samples!=1||!(image.backing.usage&vk::ImageUsageFlagBits::eTransferSrc)||
+       it->info.level_count!=1||it->info.layer_count!=1||it->info.base_level>=image.backing.mip_levels||
+       it->info.base_layer>=image.backing.layers)return {};
+    const auto view=it->info;
+    const uint32_t w=std::max(1u,image.backing.extent.width>>view.base_level),h=std::max(1u,image.backing.extent.height>>view.base_level);
+    std::array<vk::BufferImageCopy,2> copies{};
+    for(uint32_t i=0;i<2;++i){
+        const auto& pixel=i?e["control"]["pixel"]:e["pixel"];
+        const uint32_t x=pixel[0].get<uint32_t>(),y=pixel[1].get<uint32_t>();
+        if(x>=w||y>=h)return {};
+        copies[i].imageSubresource={vk::ImageAspectFlagBits::eColor,view.base_level,view.base_layer,1};
+        copies[i].imageOffset=vk::Offset3D{static_cast<int32_t>(x),static_cast<int32_t>(y),0};copies[i].imageExtent=vk::Extent3D{1,1,1};
+    }
+    const auto identity=DemonsPrelightTrace::Identity(image);
+    auto& dl=context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Download);
+    auto [mapped,offset]=dl.Map(16,16u,true);if(!mapped)return {};
+    dl.Commit();copies[0].bufferOffset=offset;copies[1].bufferOffset=offset+8;
+    image.Download(std::span{copies},dl.Handle(),offset,16);
+    auto& sched=context.GetCommandScheduler();sched.Wait(sched.CurrentTick());dl.Invalidate(offset,16);
+    std::array<uint16_t,8> data{};std::memcpy(data.data(),mapped,16);
+    if(DemonsPrelightTrace::Identity(image)["version"]!=identity["version"])return {};
+    return {{"identity",identity},{"half_words",data},{"mip",view.base_level},{"layer",view.base_layer}};
 }
 
 static nlohmann::json BeginDsV4Gi(RenderContext& context,const PreparedBindings& bindings,
@@ -5140,6 +5188,8 @@ static nlohmann::json BeginDsV4Gi(RenderContext& context,const PreparedBindings&
     e["launch"]={{"threads",{input.threads_num[0],input.threads_num[1],input.threads_num[2]}},
         {"wave",input.wave_size},{"mode",input.float_mode},{"group_pack",bindings.runtime->program->info.group_pack},
         {"group_id",{input.group_id[0],input.group_id[1],input.group_id[2]}},{"workgroup_register",input.workgroup_register}};
+    e["hdr_before"]=DsGiHdrPixels(context,bindings,e);
+    if(e["hdr_before"].is_null())return fail("hdr_before");
     const auto id=P::raw_store.ReserveCopy(T::GiBytes,true);if(!id)return fail("trace_budget");
     e["trace_id"]=id;e["trace_bytes"]=T::GiBytes;
     auto& sched=context.GetCommandScheduler();sched.Wait(sched.CurrentTick());
@@ -5160,7 +5210,7 @@ static void EndDsV4Gi(RenderContext& context,const PreparedBindings& bindings,vk
     const auto saved=P::raw_store.Save(DemonsP8Capture::Folder(),e["trace_id"].get<uint64_t>(),
         std::span<const uint8_t>{reinterpret_cast<const uint8_t*>(words.data()),T::GiBytes},true);
     if(saved.reason){e["kind"]="v4_gi_incomplete";e["reason"]=saved.reason;e.erase("stage");P::WriteEvent(e);return;}
-    e["trace_file"]=saved.file;e["use"]=use;e["footprints"]=nlohmann::json::array();
+    e["trace_file"]=saved.file;e["use"]=use;e["hdr_after"]=DsGiHdrPixels(context,bindings,e);e["footprints"]=nlohmann::json::array();
     const auto& stage=e["stage"];
     for(uint32_t witness=0;witness<2;++witness)for(std::size_t i=0;i<T::GiSites.size();++i){
         const auto& site=T::GiSites[i];if(site.kind==2||site.slot<3||site.slot>7)continue;
