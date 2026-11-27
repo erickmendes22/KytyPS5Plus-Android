@@ -1,5 +1,26 @@
 # V4 — contraexemplo local e recuperação mensurável (27/11/2026)
 
+> **Diretriz vigente — confirmação explícita do usuário, 27/11/2026:** P8/P(8) foi descartado como modelo de investigação. O único método operacional é V4, por contratos causais locais. Não há obrigação de decidir uma divisão global nem reportar seu intervalo ou status. A documentação histórica abaixo conserva evidências e decisões anteriores, mas seus roteiros, prioridades e estados globais antigos não são instruções vigentes. Os identificadores P8_USE são apenas marcadores técnicos de captura.
+
+## Estado operacional atual — após a #761, APK #763 entregue
+
+| Contrato causal | Estado e escopo |
+|---|---|
+| Aritmética q8 | MATCH condicional aos operandos observados nas testemunhas; não certifica amostragem independente. |
+| Geração da máscara de clusters | MATCH no dispatch capturado: 10.982 clusters, 87.856 dwords da máscara e 10.982 resumos. |
+| Transferência da máscara | MATCH: 351.424 bytes idênticos entre produtor e consumidor. |
+| Seleção dos probes e leitura da radiância indireta q33 | **Único contrato ativo**. A #763 retém os operandos, texels, descritores e HDR das mesmas testemunhas. Captura de aparelho pendente. |
+
+Próxima decisão: comparar as operações da q33 com referência independente;
+se houver divergência demonstrada, corrigir a primeira e medir seu efeito.
+Se houver igualdade, seguir o produtor do operando relevante à radiância
+baixa. Se a aquisição falhar, reparar a lacuna concreta. Não reabrir os
+contratos fechados sem evidência incompatível. Não confundir uma operação
+validada com a resolução visual completa. Esta alteração é exclusivamente
+metodológica, não requer outro APK.
+
+## Registros históricos e evidências preservadas
+
 ## #761 real / #762 — indirect radiance q33, same pixel pair (27/11/2026)
 
 - ZIP 20261127-201555 SHA256 1cbb6841b8029b53a87da6c68387bc08a18e90f3f56e458931f3e0baac54accd, core 1cc3209, 39/39 manifest entries verified. Writer shader 1ce1a858f62b5a11 frame353 submit10796 P8_USE_10 serial256096, mask guest 0x20ae6ae70 native11573980101893681772 offset175728, 351424 bytes. Reader frame354 submit10815 P8_USE_94, identical entire mask SHA256 59f339261f58ecc705ddcb9b94e41479e3a05a6774959228be0af1b3c9328b1a, no changed words, same native owner.
@@ -103,11 +124,10 @@ independente de todos os roots relevantes. O commit histórico 838d12c8
 é referência de rosto visível, não de iluminação saudável. Aumentar o
 replay global não é uma estratégia de redução garantida.
 
-**P8 permanece historicamente BLOCKED [0,16], zero cortes globais.**
-V4 substitui a obrigatoriedade de decidir P8 antes de corrigir o jogo.
-A classificação C1..C16 permanece útil para localizar a operação provada;
-não se exige certificar todos os ancestrais para corrigir uma violação
-local reproduzível. Não chamar uma evidência local de PASS/FAIL de P8.
+**O modelo P8 foi descartado integralmente.** V4 não depende de uma divisão
+ou classificação global; localizar a operação por suas dependências reais.
+Não se exige certificar todos os ancestrais para corrigir uma violação
+local reproduzível.
 Preservar todos os certificados anteriores no seu escopo. AGENTS.md
 continua obrigatório, inclusive entrega de APK quando a tarefa for de
 implementação/compilação, não encerrar em progresso e não emitir build
@@ -173,7 +193,7 @@ dependência HDR->cena (a ponte ainda aberta), apenas escolhe região
 diagnóstica relevante. Não reabrir compositor por falta de autoridade
 do prefixo. A baixa radiância já existe na região material antes do pós.
 
-## Roteiro operacional: primeiro contraexemplo, não a prova universal
+## Roteiro histórico da q8 — substituído pelo contrato ativo acima
 
 Um contrato ativo por vez. Começar na fila 8 (P8_USE_93, packet7738,
 CS 3dfe402653925fbf, workgroup 0, local 7,1). O alvo é a operação do
@@ -220,8 +240,8 @@ não alterou a testemunha. Não atribuir todo o incremento q0->q8 a uma
    para uma referência local executável. Uma captura por contrato
    preparado. Antes de emitir APK, demonstrar controles de igualdade,
    divergência, associação de versão, ausência/truncamento, e que
-   os desfechos apontam ação concreta. Não usar o valor "BLOCKED"
-   de P8 como veto geral nem removê-lo artificialmente.
+   os desfechos apontam ação concreta. Não transformar uma aquisição incompleta em obrigação de resolver
+   outro modelo de investigação.
 
 A baixa população de material é uma dimensão de verificação separada,
 não uma segunda hipótese simultânea nem prova de duas causas. Depois

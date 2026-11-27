@@ -1,22 +1,31 @@
 # KytyPS5 Plus Android
 
 
-## V4 — revisão autorizada pelo usuário em 27/11/2026 (prevalece sobre V3)
+## V4 — método único e obrigatório (confirmação do usuário, 27/11/2026)
 
-A certificação bilateral integral de P(8) deixa de ser pré-condição para
-corrigir a iluminação. O histórico permanece BLOCKED [0,16], sem corte
-global fictício. Adotar o contrato local de
-[DEMONS_V4_LOCAL_CONTRACT.md](docs/android/DEMONS_V4_LOCAL_CONTRACT.md):
-mesma operação, inputs, versão e saída observada; provar a primeira
-divergência local, corrigir e medir contribuição. MATCH elimina apenas
-o contrato comparado e encaminha para o produtor do input específico.
-INCOMPLETE exige reparar o comparador/aquisição ou trocar a referência
-local, não build de inventário. Um contrato ativo por vez, controles
-de igualdade/divergência/falhas e validação do exportador antes de build.
-Preservar as provas V1–V3, não inventar PASS/FAIL global. A regra de
-continuidade e entrega de APK permanece integralmente obrigatória;
-revisões explicitamente metodológicas não exigem compilar.
+**P8/P(8) foi descartado como modelo de investigação.** V1–V3, a
+bisseção C1..C16, os prefixos PASS/FAIL e o intervalo [0,16] não são
+objetivos, métricas, pendências, condições de entrega nem roteiro ativo.
+Não reportar o estado do P8 em análises, árvores ou balanços futuros.
+Não produzir novas capturas para decidir a antiga divisão. Os nomes
+técnicos legados (por exemplo P8_USE e ferramentas de captura) podem
+ser reutilizados como infraestrutura de evidência, sem reativar o método.
 
+Usar exclusivamente o [contrato local V4](docs/android/DEMONS_V4_LOCAL_CONTRACT.md):
+partir do sintoma concreto e seguir as dependências causais da operação
+testemunha. Comparar a mesma operação, entradas, versão e saída com
+referência independente; um contrato ativo por vez.
+- MATCH: fechar a operação no escopo demonstrado e seguir o produtor
+  do operando que explica a saída observada.
+- DIVERGENCE: isolar a primeira divergência demonstrada, corrigir a
+  implementação, testar regressão e medir efeito sobre o sintoma.
+- INCOMPLETE: reparar a aquisição ou referência local antes de outra
+  build; não repetir inventário nem mudar de ramo sem prova.
+Preservar os resultados úteis anteriores no escopo original. Cada build
+deve resolver uma pergunta indispensável à correção, com comparador
+validado e dois desfechos acionáveis. A continuidade e entrega de APK
+permanecem obrigatórias. Mudanças exclusivamente metodológicas não
+disparam compilação.
 
 > [!IMPORTANT]
 > **AVISO CRÍTICO — cumprimento obrigatório do AGENTS.md (27/11/2026).**
@@ -32,7 +41,7 @@ Para uma tarefa em andamento cujo entregável seja um APK, verificar **antes
 de emitir uma resposta final**:
 
 - [ ] Todas as instruções aplicáveis deste AGENTS.md foram cumpridas, inclusive
-  as regras mais recentes da árvore V3 e da matriz causal.
+  o contrato V4 e a matriz causal atual.
 - [ ] O objetivo solicitado foi implementado e validado no escopo possível;
   falhas recuperáveis e lacunas de implementação foram tratadas.
 - [ ] O APK da revisão correta foi compilado, baixado, assinado e verificado;
@@ -42,7 +51,7 @@ de emitir uma resposta final**:
 
 Se qualquer requisito aplicável estiver pendente, continuar executando as
 próximas ações disponíveis na mesma tarefa. Não encerrar com um relatório de
-progresso, commit, teste isolado, build iniciada, P8 BLOCKED, plano de trabalho
+progresso, commit, teste isolado, build iniciada, diagnóstico inconclusivo, plano de trabalho
 ou promessa de continuar. Não pedir autorização para continuar o trabalho já
 solicitado. Usar mensagens intermediárias apenas para informar progresso e
 prosseguir com a execução.
@@ -140,36 +149,8 @@ comparação têm referência/operandos, vínculo ao mesmo caso, retenção, or�
 exportação e comparador capazes de distingui-los. Exercitar igualdade, divergência
 e os modos concretos de falha da aquisição anterior. Se a execução não decidir,
 o próximo trabalho deve reparar a lacuna identificada, sem alternar o galho.
-Isso não exige oráculo integral de P8, PC idêntico ou rastreador universal CPU
+Isso não exige oráculo integral do jogo, PC idêntico ou rastreador universal CPU
 como pré-condição para uma aresta local decidível.
-
-## Prioridade corrigida pelo usuário: decidir P(8)
-
-Enquanto P(8) estiver aberto, o objetivo da próxima build diagnóstica é decidir
-essa divisão, não apenas encerrar outra comparação local. Os certificados
-locais existentes são provas reutilizáveis; não substituem o corte do nó ativo.
-Uma sonda local só integra essa build quando seu resultado e as demais evidências
-adquiridas alimentam um mecanismo concreto de decisão de P(8).
-
-Antes de compilar, verificar separadamente os dois desfechos: FAIL precisa de
-contraexemplo independente em C1..C8 com efeito demonstrável no cone do sintoma;
-PASS precisa certificar o prefixo relevante até C8, conservando a divergência
-posterior da mesma testemunha. Igualdade de uma leitura, POS0 ou saída isolada
-não certifica esse prefixo. Registrar quais bytes, versões, operações e vínculos
-o mecanismo usa, e exercitar os caminhos PASS/FAIL e as falhas de aquisição.
-
-Isso exige construir e validar o instrumento antes da aquisição, não conhecer
-antecipadamente a resposta do aparelho. Restringir o trabalho às dependências
-da testemunha; não exigir captura externa de PC, emulação integral do jogo ou
-trace CPU universal. Um auditor com P8 constante em BLOCKED não satisfaz esse
-mecanismo. Não mascarar a falta do comparador como simples espera por outro ZIP.
-
-A #746 foi entregue com comparação local READ/EMIT; não tem dois desfechos
-executáveis que decidam P(8). Aproveitar seus dados quando disponíveis, sem
-apresentá-la como garantia da primeira divisão nem repetir esse critério de
-preparo em outra build. Ao encontrar divergência comprovada, implementar a
-correção, preservando a distinção entre corrigir a operação e resolver o sintoma.
-
 
 ## Investigação causal sequencial (obrigatória, precede a escolha de sondas)
 
@@ -180,10 +161,10 @@ e uma saída observada. Selecionar caso que contribua para o sintoma, mais um
 controle positivo da mesma etapa; ausência de cobertura não prova que o
 objeto deveria estar visível. Não mudar o caso por mera correlação.
 
-Partir da primeira perda observável no albedo, rastrear o mesmo draw para
-trás: material -> prepass/depth e rasterização -> posição/clip de cada
-vértice -> cálculo do VS -> loads efetivos, endereços e dados -> produtor
-real desses bytes -> comando/asset guest. Para cada aresta, registrar
+Partir da perda observável relevante à testemunha (radiância, material,
+cobertura ou outra saída demonstrada). Rastrear o DAG das dependências
+reais até a primeira divergência; não impor uma sequência fixa de passes
+ou assumir que a causa está na geometria ou no albedo. Para cada aresta, registrar
 entrada esperada/observada, operação guest e Android/PC, saída esperada/
 observada, versão e identidade do produtor/consumidor. Se a saída é
 compatível com a entrada, seguir imediatamente para a origem dessa entrada;
@@ -204,33 +185,11 @@ Quando houver divergência comprovada, parar a expansão diagnóstica e
 implementar a correção fundamentada com teste de regressão. As regras
 de entrega de APK permanecem em vigor.
 
-## Árvore binária pré-iluminação (obrigatória)
-Usar docs/android/DEMONS_PRELIGHT_BINARY_TREE.md como árvore operacional
-canônica antes de escolher nova investigação de Demon's Souls. Resolver
-N00 pela primeira divergência de albedo em um ciclo identificável; marcar
-cada nó S/N com prova de mesma entrada/saída ou BLOQUEADO. Não avançar
-por suposição, não retestar os nós podados P01–P06 sem nova evidência
-incompatível, não criar builds por suspeita. Se há mais de uma testemunha
-com divergência, manter ambas as trajetórias e ordenar os produtores.
-Atualizar a árvore com resultados de cada execução e só implementar fix
-na primeira operação divergente demonstrada. Construir a árvore, quando
-isso for a etapa explicitamente solicitada, não exige nova compilação.
+## Árvore causal ativa V4
 
-
-## V2 — regra de bisseção causal (prevalece sobre o roteiro V1)
-Fixar G0 e os extremos PASS/FAIL da mesma testemunha antes de descer.
-Usar a árvore V2 no início de DEMONS_PRELIGHT_BINARY_TREE.md; o histórico
-V1 não é roteiro. Avaliar prefixos cumulativos P(4), depois P(2) ou P(6),
-e o meio do intervalo restante; manter um único intervalo ativo por
-caso. PASS elimina o prefixo certificado; FAIL elimina a metade posterior
-como localização da primeira divergência; BLOCKED mantém o intervalo.
-Não saltar para outro galho ou outra testemunha por associação. Não
-expandir folhas sem causalidade até a falha alvo. Repetir a bisseção
-no slice causal da classe isolada até uma operação concreta. Corrigir
-e validar a mesma testemunha e o sintoma global. Não iniciar APK para
-alteração apenas metodológica/documental. A regra de entrega permanece
-para builds efetivamente solicitadas.
-
-
-## V3 — árvore integral (prevalece sobre V2)
-Usar C1..C16 da árvore canônica. G0 fixa sintoma final e oráculo com a mesma entrada. Primeira divisão P(8) (G-buffer completo/iluminação); P(4) ou P(12) depois, até classe e instrução. Não presumir pré-iluminação, não criar linhas paralelas para CPU/GPU/driver/concorrência; tratar dependências no DAG causal da operação afetada. BLOCKED não autoriza mudar de galho. Certificados locais prévios preservados no escopo. A correção precisa explicar e restaurar a testemunha e saída final; residual comprovado segue a mesma árvore com certificados válidos.
+A fonte normativa é DEMONS_V4_LOCAL_CONTRACT.md; registrar o DAG atual
+em DEMONS_PRELIGHT_BINARY_TREE.md (nome legado) e atualizar a matriz e
+o balanço de eliminação a cada captura/build. A árvore contém contratos
+com evidência e escopo, o único contrato ativo e sua decisão seguinte.
+Não usar bisseção, prefixos cumulativos ou cortes globais como métricas.
+Conservar as evidências históricas sem tratá-las como instruções atuais.

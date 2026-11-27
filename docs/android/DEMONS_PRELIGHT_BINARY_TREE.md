@@ -1,4 +1,25 @@
-# V3 — investigação binária integral (normativa, substitui V2 e V1)
+# Demon's Souls — árvore causal V4 (histórico V1–V3 arquivado abaixo)
+
+> **Diretriz vigente — confirmação explícita do usuário, 27/11/2026:** P8/P(8) foi descartado como modelo de investigação. O único método operacional é V4, por contratos causais locais. Não há obrigação de decidir uma divisão global nem reportar seu intervalo ou status. A documentação histórica abaixo conserva evidências e decisões anteriores, mas seus roteiros, prioridades e estados globais antigos não são instruções vigentes. Os identificadores P8_USE são apenas marcadores técnicos de captura.
+
+## Estado operacional atual — após a #761, APK #763 entregue
+
+| Contrato causal | Estado e escopo |
+|---|---|
+| Aritmética q8 | MATCH condicional aos operandos observados nas testemunhas; não certifica amostragem independente. |
+| Geração da máscara de clusters | MATCH no dispatch capturado: 10.982 clusters, 87.856 dwords da máscara e 10.982 resumos. |
+| Transferência da máscara | MATCH: 351.424 bytes idênticos entre produtor e consumidor. |
+| Seleção dos probes e leitura da radiância indireta q33 | **Único contrato ativo**. A #763 retém os operandos, texels, descritores e HDR das mesmas testemunhas. Captura de aparelho pendente. |
+
+Próxima decisão: comparar as operações da q33 com referência independente;
+se houver divergência demonstrada, corrigir a primeira e medir seu efeito.
+Se houver igualdade, seguir o produtor do operando relevante à radiância
+baixa. Se a aquisição falhar, reparar a lacuna concreta. Não reabrir os
+contratos fechados sem evidência incompatível. Não confundir uma operação
+validada com a resolução visual completa. Esta alteração é exclusivamente
+metodológica, não requer outro APK.
+
+## Registros históricos e evidências preservadas
 
 ## #761 real / #762 — indirect radiance q33, same pixel pair (27/11/2026)
 
@@ -171,7 +192,7 @@ estão certificados. O overlay integral e o estado guest do compositor
 estão ausentes. Os testes executáveis PASS/FAIL de cones finitos não são
 uma decisão sobre o jogo. Consultar o balanço e o método bilateral.
 
-### Prioridade operacional: decidir P(8)
+### Prioridade histórica revogada: decidir P(8)
 
 **Correção de foco solicitada pelo usuário em 26/11/2026:** fechar comparações
 locais não basta para cumprir a primeira divisão. O objetivo da próxima build
