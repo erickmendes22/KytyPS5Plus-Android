@@ -534,3 +534,47 @@ propagação real ao flip ainda não estão implementados. P8 continua [0,16],
 zero corte global. Não usar os fixtures como certificação do jogo; não
 disparar outra build exclusivamente por mudanças metodológicas ou localizadas
 sem mecanismo bilateral integrado. Certificados locais anteriores mantidos.
+
+
+### Execução gráfica e vínculo real #753 — 27/11/2026
+
+- Integrados `c32a00885ba60f7b258ec4161e7af24d71517b59` e
+  `c60b716b9565be1d17db4fbca35a1be67ce12141`: contrato guest_export
+  no decisor bilateral; fixture de propagação GFX10 executa PASS e FAIL e
+  cinco controles negativos. CI 46020518399 e 46021488616 aprovados; o
+  segundo inclui oito rejeições de vínculo incorreto de versão/frame.
+- ZIP #753 092211, draw599 (frame358, submit10684): execução RDNA1 do VS
+  c96f3fcde8141266 com 19 invocações, 76/76 componentes POS0 bitwise,
+  PARAM0 e PARAM1 exportados, nenhum range vinculado ausente.
+  Escopo: invocações admitidas; PARAM sem observação nativa correspondente.
+- O produtor não está no mesmo frame do consumidor: owner 0x287ae0000,
+  versão38650, ordem169389, frame359/submit10692/q0. A identidade completa,
+  mip/layer, hash FNV das 1.440.000 palavras e 43 leituras coincidem com
+  P8_FULL_2.bin (SHA256 ca8613c494570124631078c23f1bdbe6173c3dc0123bb37f18bd58930bf0c94c).
+  É vínculo de versão nativa, não certificado de conteúdo guest esperado.
+- PS 552d823dcfcf2dee: a execução integral rejeita acesso de 16 bytes em
+  0x207b25ed0; só 12 estão retidos pelo SRT. O quarto DWORD s3 é morto para
+  MRT0. O recorte de dependências preserva as instruções originais vivas,
+  contrai apenas essa leitura x4 em x2+x1, sem fabricar o DWORD ausente.
+  `p8_material_mrt0.py` executado sobre o ZIP real: export esperado
+  0xff000000 em três variantes de MODE e dois padrões de registradores
+  não observados; 1.439.562/1.440.000 palavras da versão de fronteira
+  têm esse valor. 27 fixtures sintéticas com execução do shader integral
+  e recorte coincidem; retirada de operando vivo rejeitada. O MODE efetivo
+  do PS não está retido. Não é prova de cobertura nem de que as constantes
+  RGB produzidas antes desse draw são corretas.
+- O compositor real P8_USE_375 lê overlay 0x281a80000 versão57784
+  ordem169711 (1920x1080 RGBA16F, sem payload integral), e cena
+  0x2b2a40000 versão1114 (P8_FULL_37.bin). A saída flip P8_FULL_38.bin
+  versão317 está retida. Falta o overlay completo, os escalares/descritores
+  guest do compositor e a reprodução independente dos produtores da
+  fronteira e da cadeia até esse flip.
+- **Cortes globais: 0. P8 BLOCKED [0,16].** CI host aprovou a implementação,
+  não certificou P8 no jogo. Nenhum APK #755 produzido. O contrato do
+  cone real e sua propagação não estão fechados; não confundir reparo
+  de replay local com correção visual ou autorização de nova build.
+
+Reprodução (ZIP real fornecido pelo usuário, não incluído no repositório):
+
+    python3 docs/android/tools/p8_version_link.py DIAGNOSTICS.zip --draw 599
+    python3 docs/android/tools/p8_material_mrt0.py DIAGNOSTICS.zip /path/to/kyty_p8_guest_ref --check-fixtures
