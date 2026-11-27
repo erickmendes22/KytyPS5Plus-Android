@@ -422,3 +422,8 @@ Culling #749: três estados (seq 3053,3938,3979), reconstrução independente da
 Exportador: 463/463 caminhos obrigatórios incluídos, mas 1407 erros ClosedByInterruptException (1278 pipeline,124 JSON,5 journal) na validação de fechamento, mais 80 exclusões opcionais por orçamento. Corrigir leitura de arquivos regulares com streams clássicos limitados, sem apagar flag de interrupção; teste de interrupção e versão de consumidor incompatível.
 
 Próxima compilação: selecionar três observações escuras distintas, capturar produtores no frame anterior completo e até a primeira fila 0 real do frame-alvo, congelar o ciclo na identidade/versão/ordem consumida, não na primeira perda temporal da inicialização. O fechamento do exportador verifica a identidade exata em vez de escolher outra perda do journal. Manter os limites raw #749 e a camada whole-state desligada. Não altera os shaders de produção, contagens ou a luz. Este conserto resolve a lacuna temporal demonstrada, mas não afirma P8 PASS/FAIL ou iluminação corrigida antes do replay independente dos produtores e da saída.
+
+
+## #750 — entrega verificada e seleção da fronteira escura
+
+[Registro da entrega e evidência real da #749](DEMONS_APK_750_VERIFICATION.md). Revisão 339922af, build 45939076222, APK versionCode850, assinatura compatível verificada. P8 [0,16], sem corte global: produtores 224–225 não correspondem a consumidor 335. A #750 fixa seleção temporal e transporte; preserva os certificados anteriores sem trocar de hipótese por mera contagem. Aguarda teste F.
