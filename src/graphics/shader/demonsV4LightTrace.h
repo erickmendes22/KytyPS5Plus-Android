@@ -49,6 +49,43 @@ static_assert(BrdfStride==198 && Words*4==3986112);
 constexpr uint64_t LightBufferBytes=uint64_t(LightRecordBytes)*LightRecordCount;
 constexpr uint64_t Bytes=uint64_t(Words)*4;
 static_assert(Bytes<8*1024*1024);
+
+constexpr uint64_t GiShader=0xe3daeb1e7426761bull;
+constexpr uint32_t GiWaveBase=Header,GiWaveStride=12,GiSiteBase=GiWaveBase+Lanes*GiWaveStride;
+struct GiSite {uint32_t pc,slot,kind,loop,coord_count,dst,count,desc,sampler;std::array<uint32_t,4> coords;};
+constexpr std::array<GiSite,23> GiSites{{
+ {0x104,0,0,0,2,0,1,4,255,{6,7}},
+ {0x13c,1,0,0,2,11,1,4,255,{6,7}},
+ {0x178,2,0,0,3,3,1,20,255,{6,7,1}},
+ {0x184,2,0,0,3,10,1,20,255,{6,7,2}},
+ {0x1a0,2,0,0,3,2,1,20,255,{6,7,1}},
+ {0x3e4,2,0,0,3,12,1,20,255,{6,7,8}},
+ {0x508,3,1,0,2,0,3,0,16,{27,28}},
+ {0x5a4,4,0,0,3,21,1,0,255,{22,23,24}},
+ {0x600,5,0,0,3,21,1,0,255,{0,1,2}},
+ {0x618,2,2,0,1,0,3,28,255,{21}},
+ {0x708,3,2,0,1,0,1,36,255,{21}},
+ {0x9ec,4,2,1,1,5,1,24,255,{31}},
+ {0xac0,6,1,1,4,33,1,8,32,{3,33,35,5}},
+ {0xacc,7,1,1,3,3,3,0,16,{4,34,5}},
+ {0xb44,5,2,0,1,25,1,40,255,{21}},
+ {0xca4,2,2,0,1,0,2,28,255,{2}},
+ {0xd58,2,2,0,1,0,1,28,255,{2}},
+ {0xd74,3,2,0,1,0,1,36,255,{2}},
+ {0xfa8,4,2,2,1,2,1,24,255,{30}},
+ {0x107c,6,1,2,4,32,1,8,32,{0,32,34,2}},
+ {0x1088,7,1,2,3,0,3,0,16,{1,33,2}},
+ {0x112c,8,0,0,2,0,3,0,255,{6,7}},
+ {0x1174,9,3,0,2,0,4,0,255,{6,7}}
+}};
+// Dynamic corner key is the original one-hot scalar mask, not an ordinal.
+constexpr uint32_t GiRows(const GiSite& s){return s.loop?129:1;}
+constexpr uint32_t GiOffset(std::size_t i){uint32_t n=0;for(std::size_t j=0;j<i;++j)n+=GiRows(GiSites[j])*ImageStride;return n;}
+constexpr uint32_t GiWitnessWords=GiOffset(GiSites.size()),GiWords=GiSiteBase+2*GiWitnessWords;
+constexpr uint64_t GiBytes=uint64_t(GiWords)*4;
+static_assert(GiBytes<Bytes);
+constexpr bool GiKey(uint32_t key){return key&&key<=128&&(key&(key-1))==0;}
+
 inline bool Enabled(){const auto* e=std::getenv("KYTY_DS_MATRIX");return e&&e[0]=='8'&&e[1]=='\0';}
 inline std::atomic<uint64_t> address{0};
 inline uint64_t Address(){return address.load(std::memory_order_relaxed);}
