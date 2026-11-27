@@ -99,7 +99,8 @@ public:
     };
     [[nodiscard]] nlohmann::json QueueIndirectWitnessReference(uint64_t address,uint64_t bytes,
         IndirectWitnessReadback& readback,uint32_t child);
-    void CollectIndirectWitnessReferences(IndirectWitnessReadback& readback,nlohmann::json& records);
+    void CollectIndirectWitnessReferences(IndirectWitnessReadback& readback,nlohmann::json& records,
+        const char* reference_key="reference");
     void IndirectWitnessTransfer(const char* path,const char* phase,uint64_t destination,
         uint64_t source,uint64_t bytes,uint64_t value=0);
 	// For an opted-in shader storage write that aliases a GPU-authored image,

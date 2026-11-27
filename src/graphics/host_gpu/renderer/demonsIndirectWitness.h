@@ -30,6 +30,7 @@ struct AtomicTarget {
     std::atomic<bool> sealed{false};
 };
 inline std::array<AtomicTarget,4> targets;
+inline std::atomic<bool> selected_producer_pins{false};
 inline std::atomic<uint64_t> order{0};
 inline std::atomic<uint64_t> signal_dropped{0};
 inline std::vector<Target> TargetRanges(){
@@ -62,6 +63,8 @@ struct Journal {
     Json observed_loss;
     std::map<std::string,Json> batches;
     std::vector<std::string> external;
+    std::array<uint64_t,SelectedProducerPinLimit> recent{};
+    Json retired_pins;
 };
 inline Journal& State(){static Journal state;return state;}
 inline bool NameOk(const std::string& name){
@@ -152,7 +155,8 @@ inline uint64_t Record(Json event){
 inline Target Watch(uint64_t address){
     if(!Enabled()||!ValidRange(address,BatchBytes))return {};
     auto& j=State();std::scoped_lock lock(j.mutex);
-    if(!j.observed_loss.is_null())return {};
+    RememberAddress(j.recent,address);
+    if(!j.observed_loss.is_null()||selected_producer_pins.load())return {};
     for(size_t i=0;i<targets.size();++i)if(targets[i].address.load(std::memory_order_acquire)==address){
         if(targets[i].sealed.load(std::memory_order_acquire))return {};
         return {address,BatchBytes,i+1};
@@ -282,7 +286,57 @@ inline void FlushLocked(Journal& j){
         std::ofstream file(Folder()/name,std::ios::trunc);file<<data;file.close();if(!file)++j.io_errors;
     }
     manifest["drops"]["io_errors"]=j.io_errors;
+    manifest["selected_producer_pins"]=selected_producer_pins.load();
+    manifest["retired_pins"]=j.retired_pins;
     std::ofstream status(Folder()/"ds_prelight_cp_args_manifest.json",std::ios::trunc);status<<manifest.dump();
+}
+// Retire the exhausted launch-history pins once, at the selected window.
+// Old captures remain separately reproducible from their original ZIPs.
+// Reserve the full blob budget for up to two live addresses and their pinned
+// endpoint copies (2 * 2 * 16 MiB). Never evict a live pin mid-window.
+inline bool ArmSelectedProducers(){
+    if(!Enabled())return false;
+    if(selected_producer_pins.load(std::memory_order_acquire))return true;
+    DrainSignals();
+    auto& j=State();std::scoped_lock lock(j.mutex);
+    if(selected_producer_pins.load(std::memory_order_relaxed))return true;
+    for(const auto& [stream,n]:j.inflight){(void)stream;if(n)return false;}
+    j.retired_pins={{"blob_bytes",BlobBytesLocked(j)},{"batches",j.batches.size()},
+        {"event_drops",j.dropped},{"blob_drops",j.blob_dropped}};
+    for(auto& target:targets)target.sealed.store(true,std::memory_order_release);
+    for(const auto& [name,batch]:j.batches){
+        (void)batch;std::error_code ec;std::filesystem::remove(Folder()/name,ec);
+        if(ec)++j.io_errors;
+    }
+    while(!j.files.empty()){const auto name=j.files.begin()->first;RemoveLocked(j,name);}
+    j.batches.clear();j.producers.clear();j.producer_chains.clear();j.chain_omitted.clear();
+    j.retention.clear();j.last_seen.clear();j.inflight.clear();j.observed_loss=nullptr;
+    j.evicted+=j.events.size();j.events.clear();j.event_bytes=0;
+    // Report historical drops separately; new counters cover the selected window.
+    j.dropped=0;j.blob_dropped=0;
+    for(size_t i=0;i<targets.size();++i){
+        const auto address=i<j.recent.size()?j.recent[i]:0;
+        targets[i].bytes.store(address?BatchBytes:0,std::memory_order_relaxed);
+        targets[i].address.store(address,std::memory_order_release);
+        targets[i].sealed.store(false,std::memory_order_release);
+    }
+    selected_producer_pins.store(true,std::memory_order_release);
+    FlushLocked(j);return true;
+}
+inline Target SelectedProducerTarget(uint64_t address){
+    if(!selected_producer_pins.load()||!ValidRange(address,BatchBytes))return {};
+    auto& j=State();std::scoped_lock lock(j.mutex);
+    if(!j.observed_loss.is_null())return {};
+    for(size_t i=0;i<SelectedProducerPinLimit;++i)
+        if(targets[i].address.load()==address&&!targets[i].sealed.load())
+            return {address,BatchBytes,i+1};
+    for(size_t i=0;i<SelectedProducerPinLimit;++i)
+        if(!targets[i].address.load()){
+            targets[i].bytes.store(BatchBytes,std::memory_order_relaxed);
+            targets[i].address.store(address,std::memory_order_release);
+            return {address,BatchBytes,i+1};
+        }
+    return {};
 }
 inline void SaveBatch(Json batch){
     if(!Enabled())return;

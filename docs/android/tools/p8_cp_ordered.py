@@ -7,7 +7,7 @@ import json
 import struct
 from pathlib import Path
 from prelight_indirect_oracle import (Capture, audit_batch, bind_guest_journal,
-    journal_events, recount_batch, states_different, require)
+    journal_events, recount_batch, states_different, require, read_payload, state_value)
 
 NAME = 'cp-ordered-batches.jsonl'
 PREFIX = 'p8-reference/'
@@ -19,6 +19,63 @@ def gpu_offsets(state, address):
                                           for part in pending['ranges']]
     return {i for part in ranges for i in range(max(0, part['address']-address),
             min(20, part['address']+part['bytes']-address))}
+
+
+def check_pre_read(batch, raw, compared):
+    """Compare exact pre-read GPU bytes to actual original CP loads."""
+    before=state_value(raw['state_before'],'pre-read state')
+    after=state_value(raw['state_after'],'post-read state')
+    address=raw['address']
+    owned=gpu_offsets(before,address)
+    ref=raw.get('reference_before_read')
+    require(isinstance(ref,dict) and ref.get('ok') is True and 'words' in ref,
+            'missing pre-read reference')
+    require(ref.get('queued_before_consumption') is True,'pre-read copy order not established')
+    require(ref.get('state_at_copy')==before,'pre-read authority changed while freezing')
+    require(ref.get('address')==address and ref.get('bytes')==20,'pre-read reference range')
+    require(ref.get('observation_seq_at_copy',-1)>=raw['observation_seq_before']
+            and ref['observation_seq_at_copy']<=raw['observation_seq_consumed'],
+            'pre-read observation order')
+    require(ref['tick_before']<=ref['tick_after'],'pre-read tick order')
+    require(not before['image_gpu_dirty'] and not after['image_gpu_dirty'],
+            'image authority not captured')
+    require(not before['cpu_modified'] and not after['cpu_modified'],
+            'concurrent CPU mutation not excluded')
+    require(all(before.get(k)==after.get(k) for k in
+                ('native','buffer_guest','buffer_size','gpu_generation','unregister_epoch','registered')),
+            'pre/post owner or GPU generation changed')
+    require(not before['pending_tokens'] and not after['pending_tokens'],
+            'pending publication version not isolated')
+    if not owned:
+        require(not gpu_offsets(after,address),'GPU authority appeared during read')
+        require(ref.get('kind')=='cpu_backing','pre-read backing authority')
+        words=read_payload(None,ref,'pre_read_backing')
+        require(words==compared['consumed_words'],'pre/post CPU backing differs without tracked epoch')
+        return {'status':'MATCH','scope':'pre-read backing and CP loads agree'}
+    require(ref.get('kind')=='gpu_native' and before['registered'],
+            'pre-read native authority absent')
+    require(ref.get('native')==before.get('native') and ref.get('native',0)>0
+            and ref.get('buffer_guest')==before.get('buffer_guest')
+            and ref.get('buffer_size')==before.get('buffer_size')
+            and ref.get('buffer_guest',0)+ref.get('offset',-1)==address
+            and 0<=ref.get('offset',-1)<=ref.get('buffer_size',0)-20,
+            'pre-read native identity mismatch')
+    require(ref.get('collection_after_all_original_reads') is True and
+            ref.get('observation_seq_collected',-1)>=max(x['observation_seq_consumed'] for x in batch['records']),
+            'pre-read native collection precedes child loads')
+    require(gpu_offsets(after,address)<=owned,'new GPU-owned bytes during read')
+    expected=struct.pack('<5I',*read_payload(None,ref,'pre_read_native'))
+    actual=struct.pack('<5I',*compared['consumed_words'])
+    different=[i for i in sorted(owned) if expected[i]!=actual[i]]
+    if different:
+        offset=different[0]
+        return {'status':'DIVERGENCE','stage':'pre_read_gpu_to_cp_publication',
+                'address':address+offset,'dword':offset//4,
+                'byte_offset':offset,'expected_byte':expected[offset],
+                'observed_byte':actual[offset],'differing_offsets':different,
+                'scope':'same owner and GPU generation, original CP load'}
+    return {'status':'MATCH','gpu_bytes_compared':len(owned),
+            'scope':'pre-read native authority and original CP loads agree'}
 
 
 def audit_selected(batch, journal, target):
@@ -38,6 +95,10 @@ def audit_selected(batch, journal, target):
             reason = 'missing same-frame original parent/child binding'
         elif not raw.get('front_reference_ready') or not batch.get('collection_front_ready'):
             reason = 'record thread ownership not certified'
+        if batch.get('pre_read_reference_required') is True:
+            child_event=next((x for x in journal if x.get('seq')==record.get('guest_child_command')), {})
+            if child_event.get('frame')!=batch['frame'] or child_event.get('submit')!=batch['submit']:
+                reason=reason or 'child not bound to same selected frame/submit'
         # A post-read backing copy may be downstream of the very GPU->CPU
         # publication we are trying to verify. Equality does not prove that
         # publication preserved the pre-read authoritative bytes.
@@ -47,6 +108,16 @@ def audit_selected(batch, journal, target):
             if lost or before['image_gpu_dirty']:
                 record['post_read_reference_match'] = True
                 record['lost_gpu_authority_offsets'] = lost
+            if batch.get('pre_read_reference_required') is True:
+                try:
+                    pre=check_pre_read(batch,raw,record)
+                    record['pre_read_comparison']=pre
+                    if pre['status']=='DIVERGENCE' and not reason:
+                        record['status']='DIVERGENCE'
+                        record['first_divergence']=pre
+                except (ValueError,KeyError,TypeError) as e:
+                    reason=reason or str(e)
+            elif lost or before['image_gpu_dirty']:
                 reason = reason or 'pre-read GPU authority not independently captured'
         if reason:
             record.update(status='INCOMPLETE',reason=reason)

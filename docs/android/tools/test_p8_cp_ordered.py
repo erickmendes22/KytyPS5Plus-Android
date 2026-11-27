@@ -104,3 +104,35 @@ s.update(gpu_dirty=False,gpu_dirty_ranges=[],pending_publication=True,
 r=audit_selected(b,journal,408)['records'][0]
 assert r['status']=='INCOMPLETE' and r['lost_gpu_authority_offsets']==[4,5,6,7]
 print('Four #752 authority-transition regression tests passed')
+
+# Selected schema: freeze native bytes before publication and verify the exact
+# consumed tuple against that independent owner, after all children finish.
+def pre_read_case(words):
+    b=published_backing(); b['pre_read_reference_required']=True
+    r=b['records'][0]
+    r['reference_before_read']=deepcopy(record['reference'])
+    pre=r['reference_before_read']
+    pre.update(words=words,queued_before_consumption=True,observation_seq_at_copy=4)
+    j=deepcopy(journal); j[2].update(frame=407,submit=12225)
+    return b,j
+
+b,j=pre_read_case([0,1,0,0,0]); assert status(b,j)=='MATCH'
+b,j=pre_read_case([92160,1,0,0,0])
+r=audit_selected(b,j,408)['records'][0]
+assert r['status']=='DIVERGENCE' and r['first_divergence']['stage']=='pre_read_gpu_to_cp_publication'
+b,j=pre_read_case([92160,1,0,0,0])
+b['records'][0]['state_after']['gpu_generation']=2
+b['records'][0]['state_reference_after']['gpu_generation']=2
+b['records'][0]['reference']['state_at_copy']['gpu_generation']=2
+assert status(b,j)=='INCOMPLETE'
+b,j=pre_read_case([92160,1,0,0,0]);b['records'][0]['reference_before_read']['observation_seq_at_copy']=6
+assert status(b,j)=='INCOMPLETE'
+b,j=pre_read_case([92160,1,0,0,0]);b['records'][0]['reference_before_read']['native']=4
+assert status(b,j)=='INCOMPLETE'
+b,j=pre_read_case([92160,1,0,0,0]);b['records'][0]['reference_before_read']['collection_after_all_original_reads']=False
+assert status(b,j)=='INCOMPLETE'
+b,j=pre_read_case([92160,1,0,0,0]);b['records'][0].pop('reference_before_read')
+assert status(b,j)=='INCOMPLETE'
+b,j=pre_read_case([92160,1,0,0,0]);j[2]['submit']=12226
+assert status(b,j)=='INCOMPLETE'
+print('Eight pre-read native reference/identity/order cases passed')

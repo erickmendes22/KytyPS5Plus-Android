@@ -1539,7 +1539,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 	}
 
 	DemonsIndirectWitness::Target ds_target{};
-	BufferCache::IndirectWitnessReadback ds_readback;
+	BufferCache::IndirectWitnessReadback ds_readback,ds_pre_readback;
 	bool ds_capture_serial=!m_pipe_on&&!m_fan_on&&GuestGpu::IsGpuThread();
 	bool ds_selected=false;
 	bool ds_capture=false;
@@ -1597,7 +1597,14 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 			ds_target.address=Kernel::AddressFold::Fold(record);
 			ds_target.bytes=uint64_t{draw_count-1}*stride_in_bytes+20;
 			ds_readback.barrier.required=draw_count;
+			ds_pre_readback.barrier.required=draw_count;
 			ds_capture_serial=ds_own_front();
+			if(ds_capture_serial&&DemonsIndirectWitnessPolicy::Shape(indexed,draw_count,stride_in_bytes,
+			    m_index_type_and_size,m_index_buffer_size,relevant)){
+				DemonsIndirectWitness::ArmSelectedProducers();
+				const auto live=DemonsIndirectWitness::SelectedProducerTarget(ds_target.address);
+				ds_target.stream_id=live.stream_id;
+			}
 		}
 		ds_capture=ds_selected||ds_target.stream_id!=0;
 		if(ds_capture){
@@ -1615,6 +1622,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 			if(ds_selected){
 				ds_batch["selected_p8"]=true;
 				ds_batch["mutation_epoch_tracked"]=false;
+				ds_batch["pre_read_reference_required"]=true;
 				ds_batch["scope"]="ordered local CP read versus native/backing reference, not a guest producer certificate";
 			}
 		}
@@ -1656,6 +1664,16 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 			    {"mutation_epoch_before",DemonsIndirectWitness::Epoch(ds_target.stream_id)},
 			    {"state_before",ds_capture_serial?m_renderer.GetBufferCache().IndirectWitnessState(args_addr,20):
 			        nlohmann::json{{"valid",false},{"failure","pipeline_or_front_thread_unsupported"}}}};
+			if(ds_selected){
+				// Freeze the pre-publication native owner in command order. No
+				// Finish, upload or backing publication is initiated by this copy.
+				auto pre=ds_capture_serial?m_renderer.GetBufferCache().QueueIndirectWitnessReference(
+				    args_addr,20,ds_pre_readback,i):
+				    nlohmann::json{{"ok",false},{"failure","pipeline_or_front_thread_unsupported"}};
+				pre.erase("mutation_epoch_at_copy");
+				pre["queued_before_consumption"]=true;
+				ds_record["reference_before_read"]=std::move(pre);
+			}
 		}
 		const auto load=[&](const uint32_t& value,uint8_t field,uint8_t phase){
 			return ds_capture?ds_uses.Add(field,phase,value):value;
@@ -1733,13 +1751,20 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		// No diagnostic GPU wait until every original child has consumed
 		// its arguments; queued copies are frozen in command order.
 		if(ds_selected)ds_capture_serial=ds_own_front();
-		if(ds_capture_serial)m_renderer.GetBufferCache().CollectIndirectWitnessReferences(ds_readback,ds_batch["records"]);
+		if(ds_capture_serial){
+			m_renderer.GetBufferCache().CollectIndirectWitnessReferences(ds_readback,ds_batch["records"]);
+			// Even the pre-read staging owner is collected only after all
+			// original child reads. The post-read barrier proves that point.
+			if(ds_selected&&ds_readback.barrier.Ready())
+				m_renderer.GetBufferCache().CollectIndirectWitnessReferences(ds_pre_readback,ds_batch["records"],"reference_before_read");
+		}
 		if(ds_selected){
 			ds_batch["kind"]="cp_batch";
 			ds_batch["schema"]=1;
 			ds_batch["seq"]=DemonsIndirectWitness::order.fetch_add(1,std::memory_order_acq_rel)+1;
 			ds_batch["collection_front_ready"]=ds_capture_serial;
 			ds_write_selected(ds_batch);
+			if(ds_target.stream_id)DemonsIndirectWitness::SaveBatch(std::move(ds_batch));
 		}else DemonsIndirectWitness::SaveBatch(std::move(ds_batch));
 	}
 }

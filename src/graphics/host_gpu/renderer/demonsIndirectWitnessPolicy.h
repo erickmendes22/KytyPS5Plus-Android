@@ -16,6 +16,13 @@ constexpr bool ImagePayloadFits(uint64_t used,uint64_t budget,uint32_t w,uint32_
 }
 constexpr uint64_t RecordBytes = 20;
 constexpr uint64_t BatchBytes = 60;
+constexpr size_t SelectedProducerPinLimit = 2;
+// MRU records actual live CP addresses, independently of old pinned endpoints.
+constexpr void RememberAddress(std::array<uint64_t,SelectedProducerPinLimit>& recent,uint64_t address){
+    if(!address||recent[0]==address)return;
+    for(size_t i=recent.size()-1;i>0;--i)recent[i]=recent[i-1];
+    recent[0]=address;
+}
 // Retain the changed producer and its next seven candidates even when the
 // target is unchanged. Budget exhaustion is explicit, not evidence of a match.
 constexpr size_t ProducerChainLimit = 8;

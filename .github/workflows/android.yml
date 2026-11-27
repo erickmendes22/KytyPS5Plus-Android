@@ -322,8 +322,10 @@ jobs:
         with:
           submodules: false
           fetch-depth: 1
-      - name: Validate P8 replay comparator
-        run: python3 docs/android/tools/p8_native_replay.py selftest
+      - name: Validate P8 replay and original CP publication comparators
+        run: |
+          python3 docs/android/tools/p8_native_replay.py selftest
+          python3 docs/android/tools/test_p8_cp_ordered.py
       - name: Compile and run focused renderer, lighting and UFC policies
         shell: bash
         run: |

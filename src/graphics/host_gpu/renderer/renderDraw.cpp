@@ -3279,7 +3279,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     std::optional<RenderColorInfo> p8_forward_target;
     if(DemonsP8Capture::FullFrame(root_frame)){
         p8_use={{"frame",root_frame},{"submit",submit_id},{"path","graphics"},
-            {"draw",root_draw},{"stages",nlohmann::json::array()},{"targets",nlohmann::json::array()}};
+            {"draw",root_draw},{"command",command_seq},{"stages",nlohmann::json::array()},{"targets",nlohmann::json::array()}};
         for(const auto* stage:stages)
             p8_use["stages"].push_back(DemonsP8Reference::InspectBindings(m_context,*stage,root_frame,submit_id));
         for(const auto& color:std::span{state.color_info,state.color_count}){
@@ -3296,7 +3296,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                 const auto serial=++DemonsP8Reference::radiance_serial;
                 p8_use["radiance_pair"]=serial;
                 p8_forward={{"kind","radiance_draw_pair"},{"frame",root_frame},{"submit",submit_id},
-                    {"pair",serial},{"shader",root_ps->shader_hash},{"slot",color.target_slot},
+                    {"pair",serial},{"command",command_seq},{"shader",root_ps->shader_hash},{"slot",color.target_slot},
                     {"indices",draw.index_count},{"instances",draw.instance_count},
                     {"index_guest",index_source.address},{"index_bytes",index_source.size},
                     {"indirect",indirect!=nullptr}};
@@ -5949,7 +5949,7 @@ static nlohmann::json DsGuestCommand(RenderContext& context,const CommandBuffer&
     using namespace DemonsPrelightTrace;
     if(!Enabled())return nullptr;
     const auto frame=context.GetGpu().GetFrameNum();
-    const auto phase=Phase(frame);
+    const auto phase=CommandPhase(frame);
     if(phase<0)return nullptr;
     const auto& hw=buffer.GetRegisters();
     const auto& depth=hw.GetDepthRenderTarget();
@@ -5959,7 +5959,8 @@ static nlohmann::json DsGuestCommand(RenderContext& context,const CommandBuffer&
     nlohmann::json targets=nlohmann::json::array();
     for(uint32_t slot=0;slot<RENDER_COLOR_ATTACHMENTS_MAX;++slot){
         const auto a=Kernel::AddressFold::Fold(hw.GetRenderTarget(slot).base.addr);
-        if(a==DemonsQueueProbe::GBufferAddress)relevant=true;
+        if(a==DemonsQueueProbe::GBufferAddress ||
+           (DemonsP8Capture::EvidenceFrame(frame)&&a==DemonsP8CapturePolicy::HdrOwner))relevant=true;
         targets.push_back(a);
     }
     if(!relevant)return nullptr;

@@ -3410,6 +3410,7 @@ static DsIndirectProducerCapture BeginDsIndirectProducer(RenderContext& context,
         return cap;
     const auto& program = *bindings.runtime->program;
     const auto& snapshot = *bindings.runtime->resources;
+    if(DemonsP8Capture::EvidenceFrame(context.GetGpu().GetFrameNum()))Witness::ArmSelectedProducers();
     const auto targets = Witness::TargetRanges();
     for (const auto target : targets) {
         bool candidate = false;
@@ -3602,7 +3603,10 @@ static void EndDsIndirectProducer(RenderContext& context, DsIndirectProducerCapt
         const bool changed = complete && stream.before["native_words"] != after["native_words"];
         const bool first = std::ranges::find(retained_streams, stream.target.stream_id) == retained_streams.end();
         bool retained = false;
-        const bool restart = changed || first;
+        // In the selected cycle retain the reset and successive candidates,
+        // including unchanged writes. Do not restart on every changed output.
+        const bool restart = Witness::selected_producer_pins.load() ?
+            Witness::ProducerChainSize(stream.target.stream_id)==0 : changed || first;
         if (restart) Witness::BeginProducer(stream.target.stream_id);
         nlohmann::json artifact = {{"status", "producer_chain_limit"}};
         // A dispatch that erroneously writes nothing is precisely the case

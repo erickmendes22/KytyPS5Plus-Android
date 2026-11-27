@@ -44,6 +44,13 @@ int main(){
     static_assert(!P8::Reusable(false,false,false,true,true));
     static_assert(!P8::Reusable(false,false,true,false,true));
     static_assert(!P8::Reusable(false,false,true,true,false));
+    std::array<uint64_t,SelectedProducerPinLimit> recent{};
+    RememberAddress(recent,0x21de00078);RememberAddress(recent,0x21de00138);
+    RememberAddress(recent,0x21de07c38);RememberAddress(recent,0x21de07c38);
+    assert(recent[0]==0x21de07c38&&recent[1]==0x21de00138);
+    RememberAddress(recent,0x21de00138);
+    assert(recent[0]==0x21de00138&&recent[1]==0x21de07c38);
+    static_assert(2*SelectedProducerPinLimit*GenerationBudget<=BlobBudget);
     static_assert(Shape(true,3,20,1,22020096,true));
     static_assert(!Shape(true,3,20,0,22020096,true));
     static_assert(!Shape(true,3,20,1,22020095,true));

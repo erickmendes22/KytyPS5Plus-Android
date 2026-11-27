@@ -74,6 +74,14 @@ inline int Phase(int32_t frame){
     }
     std::scoped_lock lock(phase_mutex);return production_window.Phase(frame);
 }
+// Compact command identity must outlive the expensive producer phase.
+inline int CommandPhase(int32_t frame){
+    if(DemonsP8Capture::available.load()){
+        if(!DemonsP8Capture::BeginEvidence(frame))return -1;
+        return frame==DemonsP8Capture::target.load()?1:0;
+    }
+    return Phase(frame);
+}
 inline bool ObservePopulation(int32_t frame,uint32_t queue,uint64_t colored,uint64_t area);
 struct VertexRange{uint64_t address=0,bytes=0;bool confirmed=false;bool upstream=false;};
 // Prior addresses are candidate seeds only; live VS descriptors certify identity.

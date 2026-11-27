@@ -465,3 +465,30 @@ Próxima compilação: selecionar três observações escuras distintas, captura
 - Mesmo frame384 submit11367 P8_USE_93 VS00d5229e9ce98fd9 PSab81bfa8ee4e0fee, 828 índices. P8_FULL_9.bin -> P8_FULL_29.bin, versões 7717->7719, ticks 38127->38128: 1.440.000 pixels HDR; RGB bitwise idêntico em todos, alpha muda em 1.439.563. Layers 2..5 do G-buffer têm, cada um, 1.439.560 pixels no valor dominante (0xff000000/0xccff7804/0x00f00001/0x0000fe80), 440 fora. Os 437 pixels cujo alpha permanece inalterado pertencem à região não dominante de cada layer. HDR q0/q8/q33: 0/1/1 pixels acima de 0,006; entrada pós-processamento 1, compositor 7. A ausência TOTAL do passe direto não é condição necessária do sintoma: ele executa nesta testemunha escura. Não prova contagem correta, shader correto nem primeira divergência de material.
 - Bloqueios concretos: DsGuestCommand usa Phase(frame), que retorna -1 após boundary_reached; CP selecionado continua até fim do frame. Corrigir política para reter o diário compacto de parent/child após a fronteira (sem expandir a fase pesada), incluindo relevância HDR. A referência CP precisa preservar a autoridade nativa antes dos loads originais e comparar publicação/consumo com bytes de mesma versão, sem substituir contagens; a identidade do buffer e a ordenação precisam ser verificadas. Pins históricos em 0x21de00078/138/d8/198 não incluem endereço corrente 0x21de07c38; blob 66742440/67108864, 66 drops, 96 drops de eventos. Os produtores selecionados aparecem em metadata (71e0e2994d683e35, 7d5ad40fca3137e2, ea2e66ea6ad76baf), sem operandos retidos do caso corrente. Não usar snapshots de frames277-280 como referência do ciclo383-384. Reter cone do produtor real no ciclo anterior, com orçamento reservado e falhas explícitas.
 - Próxima decisão: demonstrar contraexemplo independente C1..C8 com efeito causal no G-buffer/HDR da mesma testemunha (FAIL) ou certificar prefixo e divergência posterior (PASS). O comparador local corrigido impede falso certificado, não é mecanismo bilateral global. O replay nativo do passe não pode usar só as imagens observadas: seis buffers e parte das imagens lidas não têm payload, e falta a referência independente completa. Não abrir outra classe por correlação. Não iniciar novo APK apenas por esta alteração offline/documental. Sem correção visual confirmada.
+
+
+## Aquisição seguinte — reparo da autoridade pré-leitura e dos pins
+A #752 demonstrou perda de autoridade GPU durante o primeiro load e
+perda do vínculo parent/child depois do boundary. O núcleo agora separa
+CommandPhase (diário compacto de ambos os frames, incluindo HDR) de Phase
+(produtores pesados até o boundary). Vincula P8_USE e radiance_draw_pair
+ao comando. Preserva dois readbacks de 20 bytes por filho: autoridade
+nativa pré-leitura e referência pós-leitura; nenhuma espera diagnóstica
+entre filhos, coleta depois da barreira dos loads reais. Comparador
+verifica identidade, GPU generation, bytes efetivamente GPU-owned,
+ordem e publicação, rejeita referências ausentes/instáveis e distingue
+MATCH e DIVERGENCE local sem promover a decisão a P8.
+
+A aquisição de produtores retira pins históricos no início da janela e
+arma os dois endereços recentes do stream de três registros, com orçamento
+de 64 MiB para dois conjuntos atuais de até 16 MiB e suas cópias pinadas.
+Preserva a cadeia de candidatos até o consumo real, não reinicia a cada
+alteração. O endereço realmente selecionado é comparado de modo independente,
+mesmo se não estiver nos pins; sua lacuna de produtor permanece explícita.
+Sem força de contagem, sem troca de luz/depth, sem camada whole-state.
+Os testes exercitam transição de autoridade, diferença de bytes, falta de
+referência, versão/identidade/ordem, child de outro submit, MRU e orçamento.
+**Corte global nenhum; P8 [0,16].** O mecanismo local de publicação pode
+decidir uma primeira divergência operacional; a contribuição no mesmo
+G-buffer/HDR e o prefixo completo ainda exigem prova. Não confundir
+esta aquisição reparada com solução visual ou certificado global bilateral.

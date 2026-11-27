@@ -1818,9 +1818,10 @@ nlohmann::json BufferCache::QueueIndirectWitnessReference(uint64_t address,uint6
     return result;
 }
 
-void BufferCache::CollectIndirectWitnessReferences(IndirectWitnessReadback& readback,nlohmann::json& records){
+void BufferCache::CollectIndirectWitnessReferences(IndirectWitnessReadback& readback,nlohmann::json& records,
+    const char* reference_key){
     if(!readback.barrier.Ready()){
-        for(auto& record:records)record["reference"]["failure"]="collection_before_all_consumers_rejected";
+        for(auto& record:records)record[reference_key]["failure"]="collection_before_all_consumers_rejected";
         if(readback.download){
             std::shared_ptr<Buffer> owner(std::move(readback.download));
             m_scheduler.DeferOperation([owner=std::move(owner)]{});
@@ -1832,7 +1833,7 @@ void BufferCache::CollectIndirectWitnessReferences(IndirectWitnessReadback& read
     // buffer, which cannot be recycled by intervening ordinary draw readbacks.
     if(readback.download){m_scheduler.Finish();readback.download->Invalidate(0,192);}
     for(size_t child=0;child<records.size()&&child<readback.native.size();++child){
-        auto& record=records[child];auto& reference=record["reference"];
+        auto& record=records[child];auto& reference=record[reference_key];
         if(!readback.native[child])continue;
         const auto bytes=record.value("bytes",uint64_t{20});
         std::vector<uint32_t> words(bytes/4);

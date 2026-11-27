@@ -1107,3 +1107,30 @@ APK assinado e verificado em 9b67c4548dc57c90beb99a623ef80458f688cd85. Cinco dis
 - Critical cross-run observation: #750 command49 frame383 submit11578 args 0x21de00078, same index base 0x2e8100000, limit 22020096, stride20, target/shader masks and targets as #751 command49 frame407 submit12225 args 0x21de07c38. #750 child51 emits 92160 indices, draw52 PS ab81bfa8ee4e0fee executes; #751 children51/53/55 each emit zero indices, no draw_prepared, and PS is absent from selected HDR frame. This explains the observed missing pass, not whether the guest legitimately emitted zero; the two runs are not a same-input oracle. The batch precedes the retained deferred clear, so do not misattribute it to the later G-buffer producer.
 - CP witness #751 retained 4 old addresses, last observations frames283-303, 66593608/67108864 blob bytes and 79 blob drops. All 5 retained batches had pipeline_on=true, fan_on=true, native_state_supported=false. The actual relocated batch is absent. Earlier pinned producer outputs include valid zeros and nonzeros; not proof of stale read in this episode. NaN input positions of draws230/266 revalidate prior W0 findings (#730-737); no new producer divergence demonstrated and no NaN patch.
 - Change: selected-window CP batches capture at actual address independently of historical pins, indexed fixed-count 1-3 children (observed 3 and 1), 64 batches, separate SHA256-exported JSONL. Front ownership reacquired after queued child before cache access; copies frozen after consumed fields and before next child; final GPU wait only after all original children. The F path never substitutes counts or changes render state. Exact authority/identity/operands and missing coverage reported; historical slot epochs are not asserted for new addresses. C1 explicit coherence experiment now drains prior queued child before touching renderer cache; this corrects a source-ordering gap in the experiment, not a confirmed lighting fix. No global P8 decision without independent comparison. Next observation: distinguish actual GPU zero from CPU consumption mismatch on the batch which removes the direct HDR pass, then investigate the exact producer only if the reference agrees. No whole-state capture.
+
+
+## Aquisição seguinte — reparo da autoridade pré-leitura e dos pins
+A #752 demonstrou perda de autoridade GPU durante o primeiro load e
+perda do vínculo parent/child depois do boundary. O núcleo agora separa
+CommandPhase (diário compacto de ambos os frames, incluindo HDR) de Phase
+(produtores pesados até o boundary). Vincula P8_USE e radiance_draw_pair
+ao comando. Preserva dois readbacks de 20 bytes por filho: autoridade
+nativa pré-leitura e referência pós-leitura; nenhuma espera diagnóstica
+entre filhos, coleta depois da barreira dos loads reais. Comparador
+verifica identidade, GPU generation, bytes efetivamente GPU-owned,
+ordem e publicação, rejeita referências ausentes/instáveis e distingue
+MATCH e DIVERGENCE local sem promover a decisão a P8.
+
+A aquisição de produtores retira pins históricos no início da janela e
+arma os dois endereços recentes do stream de três registros, com orçamento
+de 64 MiB para dois conjuntos atuais de até 16 MiB e suas cópias pinadas.
+Preserva a cadeia de candidatos até o consumo real, não reinicia a cada
+alteração. O endereço realmente selecionado é comparado de modo independente,
+mesmo se não estiver nos pins; sua lacuna de produtor permanece explícita.
+Sem força de contagem, sem troca de luz/depth, sem camada whole-state.
+Os testes exercitam transição de autoridade, diferença de bytes, falta de
+referência, versão/identidade/ordem, child de outro submit, MRU e orçamento.
+**Corte global nenhum; P8 [0,16].** O mecanismo local de publicação pode
+decidir uma primeira divergência operacional; a contribuição no mesmo
+G-buffer/HDR e o prefixo completo ainda exigem prova. Não confundir
+esta aquisição reparada com solução visual ou certificado global bilateral.

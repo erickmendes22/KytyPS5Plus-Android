@@ -699,3 +699,30 @@ pós-fronteira e referência nativa pré-leitura detalhadas no
 [balanço #752](DEMONS_BUILD_ELIMINATION_LEDGER.md). Sem APK novo
 ou fix visual nesta atualização offline; manter prioridade de
 instrumento decisório bilateral antes da aquisição seguinte.
+
+
+## Aquisição seguinte — reparo da autoridade pré-leitura e dos pins
+A #752 demonstrou perda de autoridade GPU durante o primeiro load e
+perda do vínculo parent/child depois do boundary. O núcleo agora separa
+CommandPhase (diário compacto de ambos os frames, incluindo HDR) de Phase
+(produtores pesados até o boundary). Vincula P8_USE e radiance_draw_pair
+ao comando. Preserva dois readbacks de 20 bytes por filho: autoridade
+nativa pré-leitura e referência pós-leitura; nenhuma espera diagnóstica
+entre filhos, coleta depois da barreira dos loads reais. Comparador
+verifica identidade, GPU generation, bytes efetivamente GPU-owned,
+ordem e publicação, rejeita referências ausentes/instáveis e distingue
+MATCH e DIVERGENCE local sem promover a decisão a P8.
+
+A aquisição de produtores retira pins históricos no início da janela e
+arma os dois endereços recentes do stream de três registros, com orçamento
+de 64 MiB para dois conjuntos atuais de até 16 MiB e suas cópias pinadas.
+Preserva a cadeia de candidatos até o consumo real, não reinicia a cada
+alteração. O endereço realmente selecionado é comparado de modo independente,
+mesmo se não estiver nos pins; sua lacuna de produtor permanece explícita.
+Sem força de contagem, sem troca de luz/depth, sem camada whole-state.
+Os testes exercitam transição de autoridade, diferença de bytes, falta de
+referência, versão/identidade/ordem, child de outro submit, MRU e orçamento.
+**Corte global nenhum; P8 [0,16].** O mecanismo local de publicação pode
+decidir uma primeira divergência operacional; a contribuição no mesmo
+G-buffer/HDR e o prefixo completo ainda exigem prova. Não confundir
+esta aquisição reparada com solução visual ou certificado global bilateral.
