@@ -28,6 +28,7 @@ public:
 	void SetHalfRatePlan(const HalfRatePlan* plan) { half_rate = plan; }
 	void HalfRateBefore(const Decoder::Instruction& inst);
 	void HalfRateAfter(const Decoder::Instruction& inst);
+    void V4LightTrace(const Decoder::Instruction& inst,bool before);
 
 private:
 	const Decoder::Operand& SourceAt(const Decoder::Instruction& inst, uint32_t index);

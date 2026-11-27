@@ -1,0 +1,20 @@
+#include "graphics/shader/demonsV4LightTrace.h"
+#include "graphics/host_gpu/renderer/demonsP8CapturePolicy.h"
+#include <cassert>
+using namespace Libs::Graphics::DemonsV4LightTrace;
+int main(){
+    static_assert(Bytes==1664112);
+    static_assert(FixedBase==8&&OuterBase==6152&&TermBase==22536);
+    static_assert(ImageOffset(0)==ImageBase);
+    static_assert(ImageOffset(9)==ImageBase+9*ImageStride);
+    static_assert(ImageOffset(10)==ImageOffset(9)+Terms*ImageStride);
+    static_assert(Libs::Graphics::DemonsP8CapturePolicy::CriticalRole("q8_hdr_before"));
+    static_assert(Libs::Graphics::DemonsP8CapturePolicy::CriticalRole("q8_hdr_after"));
+    assert(Supports(8,8,1,64));
+    assert(!Supports(8,8,1,32));
+    assert(!Supports(16,4,1,64));
+    for(std::size_t i=0;i<Images.size();++i){
+        assert(Images[i].coord_count<=7&&Images[i].count<=4);
+        assert(ImageOffset(i+1)>ImageOffset(i));
+    }
+}

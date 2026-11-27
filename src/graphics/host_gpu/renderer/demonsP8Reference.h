@@ -71,7 +71,7 @@ inline nlohmann::json Snapshot(RenderContext& context,Image& image,uint32_t mip,
         event["object"].get<uint64_t>(),event["native"].get<uint64_t>(),
         image.ContentVersion(),image.gpu_write_order,mip,layer,static_cast<uint32_t>(aspect),
         static_cast<uint32_t>(b.format),w,h};
-    const bool clean=DemonsP8CapturePolicy::Reusable(image.IsCpuDirty(),image.IsBufferModified(),true,true,true);
+    const bool clean=role!="q8_hdr_before"&&role!="q8_hdr_after"&&DemonsP8CapturePolicy::Reusable(image.IsCpuDirty(),image.IsBufferModified(),true,true,true);
     if(clean){
         nlohmann::json prior;
         {
@@ -112,7 +112,8 @@ inline nlohmann::json Snapshot(RenderContext& context,Image& image,uint32_t mip,
     event["marker_recorded"]=markers;
     event["tick"]=scheduler.CurrentTick();
     image.Download(std::span{&copy,1u},download.Handle(),offset,bytes);
-    scheduler.Finish();
+    if(role=="q8_hdr_before"||role=="q8_hdr_after")scheduler.Wait(scheduler.CurrentTick());
+    else scheduler.Finish();
     download.Invalidate(offset,bytes);
     event["version_after"]=image.ContentVersion();
     if(event["version"]!=event["version_after"])return fail("version_changed");
@@ -171,7 +172,7 @@ inline nlohmann::json InspectBindings(RenderContext& context,const Bound& bound,
     stage["uses_dma"]=program.info.uses_dma;
     stage["uses_gds"]=program.info.uses_gds;
     // Preserve raw scalar reads and descriptor words for the replay targets.
-    const bool replay=DemonsP8CapturePolicy::HzbShader(program.shader_hash)||
+    const bool replay=program.shader_hash==0x3dfe402653925fbfull||DemonsP8CapturePolicy::HzbShader(program.shader_hash)||
         program.shader_hash==DemonsP8CapturePolicy::CompositePS||
         program.shader_hash==DemonsP8CapturePolicy::DirectScenePS||
         program.shader_hash==0xe86bfee195efa5a4ull||program.shader_hash==0x8f52cca9ea3ba4fcull;

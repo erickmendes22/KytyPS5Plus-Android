@@ -1,5 +1,11 @@
 # Demon's Souls — registro de eliminação causal por build
 
+## #757 — V4 q8, aquisição diagnóstica
+
+Implementado o contrato local de admissão, máscaras e acumulação/HDR da fila 8.
+Sem corte global e sem correção visual alegada antes da captura real. Ver
+[DEMONS_APK_757_V4_Q8.md](DEMONS_APK_757_V4_Q8.md).
+
 
 ## #756 — revisão V4, 27/11/2026 (não é outra build)
 

@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsV4LightTrace.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/frontend/translate/LiveVertexExec.h"
@@ -273,6 +274,96 @@ IR::Value Translator::ReadOperand(const Decoder::Operand& operand, IR::Type type
 		     static_cast<uint32_t>(current_opcode), current_pc, IR::TypeName(type).c_str());
 	}
 	return bits;
+}
+
+void Translator::V4LightTrace(const Decoder::Instruction& inst,bool before) {
+    namespace T=DemonsV4LightTrace;
+    const auto pc=inst.pc;
+    const auto image=std::find_if(T::Images.begin(),T::Images.end(),[&](const auto& s){return s.pc==pc;});
+    bool fixed=false,outer=false,term=false;
+    switch(pc){
+        case 0x44:case 0x80:case 0xcf8:fixed=true;break;
+        case 0xf8:case 0x118:case 0x128:case 0x150:case 0x164:case 0x170:case 0x17c:
+        case 0xd4c:case 0x96c:case 0x1d84:case 0x1d98:case 0x1d9c:fixed=!before;break;
+        case 0xd68:outer=true;break;case 0xdbc:outer=!before;break;
+        case 0x880:case 0x1d5c:term=before;break;
+        case 0x888:case 0x1d64:term=!before;break;
+        case 0xc10:case 0xc1c:case 0xc28:term=true;break;
+        default:break;
+    }
+    if(!fixed&&!outer&&!term&&image==T::Images.end())return;
+    using O=IR::ValueOpcode;
+    const auto c=[](uint32_t x){return IR::U32(IR::Value(x));};
+    const auto builtin=[&](IR::StageInputKind kind,uint32_t i){return IR::U32(ir.Emit(O::GetBuiltin,{IR::Value(static_cast<uint32_t>(kind)),IR::Value(i)}));};
+    const auto v=[&](uint32_t i){return ir.GetVectorReg(static_cast<IR::VectorReg>(i));};
+    const auto s=[&](uint32_t i){return ir.GetScalarReg(static_cast<IR::ScalarReg>(i));};
+    const auto load=[&](uint32_t i){return IR::U32(ir.Emit(O::RetraceLoadU32,{c(i)}));};
+    const auto lx=builtin(IR::StageInputKind::LocalInvocationId,0),ly=builtin(IR::StageInputKind::LocalInvocationId,1);
+    const auto lane=ir.IAdd(lx,ir.IMul(ly,c(8)));
+    auto gate=ir.LogicalAnd(ir.IEqual(load(0),c(1)),ir.IEqual(builtin(IR::StageInputKind::WorkgroupId,0),load(1)));
+    gate=ir.LogicalAnd(gate,ir.IEqual(builtin(IR::StageInputKind::WorkgroupId,1),c(0)));
+    gate=ir.LogicalAnd(gate,ir.IEqual(builtin(IR::StageInputKind::WorkgroupId,2),c(0)));
+    gate=ir.LogicalAnd(gate,ir.ULessThan(lane,c(T::Lanes)));
+    const auto active=ir.LogicalAnd(gate,ir.GetExec());
+    const auto chosen=ir.LogicalAnd(active,ir.IEqual(lane,load(2)));
+    const auto store=[&](IR::U32 at,IR::U32 val,IR::U1 pred){ir.Emit(O::DebugLogStoreU32,{at,val,pred});};
+    const auto record=[&](IR::U32 base,uint32_t off,IR::U32 val,IR::U1 pred){store(ir.IAdd(base,c(off)),val,pred);};
+    const auto fbase=ir.IAdd(c(T::FixedBase),ir.IMul(lane,c(T::FixedStride)));
+    auto f=[&](uint32_t off,IR::U32 val){record(fbase,off,val,active);};
+    auto all=[&](uint32_t off,IR::U32 val){record(fbase,off,val,gate);};
+    auto mark=[&](uint32_t off){f(off,c(pc+1));};
+    if(fixed)switch(pc){
+        case 0x44:if(before){all(0,c(1));all(1,lx);all(2,ly);all(3,s(2));all(4,s(3));all(5,ir.Select(ir.GetExec(),c(1),c(0)));for(uint32_t j=0;j<4;++j)f(56+j,s(4+j));f(53,s(12));f(54,s(13));f(55,s(14));f(64,v(3));}else{mark(6);f(7,v(3));}break;
+        case 0x80:if(before){f(10,v(2));for(uint32_t j=0;j<4;++j)f(60+j,s(8+j));}else{mark(8);f(9,v(3));}break;
+        case 0xf8:all(11,c(pc+1));all(12,v(4));all(13,v(5));all(14,ir.Select(ir.GetExec(),c(1),c(0)));break;
+        case 0x118:mark(15);f(16,v(1));break;
+        case 0x128:all(17,c(pc+1));all(18,ir.Select(ir.GetExec(),c(1),c(0)));break;
+        case 0x150:mark(19);f(20,v(9));break;case 0x164:mark(21);f(22,v(0));break;
+        case 0x170:mark(23);f(24,v(13));break;case 0x17c:mark(25);f(26,v(34));break;
+        case 0xcf8:if(before){mark(27);f(28,v(47));for(uint32_t j=0;j<4;++j)f(29+j,s(40+j));}else{mark(34);f(35,v(0));}break;
+        case 0xd4c:mark(36);f(37,s(86));break;
+        case 0x96c:mark(65);f(66,s(20));f(67,s(21));break;
+        case 0x1d84:mark(38);f(39,v(4));f(40,v(5));for(uint32_t j=0;j<3;++j){f(41+j,v(j));f(44+j,v(29+j));}for(uint32_t j=0;j<8;++j)f(68+j,s(j));break;
+        case 0x1d98:mark(47);for(uint32_t j=0;j<4;++j)f(48+j,v(j));break;case 0x1d9c:mark(52);break;
+        default:break;
+    }
+    if(outer){
+        const auto k=s(87);const auto ok=ir.ULessThan(k,c(32));
+        const auto base=ir.IAdd(c(T::OuterBase),ir.IMul(ir.IAdd(ir.IMul(k,c(T::Lanes)),lane),c(T::OuterStride)));
+        const auto pred=ir.LogicalAnd(active,ok);
+        store(c(3),c(1),ir.LogicalAnd(chosen,ir.LogicalNot(ok)));
+        const auto put=[&](uint32_t off,IR::U32 val){record(base,off,val,pred);};
+        if(pc==0xd68&&before){put(0,c(pc+1));put(1,v(0));}
+        if(pc==0xd68&&!before){put(2,c(pc+1));put(3,v(0));}
+        if(pc==0xdbc){put(4,c(pc+1));put(5,s(89));}
+    }
+    if(term){
+        uint32_t region=0;auto k=c(0);
+        if(pc>=0xc10&&pc<=0xc28){region=1;k=s(20);}
+        if(pc>=0x1d5c){region=1+T::Terms;k=s(91);}
+        const auto ok=ir.ULessThan(k,c(T::Terms));const auto pred=ir.LogicalAnd(chosen,ok);
+        store(c(3),c(1),ir.LogicalAnd(chosen,ir.LogicalNot(ok)));
+        const auto base=ir.IAdd(c(T::TermBase+region*T::TermStride),ir.IMul(k,c(T::TermStride)));
+        const auto put=[&](uint32_t off,IR::U32 val){record(base,off,val,pred);};
+        if(pc==0x880){put(0,c(pc+1));uint32_t j=1;for(auto r:{38u,40u,34u,41u,35u,39u})put(j++,v(r));}
+        else if(pc==0x888){put(10,c(pc+1));for(uint32_t j=0;j<3;++j)put(11+j,v(29+j));}
+        else if(region==1){const uint32_t j=pc==0xc10?0:pc==0xc1c?1:2;const auto off=6*j;
+            if(before){put(off,c(pc+1));put(off+1,v(29+j));put(off+2,v(j?0:52));put(off+3,v(j));}
+            else{put(off+4,c(pc+1));put(off+5,v(29+j));}}
+        else if(pc==0x1d5c){put(0,c(pc+1));uint32_t j=1;for(auto r:{29u,0u,30u,50u,31u,1u})put(j++,v(r));}
+        else if(pc==0x1d64){put(10,c(pc+1));for(uint32_t j=0;j<3;++j)put(11+j,v(29+j));}
+    }
+    if(image!=T::Images.end()){
+        const auto& site=*image;const auto k=site.loop?s(site.loop==1?20:91):c(0);
+        const auto ok=ir.ULessThan(k,c(site.loop?T::Terms:1));const auto pred=ir.LogicalAnd(chosen,ok);
+        store(c(3),c(1),ir.LogicalAnd(chosen,ir.LogicalNot(ok)));
+        const auto base=ir.IAdd(c(T::ImageOffset(std::size_t(image-T::Images.begin()))),ir.IMul(k,c(T::ImageStride)));
+        const auto put=[&](uint32_t off,IR::U32 val){record(base,off,val,pred);};
+        if(before){put(0,c(pc+1));for(uint32_t j=0;j<site.coord_count;++j)put(2+j,v(site.coords[j]));
+            for(uint32_t j=0;j<8;++j)put(9+j,s(site.desc+j));
+            if(site.sampler!=255)for(uint32_t j=0;j<4;++j)put(17+j,s(site.sampler+j));}
+        else{put(1,c(pc+1));for(uint32_t j=0;j<site.count;++j)put(21+j,v(site.dst+j));}
+    }
 }
 
 void Translator::WriteRawU32(const Decoder::Operand& operand, IR::U32 value) {
@@ -1742,9 +1833,13 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				                                  options.input_info.vertex->resources[resource]);
 				continue;
 			}
+			const bool v4=options.stage==ShaderType::Compute&&options.shader_hash==DemonsV4LightTrace::Shader&&DemonsV4LightTrace::Enabled()&&DemonsV4LightTrace::Address()!=0&&
+                DemonsV4LightTrace::Supports(options.input_info.compute->threads_num[0],options.input_info.compute->threads_num[1],options.input_info.compute->threads_num[2],options.wave_size);
+            if(v4)translator.V4LightTrace(instruction,true);
 			translator.HalfRateBefore(instruction);
 			translator.TranslateInstruction(instruction);
 			translator.HalfRateAfter(instruction);
+            if(v4)translator.V4LightTrace(instruction,false);
 			if (live_exec_pc == instruction.pc) {
 				translator.MarkExecLive();
 			}

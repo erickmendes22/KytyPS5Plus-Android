@@ -18,7 +18,7 @@ constexpr uint64_t HzbCS=0xdbecbbe2051b41baull;
 constexpr bool HzbShader(uint64_t shader){return shader==HzbCS;}
 constexpr bool CriticalRole(const char* role) {
     const std::string_view r{role};
-    return r=="compositor_overlay_input"||r=="compositor_scene_input"||
+    return r=="q8_hdr_before"||r=="q8_hdr_after"||r=="compositor_overlay_input"||r=="compositor_scene_input"||
            r=="compositor"||r=="hzb_input"||r=="hzb_output";
 }
 constexpr bool CaptureCriticalFrame(bool evidence,bool full,const char* role) {

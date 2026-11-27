@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsV4LightTrace.h"
 #include "graphics/shader/demonsPcRenderParity.h"
 #include "graphics/host_gpu/renderer/demonsPrelightTrace.h"
 #include "graphics/host_gpu/renderer/demonsIndirectWitness.h"
@@ -799,6 +800,15 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 		LOGF("rt_half=2 re-trace buffer: %" PRIu64 " KiB at 0x%016" PRIx64 "\n", HalfRateTiles::kRetraceBytes >> 10u,
 		     m_rt_half_retrace->BufferDeviceAddress());
 	}
+    if(DemonsV4LightTrace::Enabled()){
+        namespace T=DemonsV4LightTrace;
+        m_ds_v4_trace=std::make_unique<Buffer>(m_graphics,m_scheduler,MemoryUsage::Download,0,
+            vk::BufferUsageFlagBits::eStorageBuffer|vk::BufferUsageFlagBits::eShaderDeviceAddress,T::Bytes);
+        EXIT_IF(m_ds_v4_trace->Mapped().size()<T::Bytes);
+        std::memset(m_ds_v4_trace->Mapped().data(),0,T::Bytes);
+        m_ds_v4_trace->Flush(0,T::Bytes);
+        T::SetAddress(m_ds_v4_trace->BufferDeviceAddress());
+    }
 	if (HalfRateTiles::CheckEnabled()) {
 		// The RT lighting kernel bakes the check log's address in when it compiles.
 		m_rt_half_check = std::make_unique<Buffer>(

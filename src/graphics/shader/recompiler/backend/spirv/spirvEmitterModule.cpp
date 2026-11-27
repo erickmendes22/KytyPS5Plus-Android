@@ -1,3 +1,4 @@
+#include "graphics/shader/demonsV4LightTrace.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/BindlessBindings.h"
 
@@ -1132,6 +1133,10 @@ static void PlanLoopGuard(EmitterState& state) {
 
 void DefineModule(EmitterState& state) {
 	PlanLoopGuard(state);
+    if(state.program.shader_hash==DemonsV4LightTrace::Shader&&DemonsV4LightTrace::Enabled()){
+        state.debug_log_address=DemonsV4LightTrace::Address();
+        state.retrace_address=DemonsV4LightTrace::Address();
+    }
 	if (state.program.shader_hash == HalfRateTiles::kShaderHash && HalfRateTiles::CheckEnabled()) {
 		state.debug_log_address = HalfRateTiles::CheckAddress();
 	}
