@@ -1,5 +1,46 @@
 # KytyPS5 Plus Android
 
+> [!IMPORTANT]
+> **AVISO CRÍTICO — cumprimento obrigatório do AGENTS.md (27/11/2026).**
+> Este arquivo contém requisitos operacionais, não sugestões. É obrigatório
+> lê-lo e aplicá-lo integralmente no início de cada tarefa, inclusive quando o
+> usuário disser apenas "continue" ou retomar uma investigação em outro chat.
+> Não cabe ao usuário repetir estas regras ou pedir novamente que o trabalho
+> prossiga.
+
+## Verificação obrigatória antes de encerrar qualquer tarefa
+
+Para uma tarefa em andamento cujo entregável seja um APK, verificar **antes
+de emitir uma resposta final**:
+
+- [ ] Todas as instruções aplicáveis deste AGENTS.md foram cumpridas, inclusive
+  as regras mais recentes da árvore V3 e da matriz causal.
+- [ ] O objetivo solicitado foi implementado e validado no escopo possível;
+  falhas recuperáveis e lacunas de implementação foram tratadas.
+- [ ] O APK da revisão correta foi compilado, baixado, assinado e verificado;
+  o link real de download está pronto para entrega.
+- [ ] A árvore e o balanço de eliminação foram atualizados quando aplicáveis,
+  distinguindo resultados reais, certificados locais e validação em gameplay.
+
+Se qualquer requisito aplicável estiver pendente, continuar executando as
+próximas ações disponíveis na mesma tarefa. Não encerrar com um relatório de
+progresso, commit, teste isolado, build iniciada, P8 BLOCKED, plano de trabalho
+ou promessa de continuar. Não pedir autorização para continuar o trabalho já
+solicitado. Usar mensagens intermediárias apenas para informar progresso e
+prosseguir com a execução.
+
+As únicas exceções são a ordem explícita do usuário para interromper ou um
+impedimento externo efetivamente irrecuperável/limitação real da sessão,
+demonstrado com a operação tentada, o erro observado e as alternativas
+esgotadas. Trabalho incompleto, comparador ainda não implementado e falhas
+recuperáveis não são impedimentos externos. Não inventar resultados nem
+substituir evidência por afirmações. Não exigir resultados de gameplay antes
+da entrega de uma build diagnóstica cujo instrumento já esteja validado.
+
+Esta checagem reforça, sem substituir ou relaxar, todas as regras abaixo.
+Tarefas explicitamente limitadas a documentação, revisão ou outra entrega sem
+APK conservam seu escopo próprio; não disparar builds desnecessárias.
+
 Para tarefas de correção ou diagnóstico Android que pedem uma nova build, o
 entregável é um APK assinado e instalável. Continue até compilar, acompanhar a
 execução, corrigir falhas recuperáveis, baixar o APK, verificar a revisão e a
