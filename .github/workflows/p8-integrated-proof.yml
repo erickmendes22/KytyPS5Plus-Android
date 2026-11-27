@@ -1,0 +1,32 @@
+name: P8 integrated host proof
+on:
+  push:
+    branches: [ staging/p8-versioned-proof-20261127 ]
+    paths: ['.github/workflows/p8-integrated-proof.yml', 'docs/android/tools/p8_*', 'docs/android/tools/test_p8_*']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  bilateral:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 46012579033
+          name: p8-independent-guest-isa
+          github-token: ${{ github.token }}
+          path: /tmp/p8-runner
+      - name: Run exact integrated P8 contracts
+        run: |
+          chmod +x /tmp/p8-runner/kyty_p8_guest_ref
+          python3 docs/android/tools/test_p8_guest_ref.py /tmp/p8-runner/kyty_p8_guest_ref
+          python3 docs/android/tools/test_p8_graphics_contract.py /tmp/p8-runner/kyty_p8_guest_ref
+          python3 docs/android/tools/test_p8_bilateral.py /tmp/p8-runner/kyty_p8_guest_ref
+          python3 docs/android/tools/test_p8_graphics_bilateral.py /tmp/p8-runner/kyty_p8_guest_ref
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p8-integrated-host-source
+          path: docs/android/tools/
+          if-no-files-found: error
