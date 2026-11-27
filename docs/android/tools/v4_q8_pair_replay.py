@@ -82,7 +82,7 @@ def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=N
     # All fixed sample loads, including actual HDR input, must have records.
     expected=dict(samples);expected[(0x1d84,0)]={'coords':list(map(int,f[lane,39:41])),'descriptor':list(map(int,f[lane,68:76])),'sampler':[0]*4,'result':list(map(int,f[lane,41:44]))}
     done={};coord_deltas=[]
-    def patched(check_light=None,entry=False):
+    def patched(check_light=None,entry=False,mask_entry=False):
         p=bytearray(original)
         def replace(pc,body):
             start=len(p);p[pc:pc+sizes[pc]]=jump(pc,start)+NOP*(sizes[pc]//4-1);p.extend(body(start))
@@ -144,11 +144,25 @@ def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=N
                 b+=code[check_pc:check_pc+sizes[check_pc]]
                 return b+jump(start+len(b),check_pc+sizes[check_pc])
             replace(check_pc,checkpoint)
+        if mask_entry:
+            # Stop before the original indexed load, after all original
+            # coordinate/material/depth arithmetic. Scratch registers are
+            # verified unused; do not inject the observed cluster index.
+            replace(0xcf8,lambda start:mov(100,40)+mov(101,41)+mov(102,42)+mov(103,43)+
+                exp(4,[100,101,102,103])+exp(5,[47]*4,True)+END)
         return bytes(p)
     for _ in range(min(len(expected)+1,128)):
         out=run_wave(runner,patched(),sg,vg,seg,mode,1<<lane)
         if (0,lane) in out:
             need(set(done)==set(expected),'observed samples not visited by replay')
+            cluster=run_wave(runner,patched(mask_entry=True),sg,vg,seg,mode,1<<lane)
+            need((4,lane) in cluster and (5,lane) in cluster,'cluster address checkpoint missing')
+            cluster_index=int(cluster[5,lane][2][0]);cluster_observed=int(f[lane,28])
+            cluster_desc=list(cluster[4,lane][2]);cluster_observed_desc=list(map(int,f[lane,29:33]))
+            if cluster_index!=cluster_observed or cluster_desc!=cluster_observed_desc:
+                return dict(status='DIVERGENCE_CANDIDATE',pc='0xcf8',reason='cluster address or descriptor differs',
+                    reference=cluster_index,observed=cluster_observed,reference_descriptor=cluster_desc,
+                    observed_descriptor=cluster_observed_desc)
             words=out[0,lane][2];actual=list(map(int,f[lane,48:52]));delta=[dist(a,b) for a,b in zip(words,actual)]
             acc=list(out[1,lane][2][:3]);obs_acc=list(map(int,f[lane,44:47]));ad=[dist(a,b) for a,b in zip(acc,obs_acc)]
             light_checks=[]
@@ -183,7 +197,7 @@ def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=N
                     if local['status']=='MATCH_LOCAL' and entry_diffs:local['status']='UPSTREAM_INPUT_CANDIDATE'
                     brdf_checks.append(dict(light=k,entry_differences=entry_diffs,**local))
             worst=max(delta+ad+[d for r in light_checks for d in r['ulp']])
-            return dict(oracle_sign_controls=controls,brdf=brdf_checks,status='MATCH_CONDITIONAL' if worst<=8 else 'DIVERGENCE_CANDIDATE',words=list(words),observed=actual,ulp=delta,accumulation_ulp=ad,light_checks=light_checks,coordinate_ulp=coord_deltas,visits=len(done))
+            return dict(cluster_index=cluster_index,cluster_descriptor_match=True,oracle_sign_controls=controls,brdf=brdf_checks,status='MATCH_CONDITIONAL' if worst<=8 else 'DIVERGENCE_CANDIDATE',words=list(words),observed=actual,ulp=delta,accumulation_ulp=ad,light_checks=light_checks,coordinate_ulp=coord_deltas,visits=len(done))
         need((60,lane) in out,'missing trap export');pc,k,*co=out[60,lane][2];need(pc in sites,'unsupported reduction path')
         key=(pc,k);need(key not in done,'repeated dynamic site/index')
         if key not in expected:return dict(status='INCOMPLETE',pc=hex(pc),light=k,reason='native sample missing',visits=len(done))

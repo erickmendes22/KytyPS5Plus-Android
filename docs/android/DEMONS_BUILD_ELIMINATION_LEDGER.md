@@ -1,5 +1,13 @@
 # Demon's Souls — registro de eliminação causal por build
 
+### Additional offline verification on the real #760 consumer
+
+- Original guest ISA with the corrected SDWA sign semantics was stopped before actual buffer load PC 0xcf8; both captured lanes independently compute v47=39296 and the exact four consumed descriptor dwords. No observed index injected. The host replay now reports this checkpoint and rejects a mismatch before certifying the conditional shader. This host-only improvement does not require another native APK.
+- Actual wave's 4 unique consumed indices: 39296=1, 39297=0xf, 54800=0, 54801=0. Independent native comparisons matched all 64 prefix loads/tile indices/coordinates, 64 stencil, 64 depth, 192 material loads, and 128 outer/inner mask loads. Slot2 authoritative backing remains byte-identical.
+- End-to-end local comparator controls reused the real #760 consumer and injected clearly synthetic producer records only: MATCH_CONSUMED for equal output, CHANGED_CONSUMED for a mutation of dword 39297 (31 vs actual 15), reject missing/stale writer serial, wrong native binding and out-of-order ticks. These controls exercise the linkage and do NOT substitute for the actual #761 writer capture.
+- Whole material population in this frame: 1805 admitted pixels; mean HDR luminance after q8 2.6575293e-5, after q33 2.6579838e-5, zero pixels >=0.006. q8 covers 464 of those, so neither witness nor queue is a complete lighting oracle. Cluster masks are shared by the lighting variants. P8 global remains open.
+
+
 ## #760 real / #761 — last clustered-light mask producer -> q8 (27/11/2026)
 
 - ZIP 20261127-195446 SHA256 473cd86ccb0fdd085f464bb8d4efb551e39e5f777b75b592d4f61def4f237263; core b126d63; frame359 submit10707 P8_USE_86, tile13498 WG0, lanes44 (788,541) and52 (788,542), stencil86. All 66 manifest entries length and SHA256 verified. 16 q8 tiles, 464 admitted nonzero-material pixels, 0 incoming luminance, 395 nonzero afterward, zero >=0.006, max 0.00390217781. Relative control is not a healthy reference.
