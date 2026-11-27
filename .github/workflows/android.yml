@@ -326,6 +326,8 @@ jobs:
         run: |
           python3 docs/android/tools/p8_native_replay.py selftest
           python3 docs/android/tools/test_p8_cp_ordered.py
+          python3 -m pip install numpy
+          python3 docs/android/tools/test_p8_paired_replay.py
       - name: Compile and run focused renderer, lighting and UFC policies
         shell: bash
         run: |

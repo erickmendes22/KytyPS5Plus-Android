@@ -802,3 +802,36 @@ Reprodução (ZIP real fornecido pelo usuário, não incluído no repositório):
 
     python3 docs/android/tools/p8_version_link.py DIAGNOSTICS.zip --draw 599
     python3 docs/android/tools/p8_material_mrt0.py DIAGNOSTICS.zip /path/to/kyty_p8_guest_ref --check-fixtures
+
+### #755 — preparação da aquisição P8 (27/11/2026)
+
+- Captura real de referência: #753, frame 359. Permanecem os certificados
+  locais da publicação CP (10/10), contagem 7d5a, POS0 (41/41) e material
+  do draw 599. Nenhuma metade global eliminada.
+- O APK anterior não retém a origem da HZB (0x2b2360000 -> 0x2b2570000,
+  shader dbecbbe2051b41ba) antes da tesselação nem a segunda entrada RGBA16F
+  do compositor (overlay 0x281a80000). O novo código captura as duas
+  extremidades da redução min2x2, incluindo o frame produtor anterior;
+  o compositor retém as duas imagens, operandos escalares e estado de
+  raster/export e associa a saída ao flip real. O orçamento crítico separado
+  é 80 MiB de armazenamento / 96 MiB de transferências; o orçamento normal
+  continua 192/256 MiB. O censo PM4 original registra pacotes, predicação,
+  intervalos condicionais ignorados e a identidade transmitida à thread
+  de registro, com limite explícito de 16 MiB.
+- Host: `p8_paired_replay.py` valida hashes, identidade/ordem, formatos,
+  descritores e versões de entrada/saída. `p8_bilateral.py` recebe os contratos
+  HZB min2x2 e compositor RDNA1. CI 46025386665 passou; fixtures locais com
+  o binário original do compositor executaram 64 pixels, claro 0xe2589625,
+  escuro 0xc0000000; falha introduzida no prefixo selecionou [0,8], falha
+  no sufixo selecionou [8,16], omissão de comando foi rejeitada.
+  Estes são testes sintéticos de capacidade, não resultados do gameplay.
+  A fórmula HZB passou os testes de redução e rejeição de operandos
+  inválidos; o executor ISA integral rejeitou image_store em 0x80 por
+  operand value não suportado. Não declarar essa execução integral aprovada.
+- Escopo da aquisição: reparar retenção e associação reais para novos
+  comparadores e preservar os certificados anteriores. O adaptador
+  completo das dependências HZB/tesselação/G-buffer/HDR/cena/flip ainda
+  não está fechado. A associação de pacotes não equivale à execução
+  independente do prefixo. Não afirmar que a próxima captura garante uma
+  decisão global. P8 permanece [0,16], sem poda global. Se surgir
+  contraexemplo local, exigir efeito causal até o flip para poda global.

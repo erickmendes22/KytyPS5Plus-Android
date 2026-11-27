@@ -320,6 +320,51 @@ def composite_pair(a,i,e,exe):
             'scope':'original guest compositor on identical logical native input texels; not prefix authority or a P8 cut'}
 
 
+
+def packet_census(a):
+    raw=a.files.get('guest-packets.jsonl')
+    if raw is None:
+        return {'status':'INCOMPLETE','reason':'missing original guest packet census'}
+    packets={};outcomes={};errors=[]
+    for row in map(json.loads,raw.splitlines()):
+        kind=row.get('kind');i=row.get('id')
+        if kind=='incomplete':
+            errors.append(row.get('reason','packet census incomplete'));continue
+        if kind=='packet':
+            if type(i) is not int or i<=0 or i in packets:errors.append('duplicate/invalid packet ID');continue
+            words=row.get('words',[])
+            if not words or any(type(w) is not int or not 0<=w<=0xffffffff for w in words):
+                errors.append('invalid raw PM4 words');continue
+            packets[i]=row
+        elif kind=='outcome':
+            if i not in packets or i in outcomes:errors.append('unbound/duplicate packet outcome');continue
+            outcomes[i]=row
+        else:errors.append('unknown guest census row')
+    if sorted(packets)!=list(range(1,len(packets)+1)):errors.append('packet serial gap')
+    if set(packets)!=set(outcomes):errors.append('missing original packet outcome')
+    links=[];missing=[];excluded=[]
+    for i,u in a.use.values():
+        p=u.get('guest_packet',0)
+        if p not in packets or p not in outcomes:
+            missing.append(u['marker']);continue
+        x=packets[p];o=outcomes[p]
+        if o['outcome']!='executed' or x['submit']!=u['submit']:
+            errors.append('invalid native packet association: '+u['marker']);continue
+        links.append({'use':u['marker'],'packet':p,'header':x['words'][0],'frame':x['frame'],'submit':x['submit']})
+    for i,row in outcomes.items():
+        p=packets[i];n=row['consumed'];kind=row['outcome']
+        if kind in ('predicated_skip','conditional_skip','suspended'):excluded.append(i)
+        if type(n) is not int or n<1:errors.append('invalid consumed packet length')
+        if kind=='conditional_skip' and len(row.get('skipped',[]))!=max(0,n-p['declared']):
+            errors.append('conditional skip payload incomplete')
+        if kind not in ('filler','tail','predicated_skip','conditional_skip','executed','suspended'):
+            errors.append('unknown packet outcome')
+    return {'status':'LINKED_OBSERVATION' if not errors and not missing else 'INCOMPLETE',
+            'guest_packets':len(packets),'native_links':len(links),'links':links,
+            'unlinked_native_uses':missing,'excluded_or_suspended':excluded,'errors':errors,
+            'scope':'original raw packet and outcome association; no claim of independent predicate or full prefix execution'}
+
+
 def audit(path,exe):
     a=Archive(path)
     try:
@@ -332,6 +377,7 @@ def audit(path,exe):
             except (ValueError,KeyError,TypeError,OSError,IndexError) as err:
                 row={'use':e.get('use'),'status':'INCOMPLETE','reason':str(err)}
             result[dest].append(row)
+        result['guest_packet_census']=packet_census(a)
         result['acquisition_gaps']=[name for name in ('hzb','compositor') if not result[name]]
         # An exact output version, not a hash/shader-name match, is needed to
         # join each pair to the actual tessellation or compositor input.
