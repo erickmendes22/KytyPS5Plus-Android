@@ -654,3 +654,7 @@ APK compilado, assinado, baixado e verificado: revisão `0f1709763e30ab7812652d2
 ## #749 — regressão de instrumentação
 
 #748, ZIP 20261126-212515: captura Vulkan 14,2 GB e congelamento frame 380. Remover serialização global de modo F, preservar dados raw com orçamento e operandos reais já adquiridos. Sem alteração semântica de iluminação. P8 [0,16]. Ver ledger.
+
+## #749 — entrega e replay real da #748
+
+APK assinado e verificado em 9b67c4548dc57c90beb99a623ef80458f688cd85. Cinco dispatches de visibilidade, 712 workgroups, 960/960 bytes de contadores iguais; contraprova local dos DWORDs 0x2088806b0. Ver [balanço de eliminação](DEMONS_BUILD_ELIMINATION_LEDGER.md). P8 [0,16] permanece aberto. Captura whole-state desativada por regressão de congelamento; aguarda validação no aparelho.

@@ -1073,3 +1073,7 @@ APK compilado, assinado, baixado e verificado: revisão `0f1709763e30ab7812652d2
 ## #749 — correção da aquisição após congelamento da #748
 
 P8 [0,16], sem corte global. Captura Vulkan completa: 14.218.357.063 bytes; congelamento frame 380. #749 desativa a camada de serialização e mantém observações raw limitadas e operandos CP. Os dois episódios HZB da #748 têm todos os texels zero e entradas distintas. Não confundir ausência do trace com erro guest.
+
+## #749 — entrega e replay real da #748
+
+APK assinado e verificado em 9b67c4548dc57c90beb99a623ef80458f688cd85. Cinco dispatches de visibilidade, 712 workgroups, 960/960 bytes de contadores iguais; contraprova local dos DWORDs 0x2088806b0. Ver [balanço de eliminação](DEMONS_BUILD_ELIMINATION_LEDGER.md). P8 [0,16] permanece aberto. Captura whole-state desativada por regressão de congelamento; aguarda validação no aparelho.
