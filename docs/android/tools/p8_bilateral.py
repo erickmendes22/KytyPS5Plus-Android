@@ -164,6 +164,10 @@ def operation_reference(op, args, executable):
         require(len(args)==3 and all(len(x)==4 for x in args) and not p, 'select operands')
         mask=struct.unpack('<I',args[0])[0];require(mask in (0,1),'non-boolean predicate')
         out=args[1] if mask else args[2]
+    elif op.kind=='compositor_pixel_isa':
+        from p8_compositor_isa import execute_contract
+        require(executable is not None and op.output.size==4 and op.output.format==64,'missing compositor executor or output pixel format')
+        out=execute_contract(executable,p,args)
     elif op.kind=='guest_export':
         from p8_graphics_contract import execute
         require(executable is not None, 'independent graphics executor unavailable')

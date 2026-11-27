@@ -1,5 +1,30 @@
 # Demon's Souls — registro de eliminação causal por build
 
+## Preparação #757 — executor ISA e suporte causal, 27/11/2026
+
+**P8 BLOCKED [0,16]; nenhuma metade global eliminada. #757 não disparada.**
+A referência offline agora executa o shader guest 3265b01ed00a5c01 com
+trampolins de diagnóstico para MIMG e amostragem lógica independente do
+tradutor SPIR-V do Android. 64/64 pontos distribuídos e 4/4 pixels do quad
+central coincidem bit a bit com o flip real de #756. O pixel (960,540)
+depende de 16 texels da cena e um do overlay. Substituição sintética fora
+desse suporte não o altera; dentro altera. O motor bilateral executa ambos
+os resultados de teste através do compositor real: FAIL [0,8] e PASS
+[8,16]. Os produtores anteriores nesses testes são sintéticos e não
+certificam o jogo. Rejeita censo ausente, fronteira errada, observação ausente
+e diferença fora do suporte. O executor também passa teste de leituras
+dinâmicas repetidas no mesmo PC, preservação de SCC e rejeição de dados
+incompletos. Sem alteração do pipeline de jogo.
+
+Lacuna concreta ainda aberta: P8_USE_242/243 não têm operandos escalares,
+imagem por versão e cobertura de primitiva completos. O segundo usa
+arrays/3D/LOD ainda não implementados na referência de amostragem.
+O prefixo real C1–C8 permanece sem autoridade independente; portanto nem
+PASS nem FAIL reais podem ser inferidos dos testes. Não gerar APK que
+apenas colete mais logs sem completar os dois caminhos. A instrumentação
+ISA é host-only, não altera o shader do jogo. Ver
+[DEMONS_P8_757_PREPARATION.md](DEMONS_P8_757_PREPARATION.md).
+
 ## Atualização prioritária — captura #756, 27/11/2026
 
 **P8 BLOCKED [0,16]; zero metades globais eliminadas. Não disparar #757.**
