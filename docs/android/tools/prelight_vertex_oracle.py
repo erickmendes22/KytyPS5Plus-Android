@@ -496,12 +496,13 @@ class Evaluator:
                       and s.get('address') == address]
         require(candidates, f'buffer load {group.pc:#x}: missing native snapshot for slots {matching}')
         source, raw = candidates[0], self.payload(candidates[0])
-        # Identical descriptors may be bound twice. Only accept duplicate
-        # observations with the same complete native range and equal bytes.
+        # Duplicate guest descriptors may use distinct native allocation offsets.
+        # Computation only needs identical complete guest bytes; this does not
+        # certify native alias identity or publication order.
         for candidate in candidates[1:]:
             other = self.payload(candidate)
             require(all(candidate.get(k) == source.get(k) for k in
-                        ('address', 'bytes', 'native_offset', 'native_range'))
+                        ('address', 'bytes', 'native_range'))
                     and source.get('capture_status') == candidate.get('capture_status') == 'complete'
                     and len(raw) == source.get('bytes') and np.array_equal(raw, other),
                     f'buffer load {group.pc:#x}: conflicting native snapshots for slots {matching}')

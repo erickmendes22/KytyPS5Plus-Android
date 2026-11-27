@@ -1,5 +1,20 @@
 # Demon's Souls — registro de eliminação causal por build
 
+
+## #756 — revisão V4, 27/11/2026 (não é outra build)
+
+Zero corte global; P8 não é mais pré-condição operacional. A prova real
+reproduz 41/41 VS (83.190 invocações, 332.760 componentes numericamente
+iguais), 1437175/1440000 pixels da máscara do céu e seu complemento
+material de 2825, sem divergência de máscara. A versão 48781 é a mesma
+nas filas 0/8/33; q8 tem 2726 pixels de material nos seus tiles, q0 99.
+O bit64 de stencil está presente nos 2825. 2822/2825 têm radiância abaixo
+do limiar descritivo 0.006 antes do pós. Próximo contrato ativo: q8
+workgroup0 tile13899, local7,1, shader 3dfe402653925fbf. Ver
+[DEMONS_V4_LOCAL_CONTRACT.md](DEMONS_V4_LOCAL_CONTRACT.md). Correção do
+oráculo no host não é fix de produção. Sem APK #757 nesta revisão.
+
+
 ## Preparação #757 — executor ISA e suporte causal, 27/11/2026
 
 **P8 BLOCKED [0,16]; nenhuma metade global eliminada. #757 não disparada.**

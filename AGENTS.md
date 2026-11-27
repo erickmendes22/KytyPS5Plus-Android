@@ -1,5 +1,23 @@
 # KytyPS5 Plus Android
 
+
+## V4 — revisão autorizada pelo usuário em 27/11/2026 (prevalece sobre V3)
+
+A certificação bilateral integral de P(8) deixa de ser pré-condição para
+corrigir a iluminação. O histórico permanece BLOCKED [0,16], sem corte
+global fictício. Adotar o contrato local de
+[DEMONS_V4_LOCAL_CONTRACT.md](docs/android/DEMONS_V4_LOCAL_CONTRACT.md):
+mesma operação, inputs, versão e saída observada; provar a primeira
+divergência local, corrigir e medir contribuição. MATCH elimina apenas
+o contrato comparado e encaminha para o produtor do input específico.
+INCOMPLETE exige reparar o comparador/aquisição ou trocar a referência
+local, não build de inventário. Um contrato ativo por vez, controles
+de igualdade/divergência/falhas e validação do exportador antes de build.
+Preservar as provas V1–V3, não inventar PASS/FAIL global. A regra de
+continuidade e entrega de APK permanece integralmente obrigatória;
+revisões explicitamente metodológicas não exigem compilar.
+
+
 > [!IMPORTANT]
 > **AVISO CRÍTICO — cumprimento obrigatório do AGENTS.md (27/11/2026).**
 > Este arquivo contém requisitos operacionais, não sugestões. É obrigatório

@@ -1,4 +1,18 @@
 # PPSA01341 01.007.000 — causal matrix
+
+
+## Prioridade V4 (27/11/2026)
+
+A bisseção global P8 permanece sem certificado; não constitui veto à
+correção de um contraexemplo local. M5/M7: primeiro contrato ativo
+q8 tile13899, CS 3dfe402653925fbf, WG0 local7,1, material v48781,
+HDR após q8 v9743. M1–M4 conservam os certificados no escopo:
+41/41 VS com igualdade numérica, máscara do céu complementar ao
+material, bit64 presente em todos os pixels materiais. População
+material e contribuição de radiância são medidas separadas, não
+hipóteses simultâneas. Ver [V4](DEMONS_V4_LOCAL_CONTRACT.md).
+Sem alteração de produção ou APK nessa etapa.
+
 References: Jetsku dd9f990 (#130 documents fog-transition crash), Chenxiao07
 66cdb39 (v20261016 family reports gameplay, no identical GPU capture).
 

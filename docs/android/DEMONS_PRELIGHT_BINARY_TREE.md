@@ -1,5 +1,19 @@
 # V3 — investigação binária integral (normativa, substitui V2 e V1)
 
+
+## V4 — novo roteiro operacional (27/11/2026; prevalece sobre V3)
+
+[Contrato local e recuperação mensurável](DEMONS_V4_LOCAL_CONTRACT.md)
+substitui a bisseção P8 como pré-condição. Histórico P8 BLOCKED [0,16],
+zero metades cortadas. Não reabrir por associação: 41/41 VS comparáveis,
+máscara céu/material complementar exata; a baixa radiância foi medida
+nos pixels de material. Testemunha ativa (799,553), tile13899 q8 WG0
+local (7,1), P8_USE_93 CS 3dfe402653925fbf. A igualdade local encaminha
+a origem do operando, a divergência local autoriza correção fundamentada
+sem exigir prefixo inteiro. Todas as demais provas permanecem no escopo.
+Nenhum APK gerado por esta revisão metodológica.
+
+
 ## Preparação #757 — executor ISA e suporte causal, 27/11/2026
 
 **P8 BLOCKED [0,16]; nenhuma metade global eliminada. #757 não disparada.**
