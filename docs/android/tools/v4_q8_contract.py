@@ -44,7 +44,7 @@ def bitset(n):return [i for i in range(32) if int(n)>>i&1]
 def marker(row,index,pc):need(int(row[index])==pc+1,'missing trace at '+hex(pc))
 
 def parse_trace(raw,wg,lane):
-    need(len(raw)==WORDS*4,'truncated/wrong trace layout')
+    need(len(raw) in (WORDS*4,(WORDS+TERMS*48)*4),'truncated/wrong trace layout')
     a=np.frombuffer(raw,dtype='<u4');need(list(a[:3])==[1,wg,lane] and a[3]==0,'stale trace header or iteration overflow')
     f=a[HEADER:OUTER_BASE].reshape(LANES,FIXED);o=a[OUTER_BASE:TERM_BASE].reshape(32,LANES,OUTER)
     terms=a[TERM_BASE:IMAGE_BASE].reshape(1+2*TERMS,TERM)

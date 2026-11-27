@@ -329,6 +329,7 @@ jobs:
           python3 -m pip install numpy
           python3 docs/android/tools/test_p8_paired_replay.py
           python3 docs/android/tools/test_v4_q8_contract.py
+          python3 docs/android/tools/test_v4_q8_light_records.py
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_v4_q8_contract_test.cpp -o /tmp/ds-v4-q8
           /tmp/ds-v4-q8
       - name: Compile and run focused renderer, lighting and UFC policies

@@ -25,7 +25,13 @@ constexpr std::array<Site,21> Images{{
  {0x1b9c,2,3,0,3,92,52,{57,58,59}}
 }};
 constexpr uint32_t ImageOffset(std::size_t site){uint32_t off=ImageBase;for(std::size_t i=0;i<site;++i)off+=(Images[i].loop?Terms:1)*ImageStride;return off;}
-constexpr uint32_t Words=ImageOffset(Images.size());
+constexpr uint32_t LegacyWords=ImageOffset(Images.size());
+// One secondary-light record per guest s91 index, at the actual consumed PCs.
+constexpr uint32_t RecordBase=LegacyWords,RecordStride=48;
+constexpr uint32_t Words=RecordBase+Terms*RecordStride;
+constexpr uint32_t LightRecordBytes=0x180;
+constexpr uint32_t LightRecordCount=224;
+constexpr uint64_t LightBufferBytes=uint64_t(LightRecordBytes)*LightRecordCount;
 constexpr uint64_t Bytes=uint64_t(Words)*4;
 static_assert(Bytes<8*1024*1024);
 inline bool Enabled(){const auto* e=std::getenv("KYTY_DS_MATRIX");return e&&e[0]=='8'&&e[1]=='\0';}

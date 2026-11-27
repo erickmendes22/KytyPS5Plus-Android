@@ -291,7 +291,10 @@ void Translator::V4LightTrace(const Decoder::Instruction& inst,bool before) {
         case 0xc10:case 0xc1c:case 0xc28:term=true;break;
         default:break;
     }
-    if(!fixed&&!outer&&!term&&image==T::Images.end())return;
+    const bool light_record=pc==0xdf4 || (pc==0xdf8&&!before) ||
+        (pc==0xe68&&!before) || (before&&(pc==0x194c||pc==0x1978||pc==0x19b4||
+            pc==0x1b0c||pc==0x1b18||pc==0x1bb4));
+    if(!fixed&&!outer&&!term&&!light_record&&image==T::Images.end())return;
     using O=IR::ValueOpcode;
     const auto c=[](uint32_t x){return IR::U32(IR::Value(x));};
     const auto builtin=[&](IR::StageInputKind kind,uint32_t i){return IR::U32(ir.Emit(O::GetBuiltin,{IR::Value(static_cast<uint32_t>(kind)),IR::Value(i)}));};
@@ -305,7 +308,8 @@ void Translator::V4LightTrace(const Decoder::Instruction& inst,bool before) {
     gate=ir.LogicalAnd(gate,ir.IEqual(builtin(IR::StageInputKind::WorkgroupId,2),c(0)));
     gate=ir.LogicalAnd(gate,ir.ULessThan(lane,c(T::Lanes)));
     const auto active=ir.LogicalAnd(gate,ir.GetExec());
-    const auto chosen=ir.LogicalAnd(active,ir.IEqual(lane,load(2)));
+    const auto selected_lane=ir.LogicalAnd(gate,ir.IEqual(lane,load(2)));
+    const auto chosen=ir.LogicalAnd(selected_lane,ir.GetExec());
     const auto store=[&](IR::U32 at,IR::U32 val,IR::U1 pred){ir.Emit(O::DebugLogStoreU32,{at,val,pred});};
     const auto record=[&](IR::U32 base,uint32_t off,IR::U32 val,IR::U1 pred){store(ir.IAdd(base,c(off)),val,pred);};
     const auto fbase=ir.IAdd(c(T::FixedBase),ir.IMul(lane,c(T::FixedStride)));
@@ -352,6 +356,31 @@ void Translator::V4LightTrace(const Decoder::Instruction& inst,bool before) {
             else{put(off+4,c(pc+1));put(off+5,v(29+j));}}
         else if(pc==0x1d5c){put(0,c(pc+1));uint32_t j=1;for(auto r:{29u,0u,30u,50u,31u,1u})put(j++,v(r));}
         else if(pc==0x1d64){put(10,c(pc+1));for(uint32_t j=0;j<3;++j)put(11+j,v(29+j));}
+    }
+    if(light_record){
+        // Preserve the rejected lane's EXEC result at 0xdf8, but do not
+        // manufacture post-rejection scalar values from a different light.
+        const auto k=s(91);const auto ok=ir.ULessThan(k,c(T::Terms));
+        const auto pred=ir.LogicalAnd(pc==0xdf8?selected_lane:chosen,ok);
+        store(c(3),c(1),ir.LogicalAnd(selected_lane,ir.LogicalNot(ok)));
+        const auto base=ir.IAdd(c(T::RecordBase),ir.IMul(k,c(T::RecordStride)));
+        const auto put=[&](uint32_t off,IR::U32 val){record(base,off,val,pred);};
+        const auto mark_record=[&](uint32_t off){put(off,c(pc+1));};
+        switch(pc){
+            case 0xdf4:
+                if(before){mark_record(0);put(1,k);put(2,ir.GetVccLo());put(3,v(8));
+                    for(uint32_t j=0;j<4;++j)put(34+j,s(56+j));}
+                else{mark_record(4);put(5,v(2));}break;
+            case 0xdf8:mark_record(6);put(7,ir.Select(ir.GetExec(),c(1),c(0)));break;
+            case 0xe68:mark_record(8);{uint32_t j=9;for(auto reg:{78u,79u,60u,61u,62u,80u,81u,8u})put(j++,s(reg));}break;
+            case 0x194c:mark_record(17);put(18,v(48));put(19,v(15));put(20,v(16));put(21,v(17));break;
+            case 0x1978:mark_record(22);put(23,v(0));put(24,v(55));break;
+            case 0x19b4:mark_record(25);put(26,v(1));put(27,v(49));break;
+            case 0x1b0c:mark_record(28);put(29,v(0));break;
+            case 0x1bb4:mark_record(30);put(31,v(49));put(32,v(50));put(33,v(51));break;
+            case 0x1b18:mark_record(38);put(39,v(49));put(40,v(50));put(41,v(51));break;
+            default:break;
+        }
     }
     if(image!=T::Images.end()){
         const auto& site=*image;const auto k=site.loop?s(site.loop==1?20:91):c(0);

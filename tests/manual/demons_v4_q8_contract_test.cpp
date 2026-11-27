@@ -3,7 +3,10 @@
 #include <cassert>
 using namespace Libs::Graphics::DemonsV4LightTrace;
 int main(){
-    static_assert(Bytes==1664112);
+    static_assert(LegacyWords*4==1664112);
+    static_assert(Bytes==1860720);
+    static_assert(RecordBase==LegacyWords&&RecordStride==48);
+    static_assert(LightBufferBytes==86016);
     static_assert(FixedBase==8&&OuterBase==6152&&TermBase==22536);
     static_assert(ImageOffset(0)==ImageBase);
     static_assert(ImageOffset(9)==ImageBase+9*ImageStride);

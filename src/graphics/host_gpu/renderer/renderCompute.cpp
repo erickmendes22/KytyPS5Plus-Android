@@ -4792,13 +4792,33 @@ static void CaptureDsRayHitProducer(RenderContext& context,
 // positions, and never changes a draw, dispatch, or shader.
 // V4: one real q8 workgroup, chosen from the material actually queued.
 // GPU-produced operands are retained as consumed, never substituted with CPU backing.
+// Observe the guest backing through its separate alias: do not synchronize,
+// obtain a new buffer or publish GPU writes as part of this reference.
+static nlohmann::json DsV4LightBacking(RenderContext& context,uint64_t address,uint64_t bytes){
+    namespace T=DemonsV4LightTrace;namespace P=DemonsP8Reference;
+    nlohmann::json row={{"ok",false},{"guest",address},{"bytes",bytes}};
+    if(bytes!=T::LightBufferBytes || !address){row["reason"]="unsupported_light_record_extent";return row;}
+    auto& cache=context.GetBufferCache();
+    row["state_before"]=cache.IndirectWitnessState(address,bytes);
+    row["tick_before"]=context.GetCommandScheduler().CurrentTick();
+    std::vector<uint8_t> raw(bytes);
+    const bool ok=LibKernel::Memory::TryReadBacking(address,raw.data(),bytes);
+    row["state_after"]=cache.IndirectWitnessState(address,bytes);
+    row["tick_after"]=context.GetCommandScheduler().CurrentTick();
+    if(!ok){row["reason"]="backing_read_failed";return row;}
+    const auto id=P::raw_store.ReserveCopy(bytes,true);
+    if(!id){row["reason"]="backing_budget";return row;}
+    const auto saved=P::raw_store.Save(DemonsP8Capture::Folder(),id,raw,true);
+    if(saved.reason){row["reason"]=saved.reason;return row;}
+    row["file"]=saved.file;row["ok"]=true;return row;
+}
 static nlohmann::json BeginDsV4Light(RenderContext& context,const PreparedBindings& bindings,
     const ShaderComputeInputInfo& input,int32_t frame,uint64_t submit,
     const std::array<uint32_t,3>& groups,bool groups_valid,const nlohmann::json& use) {
     namespace T=DemonsV4LightTrace;namespace P=DemonsP8Reference;
     if(!T::Enabled()||!DemonsP8Capture::FullFrame(frame)||bindings.runtime->program->shader_hash!=T::Shader)return {};
     static int32_t captured=-1;if(captured==frame)return {};
-    nlohmann::json e={{"kind","v4_q8_contract"},{"schema",1},{"frame",frame},{"submit",submit},{"shader",T::Shader},{"groups",groups}};
+    nlohmann::json e={{"kind","v4_q8_contract"},{"schema",2},{"frame",frame},{"submit",submit},{"shader",T::Shader},{"groups",groups}};
     auto fail=[&](const char* why){e["kind"]="v4_q8_incomplete";e["reason"]=why;P::WriteEvent(e);return nlohmann::json{};};
     auto* log=context.GetBufferCache().V4LightTraceBuffer();
     if(!log||!groups_valid||groups[0]==0||groups[1]!=1||groups[2]!=1||
@@ -4836,9 +4856,11 @@ static nlohmann::json BeginDsV4Light(RenderContext& context,const PreparedBindin
             !source.size||source.size%4||source.size>8*1024*1024)return fail("unsupported buffer range");
         const auto adjustment=(bindings.shader_data[offset_word]>>((slot%4u)*8u))&255u;
         if(adjustment>=native.range||source.size>native.range-adjustment)return fail("native buffer range mismatch");
+        if(slot==2)e["light_backing_before"]=DsV4LightBacking(context,source.address,source.size);
         auto& words=data[slot];words.resize(source.size/4);
         const auto id=P::raw_store.ReserveCopy(source.size,true);
         if(!id||!ReadDsGpuWords(context,native.buffer,native.offset+adjustment,words,true))return fail("buffer readback failed");
+        if(slot==2)e["light_backing_after_copy"]=DsV4LightBacking(context,source.address,source.size);
         const auto raw=P::raw_store.Save(DemonsP8Capture::Folder(),id,
             std::span<const uint8_t>{reinterpret_cast<const uint8_t*>(words.data()),words.size()*4},true);
         if(raw.reason)return fail(raw.reason);
@@ -4900,6 +4922,10 @@ static void EndDsV4Light(RenderContext& context,const PreparedBindings& bindings
     uint32_t zero=0;std::memcpy(mapped.data(),&zero,4);log->Flush(0,4);
     if(saved.reason){e["kind"]="v4_q8_incomplete";e["reason"]=saved.reason;P::WriteEvent(e);return;}
     e["trace_file"]=saved.file;e["use"]=use;
+    if(bindings.buffer_sources.size()==4){
+        const auto& source=bindings.buffer_sources[2];
+        e["light_backing_after_dispatch"]=DsV4LightBacking(context,source.address,source.size);
+    }
     auto& hdr=context.GetTextureCache().GetImage(bindings.images[10].image_id);
     e["after"]=P::Snapshot(context,hdr,e["mip"].get<uint32_t>(),e["layer"].get<uint32_t>(),vk::ImageAspectFlagBits::eColor,
         e["frame"].get<int32_t>(),e["submit"].get<uint64_t>(),"q8_hdr_after",8);
