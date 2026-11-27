@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
         uint32_t mode;
         in >> magic >> isa >> std::hex >> pc >> exec >> mode >> std::dec
            >> wave_size >> nsgpr >> nvgpr >> limit >> std::quoted(codepath);
-        require(bool(in) && magic=="P8ISA1", "manifest header");
+        require(bool(in) && (magic=="P8ISA1" || magic=="P8ISA2"), "manifest header");
         require(isa=="rdna1" || isa=="rdna2", "ISA");
         require((wave_size==32 || wave_size==64) && nsgpr && nsgpr<=106 &&
             nvgpr && nvgpr<=256 && exec && (wave_size==64 || !(exec>>32)) &&
@@ -93,6 +93,19 @@ int main(int argc, char** argv) {
             require(bool(in) && x.size<=64*1024*1024 && covers(ranges,x.addr,x.size),"output range absent");
             outputs.push_back(x);
         }
+        // P8ISA2 optionally initializes the bounded interpolation LDS window.
+        // The adapter must supply the actual coefficients and validate every
+        // referenced attribute/primitive; missing data is not a zero input.
+        std::vector<uint8_t> lds;
+        if(magic=="P8ISA2") {
+            std::string path;
+            in >> std::quoted(path);
+            require(bool(in),"missing LDS payload declaration");
+            if(path!="-") {
+                lds=read_file(path);
+                require(lds.size()<=64*1024 && !(lds.size()&3),"LDS payload size");
+            }
+        }
         std::string trailing;
         require(!(in>>trailing),"trailing manifest fields");
         amdgpu::ComputeUnitCore::Config cfg{};
@@ -102,13 +115,23 @@ int main(int argc, char** argv) {
         auto cu=amdgpu::ComputeUnitCore::create("p8_cu",cfg,memory.get(),cache.get(),
             simdojo::ExecMode::FUNCTIONAL,diagnostic.emitter());
         if(!cu) throw std::runtime_error(diagnostic.message());
+        std::vector<amdgpu::ShaderExport> graphics_exports;
+        // GFX10/11 use distinct export paths. RDNA1 EXP invokes the CU
+        // graphics callback, not Wavefront::shader_exports(). Bind a real
+        // destination and preserve every enabled channel and lane.
+        cu->set_shader_export_handler([&](const amdgpu::Wavefront&,const amdgpu::ShaderExport& packet){
+            require(graphics_exports.size()<4096,"too many graphics exports");
+            graphics_exports.push_back(packet);
+        });
         auto *wf=cu->dispatch_wf(0,pc,106,256,wave_size);
         require(wf!=nullptr,"wave allocation");
         wf->set_exec(exec);
         wf->set_mode_raw(mode);
-        // This first adapter accepts single-wave, no-LDS launches. The
-        // capture adapter must reject workgroups requiring shared state.
-        wf->set_lds_size(0);
+        // Still single-wave. Interpolation input is explicit, not a general
+        // implementation of compute workgroup LDS synchronization.
+        wf->set_lds_base(0);
+        wf->set_lds_size(static_cast<uint32_t>(lds.size()));
+        if(!lds.empty())cu->lds().write(uint32_t{0},lds.data(),static_cast<uint32_t>(lds.size()));
         for(unsigned i=0;i<nsgpr;++i) cu->write_sgpr(wf->sgpr_alloc().base+i,sgpr[i]);
         for(unsigned i=0;i<nvgpr;++i)
             for(unsigned lane=0;lane<wave_size;++lane)
@@ -151,6 +174,15 @@ int main(int argc, char** argv) {
             std::cout<<"MEM "<<std::hex<<range.addr<<" ";
             for(uint64_t i=0;i<range.size;++i)
                 std::cout<<std::setw(2)<<std::setfill('0')<<unsigned(memory->read8(range.addr+i));
+            std::cout<<"\n";
+        }
+        for(const auto& row:graphics_exports) {
+            std::cout<<"GFXEXP "<<std::hex<<unsigned(row.target)<<" "<<unsigned(row.enabled)
+                     <<" "<<unsigned(row.compressed)<<" "<<unsigned(row.valid_mask)<<" "
+                     <<unsigned(row.done)<<" "<<row.lanes;
+            for(unsigned lane=0;lane<wave_size;++lane)
+                if((row.lanes>>lane)&1)
+                    for(auto value:row.values[lane])std::cout<<" "<<value;
             std::cout<<"\n";
         }
         for(auto row:exports) {

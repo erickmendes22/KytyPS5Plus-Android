@@ -82,3 +82,15 @@ Testado em host nos dois ZIPs reais. A integração com audit é inventário
 adicional de ZIP, não muda a decisão global na ausência do adaptador.
 Status real: P8 BLOCKED, [0,16], 0 cortes globais. Nenhuma mudança
 de renderização, nenhuma nova build, nenhuma correção visual alegada.
+
+## Extensão gráfica do oráculo independente (host)
+
+A execução do VS c96f3fcde8141266 no draw 599 do ZIP #753, após o prólogo NGG conhecido, com bytes e registradores da testemunha, expôs uma falha do executor: `EXP POS0` era rejeitado por falta do destino de exportação gráfica RDNA1. O backend foi alterado para registrar o callback real de exportação do GFX10, conservar target/mask/lane/componentes e aceitar LDS de interpolação explícita (P8ISA2). O protocolo P8ISA1 permanece compatível. O adaptador `p8_guest_graphics.py` associa invocações admitidas aos índices nativos, valida o binário guest, une as regiões escalares e os buffers efetivamente retidos, executa a ISA original e extrai POS0 e parâmetros. Dois padrões para registradores não observados são um teste de sensibilidade, não prova exaustiva de ABI. Não substitui a referência de admissão NGG, PS/material, cobertura ou o cone até o flip.
+
+Teste host gráfico em execução na revisão ef607f84a924184d30e08b932bcf806e77410c40: https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/46012579033. O adaptador Python foi verificado sintaticamente; a execução real com P8ISA2 ainda não foi certificada. Os testes de regressão causal/transferência Vulkan da revisão de staging passaram (run 46012578899). Sem APK novo, sem corte P8.
+
+Reprodução, após obter o executor P8ISA2:
+
+    python3 docs/android/tools/p8_guest_graphics.py DIAGNOSTICS.zip /path/to/kyty_p8_guest_ref --draw 599 --max-waves 1 --output graphics.json
+
+O resultado da comparação de posição não é promovido à decisão bilateral sem os contratos de todos os predecessores necessários e a propagação comprovada até o mesmo flip. Uma exportação PARAM esperada sem observação material equivalente permanece referência local, não divergência confirmada.

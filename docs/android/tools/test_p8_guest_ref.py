@@ -33,5 +33,32 @@ def main():
         invoke(0x4000,0x4000,"03000000")
         invoke(0x4000,0x5000,None)
 
+        # Vertex position export, all four channels, two different lanes.
+        # EXP encoding is ordinary GFX10 ISA (no game code).
+        def graphics(code, sgprs, vgprs, mask, lds=None):
+            (root/"guest.bin").write_bytes(struct.pack("<"+"I"*len(code),*code))
+            if lds is not None:(root/"lds.bin").write_bytes(lds)
+            m=root/"graphics.txt"
+            m.write_text(f'P8ISA2 rdna1 10000 {mask:x} c0 64 {len(sgprs)} {len(vgprs)//64} 10000 "{root/"guest.bin"}"\n'
+                +' '.join(f'{v:x}' for v in sgprs)+'\n'+' '.join(f'{v:x}' for v in vgprs)+'\n0\n0\n'
+                +('"-"' if lds is None else f'"{root/"lds.bin"}"')+'\n')
+            r=subprocess.run([exe,m],capture_output=True,text=True,timeout=30)
+            assert r.returncode==0,(r.stdout,r.stderr)
+            return [x.split() for x in r.stdout.splitlines() if x.startswith("GFXEXP ")]
+        v=[0]*256
+        for reg in range(4):
+            v[reg*64]=0x3f800000+reg
+            v[reg*64+1]=0x40000000+reg
+        rows=graphics([0xf80008cf,0x03020100,0xbf810000],[0],v,3)
+        assert rows==[['GFXEXP','c','f','0','0','1','3','3f800000','3f800001','3f800002','3f800003','40000000','40000001','40000002','40000003']],rows
+        # One primitive, attr0.x: P0=1, P10=2, P20=4. I=.25 J=.5.
+        # The two interpolation instructions must calculate 3.5.
+        coeff=[0x3f800000,0x40000000]+[0]*6+[0x40800000]+[0]*3
+        v=[0]*(9*64);v[0]=0x3e800000;v[64]=0x3f000000
+        rows=graphics([0xbefc0302,0xc8200000,0xc8210001,0xf8000801,8,0xbf810000],
+                      [0,0,0],v,1,struct.pack('<12I',*coeff))
+        assert len(rows)==1 and rows[0][7]=='40600000',rows
+        print("Graphics export and explicit interpolation LDS fixtures passed")
+
 if __name__=="__main__":
     main()
