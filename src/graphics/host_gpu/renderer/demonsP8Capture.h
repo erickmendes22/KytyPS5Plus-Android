@@ -8,6 +8,9 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <span>
+#include <vector>
+#include <algorithm>
 #include <nlohmann/json.hpp>
 
 namespace Libs::Graphics::DemonsP8Capture {
@@ -53,6 +56,55 @@ inline bool Requested() {
 #endif
 }
 inline std::filesystem::path Folder(){return Config::GetShaderDumpFolder()/"p8-reference";}
+// The guest fetcher records original packet bytes before dispatch/predication,
+// separately from renderer use markers. QueueRecord carries this identity to
+// the recorder thread. A budget failure is explicit; an incomplete census
+// must never authorize prefix equality.
+inline thread_local uint64_t current_packet=0;
+inline std::mutex packet_mutex;
+inline uint64_t packet_serial=0,packet_bytes=0;
+inline bool packet_overflow=false;
+inline constexpr uint64_t PacketBudget=16ull*1024*1024;
+struct PacketScope {
+    uint64_t old;
+    explicit PacketScope(uint64_t id):old(current_packet){current_packet=id;}
+    ~PacketScope(){current_packet=old;}
+    PacketScope(const PacketScope&)=delete;
+    PacketScope& operator=(const PacketScope&)=delete;
+};
+inline bool WritePacketLocked(const nlohmann::json& j){
+    if(packet_overflow)return false;
+    const auto row=j.dump()+'\n';
+    std::ofstream out(Folder()/"guest-packets.jsonl",std::ios::app);
+    if(row.size()>PacketBudget-packet_bytes||!out){
+        packet_overflow=true;
+        if(out)out<<"{\"kind\":\"incomplete\",\"reason\":\"guest_packet_budget_or_io\"}\n";
+        return false;
+    }
+    out<<row;
+    if(!out){packet_overflow=true;return false;}
+    packet_bytes+=row.size();
+    return true;
+}
+inline uint64_t RecordGuestPacket(int32_t frame,uint64_t submit,uint64_t stream,
+    uint64_t address,uint32_t offset,uint32_t depth,std::span<const uint32_t> words,
+    uint32_t declared){
+    if(!EvidenceFrame(frame)||words.empty())return 0;
+    std::scoped_lock lock(packet_mutex);
+    if(packet_overflow)return 0;
+    const auto id=++packet_serial;
+    const nlohmann::json j={{"kind","packet"},{"id",id},{"frame",frame},
+        {"submit",submit},{"stream",stream},{"address",address},{"offset",offset},
+        {"depth",depth},{"declared",declared},{"words",std::vector<uint32_t>(words.begin(),words.end())}};
+    return WritePacketLocked(j)?id:0;
+}
+inline void RecordPacketOutcome(uint64_t id,const char* outcome,uint32_t consumed,
+    std::span<const uint32_t> skipped={}){
+    if(!id)return;
+    std::scoped_lock lock(packet_mutex);
+    WritePacketLocked({{"kind","outcome"},{"id",id},{"outcome",outcome},{"consumed",consumed},
+        {"skipped",std::vector<uint32_t>(skipped.begin(),skipped.end())}});
+}
 inline void Status(const char* state, int32_t frame=-1) {
     std::error_code ec;
     std::filesystem::create_directories(Folder(),ec);

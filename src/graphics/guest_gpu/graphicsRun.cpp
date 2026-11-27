@@ -1154,8 +1154,17 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		const auto        packet_header = packet[0];
 		const auto        opcode        = (packet_header >> 8u) & 0xffu;
 		EXIT_NOT_IMPLEMENTED(remaining_dw > total_dw);
+        const bool p8_census=DemonsP8Capture::EvidenceFrame(m_renderer.GetGpu().GetFrameNum());
+        const uint32_t p8_declared=p8_census?Pm4::PacketSizeDw(packet_header):0;
+        const uint64_t p8_packet=p8_census?DemonsP8Capture::RecordGuestPacket(
+            m_renderer.GetGpu().GetFrameNum(),m_submit_id,reinterpret_cast<uint64_t>(this),
+            reinterpret_cast<uint64_t>(packet),cursor.offset_dw,
+            static_cast<uint32_t>(execution.m_buffer_stack.size()),
+            std::span<const uint32_t>(packet,std::min(std::max(1u,p8_declared),remaining_dw)),p8_declared):0;
+        const DemonsP8Capture::PacketScope p8_scope(p8_packet);
 
 		if (packet_header == 0x80000000u || Pm4::PacketSizeDw(packet_header) == 1u) {
+            DemonsP8Capture::RecordPacketOutcome(p8_packet,"filler",1);
 			cursor.offset_dw++;
 			execution.m_made_progress = true;
 			continue;
@@ -1170,6 +1179,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 				LOGF("CP: trailing dword 0x%08" PRIx32 " at offset=0x%05" PRIx32 "\n", packet[0],
 				     total_dw - remaining_dw);
 			}
+			DemonsP8Capture::RecordPacketOutcome(p8_packet,"tail",1);
 			cursor.offset_dw++;
 			execution.m_made_progress = true;
 			continue;
@@ -1203,6 +1213,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 					     dst, val, packet[1], packet[2]);
 				}
 			}
+			DemonsP8Capture::RecordPacketOutcome(p8_packet,"predicated_skip",packet_dw);
 			cursor.offset_dw += packet_dw;
 			execution.m_made_progress = true;
 			continue;
@@ -1257,6 +1268,14 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		ProcessWatchdog::SetPhase(ProcessWatchdog::Phase::Process);
 		Common::PerfStats::SetPm4Opcode(0);
 		EXIT_IF(packet_dw > remaining_dw);
+        if(p8_packet){
+            const uint32_t skip_begin=std::min(p8_declared,packet_dw);
+            const bool conditional=opcode==Pm4::IT_COND_EXEC&&packet_dw>skip_begin;
+            DemonsP8Capture::RecordPacketOutcome(p8_packet,execution.m_suspended?"suspended":
+                conditional?"conditional_skip":"executed",packet_dw,
+                conditional?std::span<const uint32_t>(packet+skip_begin,packet_dw-skip_begin):
+                    std::span<const uint32_t>{});
+        }
 		if (inline_packet && GpuPipeline::Back().Idle()) {
 			// What the inline packet wrote is in the next jobs' view. If its handler queued items
 			// (indirect draws/dispatches), the record thread publishes after each of them instead.
@@ -1426,7 +1445,9 @@ std::shared_ptr<Item> CommandProcessor::MakePipeItem() {
 // KYTY_GPU_PIPELINE: queues a record job for the current item, then lets the record thread stamp
 // the writes it acquired and run the idle-submit check, as ProcessPm4 does per packet otherwise.
 void CommandProcessor::QueueRecord(Common::UniqueFunction<void, CommandBuffer&>&& record) {
-	GpuPipeline::Back().Enqueue([this, record = std::move(record)]() mutable {
+	GpuPipeline::Back().Enqueue([this, record = std::move(record),
+        p8_packet=DemonsP8Capture::current_packet]() mutable {
+        const DemonsP8Capture::PacketScope p8_scope(p8_packet);
 		auto& scheduler = GetScheduler();
 		record(scheduler.Current());
 		m_renderer.GetBufferCache().StampPendingWrites();

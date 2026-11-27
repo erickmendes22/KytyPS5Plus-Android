@@ -282,6 +282,7 @@ inline std::string MarkUse(vk::CommandBuffer command,nlohmann::json event) {
     if(event.is_null())return {};
     const auto marker="P8_USE_"+std::to_string(++use_serial);
     event["kind"]="cut_use";event["marker"]=marker;event["native_replay"]=false;
+    event["guest_packet"]=DemonsP8Capture::current_packet;
     if(command&&VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdInsertDebugUtilsLabelEXT){
         vk::DebugUtilsLabelEXT label{};label.pLabelName=marker.c_str();
         command.insertDebugUtilsLabelEXT(label);

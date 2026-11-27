@@ -331,6 +331,8 @@ jobs:
         run: |
           set -euo pipefail
           tests=(
+            p8_paired_budget_test
+            p8_raw_store_test
             demons_stencil_alias_test
             saros_host_bank_placement_test
             saros_lazy_fold_reservation_test
