@@ -9,6 +9,27 @@ constexpr bool AttachWholeStateLayer(bool requested,bool present,bool markers) {
 }
 constexpr uint64_t RawStorageBudget=192ull*1024*1024;
 constexpr uint64_t RawCopyBudget=256ull*1024*1024;
+// #750: full-screen direct HDR contribution occurs after deferred q33.
+constexpr uint64_t DirectScenePS=0xab81bfa8ee4e0feeull;
+constexpr uint64_t HdrOwner=0x281300000ull;
+constexpr uint64_t SceneOwner=0x2b2a40000ull;
+constexpr uint64_t CompositePS=0x3265b01ed00a5c01ull;
+constexpr bool DirectSceneTarget(uint64_t shader,uint64_t owner) {
+    return shader==DirectScenePS&&owner==HdrOwner;
+}
+constexpr const char* RadianceInputRole(uint64_t shader,uint64_t owner,
+                                       bool gpu,bool read,bool written,
+                                       uint32_t levels,uint32_t layers,uint64_t bytes) {
+    if(!read||written||!owner||!levels||!layers)return nullptr;
+    if((shader==0xe86bfee195efa5a4ull||shader==0x8f52cca9ea3ba4fcull)
+        &&owner==HdrOwner&&layers==1)return "post_hdr_input";
+    if(shader==CompositePS&&owner==SceneOwner&&layers==1)return "compositor_scene_input";
+    // Preserve the dynamic, small 2D inputs of the actual forward pass,
+    // not all static BC textures or hundreds of shadow-array layers.
+    if(shader==DirectScenePS&&gpu&&layers==1&&levels<=9&&bytes<=8ull*1024*1024)
+        return "forward_image_input";
+    return nullptr;
+}
 constexpr bool Trigger(int32_t frame,double luminance,uint32_t lit) {
     return frame>=240 && lit<=8 && luminance>=0.0 && luminance<0.003;
 }

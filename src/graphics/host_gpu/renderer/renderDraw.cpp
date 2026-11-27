@@ -3275,7 +3275,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		return;
 	}
 	auto& pipeline = *pipeline_ptr;
-    nlohmann::json p8_use;
+    nlohmann::json p8_use,p8_forward;
+    std::optional<RenderColorInfo> p8_forward_target;
     if(DemonsP8Capture::FullFrame(root_frame)){
         p8_use={{"frame",root_frame},{"submit",submit_id},{"path","graphics"},
             {"draw",root_draw},{"stages",nlohmann::json::array()},{"targets",nlohmann::json::array()}};
@@ -3286,6 +3287,27 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                 {"image",DemonsPrelightTrace::Identity(m_context.GetTextureCache().GetImage(color.image_id))}});
         }
         if(state.depth_info.image_id)p8_use["depth_target"]=DemonsPrelightTrace::Identity(m_context.GetTextureCache().GetImage(state.depth_info.image_id));
+        if(root_ps){
+            for(const auto& color:root_colors){
+                if(!color.image_id)continue;
+                auto& image=m_context.GetTextureCache().GetImage(color.image_id);
+                if(!DemonsP8CapturePolicy::DirectSceneTarget(root_ps->shader_hash,image.info.data.address))continue;
+                p8_forward_target=color;
+                const auto serial=++DemonsP8Reference::radiance_serial;
+                p8_use["radiance_pair"]=serial;
+                p8_forward={{"kind","radiance_draw_pair"},{"frame",root_frame},{"submit",submit_id},
+                    {"pair",serial},{"shader",root_ps->shader_hash},{"slot",color.target_slot},
+                    {"indices",draw.index_count},{"instances",draw.instance_count},
+                    {"index_guest",index_source.address},{"index_bytes",index_source.size},
+                    {"indirect",indirect!=nullptr}};
+                p8_forward["before"]=DemonsP8Reference::Snapshot(m_context,image,
+                    color.desc.view_info.base_level,color.desc.view_info.base_layer,
+                    vk::ImageAspectFlagBits::eColor,root_frame,submit_id,"forward_hdr_before");
+                // This is the pre-attachment-acquisition observation. If a
+                // clear is executed, do not interpret it as the blend operand.
+                break;
+            }
+        }
     }
 	TraceDsGraphicsOutcome(true, true, state.color_count,
 	                      static_cast<bool>(state.depth_info.image_id), state.ps_active);
@@ -5768,6 +5790,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    rendering.color_attachments[ds_scene_target.target_slot].is_clear, name,
 		    file.good()));
 	}
+    if(p8_forward_target){
+        const auto& color=*p8_forward_target;
+        const auto& regs=buffer.GetRegisters();
+        const auto& blend=regs.GetBlendControl(color.target_slot);
+        const auto& dyn=m_context.GetCommandScheduler().GetDynamicState();
+        auto& image=m_context.GetTextureCache().GetImage(color.image_id);
+        p8_forward["raster"]={{"target_mask",regs.GetRenderTargetMask()},
+            {"shader_mask",regs.GetShaderRegisters().m_cbShaderMask},
+            {"native_color_write",static_cast<bool>(dyn.color_write_enables[color.target_slot])},
+            {"load_clear",rendering.color_attachments[color.target_slot].is_clear},
+            {"blend",blend.enable},{"blend_src",blend.color_srcblend},{"blend_dst",blend.color_destblend},
+            {"blend_op",blend.color_comb_fcn},{"depth_test",state.depth_info.depth_test_enable},
+            {"depth_write",state.depth_info.depth_write_enable},{"stencil_test",state.depth_info.stencil_test_enable}};
+        p8_forward["after"]=DemonsP8Reference::Snapshot(m_context,image,
+            color.desc.view_info.base_level,color.desc.view_info.base_layer,
+            vk::ImageAspectFlagBits::eColor,root_frame,submit_id,"forward_hdr_after");
+        DemonsP8Reference::WriteEvent(p8_forward);
+    }
     if(!p8_composite.is_null()){
         p8_composite["outputs"]=nlohmann::json::array();
         for(uint32_t i=0;i<state.color_count;++i){

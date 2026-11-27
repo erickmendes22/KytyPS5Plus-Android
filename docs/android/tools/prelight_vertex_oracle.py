@@ -188,6 +188,11 @@ PROFILES = {
     # #745: same saved-EXEC/restore skeleton as c96. The conditional region
     # only supplies a material parameter, never POS0. Taint its writes and
     # retain the ordinary backward dependency check; do not assume its data.
+    # #750 material-only conditional: saved EXEC is restored at 0xcc.
+    # Taint the region's writes; no tainted value may feed POS0.
+    '13f07ce83dc1cc67': {
+        'sha256': '07208ef635cba40568b42d4da41a90c20c2b5fe256c319b360124f8c3ecb3fc3',
+        'flat': {}, 'descriptors': {}, 'conditional': (0x74, 0xc4)},
     '557d65da5b786842': {
         'sha256': '4a3745aa5d46a387f210e2000a00717cc8e2c217fa6ffea1469914d85eeea230',
         'flat': {}, 'descriptors': {}, 'conditional': (0x90, 0xc4)},
@@ -489,8 +494,17 @@ class Evaluator:
         require(np.all(at + size <= extent), f'buffer load {group.pc:#x}: descriptor OOB read; no invented zero fill')
         candidates = [s for s in self.sources if isinstance(s, dict) and s.get('slot') in matching
                       and s.get('address') == address]
-        require(len(candidates) == 1, f'buffer load {group.pc:#x}: missing/ambiguous native snapshot for slots {matching}')
+        require(candidates, f'buffer load {group.pc:#x}: missing native snapshot for slots {matching}')
         source, raw = candidates[0], self.payload(candidates[0])
+        # Identical descriptors may be bound twice. Only accept duplicate
+        # observations with the same complete native range and equal bytes.
+        for candidate in candidates[1:]:
+            other = self.payload(candidate)
+            require(all(candidate.get(k) == source.get(k) for k in
+                        ('address', 'bytes', 'native_offset', 'native_range'))
+                    and source.get('capture_status') == candidate.get('capture_status') == 'complete'
+                    and len(raw) == source.get('bytes') and np.array_equal(raw, other),
+                    f'buffer load {group.pc:#x}: conflicting native snapshots for slots {matching}')
         require(np.all(at + size <= len(raw)),
                 f'buffer load {group.pc:#x}: missing native GPU bytes in slot {source["slot"]}; '
                 f'requires through byte {int(np.max(at)) + size}, captured {len(raw)}')

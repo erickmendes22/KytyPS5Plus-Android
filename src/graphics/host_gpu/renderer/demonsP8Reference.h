@@ -126,6 +126,7 @@ inline nlohmann::json Snapshot(RenderContext& context,Image& image,uint32_t mip,
 
 // Raw-only observations distinguish same-version reuse from a physical transfer.
 inline std::atomic<uint64_t> use_serial{0};
+inline std::atomic<uint64_t> radiance_serial{0};
 inline nlohmann::json SnapshotBoundary(RenderContext& context,Image& image,
     uint32_t mip,uint32_t layer,vk::ImageAspectFlagBits aspect,int32_t frame,
     uint64_t submit,const std::string& role,uint32_t queue=UINT32_MAX) {
@@ -215,6 +216,20 @@ inline nlohmann::json InspectBindings(RenderContext& context,const Bound& bound,
                     if(v.aspect&vk::ImageAspectFlagBits::eStencil)capture(vk::ImageAspectFlagBits::eStencil,"stencil");
                 }
             }
+        }
+        const auto* role=DemonsP8CapturePolicy::RadianceInputRole(program.shader_hash,
+            image.info.data.address,image.IsGpuModified(),read,written,v.level_count,
+            v.layer_count,image.info.data.size);
+        if(role){
+            // Full actual view for supported, bounded 2D radiance operands.
+            // Snapshot validates backing and global raw transfer/storage caps.
+            entry["radiance_role"]=role;
+            if(v.aspect==vk::ImageAspectFlagBits::eColor&&v.base_level<image.backing.mip_levels&&
+               v.level_count<=image.backing.mip_levels-v.base_level&&v.base_layer<image.backing.layers){
+                for(uint32_t m=0;m<v.level_count;++m)
+                    entry["snapshots"].push_back(SnapshotBoundary(context,image,v.base_level+m,
+                        v.base_layer,vk::ImageAspectFlagBits::eColor,frame,submit,role));
+            }else entry["radiance_reason"]="unsupported_view_range";
         }
         stage["images"].push_back(std::move(entry));
     }

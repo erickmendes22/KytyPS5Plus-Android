@@ -10,6 +10,16 @@ int main(){
     static_assert(!P8::AttachWholeStateLayer(true,false,false));
     static_assert(P8::RawCopyBudget<1536ull*1024*1024);
     static_assert(P8::RawStorageBudget<=P8::RawCopyBudget);
+    static_assert(P8::DirectSceneTarget(0xab81bfa8ee4e0feeull,0x281300000ull));
+    static_assert(!P8::DirectSceneTarget(0xab81bfa8ee4e0feeull,0x287ae0000ull));
+    static_assert(!P8::DirectSceneTarget(1,0x281300000ull));
+    static_assert(P8::RadianceInputRole(0xe86bfee195efa5a4ull,P8::HdrOwner,true,true,false,1,1,12779520));
+    static_assert(P8::RadianceInputRole(P8::CompositePS,P8::SceneOwner,true,true,false,1,1,16777216));
+    static_assert(P8::RadianceInputRole(P8::DirectScenePS,0x289a00000ull,true,true,false,6,1,5111808));
+    static_assert(!P8::RadianceInputRole(P8::DirectScenePS,0x289a00000ull,true,true,false,1,80,335544320));
+    static_assert(!P8::RadianceInputRole(P8::DirectScenePS,0x289a00000ull,false,true,false,1,1,65536));
+    static_assert(!P8::RadianceInputRole(P8::DirectScenePS,0x289a00000ull,true,true,true,1,1,65536));
+    static_assert(!P8::RadianceInputRole(P8::CompositePS,P8::HdrOwner,true,true,false,1,1,12779520));
     static_assert(P8::Trigger(380,0.000041,0));
     static_assert(!P8::Trigger(239,0.0,0));
     static_assert(!P8::Trigger(380,0.01,0));
