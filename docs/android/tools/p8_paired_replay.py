@@ -7,7 +7,6 @@ Native image readbacks are same-input operands, NOT guest-root certificates.
 The report must not turn an unlinked local result into a global P8 cut.
 """
 import argparse
-from collections import Counter
 import hashlib
 import json
 import math
@@ -164,7 +163,7 @@ def hzb_pair(a,i,e):
     di=bound_descriptor(ds[0],inp,s,22);do=bound_descriptor(ds[1],out,t,22)
     need((di['select']&7)==4 and (do['select']&7)==4,'non-X HZB swizzle')
     w,h=s['extent'];ow,oh=t['extent']
-    need([w,h]==[2*ow,2*oh] and u['groups']==[ow//8,oh//8,1] and ow%8==oh%8==0,
+    need([w,h]==[2*ow,2*oh] and u['groups']==[(ow+7)//8,(oh+7)//8,1],
          'HZB launch does not cover exact output extent')
     ref=hzb_minimum(before,w,h)
     changed=np.frombuffer(ref,'<u4')!=np.frombuffer(after,'<u4')
@@ -313,7 +312,9 @@ def composite_pair(a,i,e,exe):
     def maxdelta(p,q):return max(abs(((p>>k)&1023)-((q>>k)&1023)) for k in (0,10,20))
     samples=[{'x':x,'y':y,'expected':f'{p:08x}','observed':f'{q:08x}','rgb_lsb_delta':maxdelta(p,q)}
              for (x,y,_,_),p,q in zip(coords,pred,actual)]
-    return {'use':e['use'],'status':'MATCH_EXACT' if pred==actual else
+    return {'use':e['use'],'inputs':[dict(zip(KEYS+('mip','layer','aspect'),subkey(x[1]))) for x in imgs],
+            'output':dict(zip(KEYS+('mip','layer','aspect'),subkey(out))),
+            'status':'MATCH_EXACT' if pred==actual else
             'MATCH_WITHIN_1_LSB' if all(maxdelta(p,q)<=1 for p,q in zip(pred,actual)) else 'DIVERGENCE_LOCAL',
             'frame':a.frame,'submit':u['submit'],'samples':samples,'native_flip_sha256':digest(native),
             'scope':'original guest compositor on identical logical native input texels; not prefix authority or a P8 cut'}
@@ -332,7 +333,32 @@ def audit(path,exe):
                 row={'use':e.get('use'),'status':'INCOMPLETE','reason':str(err)}
             result[dest].append(row)
         result['acquisition_gaps']=[name for name in ('hzb','compositor') if not result[name]]
+        # An exact output version, not a hash/shader-name match, is needed to
+        # join each pair to the actual tessellation or compositor input.
+        result['paired_version_links']=[]
+        produced={tuple(x['output'][k] for k in KEYS+('mip','layer','aspect')):x['use']
+                  for x in result['hzb'] if 'output' in x}
+        for x in result['hzb']+result['compositor']:
+            for v in ([x['input']] if 'input' in x else x.get('inputs',[])):
+                k=tuple(v[n] for n in KEYS+('mip','layer','aspect'))
+                if k in produced:result['paired_version_links'].append({'producer':produced[k],'consumer':x['use'],'version':v})
+        # Link the actual retained count dispatch to the HZB producer.
+        result['tessellation_hzb_links']=[]
+        name=G+'queue-state/ds_prelight_cp_args_events.jsonl'
+        if name in a.z.namelist():
+            for row in map(json.loads,a.z.read(name).splitlines()):
+                if not row.get('retained') or row.get('frame') not in (a.frame-1,a.frame) or row.get('phase')!='after':continue
+                for im in row.get('inputs',{}).get('image_operands',[]):
+                    image=im.get('image',{})
+                    if im.get('status')!='complete' or im.get('version_after')!=image.get('version'):continue
+                    for v,p in produced.items():
+                        if tuple(image.get(k) for k in KEYS)==v[:len(KEYS)]:
+                            result['tessellation_hzb_links'].append({'producer':p,'seq':row.get('seq'),'version':list(v)})
         result['local_counterexamples']=[x for name in ('hzb','compositor') for x in result[name] if x['status']=='DIVERGENCE_LOCAL']
+        result['decision']={'status':'BLOCKED','interval':[0,16],
+            'reason':'Paired outputs are independently replayed but the guest root census and complete producer-to-flip path are not certified.',
+            'next_missing_edges':['HZB/count to exact G-buffer pixel','G-buffer to scene HDR','scene HDR to final compositor input'],
+            'rule':'A local divergence is never promoted to global PASS/FAIL without causal propagation.'}
         return result
     finally:a.close()
 

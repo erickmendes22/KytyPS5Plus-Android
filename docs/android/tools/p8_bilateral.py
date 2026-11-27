@@ -183,6 +183,31 @@ def operation_reference(op, args, executable):
         # Round to nearest even for the explicitly scoped UNORM contract.
         # Do not use this contract for UINT, sRGB, blend or unknown rounding.
         out=bytes(round(min(1.0,max(0.0,v))*255.0) for v in floats)
+    elif op.kind=='hzb_min2x2':
+        from p8_paired_replay import HZB,HASHES,hzb_minimum
+        require(len(args)==2 and digest(args[0])==HASHES[HZB], 'wrong original HZB binary')
+        require(set(p)=={'width','height'}, 'invalid HZB contract parameters')
+        require(op.inputs[1].format in (100,126,130) and op.output.format==100,
+                'unsupported HZB storage format')
+        out=hzb_minimum(args[1],p['width'],p['height'])
+    elif op.kind=='compositor_wave':
+        from p8_paired_replay import run_composite
+        require(executable is not None and len(args)==4, 'missing independent compositor inputs')
+        require(set(p)=={'state','images','width','height'}, 'invalid compositor parameters')
+        # Scalar memory is an explicit versioned input. JSON contains consumed
+        # user data and raw scalar regions, not reference image/color values.
+        raw=json.loads(args[1])
+        require(len(p['images'])==2 and op.output.format==64 and
+                all(v.format==97 for v in op.inputs[2:]), 'compositor input format')
+        images=[]
+        for v,meta,data in zip(op.inputs[2:],p['images'],args[2:]):
+            s=meta['snapshot'];e=meta['entry']
+            require((v.owner,v.allocation,v.version,v.order,v.mip,v.layer,v.aspect,v.object_id,v.format)==
+                    (s['owner'],s['native'],s['version'],s['write_order'],s['mip'],s['layer'],
+                     s['aspect'],s['object'],s['format']), 'compositor version identity')
+            images.append((e,s,data))
+        _,words=run_composite(executable,args[0],raw,p['state'],images,p['width'],p['height'])
+        out=struct.pack('<%dI'%len(words),*words)
     elif op.kind=='guest_wave':
         require(executable is not None, 'independent guest executor unavailable')
         require(tuple(p['addresses'])==tuple(v.owner+v.offset for v in op.inputs), 'guest memory/resource address mismatch')

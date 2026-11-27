@@ -12,8 +12,8 @@ constexpr uint64_t RawStorageBudget=192ull*1024*1024;
 constexpr uint64_t RawCopyBudget=256ull*1024*1024;
 // Keep the previous normal budgets; reserve a separate bounded lane for
 // the actual final inputs and previous-frame HZB producer/consumer.
-constexpr uint64_t CriticalStorageBudget=48ull*1024*1024;
-constexpr uint64_t CriticalCopyBudget=64ull*1024*1024;
+constexpr uint64_t CriticalStorageBudget=80ull*1024*1024;
+constexpr uint64_t CriticalCopyBudget=96ull*1024*1024;
 constexpr uint64_t HzbCS=0xdbecbbe2051b41baull;
 constexpr bool HzbShader(uint64_t shader){return shader==HzbCS;}
 constexpr bool CriticalRole(const char* role) {

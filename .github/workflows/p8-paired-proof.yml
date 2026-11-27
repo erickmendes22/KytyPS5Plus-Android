@@ -1,0 +1,31 @@
+name: P8 paired acquisition proof
+on:
+  push:
+    branches: [staging/p8-paired-acquisition-20261127]
+    paths: ['.github/workflows/p8-paired-proof.yml', 'docs/android/tools/**', 'src/graphics/**', 'tests/manual/**']
+jobs:
+  proof:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: p8-independent-guest-isa
+          run-id: 46012579033
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: /tmp/p8
+      - run: |
+          chmod +x /tmp/p8/kyty_p8_guest_ref
+          python3 -m pip install numpy
+          python3 docs/android/tools/test_p8_guest_ref.py /tmp/p8/kyty_p8_guest_ref
+          python3 docs/android/tools/test_p8_graphics_bilateral.py /tmp/p8/kyty_p8_guest_ref
+          python3 docs/android/tools/test_p8_paired_replay.py
+          python3 docs/android/tools/test_p8_cp_ordered.py
+          c++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/p8_paired_budget_test.cpp -o /tmp/p8budget
+          /tmp/p8budget
+          c++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/p8_raw_store_test.cpp -o /tmp/p8store
+          /tmp/p8store
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p8-paired-host-source
+          path: docs/android/tools/
