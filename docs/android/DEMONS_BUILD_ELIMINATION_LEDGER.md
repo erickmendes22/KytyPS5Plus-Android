@@ -611,3 +611,37 @@ Reprodução (ZIP real fornecido pelo usuário, não incluído no repositório):
   independente do prefixo. Não afirmar que a próxima captura garante uma
   decisão global. P8 permanece [0,16], sem poda global. Se surgir
   contraexemplo local, exigir efeito causal até o flip para poda global.
+
+
+### #756 — APK pareado, compilado, assinado e verificado (27/11/2026)
+
+- Revisão nativa `f6d40307f6087e53de9a1d67efca5d710356500b`, workflow [46026444215](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/46026444215), conclusão success, artefato [15211219219](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/46026444215/artifacts/15211219219).
+- #755 falhou antes da compilação por regressão do filtro do compositor em
+  demons_indirect_witness_test: HdrOwner passou indevidamente como overlay.
+  A #756 restringe o filtro aos dois owners observados (SceneOwner e
+  OverlayOwner), preserva a asserção negativa original e passa os testes
+  focados, comparadores P8, compilação nativa, Gradle e auditoria do APK.
+- APK ARM64 de 18.519.166 bytes, SHA-256
+  `83acaf8a9d520a584572eae4c75cc194df357260b629b39e162fb27cd4a76403`.
+  ZIP SHA-256 `db32735df074796b224e5991860221b267227d3a569384841de60a88e0d1ca1c`.
+  Download, CRC dos ZIPs, assinatura APK v2 RSA/SHA-256 e digest de conteúdo
+  verificados localmente. Certificado estável SHA-256
+  `8f5f176fc9fc9654de485ac73a8d1873ceb2b61122fd93f9da95717aa1309ee0`;
+  revisão integral encontrada em lib/arm64-v8a/libmain.so.
+- Validação adicional host: fixture de arquivo pareado com os binários guest
+  reais da #753 e dados sintéticos aceitou MATCH HZB e MATCH_EXACT
+  compositor; detectou divergências introduzidas de cada saída, e rejeitou
+  versão incorreta do flip e versão instável da HZB. O recorte ISA HZB
+  min/load com export diagnóstico substituindo apenas o image_store
+  reproduziu 64/64 valores; o store integral continua sem certificação.
+  Os casos sintéticos do decisor bilateral selecionaram [0,8] e [8,16].
+- **Cortes globais: zero. Intervalo [0,16], P8 aberto.** Última captura real
+  disponível: #753 frame 359. Nenhuma execução da #756 no aparelho foi
+  observada nesta sessão. A nova aquisição repara os dados faltantes das
+  comparações HZB e compositor e associa usos a pacotes guest; não fornece
+  ainda um adaptador completo do cone causal HZB/tesselação/G-buffer/HDR/cena/flip.
+  O comparador local de arquivo não autoriza uma poda global por si só.
+  Não registrar resolução visual, P4 ou P12 antecipadamente. Próxima decisão
+  deve utilizar os novos pares com versões estáveis, e estabelecer o efeito
+  causal da divergência até o mesmo flip ou certificar o prefixo relevante
+  completo antes de podar. Nenhuma mudança artificial de iluminação.
