@@ -164,6 +164,25 @@ def operation_reference(op, args, executable):
         require(len(args)==3 and all(len(x)==4 for x in args) and not p, 'select operands')
         mask=struct.unpack('<I',args[0])[0];require(mask in (0,1),'non-boolean predicate')
         out=args[1] if mask else args[2]
+    elif op.kind=='guest_export':
+        from p8_graphics_contract import execute
+        require(executable is not None, 'independent graphics executor unavailable')
+        # The first four (or five) operands are explicit launch state, not
+        # arbitrary constants embedded in the contract's parameters.
+        start = 5 if p.get('lds') else 4
+        require(len(op.inputs) >= start and all(v.aspect == 0 for v in op.inputs[start:]),
+                'guest graphics input identity')
+        require(tuple(p['addresses']) == tuple(v.owner+v.offset for v in op.inputs[start:]),
+                'guest graphics memory/resource address mismatch')
+        out = execute(executable,p,args)
+    elif op.kind=='pack_rgba8_unorm':
+        require(len(args)==1 and not p and len(args[0])==op.output.size*4 and op.output.size%4==0,
+                'RGBA8 pack contract')
+        floats=struct.unpack('<%df'%(len(args[0])//4),args[0])
+        require(all(math.isfinite(v) for v in floats),'nonfinite RGBA8 operand')
+        # Round to nearest even for the explicitly scoped UNORM contract.
+        # Do not use this contract for UINT, sRGB, blend or unknown rounding.
+        out=bytes(round(min(1.0,max(0.0,v))*255.0) for v in floats)
     elif op.kind=='guest_wave':
         require(executable is not None, 'independent guest executor unavailable')
         require(tuple(p['addresses'])==tuple(v.owner+v.offset for v in op.inputs), 'guest memory/resource address mismatch')
