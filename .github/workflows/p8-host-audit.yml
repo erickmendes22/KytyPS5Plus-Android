@@ -1,0 +1,24 @@
+name: P8 offline reference tools (no APK)
+on:
+  push:
+    branches: [staging/ds-v3-host-audit-20261127]
+    paths: ['.github/workflows/p8-host-audit.yml', 'docs/android/tools/**']
+permissions:
+  contents: read
+jobs:
+  export-reference:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package checked-in reference implementations
+        run: |
+          mkdir -p host-reference
+          cp docs/android/tools/*.py host-reference/
+          cp docs/android/tools/p8_guest_ref.cpp host-reference/
+          git rev-parse HEAD > host-reference/revision.txt
+          (cd host-reference && sha256sum *.py *.cpp > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p8-host-reference
+          path: host-reference/
+          retention-days: 3
