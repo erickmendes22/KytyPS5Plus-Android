@@ -10,6 +10,11 @@ def rejects(fn):
     raise AssertionError('incomplete/unbound trace accepted')
 
 def main():
+    code=bytearray(0x300)
+    for pc,raw in r.SDWA_SIGNS.items():code[pc:pc+8]=raw
+    assert r.sign_select(code,0x2c0)==r.xor_sign(100,3)+r.cndmask(3,100,3)
+    assert r.sign_select(code,0x2e8)==r.xor_sign(100,11)+r.cndmask(1,11,100)
+    code[0x2e8]^=1;rejects(lambda:r.sign_select(code,0x2e8))
     assert b.STRIDE==198 and b.EXTRA_WORDS==88704
     a=np.zeros(q.PAIR_WORDS+b.EXTRA_WORDS,'<u4')
     a[q.PAIR_WORDS]=3;a[q.PAIR_WORDS+b.LIGHTS*b.STRIDE]=7

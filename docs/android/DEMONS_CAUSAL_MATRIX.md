@@ -1,5 +1,14 @@
 # PPSA01341 01.007.000 — causal matrix
 
+## 759 oracle correction — supersedes the provisional BRDF divergence (27/11/2026)
+
+- Same ZIP 20261127-183012, SHA256 a32cfbdc07d0579642bc6894caa12f87f9b7c3bac97f5c4c620b1b300f4263c2; frame475 submit14104, tile16287 WG0, lanes31/39. Corrected offline reference: **MATCH_CONDITIONAL for both**, final RGB ULP [3,0,2] and [0,1,2], all 8 individual light terms <=3 ULP, ten sample addresses/descriptors/samplers per lane exact.
+- The previous zero prediction for light1 was an oracle defect: original SDWA V_CNDMASK_B32 at PC 0x2e8 ignores selected source NEG in the independent executor. Actual encoded comparison (s69=2047, v2=2812) and negative v11 produced wrong negative sign rather than positive. Verified exact sign-bit XOR followed by ordinary CNDMASK on lanes 0/31/39/63, both condition outcomes. Guarded exact two sign-select encodings at PCs 0x2c0 and 0x2e8, using verified-unused scratch v100. No Android shader edit. The host comparator now runs semantic controls before replay.
+- #760 native BRDF schema4 was built from b126d63 before this late counterproof. Its instrumentation is not a demonstrated rendering fix and is not necessary to retest #759's already matched arithmetic. The host-only correction applies to both schemas 3/4; no extra APK compilation for the host fix. The provisional BRDF claim below is historical, not current.
+- Next active contract: provenance of light assignment / sample input (not the already matched accumulator). Actual q8 mask slot3 guest 8772865392, native 8932172584204275344, offset 167280, bytes 351424; all captured bindings to the exact range in this frame are read-only. The writer is not yet located; do not assume absence of light4 is a defect. The q8 witnesses visit only indices 0..3, while light4 is present in other cluster words and absent in these witnesses. q0 excludes their tile and q33 does not change their HDR. This is an upstream lead, not proof of missing intended light.
+- Global P8 remains BLOCKED [0,16]; exact local match only, no inferred half cut or healthy reference. Prior findings retained in scope.
+
+
 ## #759 real / #760 — BRDF instruction-local contract (27/11/2026)
 
 - Source capture SHA256 a32cfbdc07d0579642bc6894caa12f87f9b7c3bac97f5c4c620b1b300f4263c2, revision 53860bf, frame475 submit14104 tile16287 WG0, lanes31 (703,651) and39 (703,652), stencil86. 32/32 manifest payloads verified. q8 174 unique tiles and 8398 admitted material pixels, all HDR zero on entry; only 1 pixel reaches descriptive L>=0.006 after. Relative control is NOT a healthy control. L after: 6.2463879585e-6 and 8.7742447853e-6.

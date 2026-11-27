@@ -31,6 +31,31 @@ def regs(s,k):
     for m in re.finditer(k+r'(?:\[(\d+):(\d+)\]|(\d+))',s):v.extend([int(m[3])] if m[3] else range(int(m[1]),int(m[2])+1))
     return v
 
+
+# Exact lowering of the two SDWA sign-selects in the fingerprinted shader.
+# ROCjitsu ignores the selected NEG modifier at 0x2e8 in the tested runner.
+# This changes ONLY the independent replay, not production shader output.
+SDWA_SIGNS={0x2c0:bytes.fromhex('f906060203061606'),0x2e8:bytes.fromhex('f91602020b060616')}
+def xor_sign(d,r):return u((29<<25)|(d<<17)|(r<<9)|255)+u(0x80000000)
+def cndmask(d,a,b):return u((1<<25)|(d<<17)|(b<<9)|(256+a))
+def sign_select(code,pc):
+    need(pc in SDWA_SIGNS and code[pc:pc+8]==SDWA_SIGNS[pc],'unexpected SDWA sign instruction')
+    return xor_sign(100,3)+cndmask(3,100,3) if pc==0x2c0 else xor_sign(100,11)+cndmask(1,11,100)
+
+def check_sign_semantics(code,runner,mode):
+    need(code[0x2c8:0x2cc]==bytes.fromhex('4504827d'),'unexpected sign comparison')
+    lanes=(0,31,39,63);mask=sum(1<<l for l in lanes)
+    sg=[0]*106;sg[69]=2047
+    for pc,src,dst in ((0x2c0,3,3),(0x2e8,11,1)):
+        for y in (1200,2812):
+            vg=[0]*(256*64)
+            for l in lanes:
+                vg[2*64+l]=y;vg[src*64+l]=0xbe85a1cb
+            out=run_wave(runner,code[0x2c8:0x2cc]+sign_select(code,pc)+exp(0,[dst]*4,True)+END,sg,vg,[],mode,mask)
+            expected=0xbe85a1cb ^ (0x80000000 if (y<=2047 if pc==0x2c0 else y>2047) else 0)
+            need(all((0,l) in out and out[0,l][2][0]==expected for l in lanes),'SDWA sign lowering semantic control failed')
+    return 16
+
 def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=None,brdf=None,records=None):
     need(digest(code)==HASH,'unrecognized q8 ISA')
     need(len(raw['user_data'])==2 and len(buffers)==4,'launch operands')
@@ -41,6 +66,8 @@ def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=N
     original=code[:rows[-1][0]+4]
     # All v100..v123 and s100..101 are unused by the fingerprinted program.
     need(not any(set(regs(t,'v'))&set(range(100,124)) or set(regs(t,'s'))&{100,101,102,103} for _,t in rows),'reserved registers used')
+    controls=check_sign_semantics(code,runner,mode)
+    need(all(sizes.get(pc)==8 for pc in SDWA_SIGNS),'SDWA instruction size')
     parts=[(r['address'],pack(r['words'])) for r in raw['scalar_regions']]+buffers
     seg=merge(parts);sg=[0]*106;sg[:2]=raw['user_data'];sg[2]=wg;sg[3]=0;sg[102]=(1<<lane)&0xffffffff;sg[103]=(1<<lane)>>32
     vg=[0]*(256*64);vg[lane]=lane%8;vg[64+lane]=lane//8
@@ -59,6 +86,8 @@ def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=N
         p=bytearray(original)
         def replace(pc,body):
             start=len(p);p[pc:pc+sizes[pc]]=jump(pc,start)+NOP*(sizes[pc]//4-1);p.extend(body(start))
+        for pc in SDWA_SIGNS:
+            replace(pc,lambda start,pc=pc:sign_select(code,pc)+jump(start+12,pc+8))
         replace(0xf8,lambda start:code[0xf8:0xfc]+u(0x87fe7e66)+jump(start+8,0xfc))
         # Wave reductions were independently checked across the actual wave.
         p[0xd00:0xd50]=NOP*((0xd50-0xd00)//4);p[0xd00:0xd0c]=code[0xd04:0xd08]+smov(86,union)
@@ -154,7 +183,7 @@ def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=N
                     if local['status']=='MATCH_LOCAL' and entry_diffs:local['status']='UPSTREAM_INPUT_CANDIDATE'
                     brdf_checks.append(dict(light=k,entry_differences=entry_diffs,**local))
             worst=max(delta+ad+[d for r in light_checks for d in r['ulp']])
-            return dict(brdf=brdf_checks,status='MATCH_CONDITIONAL' if worst<=8 else 'DIVERGENCE_CANDIDATE',words=list(words),observed=actual,ulp=delta,accumulation_ulp=ad,light_checks=light_checks,coordinate_ulp=coord_deltas,visits=len(done))
+            return dict(oracle_sign_controls=controls,brdf=brdf_checks,status='MATCH_CONDITIONAL' if worst<=8 else 'DIVERGENCE_CANDIDATE',words=list(words),observed=actual,ulp=delta,accumulation_ulp=ad,light_checks=light_checks,coordinate_ulp=coord_deltas,visits=len(done))
         need((60,lane) in out,'missing trap export');pc,k,*co=out[60,lane][2];need(pc in sites,'unsupported reduction path')
         key=(pc,k);need(key not in done,'repeated dynamic site/index')
         if key not in expected:return dict(status='INCOMPLETE',pc=hex(pc),light=k,reason='native sample missing',visits=len(done))
