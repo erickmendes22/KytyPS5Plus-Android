@@ -29,6 +29,7 @@ constexpr bool CaptureCriticalFrame(bool evidence,bool full,const char* role) {
 constexpr uint64_t DirectScenePS=0xab81bfa8ee4e0feeull;
 constexpr uint64_t HdrOwner=0x281300000ull;
 constexpr uint64_t SceneOwner=0x2b2a40000ull;
+constexpr uint64_t OverlayOwner=0x281a80000ull;
 constexpr uint64_t CompositePS=0x3265b01ed00a5c01ull;
 constexpr bool DirectSceneTarget(uint64_t shader,uint64_t owner) {
     return shader==DirectScenePS&&owner==HdrOwner;
@@ -39,8 +40,10 @@ constexpr const char* RadianceInputRole(uint64_t shader,uint64_t owner,
     if(!read||written||!owner||!levels||!layers)return nullptr;
     if((shader==0xe86bfee195efa5a4ull||shader==0x8f52cca9ea3ba4fcull)
         &&owner==HdrOwner&&layers==1)return "post_hdr_input";
-    if(shader==CompositePS&&layers==1&&levels==1&&bytes<=24ull*1024*1024)
-        return owner==SceneOwner?"compositor_scene_input":"compositor_overlay_input";
+    if(shader==CompositePS&&layers==1&&levels==1&&bytes<=24ull*1024*1024){
+        if(owner==SceneOwner)return "compositor_scene_input";
+        if(owner==OverlayOwner)return "compositor_overlay_input";
+    }
     // Preserve the dynamic, small 2D inputs of the actual forward pass,
     // not all static BC textures or hundreds of shadow-array layers.
     if(shader==DirectScenePS&&gpu&&layers==1&&levels<=9&&bytes<=8ull*1024*1024)
