@@ -99,10 +99,10 @@ def fixture_check(original, sliced, executable):
     return checks
 
 
-def audit(path, executable, check=False):
+def audit(path, executable, check=False, draw=599):
     cap=Capture(path); dec=LLVM()
     try:
-        record=cap.json('queue-state/ds_prelight_witness_foreground_599.json')
+        record=cap.json(f'queue-state/ds_prelight_witness_foreground_{draw}.json')
         require(record.get('ps_hash')==SHADER and record.get('ps_user_data_base')==0,
                 'wrong material identity or launch ABI')
         original=cap.read('guest-shaders/ps_'+SHADER+'_probe.bin')
@@ -114,13 +114,13 @@ def audit(path, executable, check=False):
         require(len(set(results))==1,'MRT0 sensitive to unobserved launch state')
         expected=results[0]
         with zipfile.ZipFile(path) as z:
-            link=version_link(z,599)
+            link=version_link(z,draw)
             raw=z.read('p8-reference/'+link['payload'])
         require(record['frame']==link['producer']['frame'] and
                 record['submit']==link['producer']['submit'],'wrong material episode')
         hist=Counter(x[0] for x in struct.iter_unpack('<I',raw))
         return {'status':'MRT0_REFERENCE_EXECUTED','scope':'admitted fragment scalar export only; no coverage, input producer or global P8 certificate',
-                'draw':599,'shader':SHADER,'guest_sha256':SHA,'slice_sha256':hashlib.sha256(code).hexdigest(),
+                'draw':draw,'shader':SHADER,'guest_sha256':SHA,'slice_sha256':hashlib.sha256(code).hexdigest(),
                 'frame':record['frame'],'submit':record['submit'],'boundary':link['consumer'],
                 'expected_word':hex(expected),'actual_pixels_equal_word':hist[expected],
                 'actual_pixels_total':len(raw)//4,'actual_other_words':len(raw)//4-hist[expected],
@@ -136,8 +136,8 @@ def audit(path, executable, check=False):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('archive',type=Path);p.add_argument('runner',type=Path)
-    p.add_argument('--check-fixtures',action='store_true');p.add_argument('--output',type=Path)
-    a=p.parse_args();r=audit(a.archive,a.runner,a.check_fixtures);s=json.dumps(r,indent=2)+'\n'
+    p.add_argument('--draw',type=int,default=599);p.add_argument('--check-fixtures',action='store_true');p.add_argument('--output',type=Path)
+    a=p.parse_args();r=audit(a.archive,a.runner,a.check_fixtures,a.draw);s=json.dumps(r,indent=2)+'\n'
     if a.output:a.output.write_text(s)
     print(s,end='')
 

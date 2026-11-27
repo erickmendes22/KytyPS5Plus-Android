@@ -2,6 +2,20 @@
 References: Jetsku dd9f990 (#130 documents fog-transition crash), Chenxiao07
 66cdb39 (v20261016 family reports gameplay, no identical GPU capture).
 
+## Atualização prioritária — captura #756, 27/11/2026
+
+**P8 BLOCKED [0,16]; zero metades globais eliminadas. Não disparar #757.**
+A captura real frame427 já foi analisada. O replay analítico do compositor
+reproduziu 2066048/2073600 pixels exatamente, restantes com diferença máxima
+1 LSB RGB. A testemunha final (960,540) tem baseline e observação iguais;
+a sensibilidade à cena foi exercitada. O próximo passo é fechar o suporte
+causal dos escritores da cena P8_USE_242/243, não repetir certificados locais.
+O método inverso, resultados, limitações e condições bilaterais estão em
+[DEMONS_APK_756_RESULTS.md](DEMONS_APK_756_RESULTS.md), que prevalece sobre
+os estados históricos abaixo. A referência analítica não certifica DCC ou
+P8; nenhum APK foi gerado.
+
+
 ## Continuidade executável após #745 — 26/11/2026
 
 [Árvore atualizada: estado global, cortes locais e decisão da #746](DEMONS_PRELIGHT_BINARY_TREE.md#estado-atual).

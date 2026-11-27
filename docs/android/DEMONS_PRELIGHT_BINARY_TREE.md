@@ -1,8 +1,22 @@
 # V3 — investigação binária integral (normativa, substitui V2 e V1)
 
+## Atualização prioritária — captura #756, 27/11/2026
+
+**P8 BLOCKED [0,16]; zero metades globais eliminadas. Não disparar #757.**
+A captura real frame427 já foi analisada. O replay analítico do compositor
+reproduziu 2066048/2073600 pixels exatamente, restantes com diferença máxima
+1 LSB RGB. A testemunha final (960,540) tem baseline e observação iguais;
+a sensibilidade à cena foi exercitada. O próximo passo é fechar o suporte
+causal dos escritores da cena P8_USE_242/243, não repetir certificados locais.
+O método inverso, resultados, limitações e condições bilaterais estão em
+[DEMONS_APK_756_RESULTS.md](DEMONS_APK_756_RESULTS.md), que prevalece sobre
+os estados históricos abaixo. A referência analítica não certifica DCC ou
+P8; nenhum APK foi gerado.
+
+
 ## Estado atual
 
-Atualizado em **27/11/2026**, após análise offline da captura #753 (092211), revisão 96ce5f8, modo F; #756 compilada, assinada e verificada; aguarda captura, sem decisão global.
+Atualizado em **27/11/2026**, após análise offline da captura #756 (130905), revisão f6d4030, modo F; sem decisão global. O par integral do compositor foi analisado, e a investigação segue pelo escritor da cena, sem nova build.
 
 **Nó global ativo: P(8) BLOCKED. Intervalo [0,16]. Metades eliminadas: 0.**
 Na #753, o contador 86016 e leitura/emissão CP coincidem no mesmo caso.

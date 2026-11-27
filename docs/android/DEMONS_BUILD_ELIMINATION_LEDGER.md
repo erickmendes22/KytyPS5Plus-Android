@@ -1,5 +1,19 @@
 # Demon's Souls — registro de eliminação causal por build
 
+## Atualização prioritária — captura #756, 27/11/2026
+
+**P8 BLOCKED [0,16]; zero metades globais eliminadas. Não disparar #757.**
+A captura real frame427 já foi analisada. O replay analítico do compositor
+reproduziu 2066048/2073600 pixels exatamente, restantes com diferença máxima
+1 LSB RGB. A testemunha final (960,540) tem baseline e observação iguais;
+a sensibilidade à cena foi exercitada. O próximo passo é fechar o suporte
+causal dos escritores da cena P8_USE_242/243, não repetir certificados locais.
+O método inverso, resultados, limitações e condições bilaterais estão em
+[DEMONS_APK_756_RESULTS.md](DEMONS_APK_756_RESULTS.md), que prevalece sobre
+os estados históricos abaixo. A referência analítica não certifica DCC ou
+P8; nenhum APK foi gerado.
+
+
 Atualizado em **27/11/2026**. Este registro responde, para cada build: **o que
 foi cortado, com qual evidência, o que não foi cortado e qual deficiência a
 próxima aquisição corrige**. Uma nova build ou mais arquivos não contam como
