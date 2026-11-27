@@ -4894,6 +4894,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         const auto& vp=dynamic_state.viewports[0];const auto& sc=dynamic_state.scissors[0];
         const auto& hw=buffer.GetRegisters();const auto& blend=hw.GetBlendControl(0);
         const auto& ps=state.ps_input_info;
+        const auto& rsrc1=buffer.GetShaders().GetPs().ps_regs.rsrc1;
+        const auto& clip=state.vertex_info[0].clip_space;
         DemonsP8Reference::WriteEvent({{"kind","composite_state"},{"use",p8_marker},
             {"frame",root_frame},{"submit",submit_id},{"shader",root_ps->shader_hash},
             {"vs",root_vs?root_vs->shader_hash:0ull},{"indices",draw.index_count},
@@ -4908,6 +4910,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             {"target_mask",hw.GetRenderTargetMask()},{"shader_mask",hw.GetShaderRegisters().m_cbShaderMask},
             {"output_mode",ps.target_output_mode[0]},{"round_mode",ps.target_round_mode},
             {"wave",ps.wave_size},{"perspective_center",ps.ps_perspective_center_vgpr},
+            {"mode",uint32_t(rsrc1.float_mode)|(uint32_t(rsrc1.dx10_clamp)<<8)|(uint32_t(rsrc1.ieee_mode)<<9)},
+            {"fp16_overflow",bool(rsrc1.fp16_overflow)},{"rectlist",Prospero::IsRectList(buffer.GetUserConfig().GetPrimType())},
+            {"clip_transform",clip.enabled},{"clip_scale",{clip.scale[0],clip.scale[1]}},
+            {"clip_offset",{clip.offset[0],clip.offset[1]}},{"clip_half_extent",{clip.half_extent[0],clip.half_extent[1]}},
+            {"output_shader_mask",ps.target_shader_mask},{"sample_mask_export",ps.ps_sample_mask_export_enable},
+            {"samples",state.color_info[0].desc.info.samples},
             {"interpolator0",ps.interpolator_settings[0]},{"sample_shading",ps.ps_sample_shading},
             {"kill",ps.ps_pixel_kill_enable},{"depth_export",ps.ps_depth_export_enable},
             {"color_count",state.color_count}});
