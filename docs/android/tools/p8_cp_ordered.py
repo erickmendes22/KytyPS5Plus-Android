@@ -13,6 +13,14 @@ NAME = 'cp-ordered-batches.jsonl'
 PREFIX = 'p8-reference/'
 
 
+def gpu_offsets(state, address):
+    """Exact GPU-owned bytes, including outstanding publications."""
+    ranges = state['gpu_dirty_ranges'] + [part for pending in state['pending_tokens']
+                                          for part in pending['ranges']]
+    return {i for part in ranges for i in range(max(0, part['address']-address),
+            min(20, part['address']+part['bytes']-address))}
+
+
 def audit_selected(batch, journal, target):
     require(batch.get('selected_p8') is True and batch.get('mutation_epoch_tracked') is False,
             'not a selected-cycle reference or falsely tracked epoch')
@@ -30,6 +38,16 @@ def audit_selected(batch, journal, target):
             reason = 'missing same-frame original parent/child binding'
         elif not raw.get('front_reference_ready') or not batch.get('collection_front_ready'):
             reason = 'record thread ownership not certified'
+        # A post-read backing copy may be downstream of the very GPU->CPU
+        # publication we are trying to verify. Equality does not prove that
+        # publication preserved the pre-read authoritative bytes.
+        if record.get('status') == 'MATCH':
+            before, after = raw['state_before'], raw['state_after']
+            lost = sorted(gpu_offsets(before, raw['address']) - gpu_offsets(after, raw['address']))
+            if lost or before['image_gpu_dirty']:
+                record['post_read_reference_match'] = True
+                record['lost_gpu_authority_offsets'] = lost
+                reason = reason or 'pre-read GPU authority not independently captured'
         if reason:
             record.update(status='INCOMPLETE',reason=reason)
             record.pop('first_divergence',None)

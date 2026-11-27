@@ -78,3 +78,29 @@ with tempfile.TemporaryDirectory() as d:
     else:
         raise AssertionError('corrupt selected-cycle export accepted')
 print('Three-record archive transport and corrupt-export rejection passed')
+
+# #752: publication during the original read makes a post-read backing
+# alias a downstream observation, not an independent GPU-side reference.
+def published_backing():
+    b=deepcopy(batch); r=b['records'][0]
+    clean=deepcopy(state)
+    clean.update(gpu_dirty=False,gpu_modified=False,gpu_dirty_ranges=[])
+    r['state_after']=deepcopy(clean); r['state_reference_after']=deepcopy(clean)
+    r['reference'].update(kind='cpu_backing',state_at_copy=deepcopy(clean))
+    return b
+
+b=published_backing()
+r=audit_selected(b,journal,408)['records'][0]
+assert r['status']=='INCOMPLETE' and r['post_read_reference_match'] is True
+assert r['lost_gpu_authority_offsets']==list(range(20))
+b['records'][0]['state_before']=deepcopy(b['records'][0]['state_after'])
+assert status(b)=='MATCH'
+b=published_backing(); b['records'][0]['state_before']['gpu_dirty_ranges']=[{'address':address+2,'bytes':3}]
+r=audit_selected(b,journal,408)['records'][0]
+assert r['status']=='INCOMPLETE' and r['lost_gpu_authority_offsets']==[2,3,4]
+b=published_backing(); s=b['records'][0]['state_before']
+s.update(gpu_dirty=False,gpu_dirty_ranges=[],pending_publication=True,
+         pending_tokens=[{'token':1,'ranges':[{'address':address+4,'bytes':4}]}])
+r=audit_selected(b,journal,408)['records'][0]
+assert r['status']=='INCOMPLETE' and r['lost_gpu_authority_offsets']==[4,5,6,7]
+print('Four #752 authority-transition regression tests passed')

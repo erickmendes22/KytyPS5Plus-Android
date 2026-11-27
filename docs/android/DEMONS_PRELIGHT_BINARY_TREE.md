@@ -2,15 +2,24 @@
 
 ## Estado atual
 
-Atualizado em **26/11/2026**, após analisar a captura real **#746** e entregar
-**#747** como candidato de desenvolvimento, não como build de decisão P8.
-Staging após #747: execução guest independente em desenvolvimento. Este quadro
-é o estado operacional vigente; as seções posteriores preservam os contratos
-e o histórico que o fundamentam.
+Atualizado em **27/11/2026**, após a captura real **#752**, ZIP 082502,
+revisão b167ce99, modo F. Este quadro substitui os estados históricos abaixo.
 
-**Nó global ativo: P(8). Intervalo: [0,16]. Metades globais eliminadas: 0.**
-A #746 prepara a comparação local da leitura e emissão dos argumentos indiretos
-do episódio observado. Ela não representa uma seleção de C1–C8 ou C9–C16.
+**Nó global ativo: P(8) BLOCKED. Intervalo [0,16]. Metades eliminadas: 0.**
+A #752 executa o passe direto ab81bfa8ee4e0fee com 828 índices no frame384,
+submit11367, mas nenhum dos 1.440.000 pixels muda RGB; alpha muda em
+1.439.563. Portanto, ausência total do passe não é condição necessária
+do defeito. O G-buffer observado tem 440 pixels não dominantes por layer;
+todos os 437 pixels de alpha inalterado pertencem a essa pequena região.
+É vínculo espacial observado, não oráculo de entrada/saída.
+
+POS0: 39/39 MATCH em 59060 vértices (revalidação local).
+CP: 4 MATCH, 6 INCOMPLETE após corrigir falso MATCH de publicação
+GPU->CPU; 0 DIVERGENCE. Parent_command=0 após fronteira em frame384,
+referência pré-leitura ausente e pins antigos sem produtor do endereço
+corrente impedem certificar a aresta. A prioridade continua P(8);
+não reabrir POS0, não cortar C1..C8 ou C9..C16, não forçar luz/contagem.
+Ver [balanço #752](DEMONS_BUILD_ELIMINATION_LEDGER.md#752--captura-real-082502-27112026).
 
 ### Prioridade operacional: decidir P(8)
 

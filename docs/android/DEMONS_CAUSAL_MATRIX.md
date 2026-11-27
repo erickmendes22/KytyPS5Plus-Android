@@ -680,3 +680,22 @@ P8 [0,16] continua aberto. Na captura 074347, HDR q0/q8/q33 tem 0/4/4 pixels aci
 M2/M3/M6: no lote de três registros que em #750 emitiu 92.160 índices para o passe direto ab81bfa8ee4e0fee, #751 emite zero nos três filhos. O endereço dos argumentos mudou de 0x21de00078 para 0x21de07c38, fora dos quatro pins históricos. Entradas de duas execuções não são oráculo idêntico. A correção da aquisição em b167ce99 acompanha lotes do ciclo escolhido, ordena as referências com a thread de registro, preserva os cinco DWORDs realmente consumidos e os valores emitidos. C1, isoladamente, passa a drenar o filho anterior antes da leitura coerente. F não substitui valores. Sem corte global, sem fix visual confirmado.
 
 Comparador: `python3 docs/android/tools/p8_cp_ordered.py ZIP`; teste `python3 docs/android/tools/test_p8_cp_ordered.py` (sete casos locais aprovados). MATCH/ DIVERGENCE/ INCOMPLETE/ UNSTABLE distinguem leitura/emissão e falhas reais de aquisição; não convertem MATCH local em PASS P8. A divergência de leitura só é aceita localmente com autoridade GPU dos bytes diferentes, estado estável e vínculo exato a comando/filho. Sem epoch universal CPU para endereço novo, incerteza permanece explícita. O ZIP #751 não tem o novo JSONL. A #752 deve ser testada em F, com o mesmo save e configuração; ao encontrar diferença, ligar o valor correto ao passe ausente antes de cortar a árvore global.
+
+## #752 — análise real 082502 (27/11/2026)
+
+P8 BLOCKED [0,16], nenhum corte global. M2: passe direto
+ab81bfa8ee4e0fee presente com 828 índices (frame384 submit11367);
+HDR 7717->7719, RGB idêntico em 1.440.000 pixels, alpha muda em
+1.439.563. Ausência total do draw não é condição necessária. M4/M5:
+440 pixels não dominantes por layer do G-buffer; os 437 pixels de
+alpha inalterado pertencem a essa região. A primeira divergência
+independente ainda não foi provada. M7: POS0 39/39 MATCH, revalidação
+local. M3/M6: 10 registros CP, pós-backing iguais ao consumo; dois
+filhos perdem autoridade GPU nos 20 bytes durante leitura, cinco
+registros sem parent no frame384. Comparador reparado: 4 MATCH,
+6 INCOMPLETE, 0 DIVERGENCE. Não confundir resultado posterior à
+publicação com referência anterior. Lacunas de produtor, diário
+pós-fronteira e referência nativa pré-leitura detalhadas no
+[balanço #752](DEMONS_BUILD_ELIMINATION_LEDGER.md). Sem APK novo
+ou fix visual nesta atualização offline; manter prioridade de
+instrumento decisório bilateral antes da aquisição seguinte.
