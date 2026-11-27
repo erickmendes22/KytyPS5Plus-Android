@@ -150,6 +150,21 @@ static void Rejected(const std::vector<uint32_t>& source,const char* expected){
 }
 int main(int argc,char** argv){
     assert(argc>=2); // output prefix, followed by optional captured native VS modules
+    const std::array<uint32_t,5> mixed{17,19,0x80000400u,0x80000402u,17};
+    const auto mixed_windows=VertexWindows::Build(mixed,0);
+    assert(mixed_windows.base[0]==17&&mixed_windows.count[0]==3);
+    assert(mixed_windows.base[1]==0x80000400u&&mixed_windows.count[1]==3);
+    assert(mixed_windows.Total()==6&&mixed_windows.Offset(17)==0&&mixed_windows.Offset(19)==2);
+    assert(mixed_windows.Offset(0x80000400u)==3&&mixed_windows.Offset(0x80000402u)==5);
+    assert(mixed_windows.Offset(0x800003ffu)==UINT32_MAX);
+    assert(mixed_windows.Offset(20)==UINT32_MAX);
+    const std::array<uint32_t,2> wrap{0,1};
+    const auto wrapped=VertexWindows::Build(wrap,-1);
+    assert(wrapped.Total()==2&&wrapped.Offset(UINT32_MAX)==1&&wrapped.Offset(0)==0);
+    const std::array<uint32_t,2> sparse{1,65537};
+    assert(!VertexWindows::Build(sparse,0).Total());
+    const std::array<uint32_t,2> signed_limit{0x7fffffffu,0x80000000u};
+    assert(VertexWindows::Build(signed_limit,0).Total()==2);
     static_assert(HasProjectionOperands(0x868546d85ce5090aull,0x7843cbd43b48179bull));
     assert(!HasTransformInputs(0x868546d85ce5090aull,0x7843cbd43b48179bull));
     static_assert(FocusPair(0x868546d85ce5090aull,0x31e660625354d953ull,12765)==1);
@@ -195,10 +210,10 @@ int main(int argc,char** argv){
             if((op[0]&65535u)==spv::OpConstant&&op.size()==4&&op[3]==MaxVertices)limit=op[2];
             if((op[0]&65535u)==spv::OpULessThan){
                 ++range_checks;
-                if(range_checks==2)assert(op[4]==limit);
+                if(range_checks==3)assert(op[4]==limit);
             }
         }
-        assert(limit&&range_checks==2);
+        assert(limit&&range_checks==3);
         Save(std::string(argv[1])+"generic-"+std::to_string(version)+"-"+std::to_string(block)+"-"+
             std::to_string(unsigned_inputs)+".spv",v);
     }

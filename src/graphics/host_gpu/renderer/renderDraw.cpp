@@ -2716,8 +2716,8 @@ static PreparedIndexBuffer PrepareIndexBuffer(CommandBuffer&               buffe
 }
 
 // Read exactly the GPU index data that the original indexed draw consumes.
-static std::vector<uint32_t> ReadDsVertexIndices(RenderContext& context,const PreparedIndexBuffer& source,uint32_t count) {
-    if(!source.buffer || !count || count>65536) return {};
+static std::vector<uint32_t> ReadDsVertexIndices(RenderContext& context,const PreparedIndexBuffer& source,uint32_t count,uint32_t limit=65536) {
+    if(!source.buffer || !count || count>limit) return {};
     const uint32_t width=source.type==vk::IndexType::eUint16?2u:4u;
     const size_t bytes=size_t{count}*width;
     auto& scheduler=context.GetCommandScheduler();
@@ -3277,6 +3277,20 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	auto& pipeline = *pipeline_ptr;
     nlohmann::json p8_use,p8_forward;
     std::optional<RenderColorInfo> p8_forward_target;
+    std::vector<uint32_t> p8_forward_indices;
+    DemonsVertexPositionProbe::VertexWindows p8_forward_windows;
+    // Save exact raw data in the existing P8 exporter/manifest, independently
+    // of the sealed earlier foreground journal. Never alter a draw argument.
+    const auto p8_save_words=[&](std::span<const uint32_t> words){
+        const uint64_t bytes=words.size_bytes();
+        nlohmann::json row={{"valid",false},{"bytes",bytes}};
+        const auto id=DemonsP8Reference::raw_store.ReserveCopy(bytes);
+        if(!id){row["reason"]="raw_copy_budget_exceeded";return row;}
+        const auto saved=DemonsP8Reference::raw_store.Save(DemonsP8Capture::Folder(),id,
+            std::span<const uint8_t>{reinterpret_cast<const uint8_t*>(words.data()),static_cast<size_t>(bytes)});
+        if(saved.reason){row["reason"]=saved.reason;return row;}
+        row["file"]=saved.file;row["valid"]=true;return row;
+    };
     if(DemonsP8Capture::FullFrame(root_frame)){
         p8_use={{"frame",root_frame},{"submit",submit_id},{"path","graphics"},
             {"draw",root_draw},{"command",command_seq},{"stages",nlohmann::json::array()},{"targets",nlohmann::json::array()}};
@@ -3305,6 +3319,109 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                     vk::ImageAspectFlagBits::eColor,root_frame,submit_id,"forward_hdr_before");
                 // This is the pre-attachment-acquisition observation. If a
                 // clear is executed, do not interpret it as the blend operand.
+                auto& g=p8_forward["geometry"];
+                g={{"valid",false},{"base_vertex",emit.vertex_offset},{"first_instance",emit.first_instance},
+                    {"vs",root_vs?root_vs->shader_hash:0ull},{"primitive_restart",primitive_restart_enable},
+                    {"topology",static_cast<uint32_t>(topology)},{"indices",draw.index_count},
+                    {"instances",draw.instance_count},{"index_guest",index_source.address}};
+                if(root_vs && root_vs->shader_hash==DemonsVertexPositionProbe::ForwardVertexShader &&
+                   draw.IsIndexed() && !mesh_active && !mesh_emulated && !indirect &&
+                   draw.instance_count==1 && !primitive_restart_enable &&
+                   topology==vk::PrimitiveTopology::eTriangleList &&
+                   index_binding.type==vk::IndexType::eUint32 && index_source.guest_element_size==4 &&
+                   uint64_t{draw.index_count}*4<=index_source.size && draw.index_count<=1048576u){
+                    p8_forward_indices=ReadDsVertexIndices(m_context,index_binding,draw.index_count,1048576u);
+                    g["index_payload"]=p8_save_words(p8_forward_indices);
+                    p8_forward_windows=DemonsVertexPositionProbe::VertexWindows::Build(p8_forward_indices,emit.vertex_offset);
+                    g["window_base"]=p8_forward_windows.base;g["window_count"]=p8_forward_windows.count;
+                    g["native_index_offset"]=index_binding.offset;
+                    g["native_index"]=std::hash<VkBuffer>{}(static_cast<VkBuffer>(index_binding.buffer));
+                    g["valid"]=p8_forward_indices.size()==draw.index_count &&
+                        g["index_payload"].value("valid",false) && p8_forward_windows.Total()!=0;
+                    if(!g.value("valid",false))g["reason"]="index_readback_or_vertex_window_unavailable";
+                    // Exact scalar operands and descriptor identity, with bounded
+                    // native buffer slices. The 60 MiB generated record pool is
+                    // not copied wholesale: bit31 selects a 12-byte record.
+                    const auto capture_stage=[&](const PreparedBindings& bound,const auto* resources,const auto* program,bool vertex){
+                        nlohmann::json stage={{"valid",false},{"buffers",nlohmann::json::array()}};
+                        if(!resources||!program){stage["reason"]="missing_stage";return stage;}
+                        const auto& snap=*resources;
+                        stage["shader"]=program->shader_hash;stage["srt"]=snap.flattened_srt;
+                        stage["user_data"]=snap.user_data;stage["user_data_base"]=snap.diagnostic_user_data_base;
+                        stage["scalar_capture_complete"]=snap.diagnostic_scalar_complete;
+                        stage["shader_data"]=bound.shader_data;stage["descriptors"]=nlohmann::json::array();
+                        for(const auto& d:snap.buffers)stage["descriptors"].push_back(d.dwords);
+                        stage["scalar_regions"]=nlohmann::json::array();
+                        for(const auto& r:snap.diagnostic_scalar_reads)
+                            stage["scalar_regions"].push_back({{"address",r.address},{"words",r.words},{"bytes",r.words.size()*4u}});
+                        bool complete=snap.diagnostic_scalar_complete;
+                        for(size_t slot=0;slot<bound.buffer_sources.size();++slot){
+                            const auto& src=bound.buffer_sources[slot];
+                            nlohmann::json row={{"slot",slot},{"address",src.address},{"source_bytes",src.size},{"valid",false}};
+                            const auto capture=[&](){
+                                uint64_t offset=0,bytes=src.size;
+                                if(vertex&&slot==0&&src.size>8u*1024u*1024u){
+                                    // Confirm the generated-pool descriptor against
+                                    // the bound guest address and stride, rather
+                                    // than treating an arbitrary large buffer as it.
+                                    bool descriptor=false;
+                                    for(const auto& d:snap.buffers){
+                                        const auto& w=d.dwords;
+                                        const uint64_t addr=uint64_t{w[0]}|(uint64_t{w[1]&0xffffu}<<32);
+                                        descriptor|=addr==src.address&&((w[1]>>16)&0x3fffu)==12u;
+                                    }
+                                    if(!descriptor){row["reason"]="generated_record_descriptor_unverified";return false;}
+                                    const auto n=p8_forward_windows.count[1];
+                                    if(!n){row["valid"]=true;row["not_accessed"]=true;return true;}
+                                    offset=uint64_t{p8_forward_windows.base[1]&0x7fffffffu}*12;
+                                    bytes=uint64_t{n}*12;
+                                }
+                                row["slice_offset"]=offset;row["bytes"]=bytes;
+                                if(slot>=bound.buffers.size()||!bytes||bytes>8u*1024u*1024u||
+                                   offset>src.size||bytes>src.size-offset){
+                                    row["reason"]="unsupported_or_outside_source_range";return false;
+                                }
+                                const auto& native=bound.buffers[slot];
+                                const auto word=program->bindings.memory_offset_dword+slot/4u;
+                                if(!native.buffer||word>=bound.shader_data.size()||native.range==UINT64_MAX){
+                                    row["reason"]="missing_native_binding";return false;
+                                }
+                                const uint64_t adjust=(bound.shader_data[word]>>((slot%4u)*8u))&255u;
+                                if(adjust>native.range||offset>native.range-adjust||
+                                   bytes>native.range-adjust-offset||native.offset>UINT64_MAX-adjust-offset){
+                                    row["reason"]="invalid_native_slice";return false;
+                                }
+                                const uint64_t start=native.offset+adjust+offset,skip=start&3u;
+                                const uint64_t length=(bytes+skip+3u)&~uint64_t{3};
+                                if(start-skip<native.offset||length>native.range-(start-skip-native.offset)){
+                                    row["reason"]="unaligned_slice_exceeds_native_range";return false;
+                                }
+                                const auto id=DemonsP8Reference::raw_store.ReserveCopy(length);
+                                if(!id){row["reason"]="raw_copy_budget_exceeded";return false;}
+                                row["native"]=std::hash<VkBuffer>{}(static_cast<VkBuffer>(native.buffer));
+                                row["native_offset"]=start;row["native_range"]=native.range;
+                                row["tick_before"]=m_context.GetCommandScheduler().CurrentTick();
+                                const std::array<DsNativeSlice,1> slices{{{native.buffer,start-skip,length,skip}}};
+                                const auto captured=ReadDsNativeSlices(m_context,slices);
+                                row["tick_after"]=m_context.GetCommandScheduler().CurrentTick();
+                                if(captured.empty()||captured[0].size()<bytes){
+                                    row["reason"]="native_readback_unavailable";return false;
+                                }
+                                const auto saved=DemonsP8Reference::raw_store.Save(DemonsP8Capture::Folder(),id,
+                                    std::span<const uint8_t>{captured[0].data(),static_cast<size_t>(bytes)});
+                                if(saved.reason){row["reason"]=saved.reason;return false;}
+                                row["file"]=saved.file;row["valid"]=true;return true;
+                            };
+                            if(!capture())complete=false;
+                            stage["buffers"].push_back(std::move(row));
+                        }
+                        stage["valid"]=complete;return stage;
+                    };
+                    if(g.value("valid",false)){
+                        g["vs_inputs"]=capture_stage(bindings.vertex[0],state.vertex_info[0].stage.resources,root_vs,true);
+                        if(bindings.pixel)g["ps_inputs"]=capture_stage(*bindings.pixel,state.ps_input_info.stage.resources,root_ps,false);
+                    }
+                }else g["reason"]="unsupported_forward_draw_shape";
                 break;
             }
         }
@@ -4170,6 +4287,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
     namespace VP=DemonsVertexPositionProbe;
     std::vector<uint32_t> ds_vertex_indices;
     uint32_t ds_vertex_base=0,ds_vertex_count=0;
+    DemonsVertexPositionProbe::VertexWindows ds_vertex_windows;
+    const bool p8_position_due=p8_forward_target &&
+        p8_forward.value("geometry",nlohmann::json::object()).value("valid",false);
     int ds_vertex_phase=-1;
     uint64_t ds_vertex_pair=0;
     const int64_t ds_vertex_offset=draw.IsIndexed()?int64_t{emit.vertex_offset}:int64_t{emit.first_vertex};
@@ -4212,22 +4332,31 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
             pair.address==index_source.address && pair.count==draw.index_count &&
             pair.base==emit.vertex_offset && pair.instance==emit.first_instance :
             (root_trace?root_witness:(phase>=2&&counts[k][phase]<1u)));
-        const bool due=root_trace?root_capture_inputs:legacy_due;
+        const bool due=p8_position_due||(root_trace?root_capture_inputs:legacy_due);
         ds_vertex_status="unsupported_draw_shape";
         if(due && vertex_stages.size()==1 && !mesh_active && !mesh_emulated && !indirect &&
             (draw.IsIndexed()||root_trace) && draw.instance_count==1 && !primitive_restart_enable &&
             topology==vk::PrimitiveTopology::eTriangleList &&
             (!draw.IsIndexed()||index_source.guest_element_size>=2) &&
-            (root_trace||(state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress))){
-            ds_vertex_indices=root_trace?root_index_words:ReadDsVertexIndices(m_context,index_binding,draw.index_count);
+            (p8_position_due||root_trace||(state.depth_info.image_id && state.depth_info.desc.info.data.address==DemonsDominantGeometry::DepthAddress))){
+            ds_vertex_indices=p8_position_due?p8_forward_indices:(root_trace?root_index_words:ReadDsVertexIndices(m_context,index_binding,draw.index_count));
             ds_vertex_status="index_readback_unavailable";
             if(!ds_vertex_indices.empty()){
                 const auto [lo,hi]=std::minmax_element(ds_vertex_indices.begin(),ds_vertex_indices.end());
                 const int64_t base=int64_t{*lo}+ds_vertex_offset, end=int64_t{*hi}+ds_vertex_offset;
                 ds_vertex_status="vertex_span_exceeds_recorder";
-                if(base>=0 && end<=UINT32_MAX && end-base<VP::MaxVertices){
+                if(p8_position_due && p8_forward_windows.Total()){
+                    ds_vertex_windows=p8_forward_windows;
+                    ds_vertex_base=ds_vertex_windows.base[0];
+                    ds_vertex_count=ds_vertex_windows.Total();
+                    ds_vertex_status="armed_forward_two_windows";
+                    ds_vertex_phase=0;
+                    ds_vertex_pair=p8_forward.value("pair",uint64_t{0});
+                }else if(!p8_position_due&&base>=0 && end<=UINT32_MAX && end-base<VP::MaxVertices){
                     ds_vertex_base=static_cast<uint32_t>(base);
                     ds_vertex_count=static_cast<uint32_t>(end-base+1);
+                    ds_vertex_windows.base[0]=ds_vertex_base;
+                    ds_vertex_windows.count[0]=ds_vertex_count;
                     ds_vertex_status="armed";
                     if(root_trace&&k!=4){
                         ds_vertex_phase=phase;ds_vertex_pair=root_draw;
@@ -4299,7 +4428,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         if(init||capture){
             const auto initialized_words=capture?VP::Header+ds_vertex_count*VP::Stride:VP::Header;
             std::vector<uint32_t> words(initialized_words);
-            words[0]=capture?1u:0u;words[1]=ds_vertex_base;words[2]=ds_vertex_count;
+            words[0]=capture?1u:0u;
+            words[1]=ds_vertex_windows.base[0];words[2]=ds_vertex_windows.count[0];
+            words[3]=ds_vertex_windows.base[1];words[4]=ds_vertex_windows.count[1];
             std::memcpy(storage->Mapped().data(),words.data(),initialized_words*sizeof(uint32_t));
             storage->Flush(0,initialized_words*sizeof(uint32_t));
         }
@@ -5044,6 +5175,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         storage->Invalidate(0,words*sizeof(uint32_t));
         std::vector<uint32_t> values(words);
         std::memcpy(values.data(),storage->Mapped().data(),words*sizeof(uint32_t));
+        if(p8_position_due){
+            auto& g=p8_forward["geometry"];
+            g["position_payload"]=p8_save_words(values);
+            g["position_header_words"]=VP::Header;g["position_stride_words"]=VP::Stride;
+            g["position_window_count"]=ds_vertex_windows.count;
+            g["position_window_base"]=ds_vertex_windows.base;
+            g["viewport"]={viewport.x,viewport.y,viewport.width,viewport.height,viewport.minDepth,viewport.maxDepth};
+            g["scissor"]={scissor.offset.x,scissor.offset.y,scissor.extent.width,scissor.extent.height};
+            g["dx_clip_space"]=bool(buffer.GetRegisters().GetClipControl().dx_clip_space);
+            g["native_vs_file"]=ShaderDump::ModuleFile(state.programs.vertex[0].module);
+            g["position_tick"]=scheduler.CurrentTick();
+        }else{
         nlohmann::json rows=nlohmann::json::array();
         uint32_t missing=0;
         std::vector<uint32_t> unique=ds_vertex_indices;
@@ -5054,7 +5197,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         size_t ordinal=0;
         for(auto raw:unique){
             const auto idx=static_cast<uint32_t>(int64_t{raw}+ds_vertex_offset);
-            const auto p=VP::Header+size_t{idx-ds_vertex_base}*VP::Stride;
+            const auto slot=ds_vertex_windows.Offset(idx);
+            if(slot>=ds_vertex_count){++missing;continue;}
+            const auto p=VP::Header+size_t{slot}*VP::Stride;
             if(!values[p]){++missing;continue;}
             nlohmann::json row=nlohmann::json::array();
             row.push_back(idx);
@@ -5225,6 +5370,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
         }
         Log::WriteToConsoleAndLog(fmt::format("[DS_VERTEX_POSITION] frame={} shader={:016x} vertices={} missing={} file={} saved={}\n",
             ds_gbuffer_frame,ds_vp->shader_hash,unique.size(),missing,name,position_saved));
+        }
     }
     if(root_boundary_seal||(root_witness_loss&&!DemonsP8Capture::available.load())){
         root_witness_latched=true;
@@ -5791,6 +5937,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    file.good()));
 	}
     if(p8_forward_target){
+        p8_forward["geometry"]["position_status"]=ds_vertex_status;
         const auto& color=*p8_forward_target;
         const auto& regs=buffer.GetRegisters();
         const auto& blend=regs.GetBlendControl(color.target_slot);

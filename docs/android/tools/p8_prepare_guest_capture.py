@@ -95,7 +95,7 @@ def prepare(archive,out,seq):
         require(i['operand_mapping_epoch_before']==i['operand_mapping_epoch_after'] and i['operand_gpu_dirty_generation_before']==i['operand_gpu_dirty_generation_after'],'operand identity changed')
         matches=[]
         for n in z.namelist():
-            if n.startswith(prefix+'queue-state/ds_prelight_cp_args_') and re.search(r'_compute(?:_\d+)?\.bin and z.getinfo(n).file_size==i['operand_blob_bytes']:
+            if n.startswith(prefix+'queue-state/ds_prelight_cp_args_') and re.search(r'_compute(?:_\d+)?\.bin
                 d=z.read(n)
                 if fnv1a(d)==i['operand_blob_fnv1a64']: matches.append(d)
         require(matches and all(d==matches[0] for d in matches),'no unambiguous operand blob')

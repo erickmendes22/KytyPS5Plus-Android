@@ -6,10 +6,44 @@
 #include <initializer_list>
 #include <vector>
 #include <utility>
+#include <span>
+#include <algorithm>
 #include <spirv/unified1/spirv.hpp>
 
 namespace Libs::Graphics::DemonsVertexPositionProbe {
-constexpr uint32_t Header=3, Stride=23, MaxVertices=65536;
+constexpr uint32_t Header=5, Stride=23, MaxVertices=65536;
+constexpr uint64_t ForwardVertexShader=0x00d5229e9ce98fd9ull;
+// The guest forward shader treats bit31 as a generated-record tag.
+// Preserve the full 32-bit VertexIndex. Pack two disjoint intervals into
+// the existing bounded recorder; never rewrite the actual index buffer.
+struct VertexWindows {
+    std::array<uint32_t,2> base{}, count{};
+    constexpr uint32_t Total() const { return count[0]+count[1]; }
+    constexpr uint32_t Offset(uint32_t v) const {
+        for(uint32_t b=0;b<2;++b){
+            const uint32_t d=v-base[b];
+            if(d<count[b])return (b?count[0]:0u)+d;
+        }
+        return UINT32_MAX;
+    }
+    static VertexWindows Build(std::span<const uint32_t> indices,int32_t bias) {
+        VertexWindows out;
+        std::array<uint32_t,2> lo{UINT32_MAX,UINT32_MAX},hi{};
+        for(uint32_t raw:indices){
+            const uint32_t v=raw+static_cast<uint32_t>(bias), b=v>>31;
+            lo[b]=std::min(lo[b],v);hi[b]=std::max(hi[b],v);
+        }
+        uint64_t total=0;
+        for(uint32_t b=0;b<2;++b){
+            if(lo[b]>hi[b])continue;
+            const uint64_t size=uint64_t{hi[b]}-lo[b]+1;
+            total+=size;
+            if(total>MaxVertices)return {};
+            out.base[b]=lo[b];out.count[b]=static_cast<uint32_t>(size);
+        }
+        return out;
+    }
+};
 constexpr uint32_t WordCount=Header+Stride*MaxVertices;
 static_assert(uint64_t{Header}+uint64_t{Stride}*MaxVertices<=std::numeric_limits<uint32_t>::max());
 // Legacy pair selectors remain available for reproducing earlier captures.
@@ -290,11 +324,17 @@ inline bool Instrument(std::vector<uint32_t>& spirv,uint64_t hash,uint64_t finge
         emit(fn,spv::OpLoad,{u32,v,p});return v;
     };
     const auto limit=id();emit(decl,spv::OpConstant,{u32,limit,MaxVertices});
-    const auto enable=read(0),base=read(1),count=read(2);
-    const auto off=id(),enabled=id(),inrange=id(),bounded=id(),selected=id(),active=id(),write=id(),merge=id();
-    emit(fn,spv::OpISub,{u32,off,vertex,base});
+    const auto enable=read(0),base=read(1),count=read(2),base2=read(3),count2=read(4);
+    const auto d0=id(),d1=id(),r0=id(),r1=id(),second=id(),off=id();
+    const auto enabled=id(),inrange=id(),bounded=id(),selected=id(),active=id(),write=id(),merge=id();
+    emit(fn,spv::OpISub,{u32,d0,vertex,base});
+    emit(fn,spv::OpISub,{u32,d1,vertex,base2});
+    emit(fn,spv::OpULessThan,{site.boolean,r0,d0,count});
+    emit(fn,spv::OpULessThan,{site.boolean,r1,d1,count2});
+    emit(fn,spv::OpIAdd,{u32,second,count,d1});
+    emit(fn,spv::OpSelect,{u32,off,r0,d0,second});
     emit(fn,spv::OpINotEqual,{site.boolean,enabled,enable,c[0]});
-    emit(fn,spv::OpULessThan,{site.boolean,inrange,off,count});
+    emit(fn,spv::OpLogicalOr,{site.boolean,inrange,r0,r1});
     emit(fn,spv::OpULessThan,{site.boolean,bounded,off,limit});
     emit(fn,spv::OpLogicalAnd,{site.boolean,selected,inrange,bounded});
     emit(fn,spv::OpLogicalAnd,{site.boolean,active,enabled,selected});
