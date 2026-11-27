@@ -49,6 +49,21 @@ int main(){
     static_assert(!Shape(true,3,20,1,22020095,true));
     static_assert(!Shape(true,3,20,1,22020096,false));
     static_assert(!Shape(false,3,20,1,22020096,true));
+    // #751: the batch relocated to 0x21de07c38; selection must not rely
+    // on the original 4 addresses, a previous nonzero, or a fixed index pool.
+    static_assert(SelectedBatch(true,true,true,3,20,1,false));
+    static_assert(SelectedBatch(true,true,true,1,20,1,false));
+    static_assert(SelectedBatch(true,true,true,2,24,0,false));
+    static_assert(!SelectedBatch(false,true,true,3,20,1,false));
+    static_assert(!SelectedBatch(true,false,true,3,20,1,false));
+    static_assert(!SelectedBatch(true,true,true,4,20,1,false));
+    static_assert(!SelectedBatch(true,true,true,3,21,1,false));
+    static_assert(!SelectedBatch(true,true,true,3,20,1,true));
+    static_assert(FrontReferenceReady(true,false,true,true));
+    static_assert(!FrontReferenceReady(true,false,true,false));
+    static_assert(!FrontReferenceReady(true,true,true,true));
+    static_assert(!FrontReferenceReady(false,false,false,true));
+    CollectionBarrier one;one.required=1;assert(!one.Ready());one.Consumed(0);assert(one.Ready());
     static_assert(Overlap(0x21de00078,60,0x21de000a0,20));
     static_assert(!Overlap(0x21de00078,60,0x21de000b4,20));
     static_assert(!ValidRange(UINT64_MAX-20,60));

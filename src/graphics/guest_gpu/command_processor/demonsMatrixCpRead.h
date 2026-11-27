@@ -2,6 +2,7 @@
 #pragma once
 #include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/gpuPipeline.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "common/logging/log.h"
 #include "kernel/memory.h"
@@ -14,7 +15,12 @@ template<class T> T Read(RenderContext& renderer,uint64_t address) {
     if (!GuestGpu::IsGpuThread()) {
         std::memcpy(&value,reinterpret_cast<const void*>(address),sizeof(T)); return value;
     }
+    // C1 explicit coherent read can occur after a prior child queued a
+    // record job. The packet-entry drain alone does not cover that child.
+    // Reacquire front ownership before touching the renderer cache.
+    if(!GpuPipeline::OnBack())GpuPipeline::DrainForFront(GpuPipeline::DrainCause::Other);
     auto& cache=renderer.GetBufferCache();
+    cache.StampPendingWrites();
     const bool pending=cache.HasPendingBackingPublication(address,sizeof(T));
     const bool dirty=cache.HasGpuDirtyBytes(address,sizeof(T));
     T before{};

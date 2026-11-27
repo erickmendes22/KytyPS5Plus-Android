@@ -38,6 +38,19 @@ constexpr bool Shape(bool indexed, uint32_t count, uint32_t stride, uint32_t typ
                      uint32_t capacity, bool same_target) {
     return indexed && count==3 && stride==20 && type==1 && capacity==22020096 && same_target;
 }
+// The selected P8 cycle follows the actual rotating argument address at
+// consumption, independently of the four historical producer pins.
+constexpr uint32_t SelectedBatchLimit = 64;
+constexpr bool SelectedBatch(bool in_cycle,bool relevant,bool indexed,
+                             uint32_t count,uint32_t stride,uint32_t index_type,
+                             bool count_from_memory) {
+    return in_cycle&&relevant&&indexed&&count>0&&count<=3&&
+        stride>=RecordBytes&&stride%4==0&&index_type<=1&&!count_from_memory;
+}
+constexpr bool FrontReferenceReady(bool gpu_thread,bool on_record_thread,
+                                   bool pipeline_on,bool recorder_idle) {
+    return gpu_thread&&!on_record_thread&&(!pipeline_on||recorder_idle);
+}
 // A boot-time zero is not the transition. Candidates remain movable until the
 // existing albedo-loss trigger seals them; an earlier valid zero cannot steal
 // the real cycle merely because it happened first during loading.
