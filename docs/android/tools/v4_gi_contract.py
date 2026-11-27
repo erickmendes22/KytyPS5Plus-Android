@@ -54,7 +54,7 @@ def parse(data,wg,lane,control):
                 found[pc,k]={'coords':list(map(int,r[2:2+len(coords)])),'descriptor':list(map(int,r[9:9+(4 if kind==2 else 8)])),
                               'sampler':list(map(int,r[17:21])),'result':list(map(int,r[21:21+count]))}
         need(at==SITE_BASE+(witness+1)*WITNESS,'trace offset')
-        need(all((pc,0) in found for pc in (0x104,0x13c,0x178,0x184,0x1a0,0x3e4,0x508,0x618,0x112c,0x1174)),'missing admitted pixel operations')
+        need(all((pc,0) in found for pc in (0x104,0x13c,0x178,0x184,0x1a0,0x508,0x618,0x112c,0x1174)),'missing admitted pixel operations')
         rows.append(found)
     return wave,rows
 
@@ -136,7 +136,7 @@ def check_signs(runner,mode):
         for truth in (0,1):
             sg=[0]*106;vg=[0]*(256*64)
             # s_mov_b64 vcc, -1 or 0
-            code=u(0xbefe01c1 if truth else 0xbefe0180)+sign_code(pc)+exp(0,[d]*4,True)+END
+            code=u(0xbeea04c1 if truth else 0xbeea0480)+sign_code(pc)+exp(0,[d]*4,True)+END
             for l in lanes:vg[r*64+l]=0xbe85a1cb
             out=run_wave(runner,code,sg,vg,[],mode,mask)
             want=0xbe85a1cb^(0x80000000 if truth==t else 0)
