@@ -908,3 +908,28 @@ Reprodução (ZIP real fornecido pelo usuário, não incluído no repositório):
   deve utilizar os novos pares com versões estáveis, e estabelecer o efeito
   causal da divergência até o mesmo flip ou certificar o prefixo relevante
   completo antes de podar. Nenhuma mudança artificial de iluminação.
+
+
+### #756 → preparação do novo método (27/11/2026)
+
+**Sem novo corte global e sem APK #757 qualificado.** P(8) permanece [0,16]. O replay
+do consumidor final confirmou 64/64 amostras e o quad central do frame 427;
+o prefixo não está certificado. O host agora executa a ISA original de
+a5fc1658592e3cba (10 leituras, quatro pixels) e b4e1b94988dff9ae (leituras
+de array, profundidade e volume, MRT0/MRT1) em controles de entradas sintéticas.
+A mudança sintética da profundidade de 0.5 para 0.75 alterou a saída do
+segundo shader e, em substituição controlada no consumidor real de #756,
+a palavra final mudou de 0xd364d936 para 0xd8962589. Igualdade de entrada
+e rejeição de recurso ausente também foram exercitadas. Isso testa a
+propagação, não comprova uma divergência do jogo. O raster local do céu
+(draws 346/783) continuou consistente no mesmo ZIP. Não inferir erro da
+HZB zerada: o depth do G-buffer é outro recurso.
+
+As versões observadas de P8_USE_242/243 são os produtores da cena consumida
+por P8_USE_418. A aquisição nativa candidata f39727ee569315463184f376ba2a1876d66f7ec3
+retém operandos, índices, instâncias, estados e subrecursos selecionados
+desses dois draws, com orçamento separado. Ainda não foi compilada nem
+promovida à branch de APK. O replay real da cobertura/PS do segundo draw
+e a autoridade das operações anteriores, incluindo a ponte G-buffer/HDR,
+não estão fechados. Não equiparar os testes sintéticos a um PASS/FAIL
+global, nem liberar outro APK exclusivamente por ter ampliado a captura.

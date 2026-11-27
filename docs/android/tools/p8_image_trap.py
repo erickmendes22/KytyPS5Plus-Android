@@ -44,7 +44,19 @@ def operands(text):
 
 
 def analyze(decoder,code):
-    rows=decode_all(decoder,code);end=rows[-1][0]+4;pcs={pc for pc,t in rows}
+    rows=decode_all(decoder,code);end=rows[-1][0]+4
+    # A discard path may follow the first s_endpgm. Decode only reachable
+    # termination tails rather than treating data after the program as ISA.
+    while True:
+        targets=[]
+        for pc,t in rows:
+            if t.startswith(('s_branch ','s_cbranch_')):
+                v=int(t.rsplit(' ',1)[1],0)&0xffff;v=v-0x10000 if v>=0x8000 else v
+                targets.append(pc+4+v*4)
+        if not any(t>=end for t in targets):break
+        require(end<len(code),'branch outside guest binary')
+        tail=decode_all(decoder,code[end:]);rows.extend((pc+end,t) for pc,t in tail);end=rows[-1][0]+4
+    pcs={pc for pc,t in rows}
     reads=[];used=set();sg_used=set()
     for i,(pc,t) in enumerate(rows):
         for kind,target in (('v',used),('s',sg_used)):
