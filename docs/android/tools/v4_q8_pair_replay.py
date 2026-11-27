@@ -31,7 +31,7 @@ def regs(s,k):
     for m in re.finditer(k+r'(?:\[(\d+):(\d+)\]|(\d+))',s):v.extend([int(m[3])] if m[3] else range(int(m[1]),int(m[2])+1))
     return v
 
-def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=None):
+def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=None,brdf=None,records=None):
     need(digest(code)==HASH,'unrecognized q8 ISA')
     need(len(raw['user_data'])==2 and len(buffers)==4,'launch operands')
     dec=LLVM()
@@ -55,7 +55,7 @@ def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=N
     # All fixed sample loads, including actual HDR input, must have records.
     expected=dict(samples);expected[(0x1d84,0)]={'coords':list(map(int,f[lane,39:41])),'descriptor':list(map(int,f[lane,68:76])),'sampler':[0]*4,'result':list(map(int,f[lane,41:44]))}
     done={};coord_deltas=[]
-    def patched(check_light=None):
+    def patched(check_light=None,entry=False):
         p=bytearray(original)
         def replace(pc,body):
             start=len(p);p[pc:pc+sizes[pc]]=jump(pc,start)+NOP*(sizes[pc]//4-1);p.extend(body(start))
@@ -98,12 +98,23 @@ def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=N
             replace(pc,body)
         replace(0x1d9c,lambda start:exp(1,[29,30,31,3])+exp(0,[0,1,2,3],True)+END)
         if check_light is not None:
+            check_pc=0x1bb4 if entry else 0x1d5c
             def checkpoint(start):
-                b=u(0x85000000|(101<<16)|(128<<8)|129)+scmp(91,check_light)
-                b+=jump(start+len(b),start+len(b)+4+len(exp(2,[0,50,1,3],True))+4,0xbf840000)
-                b+=exp(2,[0,50,1,3],True)+END+u(0xbf070000|(128<<8)|101)+code[0x1d5c:0x1d60]
-                return b+jump(start+len(b),0x1d60)
-            replace(0x1d5c,checkpoint)
+                if entry:
+                    from v4_q8_brdf import LIVE
+                    payload=b''
+                    for j in range(0,len(LIVE),4):
+                        rr=list(LIVE[j:j+4]);rr+= [rr[-1]]*(4-len(rr))
+                        payload+=exp(32+j//4,rr,j+4>=len(LIVE))
+                else:payload=exp(2,[0,50,1,3],True)
+                # Only trap when the selected original lane is executing.
+                b=bytearray(NOP+u(0x85000000|(101<<16)|(128<<8)|129)+scmp(91,check_light))
+                b+=jump(start+len(b),start+len(b)+4+len(payload)+4,0xbf840000)
+                b+=payload+END+u(0xbf070000|(128<<8)|101)
+                b[:4]=jump(start,start+len(b),0xbf880000)
+                b+=code[check_pc:check_pc+sizes[check_pc]]
+                return b+jump(start+len(b),check_pc+sizes[check_pc])
+            replace(check_pc,checkpoint)
         return bytes(p)
     for _ in range(min(len(expected)+1,128)):
         out=run_wave(runner,patched(),sg,vg,seg,mode,1<<lane)
@@ -118,8 +129,32 @@ def replay(code,runner,mode,wg,lane,raw,buffers,f,o,samples,union,lights,terms=N
                     need((2,lane) in z,'missing replay light checkpoint')
                     predicted=list(z[2,lane][2][:3]);observed=list(map(int,terms[1025+light,[2,4,6]]));ld=[dist(a,b) for a,b in zip(predicted,observed)]
                     light_checks.append(dict(light=light,predicted=predicted,observed=observed,ulp=ld))
+            brdf_checks=[]
+            if brdf is not None:
+                from v4_q8_brdf import LIVE, validate, same_input, LIGHTS
+                need(records is not None and all(0<=k<LIGHTS for k in lights),'BRDF light index out of range')
+                need(not any(np.any(brdf[k]) for k in range(LIGHTS) if k not in lights),'BRDF record outside selected mask')
+                for k in lights:
+                    row=brdf[k]
+                    if not validate(row,records[k],terms[1025+k]):continue
+                    reference=run_wave(runner,patched(k,entry=True),sg,vg,seg,mode,1<<lane)
+                    entry_values=[]
+                    for j in range(0,len(LIVE),4):
+                        if (32+j//4,lane) not in reference:break
+                        entry_values.extend(reference[32+j//4,lane][2])
+                    local=same_input(code,runner,mode,lane,sizes,row)
+                    entry_diffs=[]
+                    if len(entry_values)>=len(LIVE):
+                        for j,reg in enumerate(LIVE):
+                            a,b=int(entry_values[j]),int(row[1+j]);d=dist(a,b)
+                            if d>8:entry_diffs.append(dict(reg=reg,expected=a,observed=b,ulp=d))
+                    else:
+                        need((0,lane) in reference,'BRDF entry reference incomplete')
+                        entry_diffs.append(dict(reason='original lane does not enter BRDF'))
+                    if local['status']=='MATCH_LOCAL' and entry_diffs:local['status']='UPSTREAM_INPUT_CANDIDATE'
+                    brdf_checks.append(dict(light=k,entry_differences=entry_diffs,**local))
             worst=max(delta+ad+[d for r in light_checks for d in r['ulp']])
-            return dict(status='MATCH_CONDITIONAL' if worst<=8 else 'DIVERGENCE_CANDIDATE',words=list(words),observed=actual,ulp=delta,accumulation_ulp=ad,light_checks=light_checks,coordinate_ulp=coord_deltas,visits=len(done))
+            return dict(brdf=brdf_checks,status='MATCH_CONDITIONAL' if worst<=8 else 'DIVERGENCE_CANDIDATE',words=list(words),observed=actual,ulp=delta,accumulation_ulp=ad,light_checks=light_checks,coordinate_ulp=coord_deltas,visits=len(done))
         need((60,lane) in out,'missing trap export');pc,k,*co=out[60,lane][2];need(pc in sites,'unsupported reduction path')
         key=(pc,k);need(key not in done,'repeated dynamic site/index')
         if key not in expected:return dict(status='INCOMPLETE',pc=hex(pc),light=k,reason='native sample missing',visits=len(done))

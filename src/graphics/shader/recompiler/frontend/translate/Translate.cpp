@@ -294,7 +294,11 @@ void Translator::V4LightTrace(const Decoder::Instruction& inst,bool before) {
     const bool light_record=pc==0xdf4 || (pc==0xdf8&&!before) ||
         (pc==0xe68&&!before) || (before&&(pc==0x194c||pc==0x1978||pc==0x19b4||
             pc==0x1b0c||pc==0x1b18||pc==0x1bb4));
-    if(!fixed&&!outer&&!term&&!light_record&&image==T::Images.end())return;
+    const auto brdf_op=std::find_if(T::BrdfOps.begin(),T::BrdfOps.end(),[&](const auto& op){return op.pc==pc;});
+    const bool brdf_entry=before&&pc==0x1bb4;
+    const bool brdf_scalar=!before&&pc==0x1bb8;
+    const bool brdf_result=!before&&brdf_op!=T::BrdfOps.end();
+    if(!fixed&&!outer&&!term&&!light_record&&image==T::Images.end()&&!brdf_entry&&!brdf_scalar&&!brdf_result)return;
     using O=IR::ValueOpcode;
     const auto c=[](uint32_t x){return IR::U32(IR::Value(x));};
     const auto builtin=[&](IR::StageInputKind kind,uint32_t i){return IR::U32(ir.Emit(O::GetBuiltin,{IR::Value(static_cast<uint32_t>(kind)),IR::Value(i)}));};
@@ -382,6 +386,26 @@ void Translator::V4LightTrace(const Decoder::Instruction& inst,bool before) {
             case 0x1bb4:mark_record(30);put(31,v(49));put(32,v(50));put(33,v(51));break;
             case 0x1b18:mark_record(38);put(39,v(49));put(40,v(50));put(41,v(51));break;
             default:break;
+        }
+    }
+    if(brdf_entry||brdf_scalar||brdf_result){
+        const auto k=s(91);const auto ok=ir.ULessThan(k,c(T::LightRecordCount));
+        const auto offset=ir.Select(is_control,c(T::BrdfWitnessWords),c(0));
+        const auto base=ir.IAdd(ir.IAdd(c(T::PairWords),offset),ir.IMul(k,c(T::BrdfStride)));
+        // Last three adds may execute after EXEC restoration even if this
+        // lane did not enter the BRDF. Retain them, but the auditor requires
+        // the entry marker before claiming a complete BRDF slice.
+        const auto pred=ir.LogicalAnd(chosen,ok);
+        store(c(3),c(1),ir.LogicalAnd(chosen,ir.LogicalNot(ok)));
+        const auto put=[&](uint32_t off,IR::U32 val){record(base,off,val,pred);};
+        if(brdf_entry){
+            put(0,c(pc+1));
+            for(uint32_t j=0;j<T::BrdfLive.size();++j)put(1+j,v(T::BrdfLive[j]));
+        }else if(brdf_scalar){
+            put(T::BrdfScalar,c(pc+1));put(T::BrdfScalar+1,ir.GetVccLo());
+        }else{
+            const auto j=static_cast<uint32_t>(brdf_op-T::BrdfOps.begin());
+            put(T::BrdfResults+2*j,c(pc+1));put(T::BrdfResults+2*j+1,v(brdf_op->dst));
         }
     }
     if(image!=T::Images.end()){

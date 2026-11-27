@@ -27,10 +27,13 @@ PAIR_WORDS=SINGLE_WORDS+WITNESS_STRIDE
 
 def select_witness(event,raw,witness='dark'):
     need(witness in ('dark','control'),'unknown witness')
-    if event['schema']!=3:
+    if event['schema'] not in (3,4):
         need(witness=='dark','control not captured by this schema')
         return event,raw
-    need(len(raw)==PAIR_WORDS*4 and event['trace_bytes']==len(raw),'truncated paired trace')
+    from v4_q8_brdf import EXTRA_WORDS
+    expected=PAIR_WORDS+(EXTRA_WORDS if event['schema']==4 else 0)
+    need(len(raw)==expected*4 and event['trace_bytes']==len(raw),'truncated paired trace')
+    raw=raw[:PAIR_WORDS*4]
     a=np.frombuffer(raw,'<u4');d=event['lane'];control=event['control'];c=control['lane'];wg=event['wg']
     need(0<=d<64 and 0<=c<64 and c!=d and list(a[:5])==[1,wg,d,0,c],'wrong paired header or overflow')
     need(event['stencil']==control['stencil'] and event['stencil']&64 and event['material_word']&0xffffff and control['material_word']&0xffffff,'invalid material/stencil pair')
@@ -169,7 +172,12 @@ def audit(path,runner,witness='dark',conditional=False):
         raw=st['guest_operands'];code=a.z.read('ds-lighting-capture/'+st['guest_file']);need(digest(code)==HASH,'unrecognized guest q8 binary')
         mode=e['launch']['mode'];need(e['launch']['threads']==[8,8,1] and e['launch']['wave']==64 and e['launch']['group_pack']<=1 and e['launch']['workgroup_register']==2 and e['groups'][1:]==[1,1],'launch mismatch')
         wg=e['wg'];lane=e['lane'];need(0<=wg<e['groups'][0] and 0<=lane<64,'witness outside launch')
-        e,trace=select_witness(e,a.files[e['trace_file']],witness)
+        full_trace=a.files[e['trace_file']]
+        e,trace=select_witness(e,full_trace,witness)
+        brdf_rows=None
+        if e['schema']==4:
+            from v4_q8_brdf import extract
+            brdf_rows=extract(full_trace,PAIR_WORDS,witness)
         lane=e['lane']
         f,o,terms,samples=parse_trace(trace,wg,lane)
         metas=e['buffers'];buffers=[]
@@ -216,7 +224,7 @@ def audit(path,runner,witness='dark',conditional=False):
         b,aft=e['before'],e['after'];need(key(b)[:3]==key(aft)[:3]==key(st['images'][10]['image'])[:3]==key(st['images'][9]['image'])[:3] and b['format']==aft['format']==97 and not b.get('observation_reused') and not aft.get('observation_reused') and b['extent']==aft['extent']==[w,h],'unpaired HDR image')
         before=np.frombuffer(a.snapshot(b,'q8_hdr_before',later=ui),'<f2').reshape(h,w,4);after=np.frombuffer(a.snapshot(aft,'q8_hdr_after',earlier=ui,later=ei),'<f2').reshape(h,w,4)
         report['hdr_before']=before[y,x].astype(float).tolist();report['hdr_after']=after[y,x].astype(float).tolist();report['admitted_lanes']=active
-        if e['schema']==3:
+        if e['schema'] in (3,4):
             observed_lum=float(before[y,x,:3].astype(np.float64)@np.array([.2126,.7152,.0722]))
             want=e['dark_luminance_before'] if witness=='dark' else e['control']['luminance_before']
             need(abs(observed_lum-want)<=1e-12,'selected incoming HDR does not match snapshot')
@@ -260,7 +268,8 @@ def audit(path,runner,witness='dark',conditional=False):
             # Every native memory load/mask/HDR operation above must match
             # before using its observed wave boundary in the scoped replay.
             report['conditional_isa']=replay(code,runner,mode,wg,lane,raw,
-                [(b['guest'],data) for b,data in zip(metas,buffers)],f,o,samples,union,lights,terms)
+                [(b['guest'],data) for b,data in zip(metas,buffers)],f,o,samples,union,lights,terms,
+                brdf=brdf_rows,records=np.frombuffer(trace,'<u4')[WORDS:].reshape(TERMS,48) if brdf_rows is not None else None)
         if not lights:report['next']='producer of the empty clustered light mask, exact slot 3 and captured indices'
         elif report['terms']['secondary_contributions']:
             term=max(report['terms']['secondary_contributions'],key=lambda q:sum(abs(v) for v in q['rgb']))

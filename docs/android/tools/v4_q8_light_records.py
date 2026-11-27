@@ -110,7 +110,7 @@ def audit(path,witness='dark'):
         events=[(i,e) for i,e in enumerate(a.events) if e.get('kind')=='v4_q8_contract']
         need(len(events)==1,'exactly one V4 q8 event required')
         ei,e=events[0];ui,u=a.use[e['use']]
-        need(e['schema'] in (2,3) and ui<ei and e['frame']==u['frame']==a.frame and e['submit']==u['submit'] and e['shader']==q.SHADER,'new record acquisition/dispatch identity required')
+        need(e['schema'] in (2,3,4) and ui<ei and e['frame']==u['frame']==a.frame and e['submit']==u['submit'] and e['shader']==q.SHADER,'new record acquisition/dispatch identity required')
         st=u['stages'][0];need(st['valid'] and st['shader']==q.SHADER and digest(a.z.read('ds-lighting-capture/'+st['guest_file']))==q.HASH,'wrong guest shader')
         b,data,desc=bound_identity(e,st,a.files)
         pub=publication(e,b,data,a.files);report['publication']=pub

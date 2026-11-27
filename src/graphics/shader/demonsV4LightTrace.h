@@ -31,9 +31,21 @@ constexpr uint32_t RecordBase=LegacyWords,RecordStride=48;
 constexpr uint32_t SingleWords=RecordBase+Terms*RecordStride;
 // Shared per-wave fields, disjoint per-witness term/sample/light-record tails.
 constexpr uint32_t WitnessStride=SingleWords-TermBase;
-constexpr uint32_t Words=SingleWords+WitnessStride;
+constexpr uint32_t PairWords=SingleWords+WitnessStride;
 constexpr uint32_t LightRecordBytes=0x180;
 constexpr uint32_t LightRecordCount=224;
+// Schema 4: append a bounded per-light, per-witness BRDF slice, without
+// moving schema-3 wave, terms, image or light-record offsets.
+struct BrdfOp {uint32_t pc,dst;};
+constexpr std::array<uint32_t,37> BrdfLive{{12,13,14,18,19,20,21,22,26,27,28,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,48,49,50,51,52,53,54,55,60,61,62}};
+constexpr std::array<BrdfOp,79> BrdfOps{{
+ {0x1bb4,0}, {0x1bc0,55}, {0x1bc8,2}, {0x1bcc,54}, {0x1bd4,1}, {0x1bd8,53}, {0x1be0,0}, {0x1be4,57}, {0x1be8,52}, {0x1bec,57}, {0x1bf0,52}, {0x1bf4,57}, {0x1bf8,52}, {0x1bfc,56}, {0x1c00,54}, {0x1c04,52}, {0x1c08,53}, {0x1c0c,56}, {0x1c10,55}, {0x1c14,2}, {0x1c18,56}, {0x1c1c,55}, {0x1c20,2}, {0x1c24,56}, {0x1c2c,55}, {0x1c30,1}, {0x1c38,2}, {0x1c40,52}, {0x1c44,0}, {0x1c4c,54}, {0x1c54,2}, {0x1c5c,52}, {0x1c64,53}, {0x1c6c,52}, {0x1c70,48}, {0x1c74,53}, {0x1c7c,2}, {0x1c80,52}, {0x1c84,52}, {0x1c8c,52}, {0x1c90,48}, {0x1c94,52}, {0x1c9c,1}, {0x1ca4,53}, {0x1ca8,1}, {0x1cb0,53}, {0x1cb4,1}, {0x1cb8,48}, {0x1cbc,48}, {0x1cc0,2}, {0x1cc4,48}, {0x1ccc,2}, {0x1cd0,52}, {0x1cd8,2}, {0x1cdc,48}, {0x1ce0,0}, {0x1ce4,54}, {0x1ce8,52}, {0x1cf0,53}, {0x1cf8,51}, {0x1d00,2}, {0x1d04,52}, {0x1d08,54}, {0x1d0c,48}, {0x1d10,50}, {0x1d14,54}, {0x1d18,53}, {0x1d1c,51}, {0x1d20,50}, {0x1d24,52}, {0x1d28,1}, {0x1d2c,53}, {0x1d34,49}, {0x1d38,0}, {0x1d3c,51}, {0x1d40,52}, {0x1d48,0}, {0x1d4c,50}, {0x1d50,1}
+}};
+constexpr uint32_t BrdfScalar=1+BrdfLive.size(),BrdfResults=BrdfScalar+2;
+constexpr uint32_t BrdfStride=BrdfResults+2*BrdfOps.size();
+constexpr uint32_t BrdfWitnessWords=LightRecordCount*BrdfStride;
+constexpr uint32_t Words=PairWords+2*BrdfWitnessWords;
+static_assert(BrdfStride==198 && Words*4==3986112);
 constexpr uint64_t LightBufferBytes=uint64_t(LightRecordBytes)*LightRecordCount;
 constexpr uint64_t Bytes=uint64_t(Words)*4;
 static_assert(Bytes<8*1024*1024);

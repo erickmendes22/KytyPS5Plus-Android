@@ -4819,7 +4819,7 @@ static nlohmann::json BeginDsV4Light(RenderContext& context,const PreparedBindin
     namespace T=DemonsV4LightTrace;namespace P=DemonsP8Reference;
     if(!T::Enabled()||!DemonsP8Capture::FullFrame(frame)||bindings.runtime->program->shader_hash!=T::Shader)return {};
     static int32_t captured=-1;if(captured==frame)return {};
-    nlohmann::json e={{"kind","v4_q8_contract"},{"schema",3},{"frame",frame},{"submit",submit},{"shader",T::Shader},{"groups",groups}};
+    nlohmann::json e={{"kind","v4_q8_contract"},{"schema",4},{"frame",frame},{"submit",submit},{"shader",T::Shader},{"groups",groups}};
     auto fail=[&](const char* why){e["kind"]="v4_q8_incomplete";e["reason"]=why;P::WriteEvent(e);return nlohmann::json{};};
     auto* log=context.GetBufferCache().V4LightTraceBuffer();
     if(!log||!groups_valid||groups[0]==0||groups[1]!=1||groups[2]!=1||

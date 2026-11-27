@@ -1,5 +1,16 @@
 # Demon's Souls — registro de eliminação causal por build
 
+## #759 real / #760 — BRDF instruction-local contract (27/11/2026)
+
+- Source capture SHA256 a32cfbdc07d0579642bc6894caa12f87f9b7c3bac97f5c4c620b1b300f4263c2, revision 53860bf, frame475 submit14104 tile16287 WG0, lanes31 (703,651) and39 (703,652), stencil86. 32/32 manifest payloads verified. q8 174 unique tiles and 8398 admitted material pixels, all HDR zero on entry; only 1 pixel reaches descriptive L>=0.006 after. Relative control is NOT a healthy control. L after: 6.2463879585e-6 and 8.7742447853e-6.
+- Local matches: 64/64 lanes for tile coordinates/stencil/depth/material and masks, native HDR read/add/store, four category decisions per witness and 24 dynamic scalar fields each. Both original ISA replays visited ten identical sample coordinates, descriptors and samplers (including previously missing dark 0x1e8). Observed image results are conditional reference inputs; no independent texture sampler or global prefix claim.
+- Original conditional replay yields zero light1 RGB where Android yields [9.1452366e-6,5.7600209e-6,3.0205415e-6] and [1.18807575e-5,8.30620866e-6,4.54074916e-6]. Lights0/2/3 match zero. Reference checkpoints for lights0/1/2, both witnesses, at 0x194c,0x1978,0x19b4,0x1b0c,0x1b18,0x1bb4: all 36 bitwise equal. Difference is downstream BRDF or an unmeasured live-in; original light1 N.L before clamp 0x1c94 is negative in both, not yet known on Android. The sign of the contribution mismatch does NOT explain the overall darkness. Do not equate an unexpected tiny positive contribution with cause of missing radiance.
+- #760 schema4 appends bounded 37 consumed live-ins, scalar VCC literal and 79 per-instruction results in [0x1bb4,0x1d50] for each entered light and witness. Total 3,986,112 bytes, preserves schema3 offsets and older readers. Distinguish same-input first divergence from entry-register producer discrepancy. Original ISA replay exports the entry and independently executes each original op with its observed input state; only offline reinjection, no changes to production lights. Final three results must bind exactly to the existing accumulation term. Missing markers, misbound RGB/term and missing reference exports fail incomplete. Local original-ISA roundtrip on fingerprinted guest slice: 79/79 exact; mutated 0x1c94 first mismatch, missing marker rejected. CI tests layout, equality/divergence and failure controls. Android execution pending.
+- Active V4 contract only: BRDF entry/operation -> term. First same-input mismatch: reduce its instruction, validate effect, then correct. If operations match but entry differs: follow the actual producer of the differing live-in, not accumulation or mask. If original and native path differ, prove the first branch with the exact operands. If no valid witness, repair acquisition. No synthetic brightness. P8 global remains historically BLOCKED [0,16]; no new global cut.
+
+[Detailed #760 contract](DEMONS_APK_760_V4_BRDF.md).
+
+
 ## #758 real / #759 paired V4 contract (27/11/2026)
 
 - ZIP 20261127-163934, SHA256 8edd69c67c099d3e3c75189ba270c893b7ffc34b828178a86705360db56a2fec,

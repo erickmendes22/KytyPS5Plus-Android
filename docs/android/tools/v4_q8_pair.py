@@ -11,7 +11,7 @@ def audit(path,runner):
     a=Archive(path)
     try:
         events=[e for e in a.events if e.get('kind')=='v4_q8_contract']
-        need(len(events)==1 and events[0]['schema']==3,'paired q8 acquisition required')
+        need(len(events)==1 and events[0]['schema'] in (3,4),'paired q8 acquisition required')
         e=events[0]
         q.select_witness(e,a.files[e['trace_file']],'dark')
         q.select_witness(e,a.files[e['trace_file']],'control')
@@ -26,9 +26,16 @@ def audit(path,runner):
                 row[k+'_luminance']=float(np.array(row['operations'][k][:3])@np.array([.2126,.7152,.0722]))
     statuses=[r['operations']['status'] for r in rows.values()]+[r['records']['status'] for r in rows.values()]
     replay_statuses=[r['operations'].get('conditional_isa',{}).get('status','INCOMPLETE') for r in rows.values()]
+    brdf=[b for r in rows.values() for b in r['operations'].get('conditional_isa',{}).get('brdf',[])]
     if 'DIVERGENCE' in statuses:
         decision='DIVERGENCE_LOCAL'
         next_step='Correct the first independently demonstrated load, filter, accumulation or publication mismatch.'
+    elif any(b['status']=='DIVERGENCE_CANDIDATE' for b in brdf):
+        decision='DIVERGENCE_CANDIDATE'
+        next_step='Reduce the first same-input BRDF instruction with captured operands; quantify signed light contribution effect before a production fix.'
+    elif any(b['status']=='UPSTREAM_INPUT_CANDIDATE' for b in brdf):
+        decision='UPSTREAM_INPUT_CANDIDATE'
+        next_step='BRDF operations match their actual native operands. Follow the first differing consumed entry register to its producer.'
     elif 'DIVERGENCE_CANDIDATE' in replay_statuses:
         decision='DIVERGENCE_CANDIDATE'
         next_step='Reduce the differing original instruction/sample address or light term with the exact captured operands; no lighting fix by assumption.'
