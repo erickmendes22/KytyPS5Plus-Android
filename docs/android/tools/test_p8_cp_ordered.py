@@ -34,3 +34,47 @@ c=deepcopy(b);c['records'][0]['reference']['ok']=False;assert status(c)=='INCOMP
 assert status(b,journal[:2])=='INCOMPLETE'
 c=deepcopy(b);c['records'][0]['reference']['collection_after_all_original_reads']=False;assert status(c)=='INCOMPLETE'
 print('7 ordered CP comparison tests passed')
+
+# Full archive transport and actual three-child shape, including a missing
+# draw on the first child and unchanged second and third records.
+from p8_cp_ordered import audit
+from pathlib import Path
+import tempfile, zipfile, json, hashlib
+b=deepcopy(batch); b['count']=3; b['records']=[]
+j=deepcopy(journal[:2]); j[0]['count']=3
+for i in range(3):
+    r=deepcopy(record); r['child']=i; r['address']=address+20*i
+    for k in ['state_before','state_after','state_reference_after']:
+        r[k]['address']=r['address']
+        r[k]['gpu_dirty_ranges']=[{'address':r['address'],'bytes':20}]
+    ref=r['reference']; ref['address']=r['address']; ref['offset']=56+20*i
+    ref['state_at_copy']=deepcopy(r['state_reference_after'])
+    r['observation_seq_before']=4+i*3
+    r['observation_seq_consumed']=5+i*3
+    r['observation_seq_reference']=6+i*3
+    ref['observation_seq_collected']=14
+    if i==0: ref['words']=[92160,1,0,0,0]
+    b['records'].append(r)
+    j.append({'seq':51+2*i,'kind':'guest_command','op':'indexed','count':0,'instances':1,'index_guest':index_base})
+b['seq']=15
+files={'cp-ordered-batches.jsonl':(json.dumps(b)+'\n').encode(),'capture-status.json':b'{"target_frame":408}'}
+manifest={'files':[dict(file=n,status='complete',bytes=len(v),copied=len(v),sha256=hashlib.sha256(v).hexdigest()) for n,v in files.items()]}
+with tempfile.TemporaryDirectory() as d:
+    p=Path(d)/'capture.zip'
+    def write_archive():
+        with zipfile.ZipFile(p,'w') as z:
+            z.writestr('queue-state/ds_prelight_events_0.jsonl','\n'.join(map(json.dumps,j))+'\n')
+            for n,v in files.items(): z.writestr('p8-reference/'+n,v)
+            z.writestr('p8-reference/export-manifest.json',json.dumps(manifest))
+    write_archive()
+    assert audit(p)['record_counts']=={'DIVERGENCE':1,'MATCH':2}
+    # Corrupted data cannot become a local mismatch verdict.
+    files['cp-ordered-batches.jsonl']+=b' '
+    write_archive()
+    try:
+        audit(p)
+    except ValueError as e:
+        assert 'export integrity mismatch' in str(e)
+    else:
+        raise AssertionError('corrupt selected-cycle export accepted')
+print('Three-record archive transport and corrupt-export rejection passed')
