@@ -520,3 +520,17 @@ esta aquisição reparada com solução visual ou certificado global bilateral.
 - CI [45999776729](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45999776729) sucesso: regressões focadas, testes de posição/SPIR-V, compilação, testes Android, auditoria de dependências e assinatura. Suite nativa completa opcional não executada.
 - [Artefato 15196969721](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45999776729/artifacts/15196969721). SHA256 APK c301b3d0164d752c0254c2ead332a841d44562e037f1627e1da257fffb325a88, ZIP ee50e845b6e4b0201c5f110ced8022e8ecd1d858d8dca867e8684f88fe5ef01b. Download, CRC, assinatura V2 e digest criptográfico, certificado estável 8f5f176fc9fc9654de485ac73a8d1873ceb2b61122fd93f9da95717aa1309ee0, arquitetura AArch64, revisão embutida em libmain.so e manifesto nativo verificados localmente. Hashes do staging diferem após strip Gradle, APK final idêntico ao hash CI.
 - Replays independentes versionados em d4696fb. Próxima execução no aparelho modo F mesmo save/câmera. P8 ainda BLOCKED [0,16]; nenhuma correção visual alegada.
+
+
+### Revisão metodológica após #754 (27/11/2026)
+
+O usuário exigiu corrigir a investigação que só produzia certificados locais.
+[Motor bilateral e contrato de integração](DEMONS_P8_BILATERAL_METHOD.md):
+testados PASS e FAIL em cone finito com execução independente RDNA1 e 18
+controles. Inventário real #752/#753: 284/284 leituras, 12 versões,
+288 operações candidatas e 540 ocorrências de predecessores não fechados.
+O adaptador do cone real, a cobertura dos contratos guest necessários e a
+propagação real ao flip ainda não estão implementados. P8 continua [0,16],
+zero corte global. Não usar os fixtures como certificação do jogo; não
+disparar outra build exclusivamente por mudanças metodológicas ou localizadas
+sem mecanismo bilateral integrado. Certificados locais anteriores mantidos.

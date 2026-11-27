@@ -332,7 +332,17 @@ def inspect_indirect(draw: dict[str, Any], executed: dict[str, Any] | None,
 
 def audit_capture(path: str | Path) -> dict[str, Any]:
     with Capture(path) as capture:
-        return audit(capture)
+        report = audit(capture)
+    # Do not depend on observing a bright-to-dark transition to locate the
+    # actual flip-linked cut. The raw P8 log includes sustained dark frames.
+    # Inventory is evidence acquisition, not the bilateral replay verdict.
+    if Path(path).is_file():
+        with zipfile.ZipFile(path) as archive:
+            has_p8 = "p8-reference/export-manifest.json" in archive.namelist()
+        if has_p8:
+            from p8_bilateral import inventory
+            report["p8_capture_inventory"] = inventory(path)
+    return report
 
 
 def attach_vertex_oracle(report: dict[str, Any], path: str | Path) -> None:

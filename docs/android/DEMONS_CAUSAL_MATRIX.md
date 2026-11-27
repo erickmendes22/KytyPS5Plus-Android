@@ -744,3 +744,17 @@ esta aquisição reparada com solução visual ou certificado global bilateral.
 - **Corte global: 0; intervalo [0,16], P8 BLOCKED.** Novo certificado local: CP completo e acumuladores do produtor 7d5a no escopo comparado. O passe HDR não fazia parte da aquisição POS0 anterior: índices acima de 65536, bit31 seleciona registros de tesselação, janela única impossível para IDs mistos, e diário de produtores pesado sela antes do consumo.
 - Próxima aquisição limitada ao draw HDR real: preservar índices nativos completos, dois intervalos disjuntos de VertexIndex, campos POS0 do próprio draw, escalares consumidos e fatia de 12 bytes por índice gerado (faixa mínima incluindo eventuais lacunas), demais descritores VS/PS dentro do orçamento raw. Registro separado no radiance_draw_pair; hashes e tamanhos no manifesto P8. O recorder continua limitando 65536 vértices armazenados no total e não altera argumentos/saídas da renderização. Testes de mapeamento para IDs mistos, limites de sinal, offset negativo, rejeição de janela excessiva e validação SPIR-V obrigatórios.
 - Limitação: não existe ainda prova bilateral do P8 integral. Esta captura visa a próxima aresta concreta de geometria/posição; não é por si uma decisão global nem correção visual. Se a referência de POS0 divergir, demonstrar seu efeito; se coincidir, seguir os produtores reais dos registros gerados ou o consumidor, sem repetir CP/contadores.
+
+
+### Revisão metodológica após #754 (27/11/2026)
+
+O usuário exigiu corrigir a investigação que só produzia certificados locais.
+[Motor bilateral e contrato de integração](DEMONS_P8_BILATERAL_METHOD.md):
+testados PASS e FAIL em cone finito com execução independente RDNA1 e 18
+controles. Inventário real #752/#753: 284/284 leituras, 12 versões,
+288 operações candidatas e 540 ocorrências de predecessores não fechados.
+O adaptador do cone real, a cobertura dos contratos guest necessários e a
+propagação real ao flip ainda não estão implementados. P8 continua [0,16],
+zero corte global. Não usar os fixtures como certificação do jogo; não
+disparar outra build exclusivamente por mudanças metodológicas ou localizadas
+sem mecanismo bilateral integrado. Certificados locais anteriores mantidos.
