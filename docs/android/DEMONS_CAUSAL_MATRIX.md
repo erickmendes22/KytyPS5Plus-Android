@@ -650,3 +650,7 @@ CI 45897822805 aprovado; execução offline do shader real ea2e66ea6ad76baf da #
 ## #748 — entrega verificada (26/11/2026)
 
 APK compilado, assinado, baixado e verificado: revisão `0f1709763e30ab7812652d2eda81518a6e32ebff`, run [45905112907](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45905112907), artifact [15157339392](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45905112907/artifacts/15157339392). Registros de assinatura, integridade, ABI e alcance em [DEMONS_APK_748_VERIFICATION.md](DEMONS_APK_748_VERIFICATION.md). **Corte global: nenhum. P8 [0,16] permanece ativo; aguarda captura F do aparelho.** A entrega não fica condicionada a PC externo ou ao resultado futuro de gameplay.
+
+## #749 — regressão de instrumentação
+
+#748, ZIP 20261126-212515: captura Vulkan 14,2 GB e congelamento frame 380. Remover serialização global de modo F, preservar dados raw com orçamento e operandos reais já adquiridos. Sem alteração semântica de iluminação. P8 [0,16]. Ver ledger.

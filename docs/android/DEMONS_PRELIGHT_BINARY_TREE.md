@@ -1069,3 +1069,7 @@ P8 permanece [0,16]. O executor AMD real confirmou 120/120 bytes da compactaçã
 ## #748 — entrega verificada (26/11/2026)
 
 APK compilado, assinado, baixado e verificado: revisão `0f1709763e30ab7812652d2eda81518a6e32ebff`, run [45905112907](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45905112907), artifact [15157339392](https://github.com/erickmendes22/KytyPS5Plus-Android/actions/runs/45905112907/artifacts/15157339392). Registros de assinatura, integridade, ABI e alcance em [DEMONS_APK_748_VERIFICATION.md](DEMONS_APK_748_VERIFICATION.md). **Corte global: nenhum. P8 [0,16] permanece ativo; aguarda captura F do aparelho.** A entrega não fica condicionada a PC externo ou ao resultado futuro de gameplay.
+
+## #749 — correção da aquisição após congelamento da #748
+
+P8 [0,16], sem corte global. Captura Vulkan completa: 14.218.357.063 bytes; congelamento frame 380. #749 desativa a camada de serialização e mantém observações raw limitadas e operandos CP. Os dois episódios HZB da #748 têm todos os texels zero e entradas distintas. Não confundir ausência do trace com erro guest.

@@ -12,10 +12,12 @@
 
 namespace Libs::Graphics::DemonsP8Reference {
 inline std::mutex raw_mutex;
-// Unique on-disk data and cumulative device transfers have distinct budgets.
-// One frame with forty deferred consumers can legitimately read the same
-// material version many times. Never reuse its earlier replay transfer.
-inline RawStore raw_store{256ull*1024ull*1024ull,2ull*1024ull*1024ull*1024ull};
+// Bounded raw-only capture. Reusing an observation of a clean, unchanged
+// version is not a new physical transfer for native replay.
+inline RawStore raw_store{DemonsP8CapturePolicy::RawStorageBudget,
+    DemonsP8CapturePolicy::RawCopyBudget};
+using ObservationKey=std::tuple<uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t>;
+inline std::map<ObservationKey,nlohmann::json> clean_observations;
 inline uint32_t TexelBytes(vk::Format format,vk::ImageAspectFlagBits aspect) {
     if(aspect==vk::ImageAspectFlagBits::eStencil)
         return format==vk::Format::eD32SfloatS8Uint?1:0;
@@ -60,7 +62,30 @@ inline nlohmann::json Snapshot(RenderContext& context,Image& image,uint32_t mip,
     if(w>16384||h>16384)return fail("oversize_extent");
     const auto bytes=uint64_t(w)*h*size;
     if(!bytes||bytes>48ull*1024*1024)return fail("oversize_readback");
-    if(!VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdInsertDebugUtilsLabelEXT)return fail("marker_unavailable");
+    event["native_replay"]=false;
+    const ObservationKey key={image.info.data.address,
+        event["object"].get<uint64_t>(),event["native"].get<uint64_t>(),
+        image.ContentVersion(),image.gpu_write_order,mip,layer,static_cast<uint32_t>(aspect),
+        static_cast<uint32_t>(b.format),w,h};
+    const bool clean=DemonsP8CapturePolicy::Reusable(image.IsCpuDirty(),image.IsBufferModified(),true,true,true);
+    if(clean){
+        nlohmann::json prior;
+        {
+            std::scoped_lock lock(raw_mutex);
+            const auto it=clean_observations.find(key);
+            if(it!=clean_observations.end())prior=it->second;
+        }
+        if(!prior.is_null()){
+            event["extent"]={w,h};event["texel_bytes"]=size;event["expected_bytes"]=bytes;
+            event["file"]=prior["file"];event["captured_bytes"]=bytes;
+            event["source_observation"]=prior["marker"];
+            event["source_submit"]=prior["submit"];
+            event["version_after"]=image.ContentVersion();
+            event["observation_reused"]=true;event["valid"]=true;
+            event["marker_recorded"]=false;
+            WriteEvent(event);return event;
+        }
+    }
     const auto id=raw_store.ReserveCopy(bytes);
     if(!id)return fail("raw_copy_budget_exceeded");
     const auto marker="P8_FULL_"+std::to_string(id);
@@ -78,7 +103,9 @@ inline nlohmann::json Snapshot(RenderContext& context,Image& image,uint32_t mip,
     scheduler.EndRendering(PassEnd::ImageCopy);
     vk::DebugUtilsLabelEXT label{};
     label.pLabelName=marker.c_str();
-    scheduler.Current().Handle().insertDebugUtilsLabelEXT(label);
+    const bool markers=VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdInsertDebugUtilsLabelEXT!=nullptr;
+    if(markers)scheduler.Current().Handle().insertDebugUtilsLabelEXT(label);
+    event["marker_recorded"]=markers;
     event["tick"]=scheduler.CurrentTick();
     image.Download(std::span{&copy,1u},download.Handle(),offset,bytes);
     scheduler.Finish();
@@ -89,13 +116,15 @@ inline nlohmann::json Snapshot(RenderContext& context,Image& image,uint32_t mip,
         std::span<const uint8_t>{reinterpret_cast<const uint8_t*>(mapped),static_cast<size_t>(bytes)});
     if(payload.reason)return fail(payload.reason);
     event["file"]=payload.file;event["payload_deduplicated"]=payload.reused;
-    event["captured_bytes"]=bytes;event["valid"]=true;
+    event["captured_bytes"]=bytes;event["valid"]=true;event["observation_reused"]=false;
+    if(clean&&!image.IsCpuDirty()&&!image.IsBufferModified()&&event["write_order"]==image.gpu_write_order){
+        std::scoped_lock lock(raw_mutex);
+        clean_observations.emplace(key,event);
+    }
     WriteEvent(event);return event;
 }
 
-// A unique GPU transfer is required at each use, even for a clean, unchanged
-// Android version: a reference backend might have changed that image.
-// RawStore deduplicates only after comparing actual readback bytes.
+// Raw-only observations distinguish same-version reuse from a physical transfer.
 inline std::atomic<uint64_t> use_serial{0};
 inline nlohmann::json SnapshotBoundary(RenderContext& context,Image& image,
     uint32_t mip,uint32_t layer,vk::ImageAspectFlagBits aspect,int32_t frame,
@@ -194,7 +223,7 @@ inline nlohmann::json InspectBindings(RenderContext& context,const Bound& bound,
 inline void MarkUse(vk::CommandBuffer command,nlohmann::json event) {
     if(event.is_null())return;
     const auto marker="P8_USE_"+std::to_string(++use_serial);
-    event["kind"]="cut_use";event["marker"]=marker;
+    event["kind"]="cut_use";event["marker"]=marker;event["native_replay"]=false;
     if(command&&VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdInsertDebugUtilsLabelEXT){
         vk::DebugUtilsLabelEXT label{};label.pLabelName=marker.c_str();
         command.insertDebugUtilsLabelEXT(label);

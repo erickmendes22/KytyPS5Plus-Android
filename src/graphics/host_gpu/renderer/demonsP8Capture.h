@@ -1,5 +1,6 @@
 #pragma once
 #include "common/emulatorConfig.h"
+#include "graphics/host_gpu/renderer/demonsP8CapturePolicy.h"
 #include "graphics/host_gpu/renderer/demonsCausalMatrix.h"
 #include <atomic>
 #include <cstdlib>
@@ -29,7 +30,7 @@ inline void Status(const char* state, int32_t frame=-1) {
     if(ec)return;
     std::ofstream out(Folder()/"capture-status.json",std::ios::trunc);
     if(out)out<<nlohmann::json{{"schema",1},{"state",state},{"frame",frame},
-        {"target_frame",target.load()},{"scope","native same-stream differential; not a guest correctness certificate"}};
+        {"target_frame",target.load()},{"native_replay",false},{"scope","bounded raw observations; not a native replay or guest correctness certificate"}};
 }
 inline bool Configure(bool present, bool markers) {
 #ifdef __ANDROID__
@@ -39,20 +40,12 @@ inline bool Configure(bool present, bool markers) {
     std::filesystem::remove_all(Folder(),ec);
     if(ec){Status("cleanup_failed");return false;}
     std::filesystem::create_directories(Folder(),ec);
-    if(ec||!present||!markers){Status(!present?"capture_layer_unavailable":"debug_markers_unavailable");return false;}
-    const auto filename=std::filesystem::absolute(Folder()/"witness.gfxr").string();
-    if(setenv("debug.gfxrecon.capture_file",filename.c_str(),1)||
-       setenv("debug.gfxrecon.capture_file_timestamp","false",1)||
-       setenv("debug.gfxrecon.capture_android_trigger","false",1)||
-       setenv("debug.gfxrecon.capture_trigger_boundary","queue_submits",1)||
-       setenv("debug.gfxrecon.capture_trigger_frames","2048",1)||
-       setenv("debug.gfxrecon.memory_tracking_mode","unassisted",1)||
-       setenv("debug.gfxrecon.capture_file_flush","true",1)){
-        Status("capture_configuration_failed");return false;
-    }
+    if(ec){Status("capture_directory_failed");return false;}
+    // Mode F must not synchronously serialize all live Vulkan resources.
+    // Raw acquisition remains independent of the layer and debug labels.
     available.store(true);
-    Status("armed");
-    return true;
+    Status("raw_only_armed");
+    return DemonsP8CapturePolicy::AttachWholeStateLayer(true,present,markers);
 #else
     (void)present;(void)markers;return false;
 #endif
@@ -62,23 +55,16 @@ inline void Observe(int32_t frame,double luminance,uint32_t lit) {
     if(!available.load())return;
     const int32_t f=target.load();
     if(f>=0){
-        if(frame>=f+2&&!stopped.exchange(true)){
-            if(setenv("debug.gfxrecon.capture_android_trigger","false",1))
-                Status("stop_trigger_failed",frame);
-            else Status("stop_requested",frame);
-        }
+        if(frame>=f+2&&!stopped.exchange(true))Status("raw_only_complete",frame);
         return;
     }
     // Select on the actual post-processing input, not the earlier
     // layer-zero collapse or the transparent UI. Candidate only.
     // The frame floor avoids the initial boot fade; it is not a proof of a defect.
-    if(frame<240||lit>8||luminance>=0.003)return;
+    if(!DemonsP8CapturePolicy::Trigger(frame,luminance,lit))return;
     int32_t expected=-1;
     if(!target.compare_exchange_strong(expected,frame+1))return;
-    if(setenv("debug.gfxrecon.capture_android_trigger","true",1)){
-        stopped.store(true);Status("start_trigger_failed",frame);return;
-    }
-    Status("start_requested",frame);
+    Status("raw_only_selected",frame);
 #else
     (void)frame;(void)luminance;(void)lit;
 #endif

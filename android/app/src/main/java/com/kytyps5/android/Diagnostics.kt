@@ -157,11 +157,13 @@ object Diagnostics {
         val manifest = org.json.JSONObject().put("schema",1).put("total",total)
         val list = org.json.JSONArray()
         var count = 0
-        val allowed = total <= maxBytes
-        for (file in files) {
+        // Do not let an oversized trace suppress small metadata and raw files.
+        var remaining = maxBytes
+        for (file in files.sortedWith(compareBy<File> { it.extension == "gfxr" }
+            .thenBy { it.extension == "bin" }.thenBy { it.name })) {
             val length = file.length()
             val entry = org.json.JSONObject().put("file",file.name).put("bytes",length)
-            if (!allowed) entry.put("status","budget_exceeded")
+            if (length > remaining) entry.put("status","budget_exceeded")
             else {
                 zip.putNextEntry(ZipEntry("p8-reference/"+file.name))
                 val digest = java.security.MessageDigest.getInstance("SHA-256")
@@ -177,6 +179,7 @@ object Diagnostics {
                 zip.closeEntry()
                 entry.put("copied",copied).put("sha256",digest.digest().joinToString("") { "%02x".format(it) })
                 entry.put("status",if (copied == length && file.length() == length) "complete" else "changed_during_export")
+                remaining -= copied
                 count++
             }
             list.put(entry)

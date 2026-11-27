@@ -1,9 +1,25 @@
 #include "graphics/host_gpu/renderer/demonsIndirectWitnessPolicy.h"
+#include "graphics/host_gpu/renderer/demonsP8CapturePolicy.h"
 #include <cassert>
 #include <limits>
 
 using namespace Libs::Graphics::DemonsIndirectWitnessPolicy;
 int main(){
+    namespace P8=Libs::Graphics::DemonsP8CapturePolicy;
+    static_assert(!P8::AttachWholeStateLayer(true,true,true));
+    static_assert(!P8::AttachWholeStateLayer(true,false,false));
+    static_assert(P8::RawCopyBudget<1536ull*1024*1024);
+    static_assert(P8::RawStorageBudget<=P8::RawCopyBudget);
+    static_assert(P8::Trigger(380,0.000041,0));
+    static_assert(!P8::Trigger(239,0.0,0));
+    static_assert(!P8::Trigger(380,0.01,0));
+    static_assert(!P8::Trigger(380,0.000041,9));
+    static_assert(P8::Reusable(false,false,true,true,true));
+    static_assert(!P8::Reusable(true,false,true,true,true));
+    static_assert(!P8::Reusable(false,true,true,true,true));
+    static_assert(!P8::Reusable(false,false,false,true,true));
+    static_assert(!P8::Reusable(false,false,true,false,true));
+    static_assert(!P8::Reusable(false,false,true,true,false));
     static_assert(Shape(true,3,20,1,22020096,true));
     static_assert(!Shape(true,3,20,0,22020096,true));
     static_assert(!Shape(true,3,20,1,22020095,true));
