@@ -10,3 +10,5 @@
 
 
 Run `python3 docs/android/tools/v4_gi_contract.py DIAGNOSTICS.zip --runner /path/to/kyty_p8_guest_ref`.
+
+Pre-delivery review: DescriptorValue has an eight-dword storage container but samplers have dword_count=4. Bind only the four actually used words and reject missing sampler; use the same captured G-buffer/depth/stencil snapshots for q33 checks. The corrected native revision supersedes the initial #762 acquisition; do not request a device test of the uncorrected binary.

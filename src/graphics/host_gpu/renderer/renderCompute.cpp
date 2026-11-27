@@ -5090,15 +5090,15 @@ static nlohmann::json ReadDsGiFootprint(RenderContext& context,const PreparedBin
         const auto& samplers=bindings.runtime->resources->samplers;
         bool matched=false;
         for(const auto& raw:samplers){
-            if(!std::equal(raw.dwords.begin(),raw.dwords.end(),r+17))continue;
+            if(raw.dword_count!=4||!std::equal(raw.dwords.begin(),raw.dwords.begin()+4,r+17))continue;
             const auto smp=DecodeNativeDescriptor<ShaderSamplerResource>(raw);
-            out["sampler"]={{"raw",raw.dwords},{"mag",smp.XyMagFilter()},{"min",smp.XyMinFilter()},
+            out["sampler"]={{"raw",std::array<uint32_t,4>{raw.dwords[0],raw.dwords[1],raw.dwords[2],raw.dwords[3]}},{"mag",smp.XyMagFilter()},{"min",smp.XyMinFilter()},
                 {"unnormalized",smp.ForceUnormCoords()},{"reduction",smp.FilterMode()},
                 {"compare",smp.DepthCompareFunc()},{"min_lod",smp.MinLod()},{"max_lod",smp.MaxLod()},
                 {"mip_filter",smp.MipFilter()}};
             matched=true;break;
         }
-        if(!matched)return fail("sampler_not_bound");
+        if(!matched){out["ok"]=false;return fail("sampler_not_bound");}
         out["subtexel_bits"]=context.GetGraphics().GetPhysicalDeviceProperties().limits.subTexelPrecisionBits;
     }
     if(slot==7)out["atlas_writer_candidates"]=DsAtlasFootprintProducers(image.info.data.address,image.ContentVersion(),x,y,layer);

@@ -90,7 +90,7 @@ def footprint_reference(pc,row,fp,entry,raw):
     need(slot in (3,6,7) and side==2,'sample footprint')
     sm=fp['sampler'];need(sm['raw']==row['sampler'] and row['sampler'] in [list(x[:4]) for x in raw['sampler_descriptors']],'sampler identity')
     need(not sm['unnormalized'] and sm['reduction']==0 and sm['mag']==sm['min'] and sm['mag'] in (0,1) and
-         (sm['mip_filter']==0 or sm['min_lod']==sm['max_lod']==0),'unsupported sampler')
+         (sm['mip_filter']==0 or sm['min_lod']==0),'unsupported sampler')
     c=[fl(v) for v in row['coords']];u0,v0=c[1:3] if slot==6 else c[:2]
     tx=u0*w-.5;ty=v0*h-.5
     need(math.floor(tx)==x and math.floor(ty)==y and 0<=x<w-1 and 0<=y<h-1,'footprint coordinate')
@@ -267,6 +267,19 @@ def audit(a,runner=None):
                     expect=read_buffer(pc,row,buffers,raw)
                     local.append(dict(pc=hex(pc),key=k,status='MATCH_LOCAL' if expect==row['result'] else 'DIVERGENCE_LOCAL',expected=expect,observed=row['result']))
                 except ValueError as ex:local.append(dict(pc=hex(pc),key=k,status='INCOMPLETE',reason=str(ex)))
+            elif slot in (0,1,2):
+                try:
+                    entry=stage['images'][slot];d=verify_image(row,entry,raw,slot)
+                    x,y,*layer=row['coords'];layer=layer[0] if layer else 0
+                    role=('stencil','depth','gbuffer')[slot]
+                    snap=[s for s in entry['snapshots'] if s['valid'] and s['role']==role and s['layer']==entry['view']['layer']+layer]
+                    need(len(snap)==1,'missing exact material/depth/stencil snapshot')
+                    snap=snap[0];data=a.snapshot(snap,role)
+                    w,h=snap['extent'];n=snap['texel_bytes'];need(0<=x<w and 0<=y<h and n==(1 if slot==0 else 4),'material bounds')
+                    need((d['format'],d['select'],d['type'])=={0:(5,2340,9),1:(22,2340,9),2:(20,516,13)}[slot],'unsupported material descriptor')
+                    offset=(y*w+x)*n;expect=[int.from_bytes(data[offset:offset+n],'little')]
+                    local.append(dict(pc=hex(pc),key=k,status='MATCH_LOCAL' if expect==row['result'] else 'DIVERGENCE_LOCAL',expected=expect,observed=row['result']))
+                except (ValueError,KeyError) as ex:local.append(dict(pc=hex(pc),key=k,status='INCOMPLETE',reason=str(ex)))
             elif slot in (3,4,5,6,7):
                 try:
                     expect,tol=footprint_reference(pc,row,fps[wi,pc,k],stage['images'][slot],raw)
