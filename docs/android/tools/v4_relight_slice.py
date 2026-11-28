@@ -117,6 +117,12 @@ def sample_reference(pc,record,fp,report):
         want=(1-fy)*((1-fx)*a[0,0]+fx*a[0,1])+fy*((1-fx)*a[1,0]+fx*a[1,1])
         tol=float(np.max(np.ptp(a.reshape(4,-1),axis=0)))*2*2**(-report['subtexel_bits'])+max(1e-9,float(np.max(abs(a)))*2e-6)
     return want,tol
+def valid_layer(value):
+    f=fl(value)
+    # Guest v_cvt_f32_u32 at 0x16e4 can only produce a finite
+    # nonnegative integral float32 from a uint32 operand.
+    return math.isfinite(f) and f>=0 and f==math.floor(f) and f<=float(2**32)
+
 def audit(code,runner,meta,data):
     rows=parse(data,meta);bad=[];incomplete=[];matched=0;checks=[]
     def result(kind,pc,ray,k,ok,detail=None):
@@ -141,6 +147,9 @@ def audit(code,runner,meta,data):
         corners=[k for k in range(8) if (0x1744,k) in r]
         prior=[0]*4
         for k in corners:
+            result('actual_guest_layer_conversion',0x16e4,ray,k,valid_layer(r[0x172c,k][2]),
+                   dict(raw_packed_index=r[0x16a4,k][0],observed_layer=fl(r[0x172c,k][2])))
+            result('actual_guest_shared_layer',0x1734,ray,k,r[0x172c,k][2]==r[0x1734,k][3])
             result('accumulator_chain',0x1744,ray,k,r[0x1744,k][6:10]==prior)
             prior=r[0x177c,k]
         if (0x1788,0) in r:

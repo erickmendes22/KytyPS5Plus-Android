@@ -11,3 +11,11 @@
 
 
 Run `python3 docs/android/tools/v4_relight_slice.py DIAGNOSTICS.zip --runner /path/to/kyty_p8_guest_ref`.
+
+### Additional offline controls before #765 delivery (host only)
+
+- Actual #764 q33 FP16 output is exactly RTZ; the atlas's 96/96 sampled RGB fields also match RTZ (RNE only 48/96). The q33 auditor now distinguishes complete RNE and RTZ policies, rather than treating an explained storage conversion as a shader divergence. This does not assert that arbitrary guest rounding modes are equivalent.
+- On real f503 probe4957, 252/256 dominant D terms are inside the bounds of gamma-decoded albedo times min/max sampled atlas RGB divided by pi. Rays148/149/150/166 exceed that conditional bound, so do not attribute D entirely to recursive atlas: earlier direct contribution also enters the actual material join. #765 explicitly captures v20/v21/v8 separately at 0x17bc.
+- Legacy SPIR-V trace f503 recorded 1536 atlas and 1536 shadow visits; 76 atlas entries on 19 rays have nonintegral layers (e.g. 1.4503871202468872), often repeated identical out-of-range coordinates. Four of those rays have nonzero albedo, only three have nonzero D. This is not a certified original instruction mismatch: old instrumentation observes host image operations regardless of guest EXEC (possible inactive/speculative lanes). The original v45 at 0x16e4 is v_cvt_f32_u32 and must be integral on a guest-active lane. #765 records only actual guest EXEC-active PCs, the loaded packed index, and both actual layer values. Host comparator checks this invariant separately even if footprint acquisition rejects the coordinate. If active invalid layer persists, reduce producer 0x16e4 and EXEC restoration; if absent, do not mistake old speculative accesses for live samples. No native sampling or brightness changes.
+- Original relight ISA controls ran on 64 historical atlas/shadow and sky samples with explicitly synthetic weights and raw albedo. All five slices reproduced the separately evaluated arithmetic; zero emission and nonzero emission controls passed, and deliberate altered output detected. These controls validate the replay plumbing, not actual #765 device results.
+

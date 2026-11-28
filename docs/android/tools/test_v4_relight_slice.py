@@ -7,6 +7,9 @@ def reject(fn):
     raise AssertionError('invalid data accepted')
 def main():
     assert r.WORDS==466952
+    assert r.valid_layer(r.bits(19)) and r.valid_layer(r.bits(0))
+    assert not r.valid_layer(r.bits(1.4503871202468872))
+    assert not r.valid_layer(r.bits(-1)) and not r.valid_layer(0x7f800000)
     assert sorted(r.wave_lane(i) for i in range(256))==[(g,l) for g in range(4) for l in range(64)]
     assert r.half_rtz([2.5017981897690333e-5,2.7074676836491562e-5])==[419,454]
     assert r.half_rtz([-2.5017981897690333e-5])==[0x8000+419]

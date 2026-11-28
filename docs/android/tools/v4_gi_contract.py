@@ -355,10 +355,15 @@ def audit(a,runner=None):
              before['mip']==after['mip'] and before['layer']==after['layer'],'HDR identity')
         b=before['half_words'][4*wi:4*wi+4];a0=after['half_words'][4*wi:4*wi+4]
         incoming=[fbits(x) for x in np.asarray(b,'<u2').view('<f2')[:3]]
-        stored=list(map(int,np.asarray([fl(x) for x in r[0x1174,0]['result']],'<f2').view('<u2')))
+        from v4_relight_slice import half_rtz
+        store_values=[fl(x) for x in r[0x1174,0]['result']]
+        stored=list(map(int,np.asarray(store_values,'<f2').view('<u2')))
+        truncated=half_rtz(store_values)
         need(r[0x112c,0]['coords']==pixel and r[0x1174,0]['coords']==pixel,'HDR coords')
         local.append(dict(pc='0x112c',status='MATCH_LOCAL' if incoming==r[0x112c,0]['result'] else 'DIVERGENCE_LOCAL'))
-        local.append(dict(pc='0x1174',status='MATCH_LOCAL' if stored==a0 else 'DIVERGENCE_CANDIDATE',expected=stored,observed=a0))
+        local.append(dict(pc='0x1174',status='MATCH_LOCAL' if a0 in (stored,truncated) else 'DIVERGENCE_CANDIDATE',
+            expected_rne=stored,expected_rtz=truncated,observed=a0,
+            rounding='RTZ' if a0==truncated and a0!=stored else 'RNE_OR_EXACT' if a0==stored else 'UNEXPLAINED'))
         rr=None
         if runner:
             try:rr=replay(code,runner,launch,e['wg'],lane,raw,buffers,wave,r)
