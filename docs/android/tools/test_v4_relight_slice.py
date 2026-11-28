@@ -7,6 +7,12 @@ def reject(fn):
     raise AssertionError('invalid data accepted')
 def main():
     assert r.WORDS==598024
+    # Actual #765 f742 ray4/event1 reference and native half sample.
+    ref=[5.867284727123501e-6]*3;obs=[5.841255187988281e-6]*3;tol=1.0778887033462525e-8
+    assert r.sample_matches(0x172c,ref,obs,tol)==(True,'fp16_rne_interval')
+    assert not r.sample_matches(0x1734,ref,obs,tol)[0]
+    assert not r.sample_matches(0x172c,ref,[obs[0]*2]*3,tol)[0]
+    assert not r.sample_matches(0x172c,ref,[obs[0]-1e-10]*3,tol)[0]
     assert r.layer_reference(0x12345678,8,511)==0x56 and r.layer_reference(0x12345678,40,511)==0x56
     assert r.valid_layer(r.bits(19)) and r.valid_layer(r.bits(0))
     assert not r.valid_layer(r.bits(1.4503871202468872))

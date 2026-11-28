@@ -126,6 +126,22 @@ def sample_reference(pc,record,fp,report):
         want=(1-fy)*((1-fx)*a[0,0]+fx*a[0,1])+fy*((1-fx)*a[1,0]+fx*a[1,1])
         tol=float(np.max(np.ptp(a.reshape(4,-1),axis=0)))*2*2**(-report['subtexel_bits'])+max(1e-9,float(np.max(abs(a)))*2e-6)
     return want,tol
+def sample_matches(pc,ref,observed,tolerance):
+    ref=np.asarray(ref,float);observed=np.asarray(observed,float)
+    if ref.shape!=observed.shape or not np.isfinite(observed).all():return False,'invalid'
+    if np.all(np.abs(ref-observed)<=tolerance):return True,'fp32_interval'
+    # #765's 64 actual same-position site12 samples are all exact FP16
+    # values; 62 match center RNE, all 64 match quantized coordinate bounds.
+    # On RGBA16F only, recognize an exact half result after rounding the
+    # coordinate-uncertainty interval. Do not give shadow/other samples
+    # this extra allowance, or accept a non-half value outside FP32 bounds.
+    if pc==0x172c and np.array_equal(observed,observed.astype('<f2').astype(float)):
+        lo=(ref-tolerance).astype('<f2').astype(float)
+        hi=(ref+tolerance).astype('<f2').astype(float)
+        if np.isfinite(lo).all() and np.isfinite(hi).all() and np.all((lo<=observed)&(observed<=hi)):
+            return True,'fp16_rne_interval'
+    return False,'unexplained'
+
 def valid_layer(value):
     f=fl(value)
     # Guest v_cvt_f32_u32 at 0x16e4 can only produce a finite
@@ -156,7 +172,8 @@ def audit(code,runner,meta,data):
             try:
                 ref,tol=sample_reference(pc,r[pc,k],fp,report)
                 val=r[0x1744,k][:3] if pc==0x172c else r[0x1744,k][3:4]
-                val=list(map(fl,val));result('footprint',pc,ray,k,all(abs(a-b)<=tol for a,b in zip(ref,val)),dict(reference=ref.tolist(),observed=val,tol=tol))
+                val=list(map(fl,val));equal,policy=sample_matches(pc,ref,val,tol)
+                result('footprint',pc,ray,k,equal,dict(reference=ref.tolist(),observed=val,tol=tol,policy=policy))
             except (ValueError,KeyError,OverflowError) as ex:incomplete.append(dict(pc=hex(pc),ray=ray,corner=k,reason=str(ex)))
         expected={(i,k) for i,r in enumerate(rows) for k in range(8) if (pc,k) in r}
         if seen!=expected or report['status'] not in ('captured','no_visits'):incomplete.append(dict(pc=hex(pc),reason='footprint coverage',observed=len(seen),expected=len(expected),status=report['status']))
