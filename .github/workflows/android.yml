@@ -334,6 +334,9 @@ jobs:
           python3 docs/android/tools/test_v4_q8_brdf.py
           python3 docs/android/tools/test_v4_cluster_publication.py
           python3 docs/android/tools/test_v4_gi_contract.py
+          python3 docs/android/tools/test_v4_relight_slice.py
+          g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_v4_relight_slice_test.cpp -o /tmp/ds-v4-relight-slice
+          /tmp/ds-v4-relight-slice
           g++ -std=c++20 -Wall -Wextra -Werror -Isrc tests/manual/demons_v4_gi_launch_test.cpp -o /tmp/ds-v4-gi-launch
           /tmp/ds-v4-gi-launch
           python3 -m py_compile docs/android/tools/v4_cluster_isa.py docs/android/tools/v4_gi_contract.py
