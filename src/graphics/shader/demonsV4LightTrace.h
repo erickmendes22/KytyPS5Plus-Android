@@ -94,6 +94,42 @@ constexpr bool GiSupports(uint32_t x,uint32_t y,uint32_t z,uint32_t wave,
 }
 constexpr bool GiKey(uint32_t key){return key&&key<=128&&(key&(key-1))==0;}
 
+
+// V4 relight: exact producer of probe4957's low native radiance.
+// Each of 256 rays owns its records; dynamic corner key is s36 one-hot.
+constexpr uint64_t RelightShader=0xbcbcc6ba1e68c974ull;
+constexpr uint32_t RelightProbe=4957,RelightRays=256,RelightStride=32;
+constexpr std::array<uint32_t,4> RelightPosition{3246391296u,3288334336u,3246391296u,1098907648u};
+struct RelightSite {uint32_t pc;bool corner;uint32_t count;std::array<uint32_t,24> regs;};
+constexpr std::array<RelightSite,15> RelightSites{{
+    {0x120,false,4,{2,3,8,9}},
+    {0x15bc,true,5,{3,284,285,286,287}},
+    {0x16a4,true,1,{4}},
+    {0x172c,true,15,{43,44,45,256,257,258,259,260,261,262,263,296,297,298,299}},
+    {0x1734,true,16,{34,39,40,45,264,265,266,267,268,269,270,271,300,301,302,303}},
+    {0x1744,true,10,{3,4,5,34,37,36,28,29,30,31}},
+    {0x177c,true,4,{28,29,30,31}},
+    {0x1788,false,4,{28,29,30,31}},
+    {0x17b8,false,3,{27,22,5}},
+    {0x17bc,false,13,{5,8,13,14,15,16,20,21,22,27,9,10,12}},
+    {0x17f8,false,3,{27,28,16}},
+    {0x18a8,false,10,{3,4,5,13,16,27,28,272,362,363}},
+    {0x18c0,false,3,{27,28,16}},
+    {0x1b60,false,9,{8,18,15,17,14,3,27,28,16}},
+    {0x1b88,false,6,{0,1,2,3,6,7}}
+}};
+constexpr uint32_t RelightRows(const RelightSite& s){return s.corner?8:1;}
+constexpr uint32_t RelightOffset(std::size_t i){uint32_t n=0;for(std::size_t j=0;j<i;++j)n+=RelightRows(RelightSites[j])*RelightStride;return n;}
+constexpr uint32_t RelightRayWords=RelightOffset(RelightSites.size());
+constexpr uint32_t RelightWords=Header+RelightRays*RelightRayWords;
+constexpr uint64_t RelightBytes=uint64_t(RelightWords)*4;
+static_assert(RelightBytes<Bytes);
+constexpr uint32_t RelightCorner(uint32_t key){
+    for(uint32_t i=0;i<8;++i)if(key==(1u<<i))return i;
+    return 8;
+}
+constexpr uint32_t RelightRay(uint32_t gx,uint32_t gy,uint32_t lx,uint32_t ly){return (gy*8+ly)*16+gx*8+lx;}
+
 inline bool Enabled(){const auto* e=std::getenv("KYTY_DS_MATRIX");return e&&e[0]=='8'&&e[1]=='\0';}
 inline std::atomic<uint64_t> address{0};
 inline uint64_t Address(){return address.load(std::memory_order_relaxed);}

@@ -277,6 +277,42 @@ IR::Value Translator::ReadOperand(const Decoder::Operand& operand, IR::Type type
 }
 
 
+
+void Translator::V4RelightTrace(const Decoder::Instruction& inst) {
+    namespace T=DemonsV4LightTrace;using O=IR::ValueOpcode;
+    const auto at=std::find_if(T::RelightSites.begin(),T::RelightSites.end(),[&](const auto& s){return s.pc==inst.pc;});
+    if(at==T::RelightSites.end())return;
+    const auto c=[](uint32_t x){return IR::U32(IR::Value(x));};
+    const auto builtin=[&](IR::StageInputKind kind,uint32_t i){return IR::U32(ir.Emit(O::GetBuiltin,{IR::Value(static_cast<uint32_t>(kind)),IR::Value(i)}));};
+    const auto load=[&](uint32_t i){return IR::U32(ir.Emit(O::RetraceLoadU32,{c(i)}));};
+    const auto gx=builtin(IR::StageInputKind::WorkgroupId,0),gy=builtin(IR::StageInputKind::WorkgroupId,1);
+    const auto lx=builtin(IR::StageInputKind::LocalInvocationId,0),ly=builtin(IR::StageInputKind::LocalInvocationId,1);
+    const auto ray=ir.IAdd(ir.IMul(ir.IAdd(ir.IMul(gy,c(8)),ly),c(16)),ir.IAdd(ir.IMul(gx,c(8)),lx));
+    auto gate=ir.LogicalAnd(ir.IEqual(load(0),c(3)),ir.IEqual(builtin(IR::StageInputKind::WorkgroupId,2),load(1)));
+    gate=ir.LogicalAnd(gate,ir.ULessThan(gx,c(2)));gate=ir.LogicalAnd(gate,ir.ULessThan(gy,c(2)));
+    gate=ir.LogicalAnd(gate,ir.ULessThan(ray,c(T::RelightRays)));
+    gate=ir.LogicalAnd(gate,ir.GetExec());
+    const auto key=at->corner?ReadScalarCode(36):c(0);
+    auto ordinal=c(0);
+    auto valid=ir.IEqual(key,c(0));
+    if(at->corner){
+        valid=ir.IEqual(key,c(1));
+        for(uint32_t i=1;i<8;++i){
+            const auto hit=ir.IEqual(key,c(1u<<i));
+            ordinal=ir.Select(hit,c(i),ordinal);valid=ir.LogicalOr(valid,hit);
+        }
+    }
+    ir.Emit(O::DebugLogStoreU32,{c(3),c(1),ir.LogicalAnd(gate,ir.LogicalNot(valid))});
+    const auto pred=ir.LogicalAnd(gate,valid);
+    const auto base=ir.IAdd(ir.IAdd(c(T::Header+T::RelightOffset(std::size_t(at-T::RelightSites.begin()))),ir.IMul(ray,c(T::RelightRayWords))),ir.IMul(ordinal,c(T::RelightStride)));
+    const auto put=[&](uint32_t off,IR::U32 value){ir.Emit(O::DebugLogStoreU32,{ir.IAdd(base,c(off)),value,pred});};
+    put(0,c(inst.pc+1));put(1,key);
+    for(uint32_t j=0;j<at->count;++j){
+        const auto reg=at->regs[j];
+        put(2+j,reg>=256?ReadScalarCode(reg-256):ir.GetVectorReg(static_cast<IR::VectorReg>(reg)));
+    }
+}
+
 void Translator::V4GiTrace(const Decoder::Instruction& inst,bool before) {
     namespace T=DemonsV4LightTrace;using O=IR::ValueOpcode;
     const uint32_t pc=inst.pc;
@@ -1944,6 +1980,9 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
                 DemonsV4LightTrace::Supports(options.input_info.compute->threads_num[0],options.input_info.compute->threads_num[1],options.input_info.compute->threads_num[2],options.wave_size)&&
                 options.input_info.compute->workgroup_register==2&&options.input_info.compute->thread_ids_num>=2&&
                 options.input_info.compute->group_id[0]&&!options.input_info.compute->dispatch_thread_dimensions;
+            const bool relight=options.stage==ShaderType::Compute&&options.shader_hash==DemonsV4LightTrace::RelightShader&&DemonsV4LightTrace::Enabled()&&DemonsV4LightTrace::Address()!=0&&
+                DemonsV4LightTrace::Supports(options.input_info.compute->threads_num[0],options.input_info.compute->threads_num[1],options.input_info.compute->threads_num[2],options.wave_size);
+            if(relight)translator.V4RelightTrace(instruction);
             if(gi)translator.V4GiTrace(instruction,true);
             if(v4)translator.V4LightTrace(instruction,true);
 			translator.HalfRateBefore(instruction);

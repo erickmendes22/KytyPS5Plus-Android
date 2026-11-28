@@ -1133,7 +1133,7 @@ static void PlanLoopGuard(EmitterState& state) {
 
 void DefineModule(EmitterState& state) {
 	PlanLoopGuard(state);
-    if((state.program.shader_hash==DemonsV4LightTrace::Shader||state.program.shader_hash==DemonsV4LightTrace::GiShader)&&DemonsV4LightTrace::Enabled()){
+    if((state.program.shader_hash==DemonsV4LightTrace::Shader||state.program.shader_hash==DemonsV4LightTrace::GiShader||state.program.shader_hash==DemonsV4LightTrace::RelightShader)&&DemonsV4LightTrace::Enabled()){
         state.debug_log_address=DemonsV4LightTrace::Address();
         state.retrace_address=DemonsV4LightTrace::Address();
     }

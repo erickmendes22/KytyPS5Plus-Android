@@ -2268,7 +2268,7 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
         if(DemonsPrelightTrace::Enabled())ShaderDump::RecordDsProbeGuestCode(params.hash,params.code);
 		if (params.hash == 0xf0c482b0b355e9deull || params.hash == 0x3dfe402653925fbfull ||
             params.hash == 0x1ce1a858f62b5a11ull ||
-            params.hash == 0xe3daeb1e7426761bull || params.hash == 0xcb3b9c1ea64fe876ull || params.hash == 0xc387ee3c610ed66bull ||
+            params.hash == 0xe3daeb1e7426761bull || params.hash == 0xbcbcc6ba1e68c974ull || params.hash == 0xcb3b9c1ea64fe876ull || params.hash == 0xc387ee3c610ed66bull ||
 		    params.hash == 0xb89a7139ba15ee52ull || params.hash == DemonsRadianceTrace::MaskWriter ||
 		    params.hash == DemonsPcDppPolicy::RayProducer) {
 			ShaderDump::RecordDsProbeGuestCode(params.hash, params.code);

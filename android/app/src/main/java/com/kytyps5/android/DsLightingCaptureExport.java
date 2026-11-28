@@ -384,6 +384,11 @@ public final class DsLightingCaptureExport {
             for (File file : files(new File(root, "queue-state"))) {
                 if (!file.isFile() || (launchTime != 0 && file.lastModified() < launchTime)) continue;
                 if (file.getName().startsWith("ds_prelight_")) require("queue-state/" + file.getName(), "fixed witness capture");
+                if (file.getName().startsWith("ds_v4_relight_") && file.getName().endsWith(".json")) {
+                    require("queue-state/" + file.getName(), "V4 relight producer");
+                    require("queue-state/" + file.getName().replace(".json", ".bin"), "V4 relight trace");
+                    require("guest-shaders/cs_bcbcc6ba1e68c974_probe.bin", "V4 relight original ISA");
+                }
                 indirectWitnessPresent |= file.getName().startsWith("ds_prelight_cp_args_");
                 if (JOURNAL.matcher(file.getName()).matches()) journals.add(file);
             }

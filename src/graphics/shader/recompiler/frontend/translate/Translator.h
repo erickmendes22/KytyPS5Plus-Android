@@ -30,6 +30,7 @@ public:
 	void HalfRateAfter(const Decoder::Instruction& inst);
     void V4LightTrace(const Decoder::Instruction& inst,bool before);
     void V4GiTrace(const Decoder::Instruction& inst,bool before);
+    void V4RelightTrace(const Decoder::Instruction& inst);
 
 private:
 	const Decoder::Operand& SourceAt(const Decoder::Instruction& inst, uint32_t index);
