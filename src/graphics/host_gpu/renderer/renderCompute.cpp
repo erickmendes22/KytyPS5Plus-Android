@@ -5145,11 +5145,13 @@ static nlohmann::json BeginDsV4Relight(RenderContext& context,const PreparedBind
     namespace T=DemonsV4LightTrace;
     const auto& p=*bindings.runtime->program;
     if(!T::Enabled()||p.shader_hash!=T::RelightShader)return {};
-    static uint32_t count=0;static int32_t last=-10000;
+    static uint32_t count=0,early_count=0;static int32_t last=-10000,miss=-10000;
     const int32_t frame=context.GetGpu().GetFrameNum();
-    if(count>=3||int64_t{frame}-last<24)return {};
     const auto& phase=DemonsAdaptiveCapture::Current();
-    if(!phase.DarkOnsetDue(frame)&&!phase.PostTransitionDarkDue(frame))return {};
+    const bool dark=phase.DarkOnsetDue(frame)||phase.PostTransitionDarkDue(frame);
+    // Reserve two acquisitions for the dark phase; allow one earlier exact
+    // position/row match to survive a transient update schedule.
+    if(count>=3||(!dark&&early_count>=1)||int64_t{frame}-last<24)return {};
     auto* log=context.GetBufferCache().V4LightTraceBuffer();
     auto fail=[&](const char* why){LOGF("[DS_V4_RELIGHT_INCOMPLETE] frame=%d submit=%llu reason=%s\n",frame,static_cast<unsigned long long>(submit),why);return nlohmann::json{};};
     if(!log||!T::Supports(input.threads_num[0],input.threads_num[1],input.threads_num[2],input.wave_size)||
@@ -5159,19 +5161,39 @@ static nlohmann::json BeginDsV4Relight(RenderContext& context,const PreparedBind
     if(groups[0]!=2||groups[1]!=2||!groups[2]||groups[2]>256||p.info.buffers.size()!=9)return fail("layout");
     auto ids=ReadDsBoundWords(context,bindings,p.info.buffers[0].descriptor_index,groups[2]);
     if(ids.size()!=groups[2])return fail("map");
-    const auto found=std::find(ids.begin(),ids.end(),T::RelightProbe);
-    if(found==ids.end())return {};
-    if(std::find(found+1,ids.end(),T::RelightProbe)!=ids.end())return fail("ambiguous_probe");
-    const uint32_t z=static_cast<uint32_t>(found-ids.begin());
-    const std::array<uint32_t,1> target{T::RelightProbe};
-    auto pos=ReadDsMaskProbeRecords(context,bindings,p.info.buffers[2].descriptor_index,target,16);
-    if(!pos.is_array()||pos.size()!=1||pos[0]!=nlohmann::json(T::RelightPosition))return fail("position");
-    auto ray=ReadDsMaskProbeRecords(context,bindings,p.info.buffers[1].descriptor_index,target,2048);
-    if(!ray.is_array()||ray.size()!=1||!ray[0].is_array()||ray[0].size()!=512)return fail("raw_rays");
+    auto pos=ReadDsMaskProbeRecords(context,bindings,p.info.buffers[2].descriptor_index,ids,16);
+    if(!pos.is_array()||pos.size()!=ids.size())return fail("position_census");
+    std::vector<std::array<uint32_t,4>> positions;positions.reserve(ids.size());
+    std::vector<uint32_t> candidates,indices;
+    for(uint32_t i=0;i<ids.size();++i){
+        if(!pos[i].is_array()||pos[i].size()!=4)return fail("position_row");
+        positions.push_back(pos[i].get<std::array<uint32_t,4>>());
+        if(positions.back()==T::RelightPosition){candidates.push_back(ids[i]);indices.push_back(i);}
+    }
+    if(candidates.empty()){
+        if(int64_t{frame}-miss>=64){miss=frame;LOGF("[DS_V4_RELIGHT] frame=%d position_not_in_dispatch groups_z=%u dark=%d\n",frame,groups[2],int(dark));}
+        return {};
+    }
+    auto rays=ReadDsMaskProbeRecords(context,bindings,p.info.buffers[1].descriptor_index,candidates,2048);
+    if(!rays.is_array()||rays.size()!=candidates.size())return fail("raw_rays");
+    std::vector<uint64_t> hashes(ids.size());
+    for(uint32_t i=0;i<candidates.size();++i){
+        if(!rays[i].is_array()||rays[i].size()!=512)return fail("raw_ray_row");
+        hashes[indices[i]]=T::RelightRayHash(rays[i].get<std::array<uint32_t,512>>());
+    }
+    const uint32_t z=T::RelightChoose(positions,hashes);
+    if(z>=ids.size())return fail("ambiguous_position");
+    const uint32_t probe=ids[z];
+    if(std::count(ids.begin(),ids.end(),probe)!=1)return fail("ambiguous_probe_id");
+    const auto row=std::find(indices.begin(),indices.end(),z);
+    if(row==indices.end())return fail("candidate_index");
+    const auto& ray=rays[static_cast<size_t>(row-indices.begin())];
+    if(!dark&&hashes[z]!=T::RelightReferenceRayHash)return {};
     const auto& snap=*bindings.runtime->resources;
-    nlohmann::json e={{"kind","v4_relight_slice"},{"schema",1},{"frame",frame},{"submit",submit},
-        {"shader",T::RelightShader},{"probe",T::RelightProbe},{"z",z},{"groups",groups},{"position",pos[0]},{"map",ids},
-        {"ray_words",ray[0]},{"mode",input.float_mode},{"bytes",T::RelightBytes},{"images",nlohmann::json::array()},
+    nlohmann::json e={{"kind","v4_relight_slice"},{"schema",2},{"frame",frame},{"submit",submit},
+        {"shader",T::RelightShader},{"probe",probe},{"reference_probe",T::RelightReferenceProbe},{"z",z},{"groups",groups},{"position",pos[z]},{"map",ids},
+        {"position_matches",candidates.size()},{"ray_hash",hashes[z]},{"reference_ray_match",hashes[z]==T::RelightReferenceRayHash},
+        {"dark_phase",dark},{"ray_words",ray},{"mode",input.float_mode},{"bytes",T::RelightBytes},{"images",nlohmann::json::array()},
         {"buffers",nlohmann::json::array()},{"samplers",nlohmann::json::array()},{"bindings",nlohmann::json::array()}};
     for(const auto& d:snap.images)e["images"].push_back(d.dwords);
     for(const auto& d:snap.buffers)e["buffers"].push_back(d.dwords);
@@ -5185,9 +5207,11 @@ static nlohmann::json BeginDsV4Relight(RenderContext& context,const PreparedBind
     auto& sched=context.GetCommandScheduler();sched.Wait(sched.CurrentTick());
     auto mapped=log->Mapped();if(mapped.size()<T::RelightBytes)return fail("trace_buffer");
     std::memset(mapped.data(),0,T::RelightBytes);
-    const std::array<uint32_t,5> hdr{3,z,T::RelightProbe,0,1};
+    const std::array<uint32_t,5> hdr{3,z,probe,0,2};
     std::memcpy(mapped.data(),hdr.data(),sizeof(hdr));log->Flush(0,T::RelightBytes);
-    ++count;last=frame;return e;
+    ++count;if(!dark)++early_count;last=frame;
+    LOGF("[DS_V4_RELIGHT_SELECTED] frame=%d probe=%u z=%u reference_row=%d dark=%d\n",frame,probe,z,int(hashes[z]==T::RelightReferenceRayHash),int(dark));
+    return e;
 }
 
 // Exact interior LOD0 footprint for all corner sample events. Read-only,
@@ -5279,6 +5303,61 @@ static nlohmann::json DsV4RelightFootprints(RenderContext& context,const Prepare
     }
     out["status"]=skipped?"partial":"captured";return out;
 }
+
+static nlohmann::json DsV4RelightPackedWords(RenderContext& context,const PreparedBindings& bindings,
+    std::span<const uint32_t> words){
+    namespace T=DemonsV4LightTrace;
+    const auto& program=*bindings.runtime->program;
+    const auto& snap=*bindings.runtime->resources;
+    const auto it=std::find_if(T::RelightSites.begin(),T::RelightSites.end(),[](const auto& site){return site.pc==0x15bc;});
+    const auto off=T::RelightOffset(std::size_t(it-T::RelightSites.begin()));
+    std::array<uint32_t,4> desc{};bool have=false;
+    std::vector<uint32_t> indices;
+    nlohmann::json result={{"status","incomplete"}};
+    const auto fail=[&](const char* why){result["reason"]=why;return result;};
+    for(uint32_t ray=0;ray<T::RelightRays;++ray)for(uint32_t k=0;k<8;++k){
+        const auto* r=words.data()+T::Header+ray*T::RelightRayWords+off+k*T::RelightStride;
+        if(!r[0])continue;
+        if(r[0]!=0x15bd||r[1]!=(1u<<k))return fail("marker");
+        if(!have){std::copy_n(r+3,4,desc.begin());have=true;}
+        else if(!std::equal(desc.begin(),desc.end(),r+3))return fail("descriptor_changed");
+        indices.push_back(r[2]);
+    }
+    if(!have)return nlohmann::json{{"status","no_visits"}};
+    uint32_t slot=UINT32_MAX;
+    for(const auto& b:program.info.buffers){
+        const auto s=b.descriptor_index;
+        if(s>=snap.buffers.size()||b.written||!std::equal(desc.begin(),desc.end(),snap.buffers[s].dwords.begin()))continue;
+        if(slot!=UINT32_MAX)return fail("ambiguous_binding");
+        slot=s;
+    }
+    if(slot>=bindings.buffers.size()||slot>=bindings.buffer_sources.size())return fail("binding");
+    const auto& src=bindings.buffer_sources[slot];
+    if(!src.size||!bindings.buffers[slot].buffer)return fail("range");
+    for(const auto& b:program.info.buffers){
+        const auto s=b.descriptor_index;
+        if(!b.written||s>=bindings.buffer_sources.size())continue;
+        const auto& other=bindings.buffer_sources[s];
+        if(src.address<other.address+other.size&&other.address<src.address+src.size)return fail("buffer_alias");
+    }
+    for(size_t i=0;i<program.info.images.size()&&i<bindings.images.size();++i){
+        if(!program.info.images[i].written||!bindings.images[i].image_id||bindings.images[i].placeholder)continue;
+        const auto& dst=context.GetTextureCache().GetImage(bindings.images[i].image_id).info.data;
+        if(src.address<dst.address+dst.size&&dst.address<src.address+src.size)return fail("image_alias");
+    }
+    std::sort(indices.begin(),indices.end());indices.erase(std::unique(indices.begin(),indices.end()),indices.end());
+    const auto resource=DecodeNativeDescriptor<ShaderBufferResource>(snap.buffers[slot]);
+    if(resource.Stride()!=4||resource.Base48()!=src.address||uint64_t{indices.back()}>=resource.NumRecords())return fail("descriptor_range");
+    const auto data=ReadDsMaskProbeRecords(context,bindings,slot,indices,4);
+    if(!data.is_array()||data.size()!=indices.size())return fail("copy");
+    auto records=nlohmann::json::array();
+    for(size_t i=0;i<indices.size();++i){
+        if(!data[i].is_array()||data[i].size()!=1)return fail("record");
+        records.push_back({{"index",indices[i]},{"word",data[i][0]}});
+    }
+    return {{"status","captured"},{"slot",slot},{"guest",src.address},{"bytes",src.size},{"descriptor",desc},{"records",records}};
+}
+
 static void EndDsV4Relight(RenderContext& context,const PreparedBindings& bindings,vk::CommandBuffer cmd,nlohmann::json e){
     namespace T=DemonsV4LightTrace;
     if(e.is_null()||e.empty())return;
@@ -5288,6 +5367,7 @@ static void EndDsV4Relight(RenderContext& context,const PreparedBindings& bindin
     auto& sched=context.GetCommandScheduler();sched.Wait(sched.CurrentTick());log->Invalidate(0,T::RelightBytes);
     auto mapped=log->Mapped();std::vector<uint32_t> words(T::RelightWords);std::memcpy(words.data(),mapped.data(),T::RelightBytes);
     uint32_t zero=0;std::memcpy(mapped.data(),&zero,4);log->Flush(0,4);
+    e["packed_words"]=DsV4RelightPackedWords(context,bindings,words);
     e["footprints"]=nlohmann::json::array({DsV4RelightFootprints(context,bindings,e,words,0x172c),DsV4RelightFootprints(context,bindings,e,words,0x1734)});
     const auto& p=*bindings.runtime->program;
     for(size_t i=0;i<p.info.images.size()&&i<bindings.images.size();++i){
@@ -5314,7 +5394,7 @@ static void EndDsV4Relight(RenderContext& context,const PreparedBindings& bindin
     bin.write(reinterpret_cast<const char*>(words.data()),T::RelightBytes);bin.close();
     if(!bin.good())return;
     std::ofstream meta(folder/(stem+".json"),std::ios::trunc);meta<<e;meta.close();
-    LOGF("[DS_V4_RELIGHT] frame=%d probe=%u bytes=%llu saved=%d\n",e["frame"].get<int32_t>(),T::RelightProbe,static_cast<unsigned long long>(T::RelightBytes),int(meta.good()));
+    LOGF("[DS_V4_RELIGHT] frame=%d probe=%u bytes=%llu saved=%d\n",e["frame"].get<int32_t>(),e["probe"].get<uint32_t>(),static_cast<unsigned long long>(T::RelightBytes),int(meta.good()));
 }
 
 static nlohmann::json BeginDsV4Gi(RenderContext& context,const PreparedBindings& bindings,

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <span>
 namespace Libs::Graphics::DemonsV4LightTrace {
 constexpr uint64_t Shader=0x3dfe402653925fbfull;
 constexpr uint32_t Header=8,Lanes=64,FixedStride=96,FixedBase=Header;
@@ -98,13 +99,36 @@ constexpr bool GiKey(uint32_t key){return key&&key<=128&&(key&(key-1))==0;}
 // V4 relight: exact producer of probe4957's low native radiance.
 // Each of 256 rays owns its records; dynamic corner key is s36 one-hot.
 constexpr uint64_t RelightShader=0xbcbcc6ba1e68c974ull;
-constexpr uint32_t RelightProbe=4957,RelightRays=256,RelightStride=32;
+constexpr uint32_t RelightReferenceProbe=4957,RelightRays=256,RelightStride=32;
+constexpr uint64_t RelightReferenceRayHash=0xa7b7333162e801bdull;
 constexpr std::array<uint32_t,4> RelightPosition{3246391296u,3288334336u,3246391296u,1098907648u};
+// Numeric probe IDs are allocated dynamically and are not a spatial identity.
+constexpr uint32_t RelightNoMatch=UINT32_MAX,RelightAmbiguous=UINT32_MAX-1;
+constexpr uint64_t RelightRayHash(std::span<const uint32_t> words){
+    uint64_t h=14695981039346656037ull;
+    for(auto w:words)h=(h^w)*1099511628211ull;
+    return h;
+}
+constexpr uint32_t RelightChoose(std::span<const std::array<uint32_t,4>> positions,
+    std::span<const uint64_t> hashes){
+    if(positions.size()!=hashes.size())return RelightAmbiguous;
+    uint32_t count=0,match=RelightNoMatch,exact_count=0,exact=RelightNoMatch;
+    for(uint32_t i=0;i<positions.size();++i){
+        if(positions[i]!=RelightPosition)continue;
+        ++count;match=i;
+        if(hashes[i]==RelightReferenceRayHash){++exact_count;exact=i;}
+    }
+    if(count==0)return RelightNoMatch;
+    if(count==1)return match;
+    return exact_count==1?exact:RelightAmbiguous;
+}
 struct RelightSite {uint32_t pc;bool corner;uint32_t count;std::array<uint32_t,24> regs;};
-constexpr std::array<RelightSite,15> RelightSites{{
+constexpr std::array<RelightSite,17> RelightSites{{
     {0x120,false,4,{2,3,8,9}},
+    {0x158c,true,1,{27}},
     {0x15bc,true,5,{3,284,285,286,287}},
-    {0x16a4,true,1,{4}},
+    {0x16a4,true,3,{4,281,290}},
+    {0x16e4,true,1,{40}},
     {0x172c,true,15,{43,44,45,256,257,258,259,260,261,262,263,296,297,298,299}},
     {0x1734,true,16,{34,39,40,45,264,265,266,267,268,269,270,271,300,301,302,303}},
     {0x1744,true,10,{3,4,5,34,37,36,28,29,30,31}},

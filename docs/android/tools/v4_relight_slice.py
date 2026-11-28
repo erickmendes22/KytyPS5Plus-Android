@@ -10,11 +10,13 @@ from p8_guest_graphics import run_wave
 from v4_q8_pair_replay import smov,exp,END,dist,fl
 from p8_paired_replay import need
 HASH='d69e3d40292a18fd7791453fee05c2c896d4791ccd067096ed878b5934efcba2'
-PROBE=4957
+REFERENCE_PROBE=4957
+REFERENCE_RAY_HASH=0xa7b7333162e801bd
+REFERENCE_RAY_SHA='b1ca24a3f1866beb850bb37879533fa81fd3a7ead2021e382a21ba455fd292ca'
 POSITION=[3246391296,3288334336,3246391296,1098907648]
 SITES=[
  (0x120,0,[2,3,8,9]),
- (0x15bc,1,[3,284,285,286,287]),(0x16a4,1,[4]),
+ (0x158c,1,[27]),(0x15bc,1,[3,284,285,286,287]),(0x16a4,1,[4,281,290]),(0x16e4,1,[40]),
  (0x172c,1,[43,44,45,*range(256,264),296,297,298,299]),
  (0x1734,1,[34,39,40,45,*range(264,272),300,301,302,303]),
  (0x1744,1,[3,4,5,34,37,36,28,29,30,31]),(0x177c,1,[28,29,30,31]),
@@ -37,11 +39,18 @@ def half_rtz(x):
 def wave_lane(ray):
     y,x=divmod(ray,16)
     return (y//8)*2+x//8,(y%8)*8+x%8
+def ray_hash(words):
+    h=14695981039346656037
+    for v in words:h=((h^int(v))*1099511628211)&((1<<64)-1)
+    return h
+
 def parse(data,meta):
-    need(meta['schema']==1 and meta['probe']==PROBE and meta['position']==POSITION,'wrong probe/position')
-    need(meta['groups'][:2]==[2,2] and 0<=meta['z']<meta['groups'][2] and meta['map'][meta['z']]==PROBE and meta['map'].count(PROBE)==1,'map')
+    probe=meta['probe']
+    need(meta['schema']==2 and meta['reference_probe']==REFERENCE_PROBE and meta['position']==POSITION,'wrong reference/position')
+    need(meta['groups'][:2]==[2,2] and len(meta['map'])==meta['groups'][2] and 0<=meta['z']<meta['groups'][2] and meta['map'][meta['z']]==probe and meta['map'].count(probe)==1,'map')
     need(len(meta['ray_words'])==512 and len(data)==meta['bytes']==WORDS*4,'trace extent')
-    a=np.frombuffer(data,'<u4');need(list(a[:5])==[3,meta['z'],PROBE,0,1],'trace header')
+    need(ray_hash(meta['ray_words'])==meta['ray_hash'] and meta['reference_ray_match']==(meta['ray_hash']==REFERENCE_RAY_HASH),'ray identity')
+    a=np.frombuffer(data,'<u4');need(list(a[:5])==[3,meta['z'],probe,0,2],'trace header')
     rows=[]
     for ray in range(256):
         at=8+ray*RAY_WORDS;records={}
@@ -53,9 +62,9 @@ def parse(data,meta):
                 records[pc,k]=list(map(int,r[2:2+len(regs)]))
         need(all((p,0) in records for p in (0x120,0x17bc,0x17f8,0x18a8,0x18c0,0x1b60,0x1b88)),'missing ray checkpoint')
         raw=records[0x120,0]
-        need(raw==[PROBE,PROBE*256+ray,*meta['ray_words'][2*ray:2*ray+2]],'native raw ray does not match bound row')
+        need(raw==[probe,probe*256+ray,*meta['ray_words'][2*ray:2*ray+2]],'native raw ray does not match bound row')
         for k in range(8):
-            visited=[(p,k) in records for p in (0x15bc,0x16a4,0x172c,0x1734,0x1744,0x177c)]
+            visited=[(p,k) in records for p in (0x15bc,0x16a4,0x16e4,0x172c,0x1734,0x1744,0x177c)]
             need(all(visited) or not any(visited),'incomplete corner')
         need(((0x1788,0) in records)==((0x17b8,0) in records),'normalization pair')
         rows.append(records)
@@ -123,8 +132,17 @@ def valid_layer(value):
     # nonnegative integral float32 from a uint32 operand.
     return math.isfinite(f) and f>=0 and f==math.floor(f) and f<=float(2**32)
 
+def layer_reference(packed,shift,mask):
+    return (packed>>(shift&31))&mask
+
 def audit(code,runner,meta,data):
     rows=parse(data,meta);bad=[];incomplete=[];matched=0;checks=[]
+    packed=meta.get('packed_words',{});packed_values={}
+    if packed.get('status')=='captured':
+        for r in packed['records']:
+            need(r['index'] not in packed_values,'duplicate native packed word')
+            packed_values[r['index']]=r['word']
+    elif packed.get('status')!='no_visits':incomplete.append(dict(pc='0x15bc',reason='packed operand unavailable',detail=packed.get('reason')))
     def result(kind,pc,ray,k,ok,detail=None):
         nonlocal matched
         if ok:matched+=1
@@ -146,9 +164,22 @@ def audit(code,runner,meta,data):
     for ray,r in enumerate(rows):
         corners=[k for k in range(8) if (0x1744,k) in r]
         prior=[0]*4
+        for k in range(8):
+            if (0x158c,k) in r:
+                result('guest_corner_admission',0x1590,ray,k,bool(r[0x158c,k][0]&(1<<k))==(k in corners),
+                       dict(mask=r[0x158c,k][0],visited=k in corners))
+            elif k in corners:incomplete.append(dict(pc='0x158c',ray=ray,corner=k,reason='missing active admission'))
         for k in corners:
-            result('actual_guest_layer_conversion',0x16e4,ray,k,valid_layer(r[0x172c,k][2]),
-                   dict(raw_packed_index=r[0x16a4,k][0],observed_layer=fl(r[0x172c,k][2])))
+            idx,*desc=r[0x15bc,k]
+            word,shift,mask=r[0x16a4,k]
+            if idx in packed_values and desc==packed.get('descriptor'):
+                result('native_packed_word',0x15bc,ray,k,packed_values[idx]==word,dict(index=idx,reference=packed_values[idx],observed=word))
+            else:incomplete.append(dict(pc='0x15bc',ray=ray,corner=k,reason='native word identity unavailable'))
+            expected=layer_reference(word,shift,mask);actual=r[0x16e4,k][0]
+            result('integer_layer_extraction',0x16c8,ray,k,actual==expected,
+                   dict(packed=word,shift=shift,mask=mask,reference=expected,observed=actual))
+            result('actual_guest_layer_conversion',0x16e4,ray,k,valid_layer(r[0x172c,k][2]) and bits(actual)==r[0x172c,k][2],
+                   dict(integer_layer=actual,expected_bits=bits(actual),observed_layer=fl(r[0x172c,k][2])))
             result('actual_guest_shared_layer',0x1734,ray,k,r[0x172c,k][2]==r[0x1734,k][3])
             result('accumulator_chain',0x1744,ray,k,r[0x1744,k][6:10]==prior)
             prior=r[0x177c,k]
@@ -185,7 +216,7 @@ def audit(code,runner,meta,data):
                         result('original_ISA',pc,ids[l],k,max(delta,default=0)<=8,dict(ulp=delta,reference=got,observed=want))
                 except (ValueError,KeyError,RuntimeError,OSError,AssertionError) as ex:incomplete.append(dict(pc=hex(pc),corner=k,group=group,reason=str(ex)))
     return dict(status='DIVERGENCE_CANDIDATE' if bad else 'INCOMPLETE' if incomplete else 'MATCH_LOCAL_CONDITIONAL',
-                frame=meta['frame'],submit=meta['submit'],probe=PROBE,matched=matched,differences=len(bad),first_differences=bad[:24],
+                frame=meta['frame'],submit=meta['submit'],probe=meta['probe'],reference_ray_match=meta['reference_ray_match'],matched=matched,differences=len(bad),first_differences=bad[:24],
                 incomplete=len(incomplete),first_incomplete=incomplete[:24],
                 scope='actual ray material factors, native footprint samples, original corner/normalization/material/environment/store arithmetic; prior input producers not certified')
 if __name__=='__main__':

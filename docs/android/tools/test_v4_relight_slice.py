@@ -6,7 +6,8 @@ def reject(fn):
     except (ValueError,KeyError,AssertionError):return
     raise AssertionError('invalid data accepted')
 def main():
-    assert r.WORDS==466952
+    assert r.WORDS==598024
+    assert r.layer_reference(0x12345678,8,511)==0x56 and r.layer_reference(0x12345678,40,511)==0x56
     assert r.valid_layer(r.bits(19)) and r.valid_layer(r.bits(0))
     assert not r.valid_layer(r.bits(1.4503871202468872))
     assert not r.valid_layer(r.bits(-1)) and not r.valid_layer(0x7f800000)
@@ -23,16 +24,20 @@ def main():
     reject(lambda:r.sample_reference(0x172c,record,dict(fp,texels=[0]),rep))
     other,_=r.sample_reference(0x172c,record,dict(fp,texels=[2000,2000,2000,0]*4),rep)
     assert np.max(abs(want-other))>tol
-    raw=[0]*512;meta=dict(schema=1,probe=r.PROBE,position=r.POSITION,groups=[2,2,1],z=0,map=[r.PROBE],ray_words=raw,bytes=r.WORDS*4)
-    a=np.zeros(r.WORDS,'<u4');a[:5]=[3,0,r.PROBE,0,1]
+    raw=[0]*512;probe=3997
+    meta=dict(schema=2,probe=probe,reference_probe=r.REFERENCE_PROBE,position=r.POSITION,groups=[2,2,1],z=0,map=[probe],ray_words=raw,bytes=r.WORDS*4,ray_hash=r.ray_hash(raw),reference_ray_match=False)
+    a=np.zeros(r.WORDS,'<u4');a[:5]=[3,0,probe,0,2]
     for ray in range(256):
         off=8+ray*r.RAY_WORDS
         for pc,corner,regs in r.SITES:
             if pc in (0x120,0x17bc,0x17f8,0x18a8,0x18c0,0x1b60,0x1b88):
                 a[off]=pc+1
-                if pc==0x120:a[off+2:off+6]=[r.PROBE,r.PROBE*256+ray,0,0]
+                if pc==0x120:a[off+2:off+6]=[probe,probe*256+ray,0,0]
             off+=(8 if corner else 1)*32
     assert len(r.parse(a.tobytes(),meta))==256
+    reject(lambda:r.parse(a.tobytes(),dict(meta,probe=4957)))
+    reject(lambda:r.parse(a.tobytes(),dict(meta,ray_hash=1)))
+    reject(lambda:r.parse(a.tobytes(),dict(meta,position=[0]*4)))
     b=a.copy();b[8+4]=1;reject(lambda:r.parse(b.tobytes(),meta))
     reject(lambda:r.parse(a[:-1].tobytes(),meta))
     b=a.copy();b[3]=1;reject(lambda:r.parse(b.tobytes(),meta))
